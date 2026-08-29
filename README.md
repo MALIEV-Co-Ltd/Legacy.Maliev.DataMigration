@@ -94,6 +94,15 @@ No executable migration logic was copied from those files.
 
 ## Receipt and execution contracts
 
+The .NET 10 executable host exposes only `receipt`, `plan`, `execute-shadow`,
+`evidence`, and `export-local-snapshot`. Command lines may carry a protected
+configuration-file reference only; connection strings, passwords, tokens,
+credentials, and private keys are rejected as command-line arguments so they
+cannot leak through process listings or logs. The receipt producer independently
+re-reads all 25 local backup files and binds their approved GCS object names,
+immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
+Signing keys are externally supplied and are never stored in this repository.
+
 `PreflightService.Validate` accepts an in-memory `BackupReceipt` and
 `MigrationPlan`. A valid receipt must:
 

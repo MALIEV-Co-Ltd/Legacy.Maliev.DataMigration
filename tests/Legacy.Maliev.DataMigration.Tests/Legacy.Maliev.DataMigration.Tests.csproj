@@ -22,6 +22,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Legacy.Maliev.DataMigration/Legacy.Maliev.DataMigration.csproj" />
+    <ProjectReference Include="../../src/Legacy.Maliev.DataMigration.Console/Legacy.Maliev.DataMigration.Console.csproj" />
     <None Include="../../database-disposition.json" Link="database-disposition.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

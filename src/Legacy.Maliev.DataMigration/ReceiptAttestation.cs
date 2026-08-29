@@ -147,6 +147,9 @@ public static class ReceiptAttestation
                 writer.Write(artifact.ByteLength);
                 WriteString(writer, artifact.Sha256!);
                 WriteString(writer, artifact.ObservedSha256!);
+                WriteString(writer, artifact.GcsObject ?? string.Empty);
+                writer.Write(artifact.GcsGeneration ?? 0);
+                WriteString(writer, artifact.GcsSha256 ?? string.Empty);
             }
         }
 

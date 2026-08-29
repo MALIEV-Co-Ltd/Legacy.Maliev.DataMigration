@@ -18,7 +18,14 @@ public sealed record BackupArtifact(
     string? FileName,
     long ByteLength,
     string? Sha256,
-    string? ObservedSha256);
+    string? ObservedSha256)
+{
+    public string? GcsObject { get; init; }
+
+    public long? GcsGeneration { get; init; }
+
+    public string? GcsSha256 { get; init; }
+}
 
 public sealed record BackupReceipt(
     string? SchemaVersion,
