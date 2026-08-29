@@ -1,5 +1,7 @@
 # Legacy.Maliev.DataMigration
 
+[![CI - Main](https://github.com/MALIEV-Co-Ltd/Legacy.Maliev.DataMigration/actions/workflows/ci-main.yml/badge.svg)](https://github.com/MALIEV-Co-Ltd/Legacy.Maliev.DataMigration/actions/workflows/ci-main.yml)
+
 This repository is the fail-closed execution boundary for the legacy SQL Server
 to PostgreSQL data migration. It now contains two deliberately separated layers:
 
@@ -23,8 +25,10 @@ nothing in this repository discovers or projects production credentials.
   marker. It exposes no rename, swap, promotion, or canonical mutation API.
 - The runner, not either adapter, owns and exhausts source enumeration in
   batches capped at both 512 rows and 4 MiB of estimated materialized payload.
-  A single row above the byte cap fails closed rather than creating an
-  unbounded in-memory batch. PostgreSQL acknowledges each binary `COPY` batch
+  SQL Server large-value columns are preflighted with signed `DATALENGTH`
+  evidence and streamed sequentially through disk-backed bounded buffers;
+  PostgreSQL receives them in bounded chunks without materializing the full
+  value. PostgreSQL acknowledges each binary `COPY` batch
   inside one whole-database transaction. Commit is refused until the
   independently re-read schema and every planned table have been inspected.
 - The persistent PostgreSQL journal atomically acquires run IDs and retains
