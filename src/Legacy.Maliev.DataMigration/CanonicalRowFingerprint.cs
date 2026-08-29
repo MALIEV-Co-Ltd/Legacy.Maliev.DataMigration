@@ -124,7 +124,7 @@ public sealed class CanonicalRowFingerprint : IDisposable
             string text => text.Normalize(NormalizationForm.FormC),
             byte[] bytes => Convert.ToHexString(bytes).ToLowerInvariant(),
             DateTime dateTime => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff", CultureInfo.InvariantCulture),
-            DateTimeOffset offset => offset.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+            DateTimeOffset offset => offset.ToString("O", CultureInfo.InvariantCulture),
             bool boolean => boolean ? "true" : "false",
             IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? string.Empty,
             _ => value.ToString()?.Normalize(NormalizationForm.FormC) ?? string.Empty,

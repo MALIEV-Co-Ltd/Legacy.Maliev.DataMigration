@@ -12,6 +12,8 @@ public sealed record GuardedRunnerPolicy(string ExpectedSourceCommitSha, string 
     public static TimeSpan MaximumAuthorizationLifetime { get; } = TimeSpan.FromHours(1);
 
     public const int CopyBatchSize = 512;
+
+    public const long CopyBatchByteLimit = 4 * 1024 * 1024;
 }
 
 public sealed record GuardedMigrationRequest(
@@ -19,7 +21,15 @@ public sealed record GuardedMigrationRequest(
     FreshSchemaPlan SchemaPlan,
     ExecutionAuthorizationReceipt Authorization);
 
-public sealed record SourceSchemaEvidence(string Database, string SchemaSha256);
+public sealed record SourceTableInventory(
+    string SourceSchema,
+    string SourceTable,
+    IReadOnlyList<string> OrderedColumns);
+
+public sealed record SourceSchemaEvidence(
+    string Database,
+    string SchemaSha256,
+    IReadOnlyList<SourceTableInventory> Tables);
 
 public sealed record MigrationRow(IReadOnlyDictionary<string, object?> Values);
 
@@ -497,6 +507,13 @@ public sealed partial class GuardedShadowMigrationRunner
                             $"{databasePlan.Database} no longer matches the signed schema plan.");
                     }
 
+                    if (!SourceInventoryMatches(databasePlan, observedSchema.Tables))
+                    {
+                        throw new MigrationExecutionException(
+                            "source_inventory_drift",
+                            $"{databasePlan.Database} table and column inventory no longer matches the signed schema plan.");
+                    }
+
                     string shadowName = CreateShadowName(databasePlan.Database, request.Authorization.RunId);
                     var plannedShadow = new ShadowDatabase(
                         shadowName,
@@ -831,16 +848,37 @@ public sealed partial class GuardedShadowMigrationRunner
         CancellationToken cancellationToken)
     {
         List<MigrationRow> batch = new(GuardedRunnerPolicy.CopyBatchSize);
+        long batchBytes = 0;
         long copied = 0;
         await foreach (MigrationRow row in _source.ReadTableAsync(database, table, cancellationToken)
             .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
+            long rowBytes = MigrationRowSizeEstimator.Estimate(row);
+            if (rowBytes > GuardedRunnerPolicy.CopyBatchByteLimit)
+            {
+                throw new MigrationExecutionException(
+                    "source_row_exceeds_batch_byte_limit",
+                    $"{database}.{table.SourceSchema}.{table.SourceTable} contains a row larger than the approved copy batch byte limit.");
+            }
+
             collector.Append(row);
-            batch.Add(row);
-            if (batch.Count == GuardedRunnerPolicy.CopyBatchSize)
+            if (batch.Count > 0 &&
+                (batch.Count == GuardedRunnerPolicy.CopyBatchSize ||
+                    rowBytes > GuardedRunnerPolicy.CopyBatchByteLimit - batchBytes))
             {
                 copied += await CopyBatchExactlyAsync(transaction, table, batch, cancellationToken).ConfigureAwait(false);
                 batch.Clear();
+                batchBytes = 0;
+            }
+
+            batch.Add(row);
+            batchBytes = checked(batchBytes + rowBytes);
+            if (batch.Count == GuardedRunnerPolicy.CopyBatchSize ||
+                batchBytes >= GuardedRunnerPolicy.CopyBatchByteLimit)
+            {
+                copied += await CopyBatchExactlyAsync(transaction, table, batch, cancellationToken).ConfigureAwait(false);
+                batch.Clear();
+                batchBytes = 0;
             }
         }
 
@@ -850,6 +888,23 @@ public sealed partial class GuardedShadowMigrationRunner
         }
 
         return copied;
+    }
+
+    private static bool SourceInventoryMatches(
+        DatabaseSchemaPlan plan,
+        IReadOnlyList<SourceTableInventory> observed)
+    {
+        SourceTableInventory[] expected = [.. plan.Tables
+            .Select(table => new SourceTableInventory(table.SourceSchema, table.SourceTable, table.OrderedColumns))
+            .OrderBy(table => table.SourceSchema, StringComparer.Ordinal)
+            .ThenBy(table => table.SourceTable, StringComparer.Ordinal)];
+        SourceTableInventory[] actual = [.. observed
+            .OrderBy(table => table.SourceSchema, StringComparer.Ordinal)
+            .ThenBy(table => table.SourceTable, StringComparer.Ordinal)];
+        return expected.Length == actual.Length && expected.Zip(actual).All(pair =>
+            string.Equals(pair.First.SourceSchema, pair.Second.SourceSchema, StringComparison.Ordinal) &&
+            string.Equals(pair.First.SourceTable, pair.Second.SourceTable, StringComparison.Ordinal) &&
+            pair.First.OrderedColumns.SequenceEqual(pair.Second.OrderedColumns, StringComparer.Ordinal));
     }
 
     private static async Task<long> CopyBatchExactlyAsync(

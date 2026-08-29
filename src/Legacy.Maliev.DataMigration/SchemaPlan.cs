@@ -505,12 +505,26 @@ public static partial class SchemaPlanCanonicalizer
         string source = sourceType.Split('(', 2)[0].Trim().ToLowerInvariant();
         return source switch
         {
-            "datetime" or "datetime2" or "smalldatetime" =>
-                string.Equals(targetType, "timestamp without time zone", StringComparison.Ordinal),
-            "datetimeoffset" => string.Equals(targetType, "timestamp with time zone", StringComparison.Ordinal),
+            "datetime" or "smalldatetime" =>
+                string.Equals(targetType, "timestamp without time zone", StringComparison.Ordinal) ||
+                string.Equals(targetType, "text", StringComparison.Ordinal),
+            "datetime2" => string.Equals(targetType, "text", StringComparison.Ordinal) ||
+                (TemporalPrecision(sourceType) is >= 0 and <= 6 &&
+                    string.Equals(targetType, "timestamp without time zone", StringComparison.Ordinal)),
+            "datetimeoffset" => string.Equals(targetType, "text", StringComparison.Ordinal),
             "date" => string.Equals(targetType, "date", StringComparison.Ordinal),
             _ => true,
         };
+    }
+
+    private static int TemporalPrecision(string sourceType)
+    {
+        int open = sourceType.IndexOf('(');
+        int close = sourceType.IndexOf(')', open + 1);
+        return open >= 0 && close > open + 1 &&
+            int.TryParse(sourceType.AsSpan(open + 1, close - open - 1), NumberStyles.None, CultureInfo.InvariantCulture, out int precision)
+            ? precision
+            : -1;
     }
 
     private static void WriteString(BinaryWriter writer, string value)

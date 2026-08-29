@@ -101,6 +101,26 @@ public sealed class SqlServerMigrationSourceContractTests
         Assert.Equal(input.Ticks, normalized.Ticks);
     }
 
+    [Fact]
+    public void NormalizeSourceValue_Datetime2SevenToText_PreservesEveryHundredNanoseconds()
+    {
+        DateTime input = new DateTime(2026, 8, 29, 17, 45, 12, DateTimeKind.Unspecified).AddTicks(1_234_567);
+
+        object result = SqlServerMigrationSource.NormalizeSourceValue(input, "datetime2(7)", "text")!;
+
+        Assert.Equal("2026-08-29T17:45:12.1234567", result);
+    }
+
+    [Fact]
+    public void NormalizeSourceValue_DatetimeOffsetToText_PreservesOriginalOffsetAndPrecision()
+    {
+        var input = new DateTimeOffset(2026, 8, 29, 17, 45, 12, TimeSpan.FromHours(7)).AddTicks(1_234_567);
+
+        object result = SqlServerMigrationSource.NormalizeSourceValue(input, "datetimeoffset(7)", "text")!;
+
+        Assert.Equal("2026-08-29T17:45:12.1234567+07:00", result);
+    }
+
     [Theory]
     [InlineData("archive", "Customers", "Id")]
     [InlineData("crm", "ArchivedCustomers", "Id")]

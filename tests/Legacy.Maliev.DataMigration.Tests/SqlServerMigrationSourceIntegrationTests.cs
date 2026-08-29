@@ -59,14 +59,15 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                     ThaiName nvarchar(200) NOT NULL,
                     Amount decimal(19, 4) NOT NULL,
                     LocalTime datetime2(7) NOT NULL,
+                    OffsetTime datetimeoffset(7) NOT NULL,
                     CONSTRAINT PK_Child PRIMARY KEY (Id),
                     CONSTRAINT FK_Child_Parent FOREIGN KEY (TenantId, ParentId)
                         REFERENCES sales.Parent (TenantId, Id) ON DELETE CASCADE);
                 CREATE INDEX IX_Child_Amount ON sales.Child (Amount DESC)
                     INCLUDE (ThaiName) WHERE Amount > 0;
                 INSERT INTO sales.Parent (TenantId, Id) VALUES (1, 10);
-                INSERT INTO sales.Child (TenantId, ParentId, ThaiName, Amount, LocalTime)
-                VALUES (1, 10, N'ชิ้นงานทดสอบ', 1234.5678, '2026-08-29T17:45:12.1234567');
+                INSERT INTO sales.Child (TenantId, ParentId, ThaiName, Amount, LocalTime, OffsetTime)
+                VALUES (1, 10, N'ชิ้นงานทดสอบ', 1234.5678, '2026-08-29T17:45:12.1234567', '2026-08-29T17:45:12.1234567+07:00');
                 """;
             _ = await command.ExecuteNonQueryAsync();
 
@@ -103,10 +104,16 @@ public sealed class SqlServerMigrationSourceIntegrationTests
         await source.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
         SourceSchemaEvidence schema = await source.InspectSchemaAsync(database, CancellationToken.None);
         Assert.Matches("^[0-9a-f]{64}$", schema.SchemaSha256);
+        Assert.Equal(
+            ["TenantId", "Id"],
+            Assert.Single(schema.Tables, table => table.SourceSchema == "sales" && table.SourceTable == "Parent").OrderedColumns);
+        Assert.Equal(
+            ["Id", "TenantId", "ParentId", "ThaiName", "Amount", "LocalTime", "OffsetTime"],
+            Assert.Single(schema.Tables, table => table.SourceSchema == "sales" && table.SourceTable == "Child").OrderedColumns);
 
         var table = new TableCopyPlan(
             "sales", "Child", "sales", "child",
-            ["Id", "TenantId", "ParentId", "ThaiName", "Amount", "LocalTime"],
+            ["Id", "TenantId", "ParentId", "ThaiName", "Amount", "LocalTime", "OffsetTime"],
             ["Id"])
         {
             SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -116,7 +123,8 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                 ["ParentId"] = "int",
                 ["ThaiName"] = "nvarchar",
                 ["Amount"] = "decimal",
-                ["LocalTime"] = "datetime2",
+                ["LocalTime"] = "datetime2(7)",
+                ["OffsetTime"] = "datetimeoffset(7)",
             },
             ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -125,7 +133,8 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                 ["ParentId"] = "integer",
                 ["ThaiName"] = "text",
                 ["Amount"] = "numeric(19,4)",
-                ["LocalTime"] = "timestamp without time zone",
+                ["LocalTime"] = "text",
+                ["OffsetTime"] = "text",
             },
             PrimaryKey = new PrimaryKeyCopyPlan("PK_Child", ["Id"]),
             ForeignKeys =
@@ -149,7 +158,8 @@ public sealed class SqlServerMigrationSourceIntegrationTests
         _ = Assert.Single(rows);
         Assert.Equal("ชิ้นงานทดสอบ", rows[0].Values["ThaiName"]);
         Assert.Equal(1234.5678m, rows[0].Values["Amount"]);
-        Assert.Equal(DateTimeKind.Unspecified, Assert.IsType<DateTime>(rows[0].Values["LocalTime"]).Kind);
+        Assert.Equal("2026-08-29T17:45:12.1234567", rows[0].Values["LocalTime"]);
+        Assert.Equal("2026-08-29T17:45:12.1234567+07:00", rows[0].Values["OffsetTime"]);
         IReadOnlyDictionary<string, long> orphans = await source.InspectForeignKeyOrphansAsync(database, table, CancellationToken.None);
         Assert.Equal(0, orphans["FK_Child_Parent"]);
 

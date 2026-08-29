@@ -73,7 +73,9 @@ public sealed partial class PreflightService
             !actualDatabases.OrderBy(database => database, StringComparer.Ordinal)
                 .SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
         {
-            errors.Add(new("database_coverage_mismatch", "The receipt must cover each of the 21 active databases exactly once."));
+            errors.Add(new(
+                "database_coverage_mismatch",
+                $"The receipt must cover each of the {DatabaseInventory.ActiveDatabases.Count} active databases exactly once."));
         }
 
         foreach (BackupArtifact? artifact in artifacts)
@@ -143,7 +145,9 @@ public sealed partial class PreflightService
         IOrderedEnumerable<string> databases = versions.Keys.OrderBy(database => database, StringComparer.Ordinal);
         if (!databases.SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
         {
-            errors.Add(new("target_schema_coverage_mismatch", "Target schema versions must cover all 21 active databases exactly."));
+            errors.Add(new(
+                "target_schema_coverage_mismatch",
+                $"Target schema versions must cover all {DatabaseInventory.ActiveDatabases.Count} active databases exactly."));
         }
 
         if (versions.Values.Any(version => !string.Equals(version, TargetSchemaVersion, StringComparison.Ordinal)))

@@ -22,7 +22,9 @@ nothing in this repository discovers or projects production credentials.
   uniquely named `legacy_shadow_*` database carrying the exact run-ownership
   marker. It exposes no rename, swap, promotion, or canonical mutation API.
 - The runner, not either adapter, owns and exhausts source enumeration in
-  bounded 512-row batches. PostgreSQL acknowledges each binary `COPY` batch
+  batches capped at both 512 rows and 4 MiB of estimated materialized payload.
+  A single row above the byte cap fails closed rather than creating an
+  unbounded in-memory batch. PostgreSQL acknowledges each binary `COPY` batch
   inside one whole-database transaction. Commit is refused until the
   independently re-read schema and every planned table have been inspected.
 - The persistent PostgreSQL journal atomically acquires run IDs and retains
@@ -58,12 +60,17 @@ failure paths retain signed reconciliation and shadow-cleanup evidence.
 
 ## Approved database disposition
 
-The contract contains all 27 currently known historical names. Exactly 21 are
-active migration inputs. `Hangfire` and `Log` are archive-only;
-`MachineLearning` and `MachineLearningData` are excluded; `ContactRequest` and
-`LocationData` remain review-hold. A receipt, schema plan, and execution
+The contract contains all 27 currently known historical names. Exactly 25 are
+active migration inputs. `Hangfire` and `Log` are preserved as read-only
+archival data under `Legacy.Maliev.CompatibilityContracts`; `ContactRequest`
+and `LocationData` are active inputs owned by ContactService and CatalogService.
+Only `MachineLearning` and `MachineLearningData` are excluded because those
+features were deliberately retired. A receipt, schema plan, and execution
 authorization must cover every active database exactly once and cannot include
-an inactive, review-hold, or unknown database.
+an excluded or unknown database. The machine-readable
+`database-disposition.json` is hash-bound through
+`BackupReceipt.DatabaseInventorySha256`, which is covered by the producer
+signature.
 
 The disposition and ownership mapping was independently transcribed from the
 committed source contract at source HEAD
@@ -84,7 +91,7 @@ No executable migration logic was copied from those files.
 - use receipt schema version `1.0`;
 - be no older than the caller-supplied positive maximum age and not be future-dated;
 - match the immutable database-disposition inventory SHA-256;
-- contain exactly one full `.bak` artifact for each of the 21 active databases;
+- contain exactly one full `.bak` artifact for each of the 25 active databases;
 - provide positive byte counts and well-formed declared and independently
   observed SHA-256 values;
 - have matching declared and observed artifact hashes; and
@@ -92,12 +99,19 @@ No executable migration logic was copied from those files.
 - carry a valid signature from a configured trusted producer key.
 
 A valid preflight plan must remain `plan-only`, disallow target writes, request
-no external actions, cover all 21 target schema versions exactly, and use only
+no external actions, cover all 25 target schema versions exactly, and use only
 target schema version `1.0`.
 
 A fresh schema plan uses schema version `2.0`, binds an exact 40-character source
 commit, and supplies distinct source/target schema fingerprints plus deterministic
 table, column, type, ordering, identity, nullability, and foreign-key contracts.
+The live snapshot must expose exactly the signed source table and ordered-column
+inventory; omissions and additions fail closed even when a caller supplies a
+matching-looking aggregate. SQL Server `datetime2(7)` and `datetimeoffset`
+values must use the exact text representation so PostgreSQL does not discard a
+100 ns digit or the original offset. Nullable SQL Server unique constraints and
+indexes are emitted as PostgreSQL `NULLS NOT DISTINCT` objects and that semantic
+is included in the target schema fingerprint.
 This deliberately permits value-preserving SQL Server-to-PostgreSQL schema
 conversion; it never pretends the two engines have byte-identical DDL.
 
@@ -125,8 +139,10 @@ adapter suite also runs against a disposable PostgreSQL 18 Testcontainer to
 prove shadow ownership, whole-database commit gating, binary copy, independent
 schema/data reconciliation, atomic concurrent leases, persistent replay, and
 failure retry. SQL Server command and connection behavior is covered by
-fail-closed contract tests; live SQL Server integration remains blocked until a
-disposable SQL Server fixture is available without using production.
+fail-closed contract tests. A gated disposable SQL Server 2022 Testcontainer
+fixture exercises snapshot/catalog/streaming behavior when
+`MALIEV_RUN_SQLSERVER_INTEGRATION=1`; production SQL Server is never a test
+fixture.
 
 ## Downstream evidence compatibility
 
@@ -146,13 +162,13 @@ program still needs:
 
 1. an independently reviewed producer that creates current verified full-backup
    receipts, observes hashes itself, protects its private signing key, and emits
-   the exact 21-database disposition;
-2. a freshly generated and independently reviewed 21-database schema plan bound
+   the exact 25-database disposition;
+2. a freshly generated and independently reviewed 25-database schema plan bound
    to the current source commit;
 3. a bounded source write freeze or a reviewed change-capture mechanism (the
    legacy source does not currently provide a proven complete daily delta);
-4. a disposable SQL Server integration fixture and crash-restart tests for the
-   concrete source adapter (production SQL Server is not a test fixture);
+4. independently reviewed crash-restart coverage for the concrete SQL Server
+   source adapter beyond the existing gated disposable SQL Server 2022 fixture;
 5. independent review and integration of the corrected AppHost schema-v2
    aggregate described above;
 6. pre/post table, row, key, relationship, sequence, and business-invariant

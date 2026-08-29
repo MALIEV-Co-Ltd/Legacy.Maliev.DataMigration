@@ -143,7 +143,43 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         await AppendSchemaQueryAsync(hash, lease, "checks", checkSql, cancellationToken).ConfigureAwait(false);
         await AppendSchemaQueryAsync(hash, lease, "foreign-keys", foreignKeySql, cancellationToken).ConfigureAwait(false);
 
-        return new SourceSchemaEvidence(database, Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant());
+        IReadOnlyList<SourceTableInventory> inventory = await ReadInventoryAsync(
+            lease,
+            cancellationToken).ConfigureAwait(false);
+        return new SourceSchemaEvidence(
+            database,
+            Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(),
+            inventory);
+    }
+
+    private static async Task<IReadOnlyList<SourceTableInventory>> ReadInventoryAsync(
+        SnapshotLease lease,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT s.name, t.name, c.column_id, c.name
+            FROM sys.tables AS t
+            INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+            INNER JOIN sys.columns AS c ON c.object_id = t.object_id
+            WHERE t.is_ms_shipped = 0
+            ORDER BY s.name, t.name, c.column_id;
+            """;
+        var rows = new List<(string Schema, string Table, int Ordinal, string Column)>();
+        await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction);
+        await using SqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            rows.Add((reader.GetString(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3)));
+        }
+
+        return [.. rows
+            .GroupBy(row => (row.Schema, row.Table))
+            .OrderBy(group => group.Key.Schema, StringComparer.Ordinal)
+            .ThenBy(group => group.Key.Table, StringComparer.Ordinal)
+            .Select(group => new SourceTableInventory(
+                group.Key.Schema,
+                group.Key.Table,
+                [.. group.OrderBy(row => row.Ordinal).Select(row => row.Column)]))];
     }
 
     private static async Task AppendSchemaQueryAsync(
@@ -201,7 +237,10 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
                     .ConfigureAwait(false) ? null : reader.GetValue(ordinal);
                 values.Add(
                     table.OrderedColumns[ordinal],
-                    NormalizeSourceValue(value, table.SourceColumnTypes[table.OrderedColumns[ordinal]]));
+                    NormalizeSourceValue(
+                        value,
+                        table.SourceColumnTypes[table.OrderedColumns[ordinal]],
+                        table.ColumnTypes[table.OrderedColumns[ordinal]]));
             }
 
             yield return new MigrationRow(values);
@@ -306,15 +345,28 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
 
     internal static object? NormalizeSourceValue(object? value, string sourceType)
     {
+        return NormalizeSourceValue(value, sourceType, string.Empty);
+    }
+
+    internal static object? NormalizeSourceValue(object? value, string sourceType, string targetType)
+    {
         if (value is null or DBNull)
         {
             return null;
         }
 
         string normalizedType = sourceType.Split('(', 2)[0].Trim().ToLowerInvariant();
-        return normalizedType is "datetime" or "datetime2" or "smalldatetime" && value is DateTime dateTime
-            ? DateTime.SpecifyKind(dateTime, DateTimeKind.Unspecified)
-            : value;
+        return (normalizedType, targetType, value) switch
+        {
+            ("datetime2", "text", DateTime preciseDateTime) =>
+                DateTime.SpecifyKind(preciseDateTime, DateTimeKind.Unspecified)
+                    .ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff", System.Globalization.CultureInfo.InvariantCulture),
+            ("datetimeoffset", "text", DateTimeOffset offset) =>
+                offset.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffffzzz", System.Globalization.CultureInfo.InvariantCulture),
+            ("datetime" or "datetime2" or "smalldatetime", _, DateTime dateTime) =>
+                DateTime.SpecifyKind(dateTime, DateTimeKind.Unspecified),
+            _ => value,
+        };
     }
 
     private static string QuoteIdentifier(string identifier)

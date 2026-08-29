@@ -307,10 +307,13 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
 
             foreach (UniqueConstraintCopyPlan unique in table.UniqueConstraints)
             {
+                string nulls = unique.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any()
+                    ? " NULLS NOT DISTINCT"
+                    : string.Empty;
                 await AddConstraintAsync(
                     table,
                     unique.Name,
-                    $"UNIQUE ({QuotedColumns(unique.Columns)})",
+                    $"UNIQUE{nulls} ({QuotedColumns(unique.Columns)})",
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -326,6 +329,9 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             foreach (IndexCopyPlan index in table.Indexes)
             {
                 string unique = index.Unique ? "UNIQUE " : string.Empty;
+                string nulls = index.Unique && index.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any()
+                    ? " NULLS NOT DISTINCT"
+                    : string.Empty;
                 string keyColumns = string.Join(", ", index.Columns.Select(column =>
                     $"{PostgreSqlShadowTarget.QuoteIdentifier(column)}{(index.DescendingColumns.Contains(column, StringComparer.Ordinal) ? " DESC" : " ASC")}"));
                 string include = index.IncludedColumns.Count == 0
@@ -336,7 +342,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     : $" WHERE {index.FilterPredicate}";
                 await ExecuteAsync(
                     $"CREATE {unique}INDEX {PostgreSqlShadowTarget.QuoteIdentifier(index.Name)} " +
-                    $"ON {Qualified(table.TargetSchema, table.TargetTable)} ({keyColumns}){include}{filter};",
+                    $"ON {Qualified(table.TargetSchema, table.TargetTable)} ({keyColumns}){include}{nulls}{filter};",
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -478,10 +484,12 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                        ORDER BY key_column.ordinal),
                    CASE WHEN constraint_row.contype = 'c'
                        THEN pg_catalog.pg_get_expr(constraint_row.conbin, constraint_row.conrelid)
-                       ELSE '' END
+                       ELSE '' END,
+                   COALESCE(index_data.indnullsnotdistinct, false)
             FROM pg_catalog.pg_constraint AS constraint_row
             INNER JOIN pg_catalog.pg_class AS c ON c.oid = constraint_row.conrelid
             INNER JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+            LEFT JOIN pg_catalog.pg_index AS index_data ON index_data.indexrelid = constraint_row.conindid
             WHERE constraint_row.contype IN ('p', 'u', 'c')
               AND n.nspname NOT IN ('pg_catalog', 'information_schema')
             ORDER BY n.nspname, c.relname, constraint_row.conname;
@@ -497,7 +505,10 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     reader.GetString(2),
                     reader.GetChar(3),
                     reader.GetFieldValue<string[]>(4),
-                    NormalizeExpression(reader.GetString(5))));
+                    NormalizeExpression(reader.GetString(5)))
+                {
+                    NullsNotDistinct = reader.GetBoolean(6),
+                });
             }
         }
 
@@ -523,7 +534,8 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                        FROM unnest(index_data.indoption) WITH ORDINALITY AS key_column(option_value, ordinal)
                        WHERE key_column.ordinal <= index_data.indnkeyatts AND (key_column.option_value & 1) = 1
                        ORDER BY key_column.ordinal),
-                   COALESCE(pg_catalog.pg_get_expr(index_data.indpred, index_data.indrelid), '')
+                   COALESCE(pg_catalog.pg_get_expr(index_data.indpred, index_data.indrelid), ''),
+                   index_data.indnullsnotdistinct
             FROM pg_catalog.pg_index AS index_data
             INNER JOIN pg_catalog.pg_class AS table_row ON table_row.oid = index_data.indrelid
             INNER JOIN pg_catalog.pg_namespace AS n ON n.oid = table_row.relnamespace
@@ -548,7 +560,10 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     reader.GetFieldValue<string[]>(4),
                     reader.GetFieldValue<string[]>(5),
                     reader.GetFieldValue<int[]>(6),
-                    NormalizeExpression(reader.GetString(7))));
+                    NormalizeExpression(reader.GetString(7)))
+                {
+                    NullsNotDistinct = reader.GetBoolean(8),
+                });
             }
         }
 
@@ -845,7 +860,10 @@ internal static class PostgreSqlSchemaFingerprint
         string Name,
         char Kind,
         IReadOnlyList<string> Columns,
-        string Expression);
+        string Expression)
+    {
+        public bool NullsNotDistinct { get; init; }
+    }
 
     internal sealed record IndexShape(
         string Schema,
@@ -855,7 +873,10 @@ internal static class PostgreSqlSchemaFingerprint
         IReadOnlyList<string> Columns,
         IReadOnlyList<string> IncludedColumns,
         IReadOnlyList<int> DescendingOrdinals,
-        string FilterPredicate);
+        string FilterPredicate)
+    {
+        public bool NullsNotDistinct { get; init; }
+    }
 
     internal sealed record ForeignKeyShape(
         string Schema,
@@ -901,7 +922,10 @@ internal static class PostgreSqlSchemaFingerprint
                 item.Name,
                 'u',
                 item.Columns,
-                string.Empty)))
+                string.Empty)
+            {
+                NullsNotDistinct = item.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any(),
+            }))
             .Concat(table.CheckConstraints.Select(item => new ConstraintShape(
                 table.TargetSchema,
                 table.TargetTable,
@@ -920,7 +944,10 @@ internal static class PostgreSqlSchemaFingerprint
                 [.. index.Columns.Select((column, ordinal) => (column, ordinal: ordinal + 1))
                     .Where(item => index.DescendingColumns.Contains(item.column, StringComparer.Ordinal))
                     .Select(item => item.ordinal)],
-                index.FilterPredicate ?? string.Empty)))];
+                index.FilterPredicate ?? string.Empty)
+            {
+                NullsNotDistinct = index.Unique && index.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any(),
+            }))];
         List<ForeignKeyShape> foreignKeys = [.. plan.Tables.SelectMany(table => table.ForeignKeys.Select(foreignKey =>
             new ForeignKeyShape(
                 table.TargetSchema,
@@ -982,6 +1009,7 @@ internal static class PostgreSqlSchemaFingerprint
                 writer.Write(constraint.Kind);
                 Write(writer, constraint.Columns);
                 Write(writer, NormalizeExpression(constraint.Expression));
+                writer.Write(constraint.NullsNotDistinct);
             }
 
             foreach (IndexShape index in indexes.OrderBy(item => item.Schema, StringComparer.Ordinal)
@@ -993,6 +1021,7 @@ internal static class PostgreSqlSchemaFingerprint
                 Write(writer, index.Table);
                 Write(writer, index.Name);
                 writer.Write(index.Unique);
+                writer.Write(index.NullsNotDistinct);
                 Write(writer, index.Columns);
                 Write(writer, index.IncludedColumns);
                 writer.Write(index.DescendingOrdinals.Count);

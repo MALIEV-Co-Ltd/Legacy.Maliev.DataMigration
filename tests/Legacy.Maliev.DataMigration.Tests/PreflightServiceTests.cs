@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -10,16 +11,43 @@ public sealed class PreflightServiceTests
     private const string ProducerKeyId = "backup-producer-1";
 
     [Fact]
-    public void Inventory_ApprovedContract_ContainsExactlyTwentyOneActiveDatabases()
+    public void Inventory_ApprovedContract_PreservesEverySelectedProductionDatabase()
     {
         Assert.Equal(27, DatabaseInventory.Entries.Count);
-        Assert.Equal(21, DatabaseInventory.ActiveDatabases.Count);
-        Assert.Equal(DatabaseDisposition.ArchiveOnly, DatabaseInventory.Entries["Hangfire"].Disposition);
-        Assert.Equal(DatabaseDisposition.ArchiveOnly, DatabaseInventory.Entries["Log"].Disposition);
+        Assert.Equal(25, DatabaseInventory.ActiveDatabases.Count);
+        Assert.Equal(DatabaseDisposition.Migrate, DatabaseInventory.Entries["Hangfire"].Disposition);
+        Assert.Equal(DatabaseDisposition.Migrate, DatabaseInventory.Entries["Log"].Disposition);
         Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["MachineLearning"].Disposition);
         Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["MachineLearningData"].Disposition);
-        Assert.Equal(DatabaseDisposition.ReviewHold, DatabaseInventory.Entries["ContactRequest"].Disposition);
-        Assert.Equal(DatabaseDisposition.ReviewHold, DatabaseInventory.Entries["LocationData"].Disposition);
+        Assert.Equal(
+            new DatabaseDispositionEntry("Legacy.Maliev.ContactService", DatabaseDisposition.Migrate),
+            DatabaseInventory.Entries["ContactRequest"]);
+        Assert.Equal(
+            new DatabaseDispositionEntry("Legacy.Maliev.CatalogService", DatabaseDisposition.Migrate),
+            DatabaseInventory.Entries["LocationData"]);
+    }
+
+    [Fact]
+    public void Inventory_MachineReadableArtifact_ExactlyMatchesReceiptBoundContract()
+    {
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "database-disposition.json")));
+        JsonElement root = document.RootElement;
+        Assert.Equal("1.0", root.GetProperty("schemaVersion").GetString());
+        Assert.Equal(DatabaseInventory.InventorySha256, root.GetProperty("inventorySha256").GetString());
+
+        Dictionary<string, DatabaseDispositionEntry> artifact = root.GetProperty("databases")
+            .EnumerateArray()
+            .ToDictionary(
+                item => item.GetProperty("database").GetString()!,
+                item => new DatabaseDispositionEntry(
+                    item.GetProperty("owner").GetString()!,
+                    Enum.Parse<DatabaseDisposition>(item.GetProperty("disposition").GetString()!, ignoreCase: false)),
+                StringComparer.Ordinal);
+
+        Assert.Equal(DatabaseInventory.Entries.OrderBy(item => item.Key), artifact.OrderBy(item => item.Key));
+        Assert.Equal(25, root.GetProperty("selectedDatabaseCount").GetInt32());
+        Assert.Equal("BackupReceipt.DatabaseInventorySha256", root.GetProperty("signatureBinding").GetString());
     }
 
     [Fact]

@@ -5,6 +5,58 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class SchemaPlanSemanticsTests
 {
+    [Theory]
+    [InlineData("datetime2(7)", "timestamp without time zone")]
+    [InlineData("datetimeoffset(7)", "timestamp with time zone")]
+    public void Validate_LossyTemporalMapping_FailsClosed(string sourceType, string targetType)
+    {
+        TableCopyPlan table = CreateTable() with
+        {
+            SourceColumnTypes = new Dictionary<string, string>(CreateTable().SourceColumnTypes, StringComparer.Ordinal)
+            {
+                ["CreatedAt"] = sourceType,
+            },
+            ColumnTypes = new Dictionary<string, string>(CreateTable().ColumnTypes, StringComparer.Ordinal)
+            {
+                ["CreatedAt"] = targetType,
+            },
+        };
+
+        IReadOnlyList<PreflightError> errors = SchemaPlanCanonicalizer.Validate(
+            CreatePlan(table),
+            new GuardedRunnerPolicy(SourceCommit, RunnerDigest),
+            CapturedAt.AddMinutes(1),
+            TimeSpan.FromHours(1));
+
+        Assert.Contains(errors, error => error.Code == "temporal_mapping_invalid");
+    }
+
+    [Theory]
+    [InlineData("datetime2(7)")]
+    [InlineData("datetimeoffset(7)")]
+    public void Validate_LosslessTemporalTextMapping_IsAccepted(string sourceType)
+    {
+        TableCopyPlan table = CreateTable() with
+        {
+            SourceColumnTypes = new Dictionary<string, string>(CreateTable().SourceColumnTypes, StringComparer.Ordinal)
+            {
+                ["CreatedAt"] = sourceType,
+            },
+            ColumnTypes = new Dictionary<string, string>(CreateTable().ColumnTypes, StringComparer.Ordinal)
+            {
+                ["CreatedAt"] = "text",
+            },
+        };
+
+        IReadOnlyList<PreflightError> errors = SchemaPlanCanonicalizer.Validate(
+            CreatePlan(table),
+            new GuardedRunnerPolicy(SourceCommit, RunnerDigest),
+            CapturedAt.AddMinutes(1),
+            TimeSpan.FromHours(1));
+
+        Assert.DoesNotContain(errors, error => error.Code == "temporal_mapping_invalid");
+    }
+
     [Fact]
     public void ComputeSha256_SchemaObjectSemanticsChange_ChangesSignedPlan()
     {
@@ -97,7 +149,7 @@ public sealed class SchemaPlanSemanticsTests
             {
                 ["Id"] = "int",
                 ["Quantity"] = "int",
-                ["CreatedAt"] = "datetime2",
+                ["CreatedAt"] = "datetime2(6)",
             },
             ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -239,7 +291,7 @@ public sealed class SchemaPlanSemanticsTests
             {
                 ["Id"] = "int",
                 ["Quantity"] = "int",
-                ["CreatedAt"] = "datetime2",
+                ["CreatedAt"] = "datetime2(6)",
             },
             ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
             {

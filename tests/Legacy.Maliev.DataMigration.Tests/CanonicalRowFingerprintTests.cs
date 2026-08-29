@@ -53,6 +53,16 @@ public sealed class CanonicalRowFingerprintTests
     }
 
     [Fact]
+    public void Compute_TextEncodedDateTimeOffset_DifferentOriginalOffsetsRemainDifferent()
+    {
+        TableCopyPlan table = CreatePlan("text");
+
+        Assert.NotEqual(
+            CanonicalRowFingerprint.Compute(table, [Row("2026-08-29T17:45:12.1234567+07:00")]),
+            CanonicalRowFingerprint.Compute(table, [Row("2026-08-29T10:45:12.1234567+00:00")]));
+    }
+
+    [Fact]
     public void Compute_ColumnTypeChanges_ChangeSemanticHash()
     {
         Assert.NotEqual(

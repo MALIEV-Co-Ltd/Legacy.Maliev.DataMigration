@@ -20,16 +20,16 @@ public sealed class GuardedShadowMigrationRunnerTests
         MigrationExecutionResult result = await harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None);
 
         Assert.Equal(MigrationExecutionStatus.Completed, result.Status);
-        Assert.Equal(21, result.Receipt.Databases.Count);
+        Assert.Equal(25, result.Receipt.Databases.Count);
         Assert.Equal(Now, result.Receipt.CompletedAtUtc);
-        Assert.Equal(21, harness.Source.SchemaInspections.Count);
-        Assert.Equal(21, harness.Source.SnapshotsStarted.Count);
-        Assert.Equal(21, harness.Source.SnapshotsCompleted.Count);
+        Assert.Equal(25, harness.Source.SchemaInspections.Count);
+        Assert.Equal(25, harness.Source.SnapshotsStarted.Count);
+        Assert.Equal(25, harness.Source.SnapshotsCompleted.Count);
         Assert.Empty(harness.Source.SnapshotsRolledBack);
-        Assert.Equal(21, harness.Target.Created.Count);
-        Assert.Equal(21, harness.Target.Transactions.Count(transaction => transaction.Committed));
+        Assert.Equal(25, harness.Target.Created.Count);
+        Assert.Equal(25, harness.Target.Transactions.Count(transaction => transaction.Committed));
         Assert.All(harness.Target.Transactions, transaction => Assert.True(transaction.VerifiedBeforeCommit));
-        Assert.Equal(21, harness.Target.Created.Select(shadow => shadow.Name).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(25, harness.Target.Created.Select(shadow => shadow.Name).Distinct(StringComparer.Ordinal).Count());
         Assert.All(harness.Target.Created, shadow => Assert.StartsWith("legacy_shadow_", shadow.Name, StringComparison.Ordinal));
         Assert.Empty(harness.Target.Deleted);
         Assert.True(MigrationEvidenceAttestation.CreatePayload(result.Receipt).Length > 0);
@@ -242,6 +242,23 @@ public sealed class GuardedShadowMigrationRunnerTests
         Assert.Empty(harness.Journal.Completed);
     }
 
+    [Theory]
+    [InlineData("missing-column")]
+    [InlineData("unexpected-column")]
+    [InlineData("unexpected-table")]
+    public async Task ExecuteAsync_ObservedSourceInventoryDiffersFromSignedPlan_FailsClosed(string drift)
+    {
+        Harness harness = CreateHarness();
+        harness.Source.InventoryDrift = drift;
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
+
+        Assert.Equal("source_inventory_drift", exception.Code);
+        Assert.Equal(harness.Target.Created.Select(shadow => shadow.Name).Order(), harness.Target.Deleted.Order());
+        Assert.Empty(harness.Journal.Completed);
+    }
+
     [Fact]
     public async Task ExecuteAsync_UnknownTargetSchemaVersion_FailsBeforeDatabaseIo()
     {
@@ -258,12 +275,8 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Theory]
-    [InlineData("Log")]
-    [InlineData("Hangfire")]
     [InlineData("MachineLearning")]
     [InlineData("MachineLearningData")]
-    [InlineData("ContactRequest")]
-    [InlineData("LocationData")]
     [InlineData("UnknownDatabase")]
     public async Task ExecuteAsync_ForbiddenOrUnknownDispositionInSchemaPlan_FailsBeforeDatabaseIo(string database)
     {
@@ -377,6 +390,33 @@ public sealed class GuardedShadowMigrationRunnerTests
         Assert.Equal("shadow_reconciliation_failed", exception.Code);
         Assert.Equal(10_000, harness.Source.RowsYielded);
         Assert.InRange(Assert.Single(harness.Target.Transactions).MaximumBatchSize, 1, GuardedRunnerPolicy.CopyBatchSize);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_LargeLobRows_AreSplitByPayloadBytesInsteadOfOnlyRowCount()
+    {
+        Harness harness = CreateHarness();
+        harness.Source.RowsPerTable = 3;
+        harness.Source.ValueFactory = _ => new string('x', 3 * 1024 * 1024);
+
+        MigrationExecutionResult result = await harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None);
+
+        Assert.Equal(MigrationExecutionStatus.Completed, result.Status);
+        Assert.All(harness.Target.Transactions, transaction => Assert.Equal(1, transaction.MaximumBatchSize));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RowLargerThanByteLimit_FailsClosedInsteadOfCreatingUnboundedBatch()
+    {
+        Harness harness = CreateHarness();
+        harness.Source.ValueFactory = _ => new string('x', (int)GuardedRunnerPolicy.CopyBatchByteLimit + 1);
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
+
+        Assert.Equal("source_row_exceeds_batch_byte_limit", exception.Code);
+        Assert.All(harness.Target.Transactions, transaction => Assert.Equal(0, transaction.MaximumBatchSize));
+        Assert.Equal(harness.Target.Created.Select(shadow => shadow.Name).Order(), harness.Target.Deleted.Order());
     }
 
     [Fact]
@@ -611,6 +651,8 @@ public sealed class GuardedShadowMigrationRunnerTests
         public Dictionary<string, string> SchemaOverrides { get; } = new(StringComparer.Ordinal);
         public int RowsPerTable { get; set; } = 1;
         public int RowsYielded { get; private set; }
+        public string? InventoryDrift { get; set; }
+        public Func<string, object?> ValueFactory { get; set; } = database => database;
 
         public Task BeginDatabaseSnapshotAsync(string database, CancellationToken cancellationToken)
         {
@@ -621,9 +663,17 @@ public sealed class GuardedShadowMigrationRunnerTests
         public Task<SourceSchemaEvidence> InspectSchemaAsync(string database, CancellationToken cancellationToken)
         {
             SchemaInspections.Add(database);
+            IReadOnlyList<SourceTableInventory> inventory = InventoryDrift switch
+            {
+                "missing-column" => [new("dbo", "Primary", ["ID"])],
+                "unexpected-column" => [new("dbo", "Primary", ["ID", "Value", "Extra"])],
+                "unexpected-table" => [new("dbo", "Primary", ["ID", "Value"]), new("dbo", "Extra", ["ID"])],
+                _ => [new("dbo", "Primary", ["ID", "Value"])],
+            };
             return Task.FromResult(new SourceSchemaEvidence(
                 database,
-                SchemaOverrides.GetValueOrDefault(database, Hash($"source:{database}"))));
+                SchemaOverrides.GetValueOrDefault(database, Hash($"source:{database}")),
+                inventory));
         }
 
         public async IAsyncEnumerable<MigrationRow> ReadTableAsync(
@@ -635,7 +685,11 @@ public sealed class GuardedShadowMigrationRunnerTests
             for (int index = 1; index <= RowsPerTable; index++)
             {
                 RowsYielded++;
-                yield return new MigrationRow(new Dictionary<string, object?> { ["ID"] = index, ["Value"] = database });
+                yield return new MigrationRow(new Dictionary<string, object?>
+                {
+                    ["ID"] = index,
+                    ["Value"] = ValueFactory(database),
+                });
                 await Task.Yield();
             }
         }

@@ -31,6 +31,43 @@ public sealed class PostgreSqlAdapterFixture : IAsyncLifetime
 [Collection(PostgreSqlAdapterTestGroup.Name)]
 public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixture fixture)
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ApplySchema_NullableSqlServerUniqueObject_UsesNullsNotDistinctSemantics(bool constraint)
+    {
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        string runId = Guid.NewGuid().ToString("D");
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", runId, CancellationToken.None);
+
+        try
+        {
+            TableCopyPlan table = CreateTablePlan() with
+            {
+                UniqueConstraints = constraint ? [new UniqueConstraintCopyPlan("UQ_orders_name", ["Name"])] : [],
+                Indexes = constraint ? [] : [new IndexCopyPlan("UX_orders_name", ["Name"], true)],
+            };
+            var plan = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+            _ = await transaction.CopyBatchAsync(
+                table,
+                [new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["Name"] = null })],
+                CancellationToken.None);
+
+            _ = await Assert.ThrowsAsync<PostgresException>(() => transaction.CopyBatchAsync(
+                table,
+                [new MigrationRow(new Dictionary<string, object?> { ["Id"] = 2, ["Name"] = null })],
+                CancellationToken.None));
+            await transaction.RollbackAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
     [Fact]
     public void Constructor_EmptyConnectionString_FailsClosed()
     {
@@ -281,7 +318,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
         {
             ["Id"] = id,
             ["Quantity"] = quantity,
-            ["CreatedAt"] = null,
+            ["CreatedAt"] = new DateTime(2026, 8, 29, 12, 0, id % 60, DateTimeKind.Unspecified),
             ["Code"] = code,
             ["NormalizedCode"] = normalizedCode,
         });
