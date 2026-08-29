@@ -157,19 +157,57 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT s.name, t.name, c.column_id, c.name
+            SELECT s.name, t.name, c.column_id, c.name, type_schema.name, ty.name,
+                   c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity,
+                   COALESCE(CONVERT(nvarchar(100), identity_column.seed_value), N''),
+                   COALESCE(CONVERT(nvarchar(100), identity_column.increment_value), N''),
+                   COALESCE(CONVERT(nvarchar(100), identity_column.last_value), N''),
+                   COALESCE(c.collation_name, N''), COALESCE(dc.definition, N''),
+                   COALESCE(cc.definition, N''), COALESCE(CONVERT(int, cc.is_persisted), 0),
+                   c.is_ansi_padded, c.is_rowguidcol, c.is_sparse, c.is_column_set,
+                   c.is_filestream, c.generated_always_type, COALESCE(c.encryption_type, 0),
+                   COALESCE(c.encryption_algorithm_name, N''), c.is_hidden, c.is_masked
             FROM sys.tables AS t
             INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
             INNER JOIN sys.columns AS c ON c.object_id = t.object_id
+            INNER JOIN sys.types AS ty ON ty.user_type_id = c.user_type_id
+            INNER JOIN sys.schemas AS type_schema ON type_schema.schema_id = ty.schema_id
+            LEFT JOIN sys.default_constraints AS dc ON dc.object_id = c.default_object_id
+            LEFT JOIN sys.computed_columns AS cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
+            LEFT JOIN sys.identity_columns AS identity_column
+                ON identity_column.object_id = c.object_id AND identity_column.column_id = c.column_id
             WHERE t.is_ms_shipped = 0
             ORDER BY s.name, t.name, c.column_id;
             """;
-        var rows = new List<(string Schema, string Table, int Ordinal, string Column)>();
+        var rows = new List<InventoryRow>();
         await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction);
-        await using SqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        await using (SqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-            rows.Add((reader.GetString(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3)));
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                string declaredType = FormatDeclaredType(reader.GetString(5), reader.GetInt16(6), reader.GetByte(7), reader.GetByte(8));
+                using IncrementalHash metadataHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                foreach (int ordinal in Enumerable.Range(4, reader.FieldCount - 4))
+                {
+                    AppendHashValue(metadataHash, reader.IsDBNull(ordinal)
+                        ? "<null>"
+                        : Convert.ToString(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty);
+                }
+                rows.Add(new InventoryRow(
+                    reader.GetString(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3), declaredType,
+                    Convert.ToHexString(metadataHash.GetHashAndReset()).ToLowerInvariant(),
+                    IsLargeValueType(declaredType)));
+            }
+        }
+
+        var lengths = new Dictionary<(string Schema, string Table, string Column), long>(new InventoryKeyComparer());
+        foreach (InventoryRow row in rows.Where(item => item.IsLargeValue))
+        {
+            string lengthSql = $"SELECT COALESCE(MAX(CONVERT(bigint, DATALENGTH({QuoteIdentifier(row.Column)}))), 0) FROM {QuoteIdentifier(row.Schema)}.{QuoteIdentifier(row.Table)};";
+            await using var lengthCommand = new SqlCommand(lengthSql, lease.Connection, lease.Transaction);
+            lengths[(row.Schema, row.Table, row.Column)] = Convert.ToInt64(
+                await lengthCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
         }
 
         return [.. rows
@@ -179,7 +217,47 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             .Select(group => new SourceTableInventory(
                 group.Key.Schema,
                 group.Key.Table,
-                [.. group.OrderBy(row => row.Ordinal).Select(row => row.Column)]))];
+                [.. group.OrderBy(row => row.Ordinal).Select(row => new SourceColumnInventory(
+                    row.Column,
+                    row.DeclaredType,
+                    row.MetadataSha256,
+                    row.IsLargeValue ? lengths[(row.Schema, row.Table, row.Column)] : null))]))];
+    }
+
+    private static string FormatDeclaredType(string type, short maxLength, byte precision, byte scale)
+    {
+        string normalized = type.ToLowerInvariant();
+        return normalized switch
+        {
+            "nvarchar" or "nchar" => $"{normalized}({(maxLength == -1 ? "max" : (maxLength / 2).ToString(System.Globalization.CultureInfo.InvariantCulture))})",
+            "varchar" or "char" or "varbinary" or "binary" => $"{normalized}({(maxLength == -1 ? "max" : maxLength.ToString(System.Globalization.CultureInfo.InvariantCulture))})",
+            "decimal" or "numeric" => $"{normalized}({precision.ToString(System.Globalization.CultureInfo.InvariantCulture)},{scale.ToString(System.Globalization.CultureInfo.InvariantCulture)})",
+            "datetime2" or "datetimeoffset" or "time" => $"{normalized}({scale.ToString(System.Globalization.CultureInfo.InvariantCulture)})",
+            _ => normalized,
+        };
+    }
+
+    private static bool IsLargeValueType(string declaredType)
+    {
+        return declaredType is "nvarchar(max)" or "varchar(max)" or "varbinary(max)" or "text" or "ntext" or "image" or "xml";
+    }
+
+    private sealed record InventoryRow(
+        string Schema, string Table, int Ordinal, string Column, string DeclaredType, string MetadataSha256, bool IsLargeValue);
+
+    private sealed class InventoryKeyComparer : IEqualityComparer<(string Schema, string Table, string Column)>
+    {
+        public bool Equals((string Schema, string Table, string Column) x, (string Schema, string Table, string Column) y)
+        {
+            return string.Equals(x.Schema, y.Schema, StringComparison.Ordinal) &&
+            string.Equals(x.Table, y.Table, StringComparison.Ordinal) &&
+            string.Equals(x.Column, y.Column, StringComparison.Ordinal);
+        }
+
+        public int GetHashCode((string Schema, string Table, string Column) value)
+        {
+            return HashCode.Combine(StringComparer.Ordinal.GetHashCode(value.Schema), StringComparer.Ordinal.GetHashCode(value.Table), StringComparer.Ordinal.GetHashCode(value.Column));
+        }
     }
 
     private static async Task AppendSchemaQueryAsync(
@@ -233,13 +311,31 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             var values = new Dictionary<string, object?>(table.OrderedColumns.Count, StringComparer.Ordinal);
             for (var ordinal = 0; ordinal < table.OrderedColumns.Count; ordinal++)
             {
-                object? value = await reader.IsDBNullAsync(ordinal, cancellationToken)
-                    .ConfigureAwait(false) ? null : reader.GetValue(ordinal);
+                string sourceType = table.SourceColumnTypes[table.OrderedColumns[ordinal]];
+                object? value;
+                if (await reader.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false))
+                {
+                    value = null;
+                }
+                else if (IsLargeValueType(sourceType) && sourceType is "varbinary(max)" or "image")
+                {
+                    await using Stream stream = reader.GetStream(ordinal);
+                    value = await ReplayableLob.FromStreamAsync(stream, cancellationToken).ConfigureAwait(false);
+                }
+                else if (IsLargeValueType(sourceType))
+                {
+                    using TextReader text = reader.GetTextReader(ordinal);
+                    value = await ReplayableLob.FromTextReaderAsync(text, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    value = reader.GetValue(ordinal);
+                }
                 values.Add(
                     table.OrderedColumns[ordinal],
                     NormalizeSourceValue(
                         value,
-                        table.SourceColumnTypes[table.OrderedColumns[ordinal]],
+                        sourceType,
                         table.ColumnTypes[table.OrderedColumns[ordinal]]));
             }
 

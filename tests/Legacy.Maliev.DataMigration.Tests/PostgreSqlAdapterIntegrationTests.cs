@@ -31,6 +31,46 @@ public sealed class PostgreSqlAdapterFixture : IAsyncLifetime
 [Collection(PostgreSqlAdapterTestGroup.Name)]
 public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixture fixture)
 {
+    [Fact]
+    public async Task CopyAndReconcile_LargeTextValue_StreamsWithoutFourMiBRejection()
+    {
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
+        try
+        {
+            TableCopyPlan table = CreateTablePlan() with
+            {
+                SourceColumns =
+                [
+                    new("Id", "int", Hash("Id:int"), null),
+                    new("Name", "nvarchar(max)", Hash("Name:nvarchar(max)"), 10 * 1024 * 1024),
+                ],
+            };
+            var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
+            DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+            await using ReplayableLob lob = await ReplayableLob.FromTextReaderAsync(
+                new StringReader(new string('ก', 3 * 1024 * 1024)), CancellationToken.None);
+            var row = new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["Name"] = lob });
+            using var expectedCollector = new TableEvidenceCollector(table);
+            expectedCollector.Append(row);
+            string expected = expectedCollector.Finish().ContentSha256;
+
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+            Assert.Equal(1, await transaction.CopyBatchAsync(table, [row], CancellationToken.None));
+            _ = await transaction.InspectSchemaAsync(plan, CancellationToken.None);
+            TableReconciliationEvidence evidence = await transaction.InspectTableAsync(table, CancellationToken.None);
+            Assert.Equal(expected, evidence.ContentSha256);
+            await transaction.RollbackAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

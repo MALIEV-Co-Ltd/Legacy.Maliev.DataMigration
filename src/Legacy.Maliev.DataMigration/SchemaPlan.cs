@@ -21,6 +21,8 @@ public sealed record TableCopyPlan(
     public IReadOnlyDictionary<string, string> SourceColumnTypes { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
+    public IReadOnlyList<SourceColumnInventory> SourceColumns { get; init; } = [];
+
     public IReadOnlyList<string> IdentityColumns { get; init; } = [];
 
     public IReadOnlyList<IdentityCopyPlan> Identities { get; init; } = [];
@@ -119,7 +121,7 @@ public sealed record FreshSchemaPlan(
 
 public static partial class SchemaPlanCanonicalizer
 {
-    private const string DomainSeparator = "Legacy.Maliev.DataMigration.SchemaPlan.v4";
+    private const string DomainSeparator = "Legacy.Maliev.DataMigration.SchemaPlan.v5";
 
     public static string ComputeSha256(FreshSchemaPlan plan)
     {
@@ -204,6 +206,15 @@ public static partial class SchemaPlanCanonicalizer
                         !table.ColumnTypes.ContainsKey(column) ||
                         !ValidTargetType(table.ColumnTypes[column])) ||
                     table.SourceColumnTypes.Count != table.OrderedColumns.Count ||
+                    table.SourceColumns.Count != table.OrderedColumns.Count ||
+                    !table.SourceColumns.Select(column => column.Column)
+                        .SequenceEqual(table.OrderedColumns, StringComparer.Ordinal) ||
+                    table.SourceColumns.Any(column =>
+                        string.IsNullOrWhiteSpace(column.DeclaredType) ||
+                        !Sha256().IsMatch(column.MetadataSha256) ||
+                        column.MaxObservedDataLength is < 0 ||
+                        !table.SourceColumnTypes.TryGetValue(column.Column, out string? declaredType) ||
+                        !string.Equals(declaredType, column.DeclaredType, StringComparison.OrdinalIgnoreCase)) ||
                     table.OrderedColumns.Any(column =>
                         !table.SourceColumnTypes.TryGetValue(column, out string? sourceType) ||
                         string.IsNullOrWhiteSpace(sourceType)) ||
@@ -353,7 +364,16 @@ public static partial class SchemaPlanCanonicalizer
                     writer.Write(table.BatchSize);
                     foreach (string column in table.OrderedColumns)
                     {
+                        SourceColumnInventory sourceColumn = table.SourceColumns.FirstOrDefault(item => item.Column == column)
+                            ?? new SourceColumnInventory(column, string.Empty, string.Empty, null);
                         WriteString(writer, table.SourceColumnTypes.GetValueOrDefault(column, string.Empty));
+                        WriteString(writer, sourceColumn.DeclaredType);
+                        WriteString(writer, sourceColumn.MetadataSha256.ToLowerInvariant());
+                        writer.Write(sourceColumn.MaxObservedDataLength.HasValue);
+                        if (sourceColumn.MaxObservedDataLength.HasValue)
+                        {
+                            writer.Write(sourceColumn.MaxObservedDataLength.Value);
+                        }
                         WriteString(writer, table.ColumnTypes.GetValueOrDefault(column, string.Empty));
                     }
                     WriteStrings(writer, table.IdentityColumns);

@@ -246,6 +246,7 @@ public sealed class GuardedShadowMigrationRunnerTests
     [InlineData("missing-column")]
     [InlineData("unexpected-column")]
     [InlineData("unexpected-table")]
+    [InlineData("metadata-mismatch")]
     public async Task ExecuteAsync_ObservedSourceInventoryDiffersFromSignedPlan_FailsClosed(string drift)
     {
         Harness harness = CreateHarness();
@@ -509,6 +510,11 @@ public sealed class GuardedShadowMigrationRunnerTests
                     ["ID"] = "int",
                     ["Value"] = "nvarchar",
                 },
+                SourceColumns =
+                [
+                    new("ID", "int", Hash("ID:int"), null),
+                    new("Value", "nvarchar", Hash("Value:nvarchar"), null),
+                ],
                 ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
                 {
                     ["ID"] = "integer",
@@ -663,12 +669,23 @@ public sealed class GuardedShadowMigrationRunnerTests
         public Task<SourceSchemaEvidence> InspectSchemaAsync(string database, CancellationToken cancellationToken)
         {
             SchemaInspections.Add(database);
+            SourceColumnInventory Id()
+            {
+                return new("ID", "int", Hash("ID:int"), null);
+            }
+
+            SourceColumnInventory Value(string type = "nvarchar")
+            {
+                return new("Value", type, Hash($"Value:{type}"), null);
+            }
+
             IReadOnlyList<SourceTableInventory> inventory = InventoryDrift switch
             {
-                "missing-column" => [new("dbo", "Primary", ["ID"])],
-                "unexpected-column" => [new("dbo", "Primary", ["ID", "Value", "Extra"])],
-                "unexpected-table" => [new("dbo", "Primary", ["ID", "Value"]), new("dbo", "Extra", ["ID"])],
-                _ => [new("dbo", "Primary", ["ID", "Value"])],
+                "missing-column" => [new("dbo", "Primary", [Id()])],
+                "unexpected-column" => [new("dbo", "Primary", [Id(), Value(), new("Extra", "int", Hash("Extra:int"), null)])],
+                "unexpected-table" => [new("dbo", "Primary", [Id(), Value()]), new("dbo", "Extra", [Id()])],
+                "metadata-mismatch" => [new("dbo", "Primary", [Id(), Value("nvarchar(max)")])],
+                _ => [new("dbo", "Primary", [Id(), Value()])],
             };
             return Task.FromResult(new SourceSchemaEvidence(
                 database,

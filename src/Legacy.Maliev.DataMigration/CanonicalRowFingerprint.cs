@@ -37,7 +37,14 @@ public sealed class CanonicalRowFingerprint : IDisposable
                 else
                 {
                     _hash.AppendData([0x01]);
-                    AppendLengthPrefixed(Encoding.UTF8.GetBytes(CanonicalValue(value, type)));
+                    if (value is ReplayableLob lob)
+                    {
+                        AppendReplayable(lob);
+                    }
+                    else
+                    {
+                        AppendLengthPrefixed(Encoding.UTF8.GetBytes(CanonicalValue(value, type)));
+                    }
                 }
             }
 
@@ -66,6 +73,20 @@ public sealed class CanonicalRowFingerprint : IDisposable
     {
         AppendLength(value.Length);
         _hash.AppendData(value);
+    }
+
+    private void AppendReplayable(ReplayableLob lob)
+    {
+        Span<byte> length = stackalloc byte[sizeof(long)];
+        BinaryPrimitives.WriteInt64BigEndian(length, lob.ByteLength);
+        _hash.AppendData(length);
+        using Stream stream = lob.OpenRead();
+        byte[] buffer = new byte[64 * 1024];
+        int read;
+        while ((read = stream.Read(buffer, 0, buffer.Length)) != 0)
+        {
+            _hash.AppendData(buffer.AsSpan(0, read));
+        }
     }
 
     private void AppendLength(int value)
@@ -121,13 +142,13 @@ public sealed class CanonicalRowFingerprint : IDisposable
     {
         return value switch
         {
-            string text => text.Normalize(NormalizationForm.FormC),
+            string text => text,
             byte[] bytes => Convert.ToHexString(bytes).ToLowerInvariant(),
             DateTime dateTime => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff", CultureInfo.InvariantCulture),
             DateTimeOffset offset => offset.ToString("O", CultureInfo.InvariantCulture),
             bool boolean => boolean ? "true" : "false",
             IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? string.Empty,
-            _ => value.ToString()?.Normalize(NormalizationForm.FormC) ?? string.Empty,
+            _ => value.ToString() ?? string.Empty,
         };
     }
 }

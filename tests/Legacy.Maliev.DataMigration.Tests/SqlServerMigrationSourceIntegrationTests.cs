@@ -60,6 +60,8 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                     Amount decimal(19, 4) NOT NULL,
                     LocalTime datetime2(7) NOT NULL,
                     OffsetTime datetimeoffset(7) NOT NULL,
+                    LargeText nvarchar(max) NULL,
+                    LargeBinary varbinary(max) NULL,
                     CONSTRAINT PK_Child PRIMARY KEY (Id),
                     CONSTRAINT FK_Child_Parent FOREIGN KEY (TenantId, ParentId)
                         REFERENCES sales.Parent (TenantId, Id) ON DELETE CASCADE);
@@ -70,6 +72,14 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                 VALUES (1, 10, N'ชิ้นงานทดสอบ', 1234.5678, '2026-08-29T17:45:12.1234567', '2026-08-29T17:45:12.1234567+07:00');
                 """;
             _ = await command.ExecuteNonQueryAsync();
+
+            command.CommandText = "UPDATE sales.Child SET LargeText = @text, LargeBinary = @binary;";
+            string largeText = new('ก', 3 * 1024 * 1024);
+            byte[] largeBinary = Enumerable.Repeat((byte)0xA5, 5 * 1024 * 1024).ToArray();
+            _ = command.Parameters.AddWithValue("@text", largeText);
+            _ = command.Parameters.AddWithValue("@binary", largeBinary);
+            _ = await command.ExecuteNonQueryAsync();
+            command.Parameters.Clear();
 
             command.CommandText = """
                 SELECT identity_column.seed_value, identity_column.increment_value, identity_column.last_value,
@@ -107,13 +117,17 @@ public sealed class SqlServerMigrationSourceIntegrationTests
         Assert.Equal(
             ["TenantId", "Id"],
             Assert.Single(schema.Tables, table => table.SourceSchema == "sales" && table.SourceTable == "Parent").OrderedColumns);
+        SourceTableInventory childInventory = Assert.Single(schema.Tables, table => table.SourceSchema == "sales" && table.SourceTable == "Child");
         Assert.Equal(
-            ["Id", "TenantId", "ParentId", "ThaiName", "Amount", "LocalTime", "OffsetTime"],
-            Assert.Single(schema.Tables, table => table.SourceSchema == "sales" && table.SourceTable == "Child").OrderedColumns);
+            ["Id", "TenantId", "ParentId", "ThaiName", "Amount", "LocalTime", "OffsetTime", "LargeText", "LargeBinary"],
+            childInventory.OrderedColumns);
+        Assert.Equal("datetime2(7)", Assert.Single(childInventory.Columns, column => column.Column == "LocalTime").DeclaredType);
+        Assert.Equal(6L * 1024 * 1024, Assert.Single(childInventory.Columns, column => column.Column == "LargeText").MaxObservedDataLength);
+        Assert.Equal(5L * 1024 * 1024, Assert.Single(childInventory.Columns, column => column.Column == "LargeBinary").MaxObservedDataLength);
 
         var table = new TableCopyPlan(
             "sales", "Child", "sales", "child",
-            ["Id", "TenantId", "ParentId", "ThaiName", "Amount", "LocalTime", "OffsetTime"],
+            ["Id", "TenantId", "ParentId", "ThaiName", "Amount", "LocalTime", "OffsetTime", "LargeText", "LargeBinary"],
             ["Id"])
         {
             SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -125,6 +139,8 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                 ["Amount"] = "decimal",
                 ["LocalTime"] = "datetime2(7)",
                 ["OffsetTime"] = "datetimeoffset(7)",
+                ["LargeText"] = "nvarchar(max)",
+                ["LargeBinary"] = "varbinary(max)",
             },
             ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -135,6 +151,8 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                 ["Amount"] = "numeric(19,4)",
                 ["LocalTime"] = "text",
                 ["OffsetTime"] = "text",
+                ["LargeText"] = "text",
+                ["LargeBinary"] = "bytea",
             },
             PrimaryKey = new PrimaryKeyCopyPlan("PK_Child", ["Id"]),
             ForeignKeys =
@@ -160,8 +178,15 @@ public sealed class SqlServerMigrationSourceIntegrationTests
         Assert.Equal(1234.5678m, rows[0].Values["Amount"]);
         Assert.Equal("2026-08-29T17:45:12.1234567", rows[0].Values["LocalTime"]);
         Assert.Equal("2026-08-29T17:45:12.1234567+07:00", rows[0].Values["OffsetTime"]);
+        ReplayableLob largeTextValue = Assert.IsType<ReplayableLob>(rows[0].Values["LargeText"]);
+        ReplayableLob largeBinaryValue = Assert.IsType<ReplayableLob>(rows[0].Values["LargeBinary"]);
+        Assert.Equal(9L * 1024 * 1024, largeTextValue.ByteLength);
+        Assert.Equal(5L * 1024 * 1024, largeBinaryValue.ByteLength);
         IReadOnlyDictionary<string, long> orphans = await source.InspectForeignKeyOrphansAsync(database, table, CancellationToken.None);
         Assert.Equal(0, orphans["FK_Child_Parent"]);
+
+        await largeTextValue.DisposeAsync();
+        await largeBinaryValue.DisposeAsync();
 
         await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
         await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);

@@ -26,6 +26,7 @@ internal static class MigrationRowSizeEstimator
         {
             null or DBNull => 1,
             byte[] bytes => bytes.LongLength,
+            ReplayableLob => 64,
             string text => Encoding.UTF8.GetByteCount(text),
             bool or byte or sbyte => 1,
             short or ushort or char => 2,

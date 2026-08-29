@@ -58,6 +58,44 @@ public sealed class SchemaPlanSemanticsTests
     }
 
     [Fact]
+    public void Validate_DeclaredSourceTypeDiffersFromSignedColumnMetadata_FailsClosed()
+    {
+        TableCopyPlan table = CreateTable() with
+        {
+            SourceColumnTypes = new Dictionary<string, string>(CreateTable().SourceColumnTypes, StringComparer.Ordinal)
+            {
+                ["CreatedAt"] = "datetime2(6)",
+            },
+            SourceColumns = [.. CreateTable().SourceColumns.Select(column =>
+                column.Column == "CreatedAt" ? column with { DeclaredType = "datetime2(7)" } : column)],
+        };
+
+        IReadOnlyList<PreflightError> errors = SchemaPlanCanonicalizer.Validate(
+            CreatePlan(table),
+            new GuardedRunnerPolicy(SourceCommit, RunnerDigest),
+            CapturedAt.AddMinutes(1),
+            TimeSpan.FromHours(1));
+
+        Assert.Contains(errors, error => error.Code == "table_plan_invalid");
+    }
+
+    [Fact]
+    public void ComputeSha256_SourceMetadataOrObservedLobMaximumChanges_ChangesSignedPlan()
+    {
+        TableCopyPlan baseline = CreateTable();
+        TableCopyPlan changed = baseline with
+        {
+            SourceColumns = [.. baseline.SourceColumns.Select(column => column.Column == "CreatedAt"
+                ? column with { MetadataSha256 = Hash("changed"), MaxObservedDataLength = 42 }
+                : column)],
+        };
+
+        Assert.NotEqual(
+            SchemaPlanCanonicalizer.ComputeSha256(CreatePlan(baseline)),
+            SchemaPlanCanonicalizer.ComputeSha256(CreatePlan(changed)));
+    }
+
+    [Fact]
     public void ComputeSha256_SchemaObjectSemanticsChange_ChangesSignedPlan()
     {
         FreshSchemaPlan baseline = CreatePlan(CreateTable());
@@ -151,6 +189,12 @@ public sealed class SchemaPlanSemanticsTests
                 ["Quantity"] = "int",
                 ["CreatedAt"] = "datetime2(6)",
             },
+            SourceColumns =
+            [
+                new("Id", "int", Hash("Id:int"), null),
+                new("Quantity", "int", Hash("Quantity:int"), null),
+                new("CreatedAt", "datetime2(6)", Hash("CreatedAt:datetime2(6)"), null),
+            ],
             ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 ["Id"] = "integer",
@@ -293,6 +337,12 @@ public sealed class SchemaPlanSemanticsTests
                 ["Quantity"] = "int",
                 ["CreatedAt"] = "datetime2(6)",
             },
+            SourceColumns =
+            [
+                new("Id", "int", Hash("Id:int"), null),
+                new("Quantity", "int", Hash("Quantity:int"), null),
+                new("CreatedAt", "datetime2(6)", Hash("CreatedAt:datetime2(6)"), null),
+            ],
             ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 ["Id"] = "integer",

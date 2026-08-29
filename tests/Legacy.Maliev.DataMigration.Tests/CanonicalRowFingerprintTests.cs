@@ -5,13 +5,13 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class CanonicalRowFingerprintTests
 {
     [Fact]
-    public void Compute_ThaiUnicodeNormalization_ProducesSameSemanticHash()
+    public void Compute_ThaiUnicodeNormalizationDifference_RemainsDetectableForExactParity()
     {
         TableCopyPlan table = CreatePlan("text");
-        MigrationRow composed = Row("กำ");
-        MigrationRow decomposed = Row("กำ".Normalize(NormalizationForm.FormD));
+        MigrationRow composed = Row("é");
+        MigrationRow decomposed = Row("é".Normalize(NormalizationForm.FormD));
 
-        Assert.Equal(
+        Assert.NotEqual(
             CanonicalRowFingerprint.Compute(table, [composed]),
             CanonicalRowFingerprint.Compute(table, [decomposed]));
     }
