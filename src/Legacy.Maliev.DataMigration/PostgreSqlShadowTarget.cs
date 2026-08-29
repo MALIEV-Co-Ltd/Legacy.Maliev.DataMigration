@@ -713,6 +713,19 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         _ = reseed.Parameters.AddWithValue(identity.IsCalled);
         _ = await reseed.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
+        const string definitionSql = "SELECT seqstart, seqincrement FROM pg_catalog.pg_sequence WHERE seqrelid = $1::regclass;";
+        await using (var definition = new NpgsqlCommand(definitionSql, connection, transaction))
+        {
+            _ = definition.Parameters.AddWithValue(sequenceName);
+            await using NpgsqlDataReader definitionReader = await definition.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await definitionReader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
+                definitionReader.GetInt64(0) != identity.SeedValue ||
+                definitionReader.GetInt64(1) != identity.IncrementValue)
+            {
+                throw new MigrationExecutionException("identity_definition_mismatch", $"Identity definition drifted for {table.TargetSchema}.{table.TargetTable}.{identity.Column}.");
+            }
+        }
+
         await using var verify = new NpgsqlCommand($"SELECT last_value, is_called FROM {sequenceName};", connection, transaction);
         await using NpgsqlDataReader reader = await verify.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
