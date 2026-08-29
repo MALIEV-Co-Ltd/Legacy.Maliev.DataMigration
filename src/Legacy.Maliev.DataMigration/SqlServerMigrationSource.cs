@@ -71,6 +71,9 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
                 c.scale,
                 c.is_nullable,
                 c.is_identity,
+                identity_column.seed_value,
+                identity_column.increment_value,
+                identity_column.last_value,
                 COALESCE(c.collation_name, N'') AS collation_name,
                 COALESCE(dc.definition, N'') AS default_definition,
                 COALESCE(cc.definition, N'') AS computed_definition
@@ -80,6 +83,8 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             INNER JOIN sys.types AS ty ON ty.user_type_id = c.user_type_id
             LEFT JOIN sys.default_constraints AS dc ON dc.object_id = c.default_object_id
             LEFT JOIN sys.computed_columns AS cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
+            LEFT JOIN sys.identity_columns AS identity_column
+                ON identity_column.object_id = c.object_id AND identity_column.column_id = c.column_id
             WHERE t.is_ms_shipped = 0
             ORDER BY s.name, t.name, c.column_id;
             """;
@@ -94,6 +99,7 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
                 ic.key_ordinal,
                 c.name AS column_name,
                 ic.is_descending_key,
+                ic.is_included_column,
                 i.has_filter,
                 COALESCE(i.filter_definition, N'') AS filter_definition
             FROM sys.indexes AS i
@@ -351,7 +357,11 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
                 referenced_schema.name,
                 referenced_table.name,
                 child_column.name,
-                referenced_column.name
+                referenced_column.name,
+                foreign_key.delete_referential_action,
+                foreign_key.update_referential_action,
+                foreign_key.is_disabled,
+                foreign_key.is_not_trusted
             FROM sys.foreign_keys AS foreign_key
             INNER JOIN sys.tables AS child_table ON child_table.object_id = foreign_key.parent_object_id
             INNER JOIN sys.schemas AS child_schema ON child_schema.schema_id = child_table.schema_id
@@ -378,12 +388,20 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         string? referencedTable = null;
         List<string> columns = [];
         List<string> referencedColumns = [];
+        int? deleteAction = null;
+        int? updateAction = null;
+        bool? disabled = null;
+        bool? notTrusted = null;
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             referencedSchema ??= reader.GetString(0);
             referencedTable ??= reader.GetString(1);
             columns.Add(reader.GetString(2));
             referencedColumns.Add(reader.GetString(3));
+            deleteAction ??= reader.GetByte(4);
+            updateAction ??= reader.GetByte(5);
+            disabled ??= reader.GetBoolean(6);
+            notTrusted ??= reader.GetBoolean(7);
         }
 
         return ValidateObservedForeignKey(
@@ -391,7 +409,11 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             referencedSchema,
             referencedTable,
             columns,
-            referencedColumns);
+            referencedColumns,
+            deleteAction,
+            updateAction,
+            disabled,
+            notTrusted);
     }
 
     internal static ForeignKeyMetadata ValidateObservedForeignKey(
@@ -399,7 +421,11 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         string? referencedSchema,
         string? referencedTable,
         IReadOnlyList<string> columns,
-        IReadOnlyList<string> referencedColumns)
+        IReadOnlyList<string> referencedColumns,
+        int? deleteAction = null,
+        int? updateAction = null,
+        bool? disabled = null,
+        bool? notTrusted = null)
     {
         ArgumentNullException.ThrowIfNull(foreignKey);
         return referencedSchema is null ||
@@ -415,11 +441,35 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             !columns.SequenceEqual(foreignKey.Columns, StringComparer.Ordinal) ||
             !referencedColumns.SequenceEqual(
                 foreignKey.SourceReferencedColumns ?? foreignKey.ReferencedColumns,
-                StringComparer.Ordinal)
+                StringComparer.Ordinal) ||
+            (deleteAction is not null && FromSqlServerAction(deleteAction.Value) != foreignKey.OnDelete) ||
+            (updateAction is not null && FromSqlServerAction(updateAction.Value) != foreignKey.OnUpdate) ||
+            (disabled is not null && disabled.Value == foreignKey.SourceEnabled) ||
+            (notTrusted is not null && notTrusted.Value == foreignKey.SourceTrusted)
             ? throw new MigrationExecutionException(
                 "source_foreign_key_drift",
                 $"The source foreign key {foreignKey.Name} does not match the signed schema plan.")
-            : new ForeignKeyMetadata(referencedSchema, referencedTable, columns, referencedColumns);
+            : new ForeignKeyMetadata(
+                referencedSchema,
+                referencedTable,
+                columns,
+                referencedColumns,
+                foreignKey.OnDelete,
+                foreignKey.OnUpdate,
+                foreignKey.SourceEnabled,
+                foreignKey.SourceTrusted);
+    }
+
+    private static ReferentialAction FromSqlServerAction(int action)
+    {
+        return action switch
+        {
+            0 => ReferentialAction.NoAction,
+            1 => ReferentialAction.Cascade,
+            2 => ReferentialAction.SetNull,
+            3 => ReferentialAction.SetDefault,
+            _ => throw new MigrationExecutionException("source_foreign_key_drift", "SQL Server reported an unsupported foreign key action."),
+        };
     }
 
     [GeneratedRegex("^[A-Za-z][A-Za-z0-9_]{0,127}$", RegexOptions.CultureInvariant)]
@@ -438,5 +488,9 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         string ReferencedSchema,
         string ReferencedTable,
         IReadOnlyList<string> Columns,
-        IReadOnlyList<string> ReferencedColumns);
+        IReadOnlyList<string> ReferencedColumns,
+        ReferentialAction OnDelete,
+        ReferentialAction OnUpdate,
+        bool Enabled,
+        bool Trusted);
 }

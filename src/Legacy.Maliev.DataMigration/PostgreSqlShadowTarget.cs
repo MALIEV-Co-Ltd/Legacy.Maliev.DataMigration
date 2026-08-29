@@ -31,36 +31,57 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
     }
 
     public async Task<ShadowDatabase> CreateUniqueEmptyShadowAsync(
+        ShadowDatabase plannedShadow,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plannedShadow);
+        ValidateShadowIdentity(plannedShadow);
+        await using var connection = new NpgsqlConnection(_administrativeConnectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await AcquireShadowLockAsync(connection, plannedShadow.Name, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            string quotedName = QuoteIdentifier(plannedShadow.Name);
+            await using (var create = new NpgsqlCommand($"CREATE DATABASE {quotedName} TEMPLATE template0;", connection))
+            {
+                _ = await create.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            string ownership = OwnershipValue(plannedShadow);
+            try
+            {
+                await using var comment = new NpgsqlCommand(
+                    $"COMMENT ON DATABASE {quotedName} IS {QuoteLiteral(ownership)};",
+                    connection);
+                _ = await comment.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                await using var cleanup = new NpgsqlCommand($"DROP DATABASE {quotedName} WITH (FORCE);", connection);
+                _ = await cleanup.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+                throw;
+            }
+
+            return plannedShadow;
+        }
+        finally
+        {
+            await ReleaseShadowLockAsync(connection, plannedShadow.Name).ConfigureAwait(false);
+        }
+    }
+
+    public Task<ShadowDatabase> CreateUniqueEmptyShadowAsync(
         string database,
         string shadowName,
         string ownerRunId,
         CancellationToken cancellationToken)
     {
-        ValidateShadowIdentity(database, shadowName, ownerRunId);
-        await using var connection = new NpgsqlConnection(_administrativeConnectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        string quotedName = QuoteIdentifier(shadowName);
-        await using (var create = new NpgsqlCommand($"CREATE DATABASE {quotedName} TEMPLATE template0;", connection))
+        var planned = new ShadowDatabase(shadowName, ownerRunId, database)
         {
-            _ = await create.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        string ownership = OwnershipValue(database, ownerRunId);
-        try
-        {
-            await using var comment = new NpgsqlCommand(
-                $"COMMENT ON DATABASE {quotedName} IS {QuoteLiteral(ownership)};",
-                connection);
-            _ = await comment.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            await using var cleanup = new NpgsqlCommand($"DROP DATABASE {quotedName} WITH (FORCE);", connection);
-            _ = await cleanup.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
-            throw;
-        }
-
-        return new ShadowDatabase(shadowName, ownerRunId, database);
+            OwnerAttempt = 1,
+            FencingToken = Guid.NewGuid(),
+        };
+        return CreateUniqueEmptyShadowAsync(planned, cancellationToken);
     }
 
     public async Task<bool> IsEmptyAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
@@ -96,17 +117,25 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
 
     public async Task DeleteRunOwnedShadowAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
     {
-        if (!await AssertOwnershipAsync(shadow, allowMissing: true, cancellationToken).ConfigureAwait(false))
-        {
-            return;
-        }
-
         await using var connection = new NpgsqlConnection(_administrativeConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = new NpgsqlCommand(
-            $"DROP DATABASE {QuoteIdentifier(shadow.Name)} WITH (FORCE);",
-            connection);
-        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await AcquireShadowLockAsync(connection, shadow.Name, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!await AssertOwnershipAsync(connection, shadow, allowMissing: true, cancellationToken).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            await using var command = new NpgsqlCommand(
+                $"DROP DATABASE {QuoteIdentifier(shadow.Name)} WITH (FORCE);",
+                connection);
+            _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await ReleaseShadowLockAsync(connection, shadow.Name).ConfigureAwait(false);
+        }
     }
 
     private Task<bool> AssertOwnershipAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
@@ -120,9 +149,18 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(shadow);
-        ValidateShadowIdentity(shadow.Database, shadow.Name, shadow.OwnerRunId);
+        ValidateShadowIdentity(shadow);
         await using var connection = new NpgsqlConnection(_administrativeConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await AssertOwnershipAsync(connection, shadow, allowMissing, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<bool> AssertOwnershipAsync(
+        NpgsqlConnection connection,
+        ShadowDatabase shadow,
+        bool allowMissing,
+        CancellationToken cancellationToken)
+    {
         const string sql = "SELECT pg_catalog.shobj_description(oid, 'pg_database') FROM pg_catalog.pg_database WHERE datname = $1;";
         await using var command = new NpgsqlCommand(sql, connection);
         _ = command.Parameters.AddWithValue(shadow.Name);
@@ -133,7 +171,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         }
 
         string? observed = scalar as string;
-        return string.Equals(observed, OwnershipValue(shadow.Database, shadow.OwnerRunId), StringComparison.Ordinal)
+        return string.Equals(observed, OwnershipValue(shadow), StringComparison.Ordinal)
             ? true
             : throw new MigrationExecutionException(
                 "shadow_ownership_invalid",
@@ -146,11 +184,12 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         return new NpgsqlConnection(builder.ConnectionString);
     }
 
-    private static void ValidateShadowIdentity(string database, string shadowName, string ownerRunId)
+    private static void ValidateShadowIdentity(ShadowDatabase shadow)
     {
-        if (!ShadowName().IsMatch(shadowName) ||
-            !Guid.TryParseExact(ownerRunId, "D", out _) ||
-            string.IsNullOrWhiteSpace(database) || database.Contains('\0', StringComparison.Ordinal))
+        if (!ShadowName().IsMatch(shadow.Name) ||
+            !Guid.TryParseExact(shadow.OwnerRunId, "D", out _) ||
+            shadow.OwnerAttempt < 1 || shadow.FencingToken == Guid.Empty ||
+            string.IsNullOrWhiteSpace(shadow.Database) || shadow.Database.Contains('\0', StringComparison.Ordinal))
         {
             throw new MigrationExecutionException(
                 "shadow_identity_invalid",
@@ -158,9 +197,30 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         }
     }
 
-    private static string OwnershipValue(string database, string ownerRunId)
+    private static string OwnershipValue(ShadowDatabase shadow)
     {
-        return $"{OwnershipPrefix}{ownerRunId}:{database}";
+        return $"{OwnershipPrefix}{shadow.OwnerRunId}:{shadow.OwnerAttempt}:{shadow.FencingToken:N}:{shadow.Database}";
+    }
+
+    private static async Task AcquireShadowLockAsync(
+        NpgsqlConnection connection,
+        string shadowName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT pg_catalog.pg_advisory_lock(pg_catalog.hashtextextended($1, 0));",
+            connection);
+        _ = command.Parameters.AddWithValue(shadowName);
+        _ = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task ReleaseShadowLockAsync(NpgsqlConnection connection, string shadowName)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT pg_catalog.pg_advisory_unlock(pg_catalog.hashtextextended($1, 0));",
+            connection);
+        _ = command.Parameters.AddWithValue(shadowName);
+        _ = await command.ExecuteScalarAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
     internal static string QuoteIdentifier(string identifier)
@@ -219,9 +279,11 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                 string generated = generatedColumn is null
                     ? string.Empty
                     : $" GENERATED ALWAYS AS ({generatedColumn.Expression}) STORED";
-                string identity = table.IdentityColumns.Contains(column, StringComparer.Ordinal)
-                    ? " GENERATED BY DEFAULT AS IDENTITY"
-                    : string.Empty;
+                IdentityCopyPlan? identityPlan = table.Identities.SingleOrDefault(
+                    identity => string.Equals(identity.Column, column, StringComparison.Ordinal));
+                string identity = identityPlan is null
+                    ? string.Empty
+                    : $" GENERATED BY DEFAULT AS IDENTITY (START WITH {identityPlan.SeedValue.ToString(CultureInfo.InvariantCulture)} INCREMENT BY {identityPlan.IncrementValue.ToString(CultureInfo.InvariantCulture)})";
                 string defaultExpression = table.DefaultExpressions.TryGetValue(column, out string? expression)
                     ? $" DEFAULT {expression}"
                     : string.Empty;
@@ -264,9 +326,17 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             foreach (IndexCopyPlan index in table.Indexes)
             {
                 string unique = index.Unique ? "UNIQUE " : string.Empty;
+                string keyColumns = string.Join(", ", index.Columns.Select(column =>
+                    $"{PostgreSqlShadowTarget.QuoteIdentifier(column)}{(index.DescendingColumns.Contains(column, StringComparer.Ordinal) ? " DESC" : " ASC")}"));
+                string include = index.IncludedColumns.Count == 0
+                    ? string.Empty
+                    : $" INCLUDE ({QuotedColumns(index.IncludedColumns)})";
+                string filter = string.IsNullOrWhiteSpace(index.FilterPredicate)
+                    ? string.Empty
+                    : $" WHERE {index.FilterPredicate}";
                 await ExecuteAsync(
                     $"CREATE {unique}INDEX {PostgreSqlShadowTarget.QuoteIdentifier(index.Name)} " +
-                    $"ON {Qualified(table.TargetSchema, table.TargetTable)} ({QuotedColumns(index.Columns)});",
+                    $"ON {Qualified(table.TargetSchema, table.TargetTable)} ({keyColumns}){include}{filter};",
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -277,7 +347,8 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                 await ExecuteAsync(
                     $"ALTER TABLE {Qualified(table.TargetSchema, table.TargetTable)} " +
                     $"ADD CONSTRAINT {PostgreSqlShadowTarget.QuoteIdentifier(foreignKey.Name)} " +
-                    $"FOREIGN KEY ({columns}) REFERENCES {Qualified(foreignKey.ReferencedSchema, foreignKey.ReferencedTable)} ({referenced}) DEFERRABLE INITIALLY DEFERRED;",
+                    $"FOREIGN KEY ({columns}) REFERENCES {Qualified(foreignKey.ReferencedSchema, foreignKey.ReferencedTable)} ({referenced}) " +
+                    $"ON DELETE {ReferentialActionSql(foreignKey.OnDelete)} ON UPDATE {ReferentialActionSql(foreignKey.OnUpdate)} NOT DEFERRABLE;",
                     cancellationToken).ConfigureAwait(false);
             }
         }
@@ -438,7 +509,21 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                        FROM unnest(index_data.indkey) WITH ORDINALITY AS key_column(attnum, ordinal)
                        INNER JOIN pg_catalog.pg_attribute AS column_row
                            ON column_row.attrelid = table_row.oid AND column_row.attnum = key_column.attnum
-                       ORDER BY key_column.ordinal)
+                       WHERE key_column.ordinal <= index_data.indnkeyatts
+                       ORDER BY key_column.ordinal),
+                   ARRAY(
+                       SELECT column_row.attname
+                       FROM unnest(index_data.indkey) WITH ORDINALITY AS key_column(attnum, ordinal)
+                       INNER JOIN pg_catalog.pg_attribute AS column_row
+                           ON column_row.attrelid = table_row.oid AND column_row.attnum = key_column.attnum
+                       WHERE key_column.ordinal > index_data.indnkeyatts
+                       ORDER BY key_column.ordinal),
+                   ARRAY(
+                       SELECT key_column.ordinal::integer
+                       FROM unnest(index_data.indoption) WITH ORDINALITY AS key_column(option_value, ordinal)
+                       WHERE key_column.ordinal <= index_data.indnkeyatts AND (key_column.option_value & 1) = 1
+                       ORDER BY key_column.ordinal),
+                   COALESCE(pg_catalog.pg_get_expr(index_data.indpred, index_data.indrelid), '')
             FROM pg_catalog.pg_index AS index_data
             INNER JOIN pg_catalog.pg_class AS table_row ON table_row.oid = index_data.indrelid
             INNER JOIN pg_catalog.pg_namespace AS n ON n.oid = table_row.relnamespace
@@ -460,7 +545,10 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     reader.GetString(1),
                     reader.GetString(2),
                     reader.GetBoolean(3),
-                    reader.GetFieldValue<string[]>(4)));
+                    reader.GetFieldValue<string[]>(4),
+                    reader.GetFieldValue<string[]>(5),
+                    reader.GetFieldValue<int[]>(6),
+                    NormalizeExpression(reader.GetString(7))));
             }
         }
 
@@ -479,7 +567,9 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                        FROM unnest(constraint_row.confkey) WITH ORDINALITY AS key_column(attnum, ordinal)
                        INNER JOIN pg_catalog.pg_attribute AS referenced_column
                            ON referenced_column.attrelid = referenced.oid AND referenced_column.attnum = key_column.attnum
-                       ORDER BY key_column.ordinal)
+                       ORDER BY key_column.ordinal),
+                   constraint_row.confdeltype, constraint_row.confupdtype,
+                   constraint_row.convalidated
             FROM pg_catalog.pg_constraint AS constraint_row
             INNER JOIN pg_catalog.pg_class AS child ON child.oid = constraint_row.conrelid
             INNER JOIN pg_catalog.pg_namespace AS child_ns ON child_ns.oid = child.relnamespace
@@ -501,7 +591,10 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     reader.GetFieldValue<string[]>(3),
                     reader.GetString(4),
                     reader.GetString(5),
-                    reader.GetFieldValue<string[]>(6)));
+                    reader.GetFieldValue<string[]>(6),
+                    FromPostgreSqlAction(reader.GetChar(7)),
+                    FromPostgreSqlAction(reader.GetChar(8)),
+                    reader.GetBoolean(9)));
             }
         }
 
@@ -553,9 +646,9 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                 Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture));
         }
 
-        foreach (string identityColumn in table.IdentityColumns)
+        foreach (IdentityCopyPlan identity in table.Identities)
         {
-            await ReseedIdentityAsync(table, identityColumn, cancellationToken).ConfigureAwait(false);
+            await ReseedIdentityAsync(table, identity, cancellationToken).ConfigureAwait(false);
         }
 
         _ = _completedTableInspections.Add($"{table.TargetSchema}.{table.TargetTable}");
@@ -600,23 +693,60 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
 
     private async Task ReseedIdentityAsync(
         TableCopyPlan table,
-        string identityColumn,
+        IdentityCopyPlan identity,
         CancellationToken cancellationToken)
     {
         const string sequenceSql = "SELECT pg_get_serial_sequence($1, $2);";
         await using var sequence = new NpgsqlCommand(sequenceSql, connection, transaction);
         _ = sequence.Parameters.AddWithValue($"{table.TargetSchema}.{table.TargetTable}");
-        _ = sequence.Parameters.AddWithValue(identityColumn);
+        _ = sequence.Parameters.AddWithValue(identity.Column);
         string? sequenceName = (string?)await sequence.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(sequenceName))
         {
             return;
         }
 
-        string sql = $"SELECT setval($1::regclass, COALESCE((SELECT MAX({PostgreSqlShadowTarget.QuoteIdentifier(identityColumn)}) FROM {Qualified(table.TargetSchema, table.TargetTable)}), 1), EXISTS (SELECT 1 FROM {Qualified(table.TargetSchema, table.TargetTable)}));";
+        const string sql = "SELECT setval($1::regclass, $2, $3);";
         await using var reseed = new NpgsqlCommand(sql, connection, transaction);
         _ = reseed.Parameters.AddWithValue(sequenceName);
+        _ = reseed.Parameters.AddWithValue(identity.CurrentValue);
+        _ = reseed.Parameters.AddWithValue(identity.IsCalled);
         _ = await reseed.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var verify = new NpgsqlCommand($"SELECT last_value, is_called FROM {sequenceName};", connection, transaction);
+        await using NpgsqlDataReader reader = await verify.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
+            reader.GetInt64(0) != identity.CurrentValue ||
+            reader.GetBoolean(1) != identity.IsCalled)
+        {
+            throw new MigrationExecutionException("identity_state_mismatch", $"Identity state drifted for {table.TargetSchema}.{table.TargetTable}.{identity.Column}.");
+        }
+    }
+
+    private static string ReferentialActionSql(ReferentialAction action)
+    {
+        return action switch
+        {
+            ReferentialAction.NoAction => "NO ACTION",
+            ReferentialAction.Cascade => "CASCADE",
+            ReferentialAction.SetNull => "SET NULL",
+            ReferentialAction.SetDefault => "SET DEFAULT",
+            ReferentialAction.Restrict => "RESTRICT",
+            _ => throw new MigrationExecutionException("foreign_key_action_invalid", "The signed foreign key action is unsupported."),
+        };
+    }
+
+    private static ReferentialAction FromPostgreSqlAction(char action)
+    {
+        return action switch
+        {
+            'a' => ReferentialAction.NoAction,
+            'r' => ReferentialAction.Restrict,
+            'c' => ReferentialAction.Cascade,
+            'n' => ReferentialAction.SetNull,
+            'd' => ReferentialAction.SetDefault,
+            _ => throw new MigrationExecutionException("foreign_key_action_invalid", "PostgreSQL reported an unsupported foreign key action."),
+        };
     }
 
     private async Task ExecuteAsync(string sql, CancellationToken cancellationToken)
@@ -709,7 +839,10 @@ internal static class PostgreSqlSchemaFingerprint
         string Table,
         string Name,
         bool Unique,
-        IReadOnlyList<string> Columns);
+        IReadOnlyList<string> Columns,
+        IReadOnlyList<string> IncludedColumns,
+        IReadOnlyList<int> DescendingOrdinals,
+        string FilterPredicate);
 
     internal sealed record ForeignKeyShape(
         string Schema,
@@ -718,7 +851,10 @@ internal static class PostgreSqlSchemaFingerprint
         IReadOnlyList<string> Columns,
         string ReferencedSchema,
         string ReferencedTable,
-        IReadOnlyList<string> ReferencedColumns);
+        IReadOnlyList<string> ReferencedColumns,
+        ReferentialAction OnDelete,
+        ReferentialAction OnUpdate,
+        bool Validated);
 
     internal static string ComputeExpected(DatabaseSchemaPlan plan)
     {
@@ -732,7 +868,7 @@ internal static class PostgreSqlSchemaFingerprint
                 column,
                 PostgreSqlTypePolicy.Validate(table.ColumnTypes[column]),
                 table.NullableColumns.Contains(column, StringComparer.Ordinal),
-                table.IdentityColumns.Contains(column, StringComparer.Ordinal),
+                table.Identities.Any(identity => string.Equals(identity.Column, column, StringComparison.Ordinal)),
                 table.DefaultExpressions.GetValueOrDefault(column, string.Empty),
                 table.GeneratedColumns.SingleOrDefault(item => string.Equals(item.Column, column, StringComparison.Ordinal))?.Expression ?? string.Empty,
                 table.Collations.GetValueOrDefault(column, string.Empty))))];
@@ -761,7 +897,17 @@ internal static class PostgreSqlSchemaFingerprint
                 item.Columns,
                 item.Expression))))];
         List<IndexShape> indexes = [.. plan.Tables.SelectMany(table => table.Indexes.Select(index =>
-            new IndexShape(table.TargetSchema, table.TargetTable, index.Name, index.Unique, index.Columns)))];
+            new IndexShape(
+                table.TargetSchema,
+                table.TargetTable,
+                index.Name,
+                index.Unique,
+                index.Columns,
+                index.IncludedColumns,
+                [.. index.Columns.Select((column, ordinal) => (column, ordinal: ordinal + 1))
+                    .Where(item => index.DescendingColumns.Contains(item.column, StringComparer.Ordinal))
+                    .Select(item => item.ordinal)],
+                index.FilterPredicate ?? string.Empty)))];
         List<ForeignKeyShape> foreignKeys = [.. plan.Tables.SelectMany(table => table.ForeignKeys.Select(foreignKey =>
             new ForeignKeyShape(
                 table.TargetSchema,
@@ -770,7 +916,10 @@ internal static class PostgreSqlSchemaFingerprint
                 foreignKey.Columns,
                 foreignKey.ReferencedSchema,
                 foreignKey.ReferencedTable,
-                foreignKey.ReferencedColumns)))];
+                foreignKey.ReferencedColumns,
+                foreignKey.OnDelete,
+                foreignKey.OnUpdate,
+                true)))];
         return Compute(tables, columns, constraints, indexes, foreignKeys);
     }
 
@@ -832,6 +981,13 @@ internal static class PostgreSqlSchemaFingerprint
                 Write(writer, index.Name);
                 writer.Write(index.Unique);
                 Write(writer, index.Columns);
+                Write(writer, index.IncludedColumns);
+                writer.Write(index.DescendingOrdinals.Count);
+                foreach (int ordinal in index.DescendingOrdinals)
+                {
+                    writer.Write(ordinal);
+                }
+                Write(writer, NormalizeExpression(index.FilterPredicate));
             }
 
             foreach (ForeignKeyShape foreignKey in foreignKeys.OrderBy(item => item.Schema, StringComparer.Ordinal)
@@ -846,6 +1002,9 @@ internal static class PostgreSqlSchemaFingerprint
                 Write(writer, foreignKey.ReferencedSchema);
                 Write(writer, foreignKey.ReferencedTable);
                 Write(writer, foreignKey.ReferencedColumns);
+                writer.Write((int)foreignKey.OnDelete);
+                writer.Write((int)foreignKey.OnUpdate);
+                writer.Write(foreignKey.Validated);
             }
         }
 

@@ -173,6 +173,25 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
                 NullableColumns = ["CreatedAt"],
                 Collations = new Dictionary<string, string>(StringComparer.Ordinal) { ["Code"] = "C" },
                 GeneratedColumns = [new GeneratedColumnCopyPlan("NormalizedCode", "lower(\"Code\")")],
+                IdentityColumns = ["Id"],
+                Identities = [new IdentityCopyPlan("Id", 100, 5, 145, true)],
+                Indexes =
+                [
+                    new IndexCopyPlan("IX_orders_quantity", ["Quantity"], false)
+                    {
+                        DescendingColumns = ["Quantity"],
+                        IncludedColumns = ["CreatedAt"],
+                        FilterPredicate = "\"Quantity\" > 0",
+                    },
+                ],
+                ForeignKeys =
+                [
+                    new ForeignKeyCopyPlan("FK_orders_self", ["Id"], "sales", "orders", ["Id"])
+                    {
+                        OnDelete = ReferentialAction.Cascade,
+                        OnUpdate = ReferentialAction.Restrict,
+                    },
+                ],
             };
             var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
             DatabaseSchemaPlan plan = draft with
@@ -183,11 +202,35 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
                 await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
 
             await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+            _ = await transaction.CopyBatchAsync(
+                table,
+                [
+                    SchemaRow(100, 1, "A", "a"),
+                    SchemaRow(110, 2, "B", "b"),
+                ],
+                CancellationToken.None);
             string actual = await transaction.InspectSchemaAsync(plan, CancellationToken.None);
             _ = await transaction.InspectTableAsync(table, CancellationToken.None);
             await transaction.CommitAsync(CancellationToken.None);
 
             Assert.Equal(plan.TargetSchemaSha256, actual);
+            var shadowConnection = new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Database = shadow.Name };
+            await using var connection = new NpgsqlConnection(shadowConnection.ConnectionString);
+            await connection.OpenAsync();
+            await using var sequenceNameCommand = new NpgsqlCommand(
+                "SELECT pg_get_serial_sequence('sales.orders', 'Id');",
+                connection);
+            string sequenceName = Assert.IsType<string>(await sequenceNameCommand.ExecuteScalarAsync());
+            await using var state = new NpgsqlCommand(
+                $"SELECT last_value, is_called FROM {sequenceName}; SELECT array_agg(\"Id\" ORDER BY \"Id\") FROM sales.orders;",
+                connection);
+            await using NpgsqlDataReader reader = await state.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(145, reader.GetInt64(0));
+            Assert.True(reader.GetBoolean(1));
+            Assert.True(await reader.NextResultAsync());
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal([100, 110], reader.GetFieldValue<int[]>(0));
         }
         finally
         {
@@ -219,6 +262,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
                 ["Name"] = "text",
             },
             NullableColumns = ["Name"],
+            PrimaryKey = new PrimaryKeyCopyPlan("PK_orders", ["Id"]),
         };
     }
 
@@ -229,6 +273,18 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
             new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["Name"] = "ไทย" }),
             new MigrationRow(new Dictionary<string, object?> { ["Id"] = 2, ["Name"] = null }),
         ];
+    }
+
+    private static MigrationRow SchemaRow(int id, int quantity, string code, string normalizedCode)
+    {
+        return new MigrationRow(new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["Id"] = id,
+            ["Quantity"] = quantity,
+            ["CreatedAt"] = null,
+            ["Code"] = code,
+            ["NormalizedCode"] = normalizedCode,
+        });
     }
 
     private static string Hash(string value)

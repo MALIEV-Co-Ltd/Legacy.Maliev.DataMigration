@@ -23,6 +23,8 @@ public sealed record TableCopyPlan(
 
     public IReadOnlyList<string> IdentityColumns { get; init; } = [];
 
+    public IReadOnlyList<IdentityCopyPlan> Identities { get; init; } = [];
+
     public IReadOnlyList<string> NullableColumns { get; init; } = [];
 
     public IReadOnlyList<ForeignKeyCopyPlan> ForeignKeys { get; init; } = [];
@@ -48,7 +50,30 @@ public sealed record PrimaryKeyCopyPlan(string Name, IReadOnlyList<string> Colum
 
 public sealed record UniqueConstraintCopyPlan(string Name, IReadOnlyList<string> Columns);
 
-public sealed record IndexCopyPlan(string Name, IReadOnlyList<string> Columns, bool Unique);
+public sealed record IdentityCopyPlan(
+    string Column,
+    long SeedValue,
+    long IncrementValue,
+    long CurrentValue,
+    bool IsCalled);
+
+public sealed record IndexCopyPlan(string Name, IReadOnlyList<string> Columns, bool Unique)
+{
+    public IReadOnlyList<string> DescendingColumns { get; init; } = [];
+
+    public IReadOnlyList<string> IncludedColumns { get; init; } = [];
+
+    public string? FilterPredicate { get; init; }
+}
+
+public enum ReferentialAction
+{
+    NoAction = 0,
+    Cascade = 1,
+    SetNull = 2,
+    SetDefault = 3,
+    Restrict = 4,
+}
 
 public sealed record CheckConstraintCopyPlan(string Name, string Expression)
 {
@@ -69,6 +94,14 @@ public sealed record ForeignKeyCopyPlan(
     public string? SourceReferencedTable { get; init; }
 
     public IReadOnlyList<string>? SourceReferencedColumns { get; init; }
+
+    public ReferentialAction OnDelete { get; init; } = ReferentialAction.NoAction;
+
+    public ReferentialAction OnUpdate { get; init; } = ReferentialAction.NoAction;
+
+    public bool SourceEnabled { get; init; } = true;
+
+    public bool SourceTrusted { get; init; } = true;
 }
 
 public sealed record DatabaseSchemaPlan(
@@ -86,7 +119,7 @@ public sealed record FreshSchemaPlan(
 
 public static partial class SchemaPlanCanonicalizer
 {
-    private const string DomainSeparator = "Legacy.Maliev.DataMigration.SchemaPlan.v3";
+    private const string DomainSeparator = "Legacy.Maliev.DataMigration.SchemaPlan.v4";
 
     public static string ComputeSha256(FreshSchemaPlan plan)
     {
@@ -177,6 +210,11 @@ public static partial class SchemaPlanCanonicalizer
                     table.OrderByColumns.Count == 0 ||
                     table.OrderByColumns.Any(column => !table.OrderedColumns.Contains(column, StringComparer.Ordinal)) ||
                     table.IdentityColumns.Any(column => !table.OrderedColumns.Contains(column, StringComparer.Ordinal)) ||
+                    table.Identities.Any(identity =>
+                        !table.OrderedColumns.Contains(identity.Column, StringComparer.Ordinal) ||
+                        identity.IncrementValue == 0) ||
+                    table.Identities.Select(identity => identity.Column).Distinct(StringComparer.Ordinal).Count() != table.Identities.Count ||
+                    table.IdentityColumns.Except(table.Identities.Select(identity => identity.Column), StringComparer.Ordinal).Any() ||
                     table.NullableColumns.Any(column => !table.OrderedColumns.Contains(column, StringComparer.Ordinal)) ||
                     table.ForeignKeys.Any(foreignKey => !ValidNamedColumns(foreignKey.Name, foreignKey.Columns, table) ||
                         foreignKey.Columns.Count != foreignKey.ReferencedColumns.Count ||
@@ -187,7 +225,11 @@ public static partial class SchemaPlanCanonicalizer
                         foreignKey.ReferencedColumns.Any(string.IsNullOrWhiteSpace)) ||
                     (table.PrimaryKey is not null && !ValidNamedColumns(table.PrimaryKey.Name, table.PrimaryKey.Columns, table)) ||
                     table.UniqueConstraints.Any(item => !ValidNamedColumns(item.Name, item.Columns, table)) ||
-                    table.Indexes.Any(item => !ValidNamedColumns(item.Name, item.Columns, table)) ||
+                    table.Indexes.Any(item => !ValidNamedColumns(item.Name, item.Columns, table) ||
+                        item.DescendingColumns.Any(column => !item.Columns.Contains(column, StringComparer.Ordinal)) ||
+                        item.IncludedColumns.Any(column => !table.OrderedColumns.Contains(column, StringComparer.Ordinal)) ||
+                        item.IncludedColumns.Intersect(item.Columns, StringComparer.Ordinal).Any() ||
+                        (item.FilterPredicate is not null && !ValidExpression(item.FilterPredicate))) ||
                     table.DefaultExpressions.Any(item =>
                         !table.OrderedColumns.Contains(item.Key, StringComparer.Ordinal) || !ValidExpression(item.Value)) ||
                     table.CheckConstraints.Any(item =>
@@ -211,6 +253,25 @@ public static partial class SchemaPlanCanonicalizer
                     constraintNames.Distinct(StringComparer.Ordinal).Count() != constraintNames.Length)
                 {
                     errors.Add(new("table_plan_invalid", $"{database.Database} contains an invalid deterministic table mapping."));
+                }
+
+                var totalKeys = new List<IReadOnlyList<string>>();
+                if (table.PrimaryKey is not null)
+                {
+                    totalKeys.Add(table.PrimaryKey.Columns);
+                }
+
+                totalKeys.AddRange(table.UniqueConstraints
+                    .Where(unique => !unique.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any())
+                    .Select(unique => unique.Columns));
+                if (!totalKeys.Any(key => key.All(column => table.OrderByColumns.Contains(column, StringComparer.Ordinal))))
+                {
+                    errors.Add(new("order_by_not_total", $"{database.Database}.{table.SourceTable} ordering is not proven unique."));
+                }
+
+                if (table.ForeignKeys.Any(foreignKey => !foreignKey.SourceEnabled || !foreignKey.SourceTrusted))
+                {
+                    errors.Add(new("foreign_key_disposition_unsupported", $"{database.Database}.{table.SourceTable} contains a disabled or untrusted foreign key."));
                 }
 
                 foreach ((string column, string sourceType) in table.SourceColumnTypes)
@@ -296,6 +357,16 @@ public static partial class SchemaPlanCanonicalizer
                         WriteString(writer, table.ColumnTypes.GetValueOrDefault(column, string.Empty));
                     }
                     WriteStrings(writer, table.IdentityColumns);
+                    IdentityCopyPlan[] identities = [.. table.Identities.OrderBy(item => item.Column, StringComparer.Ordinal)];
+                    writer.Write(identities.Length);
+                    foreach (IdentityCopyPlan identity in identities)
+                    {
+                        WriteString(writer, identity.Column);
+                        writer.Write(identity.SeedValue);
+                        writer.Write(identity.IncrementValue);
+                        writer.Write(identity.CurrentValue);
+                        writer.Write(identity.IsCalled);
+                    }
                     WriteStrings(writer, table.NullableColumns);
                     writer.Write(table.ForeignKeys.Count);
                     foreach (ForeignKeyCopyPlan foreignKey in table.ForeignKeys.OrderBy(item => item.Name, StringComparer.Ordinal))
@@ -308,6 +379,10 @@ public static partial class SchemaPlanCanonicalizer
                         WriteString(writer, foreignKey.SourceReferencedSchema ?? foreignKey.ReferencedSchema);
                         WriteString(writer, foreignKey.SourceReferencedTable ?? foreignKey.ReferencedTable);
                         WriteStrings(writer, foreignKey.SourceReferencedColumns ?? foreignKey.ReferencedColumns);
+                        writer.Write((int)foreignKey.OnDelete);
+                        writer.Write((int)foreignKey.OnUpdate);
+                        writer.Write(foreignKey.SourceEnabled);
+                        writer.Write(foreignKey.SourceTrusted);
                     }
                     writer.Write(table.PrimaryKey is not null);
                     if (table.PrimaryKey is not null)
@@ -323,6 +398,9 @@ public static partial class SchemaPlanCanonicalizer
                         WriteString(writer, index.Name);
                         WriteStrings(writer, index.Columns);
                         writer.Write(index.Unique);
+                        WriteStrings(writer, index.DescendingColumns);
+                        WriteStrings(writer, index.IncludedColumns);
+                        WriteString(writer, index.FilterPredicate ?? string.Empty);
                     }
                     WriteDictionary(writer, table.DefaultExpressions);
                     CheckConstraintCopyPlan[] checks = [.. table.CheckConstraints.OrderBy(item => item.Name, StringComparer.Ordinal)];

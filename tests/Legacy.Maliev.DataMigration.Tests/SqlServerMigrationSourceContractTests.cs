@@ -155,4 +155,33 @@ public sealed class SqlServerMigrationSourceContractTests
         Assert.Equal("Customer", metadata.ReferencedTable);
         Assert.Equal(["ID"], metadata.ReferencedColumns);
     }
+
+    [Fact]
+    public void ValidateObservedForeignKey_ActionOrTrustDrifts_FailsClosed()
+    {
+        var plan = new ForeignKeyCopyPlan(
+            "FK_orders_customer",
+            ["CustomerId"],
+            "crm",
+            "Customers",
+            ["Id"])
+        {
+            OnDelete = ReferentialAction.Cascade,
+            OnUpdate = ReferentialAction.NoAction,
+        };
+
+        MigrationExecutionException exception = Assert.Throws<MigrationExecutionException>(() =>
+            SqlServerMigrationSource.ValidateObservedForeignKey(
+                plan,
+                "crm",
+                "Customers",
+                ["CustomerId"],
+                ["Id"],
+                deleteAction: 0,
+                updateAction: 0,
+                disabled: false,
+                notTrusted: false));
+
+        Assert.Equal("source_foreign_key_drift", exception.Code);
+    }
 }

@@ -153,6 +153,78 @@ public sealed class SchemaPlanSemanticsTests
         Assert.Contains(errors, error => error.Code == "table_plan_invalid");
     }
 
+    [Fact]
+    public void ComputeSha256_IndexForeignKeyAndIdentitySemanticsChange_ChangesSignature()
+    {
+        TableCopyPlan baseline = CreateTable() with
+        {
+            Identities = [new IdentityCopyPlan("Id", 100, 5, 145, true)],
+            Indexes =
+            [
+                new IndexCopyPlan("IX_orders_quantity", ["Quantity"], false)
+                {
+                    DescendingColumns = ["Quantity"],
+                    IncludedColumns = ["CreatedAt"],
+                    FilterPredicate = "\"Quantity\" > 0",
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyCopyPlan("FK_orders_parent", ["Id"], "sales", "orders", ["Id"])
+                {
+                    OnDelete = ReferentialAction.Cascade,
+                    OnUpdate = ReferentialAction.Restrict,
+                },
+            ],
+        };
+
+        string original = SchemaPlanCanonicalizer.ComputeSha256(CreatePlan(baseline));
+        Assert.NotEqual(original, SchemaPlanCanonicalizer.ComputeSha256(CreatePlan(
+            baseline with { Identities = [baseline.Identities[0] with { CurrentValue = 150 }] })));
+        Assert.NotEqual(original, SchemaPlanCanonicalizer.ComputeSha256(CreatePlan(
+            baseline with { Indexes = [baseline.Indexes[0] with { FilterPredicate = "\"Quantity\" >= 0" }] })));
+        Assert.NotEqual(original, SchemaPlanCanonicalizer.ComputeSha256(CreatePlan(
+            baseline with { ForeignKeys = [baseline.ForeignKeys[0] with { OnDelete = ReferentialAction.NoAction }] })));
+    }
+
+    [Fact]
+    public void Validate_OrderByDoesNotContainNonNullableUniqueKey_FailsClosed()
+    {
+        TableCopyPlan table = CreateTable() with { OrderByColumns = ["Quantity"], PrimaryKey = null };
+
+        IReadOnlyList<PreflightError> errors = SchemaPlanCanonicalizer.Validate(
+            CreatePlan(table),
+            new GuardedRunnerPolicy(SourceCommit, RunnerDigest),
+            CapturedAt.AddMinutes(1),
+            TimeSpan.FromHours(1));
+
+        Assert.Contains(errors, error => error.Code == "order_by_not_total");
+    }
+
+    [Fact]
+    public void Validate_DisabledOrUntrustedForeignKey_FailsClosed()
+    {
+        TableCopyPlan table = CreateTable() with
+        {
+            ForeignKeys =
+            [
+                new ForeignKeyCopyPlan("FK_orders_parent", ["Id"], "sales", "orders", ["Id"])
+                {
+                    SourceEnabled = false,
+                    SourceTrusted = false,
+                },
+            ],
+        };
+
+        IReadOnlyList<PreflightError> errors = SchemaPlanCanonicalizer.Validate(
+            CreatePlan(table),
+            new GuardedRunnerPolicy(SourceCommit, RunnerDigest),
+            CapturedAt.AddMinutes(1),
+            TimeSpan.FromHours(1));
+
+        Assert.Contains(errors, error => error.Code == "foreign_key_disposition_unsupported");
+    }
+
     internal static TableCopyPlan CreateTable()
     {
         return new TableCopyPlan(

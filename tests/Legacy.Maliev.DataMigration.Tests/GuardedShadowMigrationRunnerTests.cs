@@ -474,6 +474,7 @@ public sealed class GuardedShadowMigrationRunnerTests
                     ["ID"] = "integer",
                     ["Value"] = "text",
                 },
+                PrimaryKey = new PrimaryKeyCopyPlan("PK_Primary", ["ID"]),
             }]);
     }
 
@@ -689,15 +690,12 @@ public sealed class GuardedShadowMigrationRunnerTests
         public Action? BeforeDelete { get; set; }
 
         public Task<ShadowDatabase> CreateUniqueEmptyShadowAsync(
-            string database,
-            string shadowName,
-            string ownerRunId,
+            ShadowDatabase requested,
             CancellationToken cancellationToken)
         {
-            var requested = new ShadowDatabase(shadowName, ownerRunId, database);
             Assert.True(IsRegistered?.Invoke(requested) ?? false, "Shadow inventory must be durable before CREATE DATABASE.");
             var shadow = ReturnMalformedLease
-                ? new ShadowDatabase(shadowName + "_malformed", ownerRunId, database)
+                ? requested with { Name = requested.Name + "_malformed" }
                 : requested;
             Created.Add(shadow);
             return Task.FromResult(shadow);
@@ -873,7 +871,10 @@ public sealed class GuardedShadowMigrationRunnerTests
             }
 
             _inProgress.Add(identity.RunId, identity);
-            var lease = new MigrationRunLease(identity, "test-runner", 1, DateTimeOffset.MaxValue);
+            var lease = new MigrationRunLease(identity, "test-runner", 1, DateTimeOffset.MaxValue)
+            {
+                FencingToken = Guid.NewGuid(),
+            };
             _leases.Add(identity.RunId, lease);
             IReadOnlyList<ShadowDatabase> pending = _pendingShadows.TryGetValue(identity.RunId, out List<ShadowDatabase>? shadows)
                 ? [.. shadows]

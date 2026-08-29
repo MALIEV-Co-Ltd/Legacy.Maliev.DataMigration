@@ -40,7 +40,8 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
         var shadow = new ShadowDatabase(
             $"legacy_shadow_order_{Guid.NewGuid():N}",
             identity.RunId.ToString("D"),
-            "Order");
+            "Order")
+        { OwnerAttempt = firstLease.Attempt, FencingToken = firstLease.FencingToken };
         await crashed.RegisterShadowAsync(firstLease, shadow, CancellationToken.None);
 
         clock.Advance(TimeSpan.FromSeconds(61));
@@ -49,6 +50,7 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
         Assert.Equal(MigrationRunStartStatus.Acquired, takeover.Status);
         Assert.Equal("restart-worker", takeover.Lease!.Owner);
         Assert.Equal(2, takeover.Lease.Attempt);
+        Assert.NotEqual(firstLease.FencingToken, takeover.Lease.FencingToken);
         Assert.Equal([shadow], takeover.PendingShadows);
         MigrationExecutionException staleOwner = await Assert.ThrowsAsync<MigrationExecutionException>(
             () => crashed.HeartbeatAsync(firstLease, CancellationToken.None));
@@ -67,7 +69,8 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
         var shadow = new ShadowDatabase(
             $"legacy_shadow_order_{Guid.NewGuid():N}",
             identity.RunId.ToString("D"),
-            "Order");
+            "Order")
+        { OwnerAttempt = firstLease.Attempt, FencingToken = firstLease.FencingToken };
         await crashed.RegisterShadowAsync(firstLease, shadow, CancellationToken.None);
         clock.Advance(TimeSpan.FromSeconds(61));
         MigrationRunStartResult takeover = await restarted.TryBeginAsync(identity, CancellationToken.None);
@@ -75,18 +78,42 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
 
         await restarted.RecordShadowCleanupAsync(
             takeoverLease,
-            new ShadowCleanupOutcome(shadow.Name, false, "transient"),
+            new ShadowCleanupOutcome(shadow.Name, false, "transient")
+            {
+                OwnerAttempt = shadow.OwnerAttempt,
+                FencingToken = shadow.FencingToken,
+            },
             CancellationToken.None);
         Assert.Equal([shadow], await restarted.GetPendingShadowsAsync(takeoverLease, CancellationToken.None));
 
         await restarted.RecordShadowCleanupAsync(
             takeoverLease,
-            new ShadowCleanupOutcome(shadow.Name, true, null),
+            new ShadowCleanupOutcome(shadow.Name, true, null)
+            {
+                OwnerAttempt = shadow.OwnerAttempt,
+                FencingToken = shadow.FencingToken,
+            },
             CancellationToken.None);
         Assert.Empty(await restarted.GetPendingShadowsAsync(takeoverLease, CancellationToken.None));
 
-        await restarted.RegisterShadowAsync(takeoverLease, shadow, CancellationToken.None);
-        Assert.Equal([shadow], await restarted.GetPendingShadowsAsync(takeoverLease, CancellationToken.None));
+        ShadowDatabase successor = shadow with
+        {
+            OwnerAttempt = takeoverLease.Attempt,
+            FencingToken = takeoverLease.FencingToken,
+        };
+        await restarted.RegisterShadowAsync(takeoverLease, successor, CancellationToken.None);
+        Assert.Equal([successor], await restarted.GetPendingShadowsAsync(takeoverLease, CancellationToken.None));
+        MigrationExecutionException staleCleanup = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            restarted.RecordShadowCleanupAsync(
+                takeoverLease,
+                new ShadowCleanupOutcome(shadow.Name, true, null)
+                {
+                    OwnerAttempt = shadow.OwnerAttempt,
+                    FencingToken = shadow.FencingToken,
+                },
+                CancellationToken.None));
+        Assert.Equal("shadow_inventory_invalid", staleCleanup.Code);
+        Assert.Equal([successor], await restarted.GetPendingShadowsAsync(takeoverLease, CancellationToken.None));
 
         await using var connection = new NpgsqlConnection(fixture.ConnectionString);
         await connection.OpenAsync(CancellationToken.None);
