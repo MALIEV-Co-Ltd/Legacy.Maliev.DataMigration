@@ -349,7 +349,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
             updated_at_utc timestamp with time zone NOT NULL,
             PRIMARY KEY (run_id, shadow_name)
         );
-            """;
+        """;
     }
 
     private async Task<JournalRow> ReadForUpdateAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid runId, CancellationToken cancellationToken)
