@@ -13,6 +13,7 @@ public interface IReceiptAttestationTrustStore
 
 public sealed class ReceiptAttestationTrustStore : IReceiptAttestationTrustStore
 {
+    private const string P256CurveOid = "1.2.840.10045.3.1.7";
     private readonly Dictionary<string, byte[]> _trustedKeys;
 
     public ReceiptAttestationTrustStore(IEnumerable<TrustedAttestationKey> trustedKeys)
@@ -25,10 +26,9 @@ public sealed class ReceiptAttestationTrustStore : IReceiptAttestationTrustStore
             ArgumentException.ThrowIfNullOrWhiteSpace(trustedKey.KeyId);
             ArgumentNullException.ThrowIfNull(trustedKey.SubjectPublicKeyInfo);
 
-            using ECDsa verifier = ECDsa.Create();
-            verifier.ImportSubjectPublicKeyInfo(trustedKey.SubjectPublicKeyInfo, out int bytesRead);
-            if (bytesRead != trustedKey.SubjectPublicKeyInfo.Length ||
-                !keys.TryAdd(trustedKey.KeyId, trustedKey.SubjectPublicKeyInfo.ToArray()))
+            byte[] subjectPublicKeyInfo = trustedKey.SubjectPublicKeyInfo.ToArray();
+            ValidateP256SubjectPublicKeyInfo(subjectPublicKeyInfo);
+            if (!keys.TryAdd(trustedKey.KeyId, subjectPublicKeyInfo))
             {
                 throw new ArgumentException("Trusted attestation keys must be valid and have unique identifiers.", nameof(trustedKeys));
             }
@@ -50,9 +50,53 @@ public sealed class ReceiptAttestationTrustStore : IReceiptAttestationTrustStore
         }
 
         using ECDsa verifier = ECDsa.Create();
-        verifier.ImportSubjectPublicKeyInfo(publicKey, out int bytesRead);
-        return bytesRead == publicKey.Length &&
-            verifier.VerifyData(payload, signature, HashAlgorithmName.SHA256);
+        try
+        {
+            verifier.ImportSubjectPublicKeyInfo(publicKey, out int bytesRead);
+            return bytesRead == publicKey.Length &&
+                IsP256(verifier) &&
+                verifier.VerifyData(payload, signature, HashAlgorithmName.SHA256);
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
+    }
+
+    private static void ValidateP256SubjectPublicKeyInfo(byte[] subjectPublicKeyInfo)
+    {
+        using ECDsa verifier = ECDsa.Create();
+        try
+        {
+            verifier.ImportSubjectPublicKeyInfo(subjectPublicKeyInfo, out int bytesRead);
+            if (bytesRead != subjectPublicKeyInfo.Length)
+            {
+                throw CreateTrustedKeyException("trusted_attestation_key_encoding_invalid");
+            }
+        }
+        catch (CryptographicException)
+        {
+            throw CreateTrustedKeyException("trusted_attestation_key_algorithm_invalid");
+        }
+
+        if (!IsP256(verifier))
+        {
+            throw CreateTrustedKeyException("trusted_attestation_key_curve_invalid");
+        }
+    }
+
+    private static bool IsP256(ECDsa verifier)
+    {
+        ECCurve curve = verifier.ExportParameters(false).Curve;
+        return verifier.KeySize == 256 &&
+            string.Equals(curve.Oid.Value, P256CurveOid, StringComparison.Ordinal);
+    }
+
+    private static ArgumentException CreateTrustedKeyException(string code)
+    {
+        var exception = new ArgumentException("Trusted attestation key is not an ECDSA P-256 public key.");
+        exception.Data["code"] = code;
+        return exception;
     }
 }
 

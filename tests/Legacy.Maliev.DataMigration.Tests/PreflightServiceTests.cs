@@ -197,6 +197,30 @@ public sealed class PreflightServiceTests
     }
 
     [Fact]
+    public void ReceiptAttestationTrustStore_P384TrustedKey_RejectsWithStableCurveCode()
+    {
+        using ECDsa p384Key = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+
+        ArgumentException exception = Assert.Throws<ArgumentException>(() =>
+            new ReceiptAttestationTrustStore(
+            [new TrustedAttestationKey("backup-producer-p384", p384Key.ExportSubjectPublicKeyInfo())]));
+
+        Assert.Equal("trusted_attestation_key_curve_invalid", exception.Data["code"]);
+    }
+
+    [Fact]
+    public void ReceiptAttestationTrustStore_NonEcdsaTrustedKey_RejectsWithStableAlgorithmCode()
+    {
+        using RSA rsaKey = RSA.Create(2048);
+
+        ArgumentException exception = Assert.Throws<ArgumentException>(() =>
+            new ReceiptAttestationTrustStore(
+            [new TrustedAttestationKey("backup-producer-rsa", rsaKey.ExportSubjectPublicKeyInfo())]));
+
+        Assert.Equal("trusted_attestation_key_algorithm_invalid", exception.Data["code"]);
+    }
+
+    [Fact]
     public void Validate_NullArtifactEntry_ReturnsStableErrorWithoutThrowing()
     {
         BackupReceipt receipt = CreateReceipt();
