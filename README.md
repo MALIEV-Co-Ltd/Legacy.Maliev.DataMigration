@@ -115,6 +115,14 @@ source database read-only. `scripts/invoke-shadow-migration.ps1` then runs the
 five gates in order and refuses to start unless `LEGACY_DEPLOY_ENABLED=false`.
 Neither script contains deployment, GKE, GCS mutation, or Secret Manager logic.
 
+The `plan` command opens a SQL Server snapshot for each approved database and
+generates a new deterministic plan directly from the restored source catalogs.
+It binds exact column metadata and observed LOB maxima, primary/composite keys,
+nullable unique constraints, indexes and includes, identities, foreign keys,
+checks, defaults, generated columns, and lossless type mappings. Unsupported
+types, untrusted constraints, or tables without a proven total ordering fail
+closed; a checked-in or hand-maintained schema plan is not accepted as fresh.
+
 `PreflightService.Validate` accepts an in-memory `BackupReceipt` and
 `MigrationPlan`. A valid receipt must:
 

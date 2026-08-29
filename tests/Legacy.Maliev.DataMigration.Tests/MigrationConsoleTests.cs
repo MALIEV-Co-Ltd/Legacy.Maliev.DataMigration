@@ -53,6 +53,26 @@ public sealed class MigrationConsoleTests : IDisposable
         Assert.Equal(string.Empty, error.ToString());
     }
 
+    [Fact]
+    public async Task RunAsync_Plan_MissingSourceReferenceFailsWithoutPrintingConfiguration()
+    {
+        _ = Directory.CreateDirectory(_root);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            plan = new { outputPath = Path.Combine(_root, "plan.json"), sourceCommitSha = new string('a', 40) },
+        }, JsonOptions));
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["plan", "--config", configPath], output, error, _ => null, CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal("plan_source_reference_missing" + Environment.NewLine, error.ToString());
+        Assert.Equal(string.Empty, output.ToString());
+    }
+
     private static JsonSerializerOptions JsonOptions { get; } = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
     public void Dispose()

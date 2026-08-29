@@ -125,6 +125,22 @@ public sealed class SqlServerMigrationSourceIntegrationTests
         Assert.Equal(6L * 1024 * 1024, Assert.Single(childInventory.Columns, column => column.Column == "LargeText").MaxObservedDataLength);
         Assert.Equal(5L * 1024 * 1024, Assert.Single(childInventory.Columns, column => column.Column == "LargeBinary").MaxObservedDataLength);
 
+        DatabaseSchemaPlan generatedPlan = await source.GenerateDatabasePlanAsync(database, CancellationToken.None);
+        TableCopyPlan generatedChild = Assert.Single(generatedPlan.Tables, table => table.SourceTable == "Child");
+        Assert.Equal(["Id"], generatedChild.PrimaryKey!.Columns);
+        Assert.Equal(["TenantId", "Id"], Assert.Single(generatedPlan.Tables, table => table.SourceTable == "Parent").PrimaryKey!.Columns);
+        Assert.Equal("text", generatedChild.ColumnTypes["LocalTime"]);
+        Assert.Equal("text", generatedChild.ColumnTypes["OffsetTime"]);
+        Assert.Equal(new IdentityCopyPlan("Id", 100, 5, 100, true), Assert.Single(generatedChild.Identities));
+        IndexCopyPlan generatedIndex = Assert.Single(generatedChild.Indexes, index => index.Name == "IX_Child_Amount");
+        Assert.Equal(["Amount"], generatedIndex.DescendingColumns);
+        Assert.Equal(["ThaiName"], generatedIndex.IncludedColumns);
+        ForeignKeyCopyPlan generatedForeignKey = Assert.Single(generatedChild.ForeignKeys);
+        Assert.Equal(["TenantId", "ParentId"], generatedForeignKey.Columns);
+        Assert.Equal(["TenantId", "Id"], generatedForeignKey.ReferencedColumns);
+        Assert.Equal(ReferentialAction.Cascade, generatedForeignKey.OnDelete);
+        Assert.Equal(PostgreSqlSchemaFingerprint.ComputeExpected(generatedPlan), generatedPlan.TargetSchemaSha256);
+
         var table = new TableCopyPlan(
             "sales", "Child", "sales", "child",
             ["Id", "TenantId", "ParentId", "ThaiName", "Amount", "LocalTime", "OffsetTime", "LargeText", "LargeBinary"],

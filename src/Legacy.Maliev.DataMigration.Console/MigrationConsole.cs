@@ -7,6 +7,7 @@ namespace Legacy.Maliev.DataMigration.Console;
 public static class MigrationConsole
 {
     private const string SigningKeyEnvironmentVariable = "LEGACY_MIGRATION_RECEIPT_SIGNING_KEY_FILE";
+    private const string SqlServerConnectionEnvironmentVariable = "LEGACY_MIGRATION_SQLSERVER_CONNECTION";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -27,15 +28,20 @@ public static class MigrationConsole
         try
         {
             ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
-            if (!string.Equals(invocation.Command, "receipt", StringComparison.Ordinal))
+            switch (invocation.Command)
             {
-                await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
-                return 2;
+                case "receipt":
+                    await ProduceReceiptAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("receipt_complete").ConfigureAwait(false);
+                    return 0;
+                case "plan":
+                    await ProducePlanAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("plan_complete").ConfigureAwait(false);
+                    return 0;
+                default:
+                    await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
+                    return 2;
             }
-
-            await ProduceReceiptAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
-            await output.WriteLineAsync("receipt_complete").ConfigureAwait(false);
-            return 0;
         }
         catch (CommandLineException exception)
         {
@@ -52,6 +58,26 @@ public static class MigrationConsole
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 65;
         }
+    }
+
+    private static async Task ProducePlanAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
+            .ConfigureAwait(false);
+        PlanCommandConfiguration plan = configuration.Plan ??
+            throw new MigrationConsoleException("plan_configuration_missing", "Plan configuration is required.");
+        string sourceConnection = getEnvironmentVariable(SqlServerConnectionEnvironmentVariable) ??
+            throw new MigrationConsoleException("plan_source_reference_missing", "The source connection reference is required.");
+        await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(sourceConnection));
+        FreshSchemaPlan schemaPlan = await FreshSchemaPlanProducer.ProduceAsync(
+            source,
+            plan.SourceCommitSha,
+            DateTimeOffset.UtcNow,
+            cancellationToken).ConfigureAwait(false);
+        await WriteNewJsonAsync(plan.OutputPath, schemaPlan, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task ProduceReceiptAsync(
@@ -120,9 +146,13 @@ public static class MigrationConsole
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private sealed record MigrationConsoleConfiguration(ReceiptCommandConfiguration? Receipt);
+    private sealed record MigrationConsoleConfiguration(
+        ReceiptCommandConfiguration? Receipt = null,
+        PlanCommandConfiguration? Plan = null);
 
     private sealed record ReceiptCommandConfiguration(string BackupStatePath, string OutputPath, string KeyId);
+
+    private sealed record PlanCommandConfiguration(string OutputPath, string SourceCommitSha);
 
     private sealed record BackupStateDocument(IReadOnlyList<VerifiedBackupStateArtifact> Artifacts);
 }

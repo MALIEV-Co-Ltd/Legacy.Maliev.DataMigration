@@ -11,7 +11,7 @@ namespace Legacy.Maliev.DataMigration;
 
 public sealed record SqlServerMigrationSourceOptions(string ConnectionString);
 
-public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrationSource, IAsyncDisposable
+public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrationSource, IDatabaseSchemaPlanSource, IAsyncDisposable
 {
     private readonly SqlServerMigrationSourceOptions _options;
     private readonly ConcurrentDictionary<string, SnapshotLease> _snapshots = new(StringComparer.Ordinal);
