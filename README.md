@@ -103,6 +103,14 @@ re-reads all 25 local backup files and binds their approved GCS object names,
 immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
 Signing keys are externally supplied and are never stored in this repository.
 
+`scripts/restore-verified-sqlserver-backups.ps1` restores only the exact signed
+inventory into a disposable SQL Server 2022 instance. It runs `RESTORE
+VERIFYONLY`, discovers every logical file with `RESTORE FILELISTONLY`, supplies
+an explicit `WITH MOVE`, refuses existing targets, and makes every restored
+source database read-only. `scripts/invoke-shadow-migration.ps1` then runs the
+five gates in order and refuses to start unless `LEGACY_DEPLOY_ENABLED=false`.
+Neither script contains deployment, GKE, GCS mutation, or Secret Manager logic.
+
 `PreflightService.Validate` accepts an in-memory `BackupReceipt` and
 `MigrationPlan`. A valid receipt must:
 
