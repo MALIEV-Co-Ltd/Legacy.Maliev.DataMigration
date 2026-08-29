@@ -334,7 +334,8 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
                 }
                 else
                 {
-                    values.Add(column, CreateStreamingLob(lease, table, column, values));
+                    long expectedByteLength = Convert.ToInt64(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture);
+                    values.Add(column, CreateStreamingLob(lease, table, column, expectedByteLength, values));
                 }
             }
 
@@ -451,14 +452,21 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             throw new MigrationExecutionException("streaming_lob_key_invalid", "A streamed value requires a materialized deterministic row key.");
         }
         string[] materialized = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
-        string[] nullProbes = [.. table.OrderedColumns.Where(column => IsLargeValueType(table.SourceColumnTypes[column]))
-            .Select(column => $"DATALENGTH({QuoteIdentifier(column)})")];
-        return $"SELECT {string.Join(", ", materialized.Concat(nullProbes))} " +
+        string[] lengthProbes = [.. table.OrderedColumns.Where(column => IsLargeValueType(table.SourceColumnTypes[column]))
+            .Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
+                ? $"DATALENGTH({QuoteIdentifier(column)})"
+                : $"DATALENGTH(CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
+        return $"SELECT {string.Join(", ", materialized.Concat(lengthProbes))} " +
             $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)} " +
             $"ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
     }
 
-    private static StreamingLob CreateStreamingLob(SnapshotLease lease, TableCopyPlan table, string column, Dictionary<string, object?> values)
+    private static StreamingLob CreateStreamingLob(
+        SnapshotLease lease,
+        TableCopyPlan table,
+        string column,
+        long expectedByteLength,
+        Dictionary<string, object?> values)
     {
         IReadOnlyList<string> keys = table.PrimaryKey?.Columns ?? table.OrderByColumns;
         object?[] keyValues = [.. keys.Select(key => values[key])];
@@ -466,7 +474,7 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             keyValues[index] is null or DBNull ? $"{QuoteIdentifier(key)} IS NULL" : $"{QuoteIdentifier(key)} = @key{index}"));
         string sql = $"SELECT {QuoteIdentifier(column)} FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)} WHERE {predicate};";
         bool binary = table.SourceColumnTypes[column] is "varbinary(max)" or "image";
-        return new StreamingLob(binary ? StreamingLobKind.Binary : StreamingLobKind.Text, async (destination, cancellationToken) =>
+        return new StreamingLob(binary ? StreamingLobKind.Binary : StreamingLobKind.Text, expectedByteLength, async (destination, cancellationToken) =>
         {
             await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction) { CommandTimeout = 0 };
             for (var index = 0; index < keys.Count; index++)

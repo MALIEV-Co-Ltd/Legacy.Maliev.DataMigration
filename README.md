@@ -26,10 +26,12 @@ nothing in this repository discovers or projects production credentials.
 - The runner, not either adapter, owns and exhausts source enumeration in
   batches capped at both 512 rows and 4 MiB of estimated materialized payload.
   SQL Server large-value columns are preflighted with signed `DATALENGTH`
-  evidence and streamed sequentially without plaintext filesystem spooling;
-  PostgreSQL receives bounded chunks through transaction-scoped large objects,
-  applies each value once, and unlinks staging before completion without
-  materializing the full value. PostgreSQL acknowledges each binary `COPY` batch
+  evidence and streamed sequentially without plaintext filesystem artifacts or
+  auxiliary database staging. PostgreSQL binary `COPY` pulls each signed-length
+  field through a bounded in-memory pipe without client-side whole-value
+  materialization; the final PostgreSQL varlena/WAL representation is capped by
+  the signed source maximum and a conservative 1,000,000,000-byte target limit.
+  PostgreSQL acknowledges each binary `COPY` batch
   inside one whole-database transaction. Commit is refused until the
   independently re-read schema and every planned table have been inspected.
 - The persistent PostgreSQL journal atomically acquires run IDs and retains

@@ -64,14 +64,14 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
             var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
             DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
             string largeText = new('ก', 3 * 1024 * 1024);
-            var lob = new StreamingLob(StreamingLobKind.Text, async (destination, cancellationToken) =>
+            var lob = new StreamingLob(StreamingLobKind.Text, 9L * 1024 * 1024, async (destination, cancellationToken) =>
             {
                 await using var writer = new StreamWriter(destination, new UTF8Encoding(false, true), 32 * 1024, leaveOpen: true);
                 await writer.WriteAsync(largeText.AsMemory(), cancellationToken);
                 await writer.FlushAsync(cancellationToken);
             });
             byte[] largeBinary = Enumerable.Range(0, 5 * 1024 * 1024).Select(index => (byte)(index % 251)).ToArray();
-            var binaryLob = new StreamingLob(StreamingLobKind.Binary, async (destination, cancellationToken) =>
+            var binaryLob = new StreamingLob(StreamingLobKind.Binary, largeBinary.LongLength, async (destination, cancellationToken) =>
             {
                 await using var source = new MemoryStream(largeBinary, writable: false);
                 await source.CopyToAsync(destination, 64 * 1024, cancellationToken);
@@ -89,6 +89,166 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
             TableReconciliationEvidence evidence = await transaction.InspectTableAsync(table, CancellationToken.None);
             Assert.Equal(expected, evidence.ContentSha256);
             await transaction.RollbackAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task CopyBatch_LaterStreamingColumnFailure_RollsBackWithoutRowsOrLargeObjects()
+    {
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
+        try
+        {
+            TableCopyPlan table = CreateStreamingTablePlan();
+            var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
+            DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+            var first = new StreamingLob(StreamingLobKind.Text, 4, async (destination, cancellationToken) =>
+            {
+                await destination.WriteAsync("safe"u8.ToArray(), cancellationToken);
+            });
+            var second = new StreamingLob(StreamingLobKind.Binary, 4, async (destination, cancellationToken) =>
+            {
+                await destination.WriteAsync(new byte[] { 1, 2 }, cancellationToken);
+                throw new InvalidOperationException("later source column failed");
+            });
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+
+            _ = await Assert.ThrowsAsync<InvalidOperationException>(() => transaction.CopyBatchAsync(
+                table,
+                [new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["Name"] = first, ["Payload"] = second })],
+                CancellationToken.None));
+            await transaction.RollbackAsync(CancellationToken.None);
+
+            Assert.True(first.IsConsumed);
+            Assert.False(second.IsConsumed);
+            await AssertShadowHasNoMigrationArtifactsAsync(shadow);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task CopyBatch_QueryCancellation_RollsBackWithoutRowsOrLargeObjects()
+    {
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
+        try
+        {
+            TableCopyPlan table = CreateStreamingTablePlan();
+            var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
+            DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+            var producerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var lob = new StreamingLob(StreamingLobKind.Text, 9L * 1024 * 1024, async (destination, cancellationToken) =>
+            {
+                producerStarted.SetResult();
+                byte[] chunk = new byte[64 * 1024];
+                while (true)
+                {
+                    await destination.WriteAsync(chunk, cancellationToken);
+                }
+            });
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+            using var cancellation = new CancellationTokenSource();
+            Task<long> copy = transaction.CopyBatchAsync(
+                table,
+                [new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["Name"] = lob, ["Payload"] = null })],
+                cancellation.Token);
+            await producerStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await cancellation.CancelAsync();
+
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => copy);
+            await transaction.RollbackAsync(CancellationToken.None);
+
+            Assert.False(lob.IsConsumed);
+            await AssertShadowHasNoMigrationArtifactsAsync(shadow);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task CopyBatch_SuccessThenTransactionRollback_PersistsNoRowsOrLargeObjects()
+    {
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
+        try
+        {
+            TableCopyPlan table = CreateStreamingTablePlan();
+            var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
+            DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+            var text = new StreamingLob(StreamingLobKind.Text, 4, async (destination, cancellationToken) =>
+                await destination.WriteAsync("safe"u8.ToArray(), cancellationToken));
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+            Assert.Equal(1, await transaction.CopyBatchAsync(
+                table,
+                [new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["Name"] = text, ["Payload"] = null })],
+                CancellationToken.None));
+            await transaction.RollbackAsync(CancellationToken.None);
+
+            await AssertShadowHasNoMigrationArtifactsAsync(shadow);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task CopyBatch_UnsafeSignedTextMaximum_FailsBeforeOpeningProducer()
+    {
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
+        try
+        {
+            TableCopyPlan table = CreateStreamingTablePlan() with
+            {
+                SourceColumns =
+                [
+                    new("Id", "int", Hash("Id:int"), null),
+                    new("Name", "nvarchar(max)", Hash("Name:nvarchar(max)"), 500_000_001),
+                    new("Payload", "varbinary(max)", Hash("Payload:varbinary(max)"), 10 * 1024 * 1024),
+                ],
+            };
+            var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
+            DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+            var opened = false;
+            var lob = new StreamingLob(StreamingLobKind.Text, 4, async (destination, cancellationToken) =>
+            {
+                opened = true;
+                await destination.WriteAsync("safe"u8.ToArray(), cancellationToken);
+            });
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+
+            MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                transaction.CopyBatchAsync(
+                    table,
+                    [new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["Name"] = lob, ["Payload"] = null })],
+                    CancellationToken.None));
+            await transaction.RollbackAsync(CancellationToken.None);
+
+            Assert.Equal("streaming_lob_target_limit_invalid", exception.Code);
+            Assert.False(opened);
+            await AssertShadowHasNoMigrationArtifactsAsync(shadow);
         }
         finally
         {
@@ -366,6 +526,49 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
             NullableColumns = ["Name"],
             PrimaryKey = new PrimaryKeyCopyPlan("PK_orders", ["Id"]),
         };
+    }
+
+    private static TableCopyPlan CreateStreamingTablePlan()
+    {
+        return new TableCopyPlan("dbo", "Order", "public", "orders", ["Id", "Name", "Payload"], ["Id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "int",
+                ["Name"] = "nvarchar(max)",
+                ["Payload"] = "varbinary(max)",
+            },
+            ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "integer",
+                ["Name"] = "text",
+                ["Payload"] = "bytea",
+            },
+            NullableColumns = ["Name", "Payload"],
+            PrimaryKey = new PrimaryKeyCopyPlan("PK_orders", ["Id"]),
+            SourceColumns =
+            [
+                new("Id", "int", Hash("Id:int"), null),
+                new("Name", "nvarchar(max)", Hash("Name:nvarchar(max)"), 10 * 1024 * 1024),
+                new("Payload", "varbinary(max)", Hash("Payload:varbinary(max)"), 10 * 1024 * 1024),
+            ],
+        };
+    }
+
+    private async Task AssertShadowHasNoMigrationArtifactsAsync(ShadowDatabase shadow)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Database = shadow.Name };
+        await using var connection = new NpgsqlConnection(builder.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT count(*) FROM pg_largeobject_metadata; SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%';",
+            connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(0, reader.GetInt64(0));
+        Assert.True(await reader.NextResultAsync());
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(0, reader.GetInt64(0));
     }
 
     private static IReadOnlyList<MigrationRow> Rows()

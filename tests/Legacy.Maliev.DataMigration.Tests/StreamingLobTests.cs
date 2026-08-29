@@ -5,6 +5,20 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class StreamingLobTests
 {
     [Fact]
+    public void ProductionStreamingPath_HasNoFilesystemOrPostgreSqlLargeObjectStaging()
+    {
+        string source = File.ReadAllText(SourcePath("StreamingLob.cs")) +
+            File.ReadAllText(SourcePath("PostgreSqlShadowTarget.cs"));
+
+        Assert.DoesNotContain("Path.GetTempPath", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("FileStream", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("lo_create", source, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("lowrite", source, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("lo_get", source, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("NpgsqlLargeObject", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ConsumeAsync_StreamsMoreThanFourMiBWithoutFilesystemSpooling()
     {
         byte[] payload = Encoding.UTF8.GetBytes(new string('ก', 3 * 1024 * 1024));
