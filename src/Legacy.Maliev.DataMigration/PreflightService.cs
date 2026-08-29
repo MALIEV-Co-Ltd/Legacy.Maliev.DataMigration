@@ -7,14 +7,19 @@ namespace Legacy.Maliev.DataMigration;
 public sealed partial class PreflightService
 {
     private readonly IExternalCommandExecutor _externalCommandExecutor;
+    private readonly IReceiptAttestationTrustStore _attestationTrustStore;
 
     public const string ReceiptSchemaVersion = "1.0";
     public const string TargetSchemaVersion = "1.0";
 
-    public PreflightService(IExternalCommandExecutor externalCommandExecutor)
+    public PreflightService(
+        IExternalCommandExecutor externalCommandExecutor,
+        IReceiptAttestationTrustStore attestationTrustStore)
     {
         ArgumentNullException.ThrowIfNull(externalCommandExecutor);
+        ArgumentNullException.ThrowIfNull(attestationTrustStore);
         _externalCommandExecutor = externalCommandExecutor;
+        _attestationTrustStore = attestationTrustStore;
     }
 
     public PreflightResult Validate(
@@ -30,6 +35,7 @@ public sealed partial class PreflightService
         List<PreflightError> errors = [];
         ValidateReceipt(receipt, nowUtc, maximumReceiptAge, errors);
         ValidatePlan(plan, errors);
+        ValidateAttestation(receipt, errors);
         return new PreflightResult(errors);
     }
 
@@ -59,9 +65,10 @@ public sealed partial class PreflightService
             errors.Add(new("inventory_hash_mismatch", "The database disposition inventory differs from the approved contract."));
         }
 
-        IReadOnlyList<BackupArtifact> artifacts = receipt.Artifacts ?? [];
-        string[] actualDatabases = artifacts.Select(artifact => artifact.Database).ToArray();
+        IReadOnlyList<BackupArtifact?> artifacts = receipt.Artifacts ?? [];
+        string?[] actualDatabases = artifacts.Select(artifact => artifact?.Database).ToArray();
         if (actualDatabases.Length != DatabaseInventory.ActiveDatabases.Count ||
+            actualDatabases.Any(string.IsNullOrWhiteSpace) ||
             actualDatabases.Distinct(StringComparer.Ordinal).Count() != actualDatabases.Length ||
             !actualDatabases.OrderBy(database => database, StringComparer.Ordinal)
                 .SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
@@ -69,29 +76,43 @@ public sealed partial class PreflightService
             errors.Add(new("database_coverage_mismatch", "The receipt must cover each of the 21 active databases exactly once."));
         }
 
-        foreach (BackupArtifact artifact in artifacts)
+        foreach (BackupArtifact? artifact in artifacts)
         {
+            if (artifact is null)
+            {
+                errors.Add(new("backup_artifact_missing", "The receipt contains a null backup artifact."));
+                continue;
+            }
+
             if (!string.Equals(artifact.BackupType, "Full", StringComparison.Ordinal))
             {
                 errors.Add(new("backup_type_not_full", $"{artifact.Database} is not a full backup."));
             }
 
-            if (!FullBackupFileName().IsMatch(artifact.FileName) ||
+            bool hashesAreValid = artifact.Sha256 is not null &&
+                artifact.ObservedSha256 is not null &&
+                Sha256().IsMatch(artifact.Sha256) &&
+                Sha256().IsMatch(artifact.ObservedSha256);
+            if (string.IsNullOrWhiteSpace(artifact.Database) ||
+                artifact.FileName is null ||
+                !FullBackupFileName().IsMatch(artifact.FileName) ||
                 artifact.ByteLength <= 0 ||
-                !Sha256().IsMatch(artifact.Sha256) ||
-                !Sha256().IsMatch(artifact.ObservedSha256))
+                !hashesAreValid)
             {
                 errors.Add(new("backup_artifact_invalid", $"{artifact.Database} backup evidence is malformed."));
             }
 
-            if (!FixedTimeEquals(artifact.ObservedSha256, artifact.Sha256))
+            if (hashesAreValid && !FixedTimeEquals(artifact.ObservedSha256, artifact.Sha256))
             {
                 errors.Add(new("backup_hash_mismatch", $"{artifact.Database} observed SHA-256 does not match its receipt."));
             }
         }
 
-        string computedManifestHash = ComputeManifestSha256(artifacts);
-        if (!FixedTimeEquals(receipt.ManifestSha256, computedManifestHash))
+        if (!TryComputeManifestSha256(artifacts, out string computedManifestHash))
+        {
+            errors.Add(new("manifest_payload_invalid", "The backup artifact manifest cannot be canonicalized."));
+        }
+        else if (!FixedTimeEquals(receipt.ManifestSha256, computedManifestHash))
         {
             errors.Add(new("manifest_hash_mismatch", "The backup artifact manifest SHA-256 does not match its contents."));
         }
@@ -109,12 +130,16 @@ public sealed partial class PreflightService
             errors.Add(new("target_writes_forbidden", "Target writes are forbidden during preflight."));
         }
 
-        if (plan.RequestedExternalActions is { Count: > 0 })
+        if (plan.RequestedExternalActions is null)
+        {
+            errors.Add(new("external_actions_missing", "The external action list is required and must be empty."));
+        }
+        else if (plan.RequestedExternalActions.Count > 0)
         {
             errors.Add(new("external_actions_forbidden", "External actions are forbidden during preflight."));
         }
 
-        Dictionary<string, string> versions = plan.TargetSchemaVersions ?? new(StringComparer.Ordinal);
+        Dictionary<string, string?> versions = plan.TargetSchemaVersions ?? new(StringComparer.Ordinal);
         IOrderedEnumerable<string> databases = versions.Keys.OrderBy(database => database, StringComparer.Ordinal);
         if (!databases.SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
         {
@@ -127,13 +152,76 @@ public sealed partial class PreflightService
         }
     }
 
-    public static string ComputeManifestSha256(IEnumerable<BackupArtifact> artifacts)
+    private void ValidateAttestation(BackupReceipt receipt, List<PreflightError> errors)
     {
-        ArgumentNullException.ThrowIfNull(artifacts);
+        bool hasKnownKey = false;
+        if (string.IsNullOrWhiteSpace(receipt.AttestationKeyId))
+        {
+            errors.Add(new("attestation_key_missing", "The producer attestation key identifier is required."));
+        }
+        else if (!_attestationTrustStore.ContainsKey(receipt.AttestationKeyId))
+        {
+            errors.Add(new("attestation_key_unknown", "The producer attestation key is not trusted."));
+        }
+        else
+        {
+            hasKnownKey = true;
+        }
+
+        byte[]? signature = null;
+        if (string.IsNullOrWhiteSpace(receipt.AttestationSignature))
+        {
+            errors.Add(new("attestation_signature_missing", "The producer attestation signature is required."));
+        }
+        else if (receipt.AttestationSignature.Length > 4096)
+        {
+            errors.Add(new("attestation_signature_invalid", "The producer attestation signature is invalid."));
+        }
+        else
+        {
+            try
+            {
+                signature = Convert.FromBase64String(receipt.AttestationSignature);
+            }
+            catch (FormatException)
+            {
+                errors.Add(new("attestation_signature_invalid", "The producer attestation signature is invalid."));
+            }
+        }
+
+        if (!ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload))
+        {
+            errors.Add(new("attestation_payload_invalid", "The receipt cannot be canonicalized for producer attestation."));
+            return;
+        }
+
+        if (hasKnownKey && signature is not null &&
+            !_attestationTrustStore.Verify(receipt.AttestationKeyId!, payload, signature))
+        {
+            errors.Add(new("attestation_signature_invalid", "The producer attestation signature is invalid."));
+        }
+    }
+
+    private static bool TryComputeManifestSha256(
+        IEnumerable<BackupArtifact?> artifacts,
+        out string manifestSha256)
+    {
+        manifestSha256 = string.Empty;
+        BackupArtifact?[] artifactArray = artifacts.ToArray();
+        if (artifactArray.Any(artifact => artifact is null ||
+            artifact.Database is null ||
+            artifact.BackupType is null ||
+            artifact.FileName is null ||
+            artifact.Sha256 is null ||
+            artifact.ObservedSha256 is null))
+        {
+            return false;
+        }
 
         string canonical = string.Join(
             '\n',
-            artifacts
+            artifactArray
+                .Select(artifact => artifact!)
                 .OrderBy(artifact => artifact.Database, StringComparer.Ordinal)
                 .Select(artifact => string.Join(
                     '|',
@@ -141,9 +229,10 @@ public sealed partial class PreflightService
                     artifact.BackupType,
                     artifact.FileName,
                     artifact.ByteLength,
-                    artifact.Sha256.ToLowerInvariant(),
-                    artifact.ObservedSha256.ToLowerInvariant())));
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+                    artifact.Sha256!.ToLowerInvariant(),
+                    artifact.ObservedSha256!.ToLowerInvariant())));
+        manifestSha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+        return true;
     }
 
     private static bool FixedTimeEquals(string? actual, string? expected)

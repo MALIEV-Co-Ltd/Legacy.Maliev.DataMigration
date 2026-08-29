@@ -14,6 +14,12 @@ read from, or write to a database, cluster, cloud service, or secret store.
 - Target writes and requested external actions are rejected during preflight.
 - The preflight service never invokes its injected external-command sentinel;
   tests verify this for both valid and rejected inputs.
+- Every accepted receipt requires a valid ECDSA P-256 producer attestation. The
+  signature binds the canonical receipt schema, capture time, inventory and
+  manifest hashes, trusted key identifier, and every database artifact name,
+  filename, byte count, declared hash, and independently observed hash.
+- Trusted producer public keys are injected outside the receipt. A receipt
+  cannot add or select a caller-controlled public key.
 - This repository contains no credentials, connection strings, endpoints,
   production backup metadata, or migrated customer data.
 
@@ -53,7 +59,8 @@ No executable migration logic was copied from those files.
 - provide positive byte counts and well-formed declared and independently
   observed SHA-256 values;
 - have matching declared and observed artifact hashes; and
-- have a manifest SHA-256 that recomputes from the canonical artifact list.
+- have a manifest SHA-256 that recomputes from the canonical artifact list; and
+- carry a valid signature from a configured trusted producer key.
 
 A valid plan must be `plan-only`, disallow target writes, request no external
 actions, cover all 21 target schema versions exactly, and use only target schema
@@ -76,11 +83,13 @@ they must use PostgreSQL Testcontainers rather than SQLite or an in-memory provi
 
 ## Remaining release blockers
 
-This slice does not make daily production synchronization safe. Before any data
-copy is allowed, the program still needs:
+This slice does not implement or approve a backup producer and does not make
+daily production synchronization safe. Before any data copy is allowed, the
+program still needs:
 
-1. a current, verified full-backup producer receipt with independently observed
-   hashes and an exact 21-database disposition;
+1. an independently reviewed producer that creates current verified full-backup
+   receipts, observes hashes itself, protects its private signing key, and emits
+   the exact 21-database disposition;
 2. an approved legacy-schema to current EF Core PostgreSQL schema mapping;
 3. a bounded source write freeze or a reviewed change-capture mechanism (the
    legacy source does not currently provide a proven complete daily delta);

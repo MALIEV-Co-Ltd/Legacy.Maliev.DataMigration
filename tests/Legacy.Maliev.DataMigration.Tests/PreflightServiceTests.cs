@@ -6,6 +6,8 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class PreflightServiceTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 29, 12, 0, 0, TimeSpan.Zero);
+    private static readonly ECDsa ProducerSigningKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    private const string ProducerKeyId = "backup-producer-1";
 
     [Fact]
     public void Inventory_ApprovedContract_ContainsExactlyTwentyOneActiveDatabases()
@@ -20,7 +22,7 @@ public sealed class PreflightServiceTests
     public void Validate_ApprovedPlanAndFreshFullReceipt_ReturnsValidPlanOnlyResult()
     {
         RecordingExternalCommandExecutor executor = new();
-        var result = new PreflightService(executor).Validate(
+        var result = CreateService(executor).Validate(
             CreateReceipt(),
             CreatePlan(),
             Now,
@@ -37,10 +39,10 @@ public sealed class PreflightServiceTests
         RecordingExternalCommandExecutor executor = new();
         var receipt = CreateReceipt(artifacts =>
         {
-            artifacts[0] = artifacts[0] with { BackupType = "Differential" };
+            artifacts[0] = artifacts[0]! with { BackupType = "Differential" };
         });
 
-        var result = new PreflightService(executor).Validate(receipt, CreatePlan(), Now, TimeSpan.FromHours(26));
+        var result = CreateService(executor).Validate(receipt, CreatePlan(), Now, TimeSpan.FromHours(26));
 
         Assert.Contains(result.Errors, error => error.Code == "backup_type_not_full");
         Assert.Equal(0, executor.InvocationCount);
@@ -71,7 +73,7 @@ public sealed class PreflightServiceTests
     {
         var receipt = CreateReceipt(artifacts =>
         {
-            artifacts[0] = artifacts[0] with { ObservedSha256 = new string('f', 64) };
+            artifacts[0] = artifacts[0]! with { ObservedSha256 = new string('f', 64) };
         });
 
         var result = CreateService().Validate(receipt, CreatePlan(), Now, TimeSpan.FromHours(26));
@@ -113,7 +115,7 @@ public sealed class PreflightServiceTests
     public void Validate_UnknownTargetSchemaVersion_RejectsPlan()
     {
         var plan = CreatePlan();
-        plan.TargetSchemaVersions[DatabaseInventory.ActiveDatabases[0]] = "future-version";
+        plan.TargetSchemaVersions![DatabaseInventory.ActiveDatabases[0]] = "future-version";
 
         var result = CreateService().Validate(CreateReceipt(), plan, Now, TimeSpan.FromHours(26));
 
@@ -126,7 +128,7 @@ public sealed class PreflightServiceTests
         RecordingExternalCommandExecutor executor = new();
         var plan = CreatePlan() with { AllowTargetWrites = true };
 
-        var result = new PreflightService(executor).Validate(CreateReceipt(), plan, Now, TimeSpan.FromHours(26));
+        var result = CreateService(executor).Validate(CreateReceipt(), plan, Now, TimeSpan.FromHours(26));
 
         Assert.Contains(result.Errors, error => error.Code == "target_writes_forbidden");
         Assert.Equal(0, executor.InvocationCount);
@@ -138,28 +140,162 @@ public sealed class PreflightServiceTests
         RecordingExternalCommandExecutor executor = new();
         var plan = CreatePlan() with { RequestedExternalActions = ["kubectl", "psql"] };
 
-        var result = new PreflightService(executor).Validate(CreateReceipt(), plan, Now, TimeSpan.FromHours(26));
+        var result = CreateService(executor).Validate(CreateReceipt(), plan, Now, TimeSpan.FromHours(26));
 
         Assert.Contains(result.Errors, error => error.Code == "external_actions_forbidden");
         Assert.Equal(0, executor.InvocationCount);
     }
 
-    private static PreflightService CreateService()
+    [Fact]
+    public void Validate_UnknownAttestationKey_RejectsReceipt()
     {
-        return new(new RecordingExternalCommandExecutor());
+        BackupReceipt receipt = CreateReceipt() with { AttestationKeyId = "caller-selected-key" };
+
+        PreflightResult result = CreateService().Validate(receipt, CreatePlan(), Now, TimeSpan.FromHours(26));
+
+        Assert.Contains(result.Errors, error => error.Code == "attestation_key_unknown");
     }
 
-    private static BackupReceipt CreateReceipt(Action<List<BackupArtifact>>? mutate = null)
+    [Fact]
+    public void Validate_MissingAttestationSignature_RejectsReceipt()
     {
-        List<BackupArtifact> artifacts = [.. DatabaseInventory.ActiveDatabases.Select(CreateArtifact)];
+        BackupReceipt receipt = CreateReceipt() with { AttestationSignature = null };
+
+        PreflightResult result = CreateService().Validate(receipt, CreatePlan(), Now, TimeSpan.FromHours(26));
+
+        Assert.Contains(result.Errors, error => error.Code == "attestation_signature_missing");
+    }
+
+    [Fact]
+    public void Validate_ModifiedAttestedField_RejectsReceipt()
+    {
+        BackupReceipt receipt = CreateReceipt();
+        List<BackupArtifact?> artifacts = [.. receipt.Artifacts!];
+        artifacts[0] = artifacts[0]! with { ByteLength = artifacts[0]!.ByteLength + 1 };
+        receipt = receipt with { Artifacts = artifacts };
+
+        PreflightResult result = CreateService().Validate(receipt, CreatePlan(), Now, TimeSpan.FromHours(26));
+
+        Assert.Contains(result.Errors, error => error.Code == "attestation_signature_invalid");
+    }
+
+    [Fact]
+    public void Validate_CallerSignedReceiptWithUntrustedPrivateKey_RejectsReceipt()
+    {
+        BackupReceipt receipt = CreateReceipt();
+        Assert.True(ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload));
+        using ECDsa attackerKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        receipt = receipt with
+        {
+            AttestationSignature = Convert.ToBase64String(
+                attackerKey.SignData(payload, HashAlgorithmName.SHA256)),
+        };
+
+        PreflightResult result = CreateService().Validate(receipt, CreatePlan(), Now, TimeSpan.FromHours(26));
+
+        Assert.Contains(result.Errors, error => error.Code == "attestation_signature_invalid");
+    }
+
+    [Fact]
+    public void Validate_NullArtifactEntry_ReturnsStableErrorWithoutThrowing()
+    {
+        BackupReceipt receipt = CreateReceipt();
+        List<BackupArtifact?> artifacts = [.. receipt.Artifacts!];
+        artifacts[0] = null;
+        receipt = receipt with { Artifacts = artifacts };
+
+        PreflightResult result = CreateService().Validate(receipt, CreatePlan(), Now, TimeSpan.FromHours(26));
+
+        Assert.Contains(result.Errors, error => error.Code == "backup_artifact_missing");
+    }
+
+    [Fact]
+    public void Validate_NullReceiptFields_ReturnsStableErrorsWithoutThrowing()
+    {
+        BackupReceipt receipt = CreateReceipt() with
+        {
+            SchemaVersion = null,
+            DatabaseInventorySha256 = null,
+            ManifestSha256 = null,
+            Artifacts = null,
+            AttestationKeyId = null,
+            AttestationSignature = null,
+        };
+
+        PreflightResult result = CreateService().Validate(receipt, CreatePlan(), Now, TimeSpan.FromHours(26));
+
+        Assert.Contains(result.Errors, error => error.Code == "receipt_schema_version_unknown");
+        Assert.Contains(result.Errors, error => error.Code == "database_coverage_mismatch");
+        Assert.Contains(result.Errors, error => error.Code == "attestation_key_missing");
+        Assert.Contains(result.Errors, error => error.Code == "attestation_signature_missing");
+    }
+
+    [Fact]
+    public void Validate_NullArtifactFields_ReturnsStableErrorWithoutThrowing()
+    {
+        BackupReceipt receipt = CreateReceipt();
+        List<BackupArtifact?> artifacts = [.. receipt.Artifacts!];
+        artifacts[0] = artifacts[0]! with
+        {
+            Database = null,
+            BackupType = null,
+            FileName = null,
+            Sha256 = null,
+            ObservedSha256 = null,
+        };
+        receipt = receipt with { Artifacts = artifacts };
+
+        PreflightResult result = CreateService().Validate(receipt, CreatePlan(), Now, TimeSpan.FromHours(26));
+
+        Assert.Contains(result.Errors, error => error.Code == "backup_artifact_invalid");
+    }
+
+    [Fact]
+    public void Validate_NullPlanCollections_ReturnsStableErrorsWithoutThrowing()
+    {
+        MigrationPlan plan = CreatePlan() with
+        {
+            Mode = null,
+            TargetSchemaVersions = null,
+            RequestedExternalActions = null,
+        };
+
+        PreflightResult result = CreateService().Validate(CreateReceipt(), plan, Now, TimeSpan.FromHours(26));
+
+        Assert.Contains(result.Errors, error => error.Code == "mode_not_plan_only");
+        Assert.Contains(result.Errors, error => error.Code == "target_schema_coverage_mismatch");
+    }
+
+    private static PreflightService CreateService()
+    {
+        return CreateService(new RecordingExternalCommandExecutor());
+    }
+
+    private static PreflightService CreateService(IExternalCommandExecutor executor)
+    {
+        TrustedAttestationKey trustedKey = new(ProducerKeyId, ProducerSigningKey.ExportSubjectPublicKeyInfo());
+        return new(
+            executor,
+            new ReceiptAttestationTrustStore([trustedKey]));
+    }
+
+    private static BackupReceipt CreateReceipt(Action<List<BackupArtifact?>>? mutate = null)
+    {
+        List<BackupArtifact?> artifacts = [.. DatabaseInventory.ActiveDatabases.Select(CreateArtifact)];
         mutate?.Invoke(artifacts);
 
-        return new BackupReceipt(
+        BackupReceipt unsignedReceipt = new(
             SchemaVersion: "1.0",
             CapturedAtUtc: Now.AddHours(-1),
             DatabaseInventorySha256: DatabaseInventory.InventorySha256,
             ManifestSha256: ComputeManifestSha256(artifacts),
-            Artifacts: artifacts);
+            Artifacts: artifacts,
+            AttestationKeyId: ProducerKeyId,
+            AttestationSignature: null);
+        Assert.True(ReceiptAttestation.TryCreatePayload(unsignedReceipt, out byte[] payload));
+        string signature = Convert.ToBase64String(
+            ProducerSigningKey.SignData(payload, HashAlgorithmName.SHA256));
+        return unsignedReceipt with { AttestationSignature = signature };
     }
 
     private static BackupArtifact CreateArtifact(string database)
@@ -181,16 +317,17 @@ public sealed class PreflightServiceTests
             AllowTargetWrites: false,
             TargetSchemaVersions: DatabaseInventory.ActiveDatabases.ToDictionary(
                 database => database,
-                _ => "1.0",
+                _ => (string?)"1.0",
                 StringComparer.Ordinal),
             RequestedExternalActions: []);
     }
 
-    private static string ComputeManifestSha256(IEnumerable<BackupArtifact> artifacts)
+    private static string ComputeManifestSha256(IEnumerable<BackupArtifact?> artifacts)
     {
         string canonical = string.Join(
             '\n',
             artifacts
+                .Select(Assert.IsType<BackupArtifact>)
                 .OrderBy(artifact => artifact.Database, StringComparer.Ordinal)
                 .Select(artifact => string.Join(
                     '|',
@@ -198,8 +335,8 @@ public sealed class PreflightServiceTests
                     artifact.BackupType,
                     artifact.FileName,
                     artifact.ByteLength,
-                    artifact.Sha256.ToLowerInvariant(),
-                    artifact.ObservedSha256.ToLowerInvariant())));
+                    artifact.Sha256!.ToLowerInvariant(),
+                    artifact.ObservedSha256!.ToLowerInvariant())));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
