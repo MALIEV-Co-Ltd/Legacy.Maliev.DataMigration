@@ -18,19 +18,58 @@ public sealed record TableCopyPlan(
     public IReadOnlyDictionary<string, string> ColumnTypes { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
+    public IReadOnlyDictionary<string, string> SourceColumnTypes { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
     public IReadOnlyList<string> IdentityColumns { get; init; } = [];
 
     public IReadOnlyList<string> NullableColumns { get; init; } = [];
 
     public IReadOnlyList<ForeignKeyCopyPlan> ForeignKeys { get; init; } = [];
+
+    public PrimaryKeyCopyPlan? PrimaryKey { get; init; }
+
+    public IReadOnlyList<UniqueConstraintCopyPlan> UniqueConstraints { get; init; } = [];
+
+    public IReadOnlyList<IndexCopyPlan> Indexes { get; init; } = [];
+
+    public IReadOnlyDictionary<string, string> DefaultExpressions { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    public IReadOnlyList<CheckConstraintCopyPlan> CheckConstraints { get; init; } = [];
+
+    public IReadOnlyList<GeneratedColumnCopyPlan> GeneratedColumns { get; init; } = [];
+
+    public IReadOnlyDictionary<string, string> Collations { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
 }
+
+public sealed record PrimaryKeyCopyPlan(string Name, IReadOnlyList<string> Columns);
+
+public sealed record UniqueConstraintCopyPlan(string Name, IReadOnlyList<string> Columns);
+
+public sealed record IndexCopyPlan(string Name, IReadOnlyList<string> Columns, bool Unique);
+
+public sealed record CheckConstraintCopyPlan(string Name, string Expression)
+{
+    public IReadOnlyList<string> Columns { get; init; } = [];
+}
+
+public sealed record GeneratedColumnCopyPlan(string Column, string Expression, bool Stored = true);
 
 public sealed record ForeignKeyCopyPlan(
     string Name,
     IReadOnlyList<string> Columns,
     string ReferencedSchema,
     string ReferencedTable,
-    IReadOnlyList<string> ReferencedColumns);
+    IReadOnlyList<string> ReferencedColumns)
+{
+    public string? SourceReferencedSchema { get; init; }
+
+    public string? SourceReferencedTable { get; init; }
+
+    public IReadOnlyList<string>? SourceReferencedColumns { get; init; }
+}
 
 public sealed record DatabaseSchemaPlan(
     string Database,
@@ -47,7 +86,7 @@ public sealed record FreshSchemaPlan(
 
 public static partial class SchemaPlanCanonicalizer
 {
-    private const string DomainSeparator = "Legacy.Maliev.DataMigration.SchemaPlan.v2";
+    private const string DomainSeparator = "Legacy.Maliev.DataMigration.SchemaPlan.v3";
 
     public static string ComputeSha256(FreshSchemaPlan plan)
     {
@@ -111,6 +150,14 @@ public static partial class SchemaPlanCanonicalizer
 
             foreach (TableCopyPlan table in database.Tables)
             {
+                string[] primaryKeyNames = table.PrimaryKey is null ? [] : [table.PrimaryKey.Name];
+                string[] constraintNames =
+                [
+                    .. primaryKeyNames,
+                    .. table.UniqueConstraints.Select(item => item.Name),
+                    .. table.CheckConstraints.Select(item => item.Name),
+                    .. table.ForeignKeys.Select(item => item.Name),
+                ];
                 if (string.IsNullOrWhiteSpace(table.SourceSchema) ||
                     string.IsNullOrWhiteSpace(table.SourceTable) ||
                     string.IsNullOrWhiteSpace(table.TargetSchema) ||
@@ -120,16 +167,92 @@ public static partial class SchemaPlanCanonicalizer
                     table.OrderedColumns.Any(string.IsNullOrWhiteSpace) ||
                     table.OrderedColumns.Distinct(StringComparer.Ordinal).Count() != table.OrderedColumns.Count ||
                     table.ColumnTypes.Count != table.OrderedColumns.Count ||
-                    table.OrderedColumns.Any(column => !table.ColumnTypes.ContainsKey(column)) ||
+                    table.OrderedColumns.Any(column =>
+                        !table.ColumnTypes.ContainsKey(column) ||
+                        !ValidTargetType(table.ColumnTypes[column])) ||
+                    table.SourceColumnTypes.Count != table.OrderedColumns.Count ||
+                    table.OrderedColumns.Any(column =>
+                        !table.SourceColumnTypes.TryGetValue(column, out string? sourceType) ||
+                        string.IsNullOrWhiteSpace(sourceType)) ||
                     table.OrderByColumns.Count == 0 ||
                     table.OrderByColumns.Any(column => !table.OrderedColumns.Contains(column, StringComparer.Ordinal)) ||
                     table.IdentityColumns.Any(column => !table.OrderedColumns.Contains(column, StringComparer.Ordinal)) ||
                     table.NullableColumns.Any(column => !table.OrderedColumns.Contains(column, StringComparer.Ordinal)) ||
-                    table.ForeignKeys.Any(foreignKey => foreignKey.Columns.Count == 0 ||
+                    table.ForeignKeys.Any(foreignKey => !ValidNamedColumns(foreignKey.Name, foreignKey.Columns, table) ||
                         foreignKey.Columns.Count != foreignKey.ReferencedColumns.Count ||
-                        foreignKey.Columns.Any(column => !table.OrderedColumns.Contains(column, StringComparer.Ordinal))))
+                        (foreignKey.SourceReferencedColumns is not null &&
+                            foreignKey.Columns.Count != foreignKey.SourceReferencedColumns.Count) ||
+                        string.IsNullOrWhiteSpace(foreignKey.ReferencedSchema) ||
+                        string.IsNullOrWhiteSpace(foreignKey.ReferencedTable) ||
+                        foreignKey.ReferencedColumns.Any(string.IsNullOrWhiteSpace)) ||
+                    (table.PrimaryKey is not null && !ValidNamedColumns(table.PrimaryKey.Name, table.PrimaryKey.Columns, table)) ||
+                    table.UniqueConstraints.Any(item => !ValidNamedColumns(item.Name, item.Columns, table)) ||
+                    table.Indexes.Any(item => !ValidNamedColumns(item.Name, item.Columns, table)) ||
+                    table.DefaultExpressions.Any(item =>
+                        !table.OrderedColumns.Contains(item.Key, StringComparer.Ordinal) || !ValidExpression(item.Value)) ||
+                    table.CheckConstraints.Any(item =>
+                        string.IsNullOrWhiteSpace(item.Name) ||
+                        !ValidExpression(item.Expression) ||
+                        item.Columns.Count == 0 ||
+                        item.Columns.Any(column => !table.OrderedColumns.Contains(column, StringComparer.Ordinal))) ||
+                    table.GeneratedColumns.Any(item =>
+                        !table.OrderedColumns.Contains(item.Column, StringComparer.Ordinal) ||
+                        !item.Stored ||
+                        !ValidExpression(item.Expression)) ||
+                    table.GeneratedColumns.Select(item => item.Column).Distinct(StringComparer.Ordinal).Count() != table.GeneratedColumns.Count ||
+                    table.Collations.Any(item =>
+                        !table.OrderedColumns.Contains(item.Key, StringComparer.Ordinal) ||
+                        string.IsNullOrWhiteSpace(item.Value) ||
+                        item.Value.Contains('\0', StringComparison.Ordinal) ||
+                        !IsCollatableType(table.ColumnTypes[item.Key])) ||
+                    table.IdentityColumns.Intersect(table.GeneratedColumns.Select(item => item.Column), StringComparer.Ordinal).Any() ||
+                    table.DefaultExpressions.Keys.Intersect(table.GeneratedColumns.Select(item => item.Column), StringComparer.Ordinal).Any() ||
+                    table.DefaultExpressions.Keys.Intersect(table.IdentityColumns, StringComparer.Ordinal).Any() ||
+                    constraintNames.Distinct(StringComparer.Ordinal).Count() != constraintNames.Length)
                 {
                     errors.Add(new("table_plan_invalid", $"{database.Database} contains an invalid deterministic table mapping."));
+                }
+
+                foreach ((string column, string sourceType) in table.SourceColumnTypes)
+                {
+                    if (!ValidTemporalMapping(sourceType, table.ColumnTypes.GetValueOrDefault(column, string.Empty)))
+                    {
+                        errors.Add(new("temporal_mapping_invalid", $"{database.Database}.{table.SourceTable}.{column} has an unsafe temporal mapping."));
+                    }
+                }
+            }
+
+            string[] indexNames = [.. database.Tables.SelectMany(table => table.Indexes.Select(index =>
+                $"{table.TargetSchema}.{index.Name}"))];
+            if (indexNames.Distinct(StringComparer.Ordinal).Count() != indexNames.Length)
+            {
+                errors.Add(new("table_plan_invalid", $"{database.Database} contains duplicate target index names."));
+            }
+
+            foreach ((TableCopyPlan table, ForeignKeyCopyPlan foreignKey) in database.Tables.SelectMany(
+                table => table.ForeignKeys.Select(foreignKey => (table, foreignKey))))
+            {
+                TableCopyPlan? sourceReference = database.Tables.SingleOrDefault(candidate =>
+                    string.Equals(
+                        candidate.SourceSchema,
+                        foreignKey.SourceReferencedSchema ?? foreignKey.ReferencedSchema,
+                        StringComparison.Ordinal) &&
+                    string.Equals(
+                        candidate.SourceTable,
+                        foreignKey.SourceReferencedTable ?? foreignKey.ReferencedTable,
+                        StringComparison.Ordinal));
+                TableCopyPlan? targetReference = database.Tables.SingleOrDefault(candidate =>
+                    string.Equals(candidate.TargetSchema, foreignKey.ReferencedSchema, StringComparison.Ordinal) &&
+                    string.Equals(candidate.TargetTable, foreignKey.ReferencedTable, StringComparison.Ordinal));
+                if (sourceReference is null || targetReference is null ||
+                    (foreignKey.SourceReferencedColumns ?? foreignKey.ReferencedColumns).Any(column =>
+                        !sourceReference.OrderedColumns.Contains(column, StringComparer.Ordinal)) ||
+                    foreignKey.ReferencedColumns.Any(column =>
+                        !targetReference.OrderedColumns.Contains(column, StringComparer.Ordinal)))
+                {
+                    errors.Add(new(
+                        "table_plan_invalid",
+                        $"{database.Database}.{table.SourceTable}.{foreignKey.Name} references a table outside the signed plan."));
                 }
             }
         }
@@ -169,6 +292,7 @@ public static partial class SchemaPlanCanonicalizer
                     writer.Write(table.BatchSize);
                     foreach (string column in table.OrderedColumns)
                     {
+                        WriteString(writer, table.SourceColumnTypes.GetValueOrDefault(column, string.Empty));
                         WriteString(writer, table.ColumnTypes.GetValueOrDefault(column, string.Empty));
                     }
                     WriteStrings(writer, table.IdentityColumns);
@@ -181,7 +305,43 @@ public static partial class SchemaPlanCanonicalizer
                         WriteString(writer, foreignKey.ReferencedSchema);
                         WriteString(writer, foreignKey.ReferencedTable);
                         WriteStrings(writer, foreignKey.ReferencedColumns);
+                        WriteString(writer, foreignKey.SourceReferencedSchema ?? foreignKey.ReferencedSchema);
+                        WriteString(writer, foreignKey.SourceReferencedTable ?? foreignKey.ReferencedTable);
+                        WriteStrings(writer, foreignKey.SourceReferencedColumns ?? foreignKey.ReferencedColumns);
                     }
+                    writer.Write(table.PrimaryKey is not null);
+                    if (table.PrimaryKey is not null)
+                    {
+                        WriteString(writer, table.PrimaryKey.Name);
+                        WriteStrings(writer, table.PrimaryKey.Columns);
+                    }
+                    WriteNamedColumns(writer, table.UniqueConstraints.Select(item => (item.Name, item.Columns)));
+                    IndexCopyPlan[] indexes = [.. table.Indexes.OrderBy(item => item.Name, StringComparer.Ordinal)];
+                    writer.Write(indexes.Length);
+                    foreach (IndexCopyPlan index in indexes)
+                    {
+                        WriteString(writer, index.Name);
+                        WriteStrings(writer, index.Columns);
+                        writer.Write(index.Unique);
+                    }
+                    WriteDictionary(writer, table.DefaultExpressions);
+                    CheckConstraintCopyPlan[] checks = [.. table.CheckConstraints.OrderBy(item => item.Name, StringComparer.Ordinal)];
+                    writer.Write(checks.Length);
+                    foreach (CheckConstraintCopyPlan check in checks)
+                    {
+                        WriteString(writer, check.Name);
+                        WriteString(writer, check.Expression);
+                        WriteStrings(writer, check.Columns);
+                    }
+                    GeneratedColumnCopyPlan[] generated = [.. table.GeneratedColumns.OrderBy(item => item.Column, StringComparer.Ordinal)];
+                    writer.Write(generated.Length);
+                    foreach (GeneratedColumnCopyPlan column in generated)
+                    {
+                        WriteString(writer, column.Column);
+                        WriteString(writer, column.Expression);
+                        writer.Write(column.Stored);
+                    }
+                    WriteDictionary(writer, table.Collations);
                 }
             }
         }
@@ -198,6 +358,83 @@ public static partial class SchemaPlanCanonicalizer
         }
     }
 
+    private static void WriteNamedColumns(
+        BinaryWriter writer,
+        IEnumerable<(string Name, IReadOnlyList<string> Columns)> values)
+    {
+        (string Name, IReadOnlyList<string> Columns)[] ordered = [.. values.OrderBy(item => item.Name, StringComparer.Ordinal)];
+        writer.Write(ordered.Length);
+        foreach ((string name, IReadOnlyList<string> columns) in ordered)
+        {
+            WriteString(writer, name);
+            WriteStrings(writer, columns);
+        }
+    }
+
+    private static void WriteDictionary(BinaryWriter writer, IReadOnlyDictionary<string, string> values)
+    {
+        KeyValuePair<string, string>[] ordered = [.. values.OrderBy(item => item.Key, StringComparer.Ordinal)];
+        writer.Write(ordered.Length);
+        foreach ((string key, string value) in ordered)
+        {
+            WriteString(writer, key);
+            WriteString(writer, value);
+        }
+    }
+
+    private static bool ValidNamedColumns(string name, IReadOnlyList<string> columns, TableCopyPlan table)
+    {
+        return !string.IsNullOrWhiteSpace(name) &&
+            columns.Count > 0 &&
+            columns.Distinct(StringComparer.Ordinal).Count() == columns.Count &&
+            columns.All(column => table.OrderedColumns.Contains(column, StringComparer.Ordinal));
+    }
+
+    private static bool ValidExpression(string expression)
+    {
+        return !string.IsNullOrWhiteSpace(expression) &&
+            !expression.Contains('\0', StringComparison.Ordinal) &&
+            !expression.Contains(';', StringComparison.Ordinal) &&
+            !expression.Contains("--", StringComparison.Ordinal) &&
+            !expression.Contains("/*", StringComparison.Ordinal) &&
+            !expression.Contains("*/", StringComparison.Ordinal) &&
+            !ForbiddenExpressionKeyword().IsMatch(expression);
+    }
+
+    private static bool ValidTargetType(string type)
+    {
+        try
+        {
+            _ = PostgreSqlTypePolicy.Validate(type);
+            return true;
+        }
+        catch (MigrationExecutionException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsCollatableType(string type)
+    {
+        string normalized = type.Trim().ToLowerInvariant();
+        return normalized == "text" ||
+            normalized.StartsWith("character varying(", StringComparison.Ordinal) ||
+            normalized.StartsWith("character(", StringComparison.Ordinal);
+    }
+
+    private static bool ValidTemporalMapping(string sourceType, string targetType)
+    {
+        string source = sourceType.Split('(', 2)[0].Trim().ToLowerInvariant();
+        return source switch
+        {
+            "datetime" or "datetime2" or "smalldatetime" =>
+                string.Equals(targetType, "timestamp without time zone", StringComparison.Ordinal),
+            "datetimeoffset" => string.Equals(targetType, "timestamp with time zone", StringComparison.Ordinal),
+            "date" => string.Equals(targetType, "date", StringComparison.Ordinal),
+            _ => true,
+        };
+    }
+
     private static void WriteString(BinaryWriter writer, string value)
     {
         byte[] bytes = Encoding.UTF8.GetBytes(value);
@@ -210,4 +447,7 @@ public static partial class SchemaPlanCanonicalizer
 
     [GeneratedRegex("^[0-9a-fA-F]{64}$", RegexOptions.CultureInvariant)]
     private static partial Regex Sha256();
+
+    [GeneratedRegex("\\b(CREATE|ALTER|DROP|TRUNCATE|GRANT|REVOKE|COPY|DO|CALL)\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ForbiddenExpressionKeyword();
 }

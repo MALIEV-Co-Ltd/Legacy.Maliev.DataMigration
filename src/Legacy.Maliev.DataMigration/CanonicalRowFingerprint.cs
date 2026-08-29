@@ -99,7 +99,9 @@ public sealed class CanonicalRowFingerprint : IDisposable
             DateTime? utc = value switch
             {
                 DateTimeOffset offset => offset.UtcDateTime,
-                DateTime date => date.ToUniversalTime(),
+                DateTime date when date.Kind == DateTimeKind.Utc => date,
+                DateTime => throw new InvalidOperationException(
+                    "A timestamp with time zone value must carry an explicit UTC offset."),
                 _ => null,
             };
             return utc is null

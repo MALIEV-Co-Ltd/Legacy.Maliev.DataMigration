@@ -464,6 +464,11 @@ public sealed class GuardedShadowMigrationRunnerTests
             Hash($"target:{database}"),
             [new TableCopyPlan("dbo", "Primary", "public", "Primary", ["ID", "Value"], ["ID"])
             {
+                SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["ID"] = "int",
+                    ["Value"] = "nvarchar",
+                },
                 ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
                 {
                     ["ID"] = "integer",

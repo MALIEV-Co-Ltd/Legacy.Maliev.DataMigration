@@ -39,6 +39,20 @@ public sealed class CanonicalRowFingerprintTests
     }
 
     [Fact]
+    public void Compute_TimestampWithTimeZone_UnspecifiedSqlServerDateTime_FailsClosed()
+    {
+        TableCopyPlan table = CreatePlan("timestamp with time zone");
+        DateTime unspecified = new(2026, 8, 29, 12, 30, 0, DateTimeKind.Unspecified);
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            CanonicalRowFingerprint.Compute(table, [Row(unspecified)]));
+
+        Assert.Equal(
+            "A timestamp with time zone value must carry an explicit UTC offset.",
+            exception.Message);
+    }
+
+    [Fact]
     public void Compute_ColumnTypeChanges_ChangeSemanticHash()
     {
         Assert.NotEqual(
@@ -84,6 +98,7 @@ public sealed class CanonicalRowFingerprintTests
         ["Value"],
         ["Value"])
         {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal) { ["Value"] = "nvarchar" },
             ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal) { ["Value"] = type },
         };
     }

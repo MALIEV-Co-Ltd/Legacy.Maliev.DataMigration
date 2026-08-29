@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Buffers.Binary;
 using Microsoft.Data.SqlClient;
 
 namespace Legacy.Maliev.DataMigration;
@@ -58,7 +59,7 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         CancellationToken cancellationToken)
     {
         SnapshotLease lease = GetSnapshot(database);
-        const string sql = """
+        const string columnSql = """
             SELECT
                 s.name AS schema_name,
                 t.name AS table_name,
@@ -70,6 +71,7 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
                 c.scale,
                 c.is_nullable,
                 c.is_identity,
+                COALESCE(c.collation_name, N'') AS collation_name,
                 COALESCE(dc.definition, N'') AS default_definition,
                 COALESCE(cc.definition, N'') AS computed_definition
             FROM sys.tables AS t
@@ -81,23 +83,93 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             WHERE t.is_ms_shipped = 0
             ORDER BY s.name, t.name, c.column_id;
             """;
+        const string keyAndIndexSql = """
+            SELECT
+                s.name AS schema_name,
+                t.name AS table_name,
+                i.name AS index_name,
+                i.is_primary_key,
+                i.is_unique_constraint,
+                i.is_unique,
+                ic.key_ordinal,
+                c.name AS column_name,
+                ic.is_descending_key,
+                i.has_filter,
+                COALESCE(i.filter_definition, N'') AS filter_definition
+            FROM sys.indexes AS i
+            INNER JOIN sys.tables AS t ON t.object_id = i.object_id
+            INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+            INNER JOIN sys.index_columns AS ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+            INNER JOIN sys.columns AS c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+            WHERE t.is_ms_shipped = 0 AND i.is_hypothetical = 0
+            ORDER BY s.name, t.name, i.name, ic.key_ordinal, ic.index_column_id;
+            """;
+        const string checkSql = """
+            SELECT s.name, t.name, cc.name, cc.definition, cc.is_disabled, cc.is_not_trusted
+            FROM sys.check_constraints AS cc
+            INNER JOIN sys.tables AS t ON t.object_id = cc.parent_object_id
+            INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+            WHERE t.is_ms_shipped = 0
+            ORDER BY s.name, t.name, cc.name;
+            """;
+        const string foreignKeySql = """
+            SELECT child_schema.name, child_table.name, foreign_key.name,
+                   mapping.constraint_column_id, child_column.name,
+                   referenced_schema.name, referenced_table.name, referenced_column.name,
+                   foreign_key.delete_referential_action, foreign_key.update_referential_action,
+                   foreign_key.is_disabled, foreign_key.is_not_trusted
+            FROM sys.foreign_keys AS foreign_key
+            INNER JOIN sys.tables AS child_table ON child_table.object_id = foreign_key.parent_object_id
+            INNER JOIN sys.schemas AS child_schema ON child_schema.schema_id = child_table.schema_id
+            INNER JOIN sys.tables AS referenced_table ON referenced_table.object_id = foreign_key.referenced_object_id
+            INNER JOIN sys.schemas AS referenced_schema ON referenced_schema.schema_id = referenced_table.schema_id
+            INNER JOIN sys.foreign_key_columns AS mapping ON mapping.constraint_object_id = foreign_key.object_id
+            INNER JOIN sys.columns AS child_column
+                ON child_column.object_id = mapping.parent_object_id AND child_column.column_id = mapping.parent_column_id
+            INNER JOIN sys.columns AS referenced_column
+                ON referenced_column.object_id = mapping.referenced_object_id AND referenced_column.column_id = mapping.referenced_column_id
+            WHERE child_table.is_ms_shipped = 0
+            ORDER BY child_schema.name, child_table.name, foreign_key.name, mapping.constraint_column_id;
+            """;
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        await AppendSchemaQueryAsync(hash, lease, "columns", columnSql, cancellationToken).ConfigureAwait(false);
+        await AppendSchemaQueryAsync(hash, lease, "keys-indexes", keyAndIndexSql, cancellationToken).ConfigureAwait(false);
+        await AppendSchemaQueryAsync(hash, lease, "checks", checkSql, cancellationToken).ConfigureAwait(false);
+        await AppendSchemaQueryAsync(hash, lease, "foreign-keys", foreignKeySql, cancellationToken).ConfigureAwait(false);
+
+        return new SourceSchemaEvidence(database, Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant());
+    }
+
+    private static async Task AppendSchemaQueryAsync(
+        IncrementalHash hash,
+        SnapshotLease lease,
+        string section,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        AppendHashValue(hash, section);
         await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             for (var ordinal = 0; ordinal < reader.FieldCount; ordinal++)
             {
-                string value = reader.IsDBNull(ordinal)
-                    ? "<null>"
-                    : Convert.ToString(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
-                byte[] bytes = Encoding.UTF8.GetBytes(value.Normalize(NormalizationForm.FormC));
-                hash.AppendData(BitConverter.GetBytes(bytes.Length));
-                hash.AppendData(bytes);
+                AppendHashValue(
+                    hash,
+                    reader.IsDBNull(ordinal)
+                        ? "<null>"
+                        : Convert.ToString(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty);
             }
         }
+    }
 
-        return new SourceSchemaEvidence(database, Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant());
+    private static void AppendHashValue(IncrementalHash hash, string value)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(value.Normalize(NormalizationForm.FormC));
+        Span<byte> length = stackalloc byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32BigEndian(length, bytes.Length);
+        hash.AppendData(length);
+        hash.AppendData(bytes);
     }
 
     public async IAsyncEnumerable<MigrationRow> ReadTableAsync(
@@ -119,8 +191,11 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             var values = new Dictionary<string, object?>(table.OrderedColumns.Count, StringComparer.Ordinal);
             for (var ordinal = 0; ordinal < table.OrderedColumns.Count; ordinal++)
             {
-                values.Add(table.OrderedColumns[ordinal], await reader.IsDBNullAsync(ordinal, cancellationToken)
-                    .ConfigureAwait(false) ? null : reader.GetValue(ordinal));
+                object? value = await reader.IsDBNullAsync(ordinal, cancellationToken)
+                    .ConfigureAwait(false) ? null : reader.GetValue(ordinal);
+                values.Add(
+                    table.OrderedColumns[ordinal],
+                    NormalizeSourceValue(value, table.SourceColumnTypes[table.OrderedColumns[ordinal]]));
             }
 
             yield return new MigrationRow(values);
@@ -223,6 +298,19 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             $"ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
     }
 
+    internal static object? NormalizeSourceValue(object? value, string sourceType)
+    {
+        if (value is null or DBNull)
+        {
+            return null;
+        }
+
+        string normalizedType = sourceType.Split('(', 2)[0].Trim().ToLowerInvariant();
+        return normalizedType is "datetime" or "datetime2" or "smalldatetime" && value is DateTime dateTime
+            ? DateTime.SpecifyKind(dateTime, DateTimeKind.Unspecified)
+            : value;
+    }
+
     private static string QuoteIdentifier(string identifier)
     {
         return string.IsNullOrEmpty(identifier) || identifier.Contains('\0', StringComparison.Ordinal)
@@ -298,9 +386,36 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             referencedColumns.Add(reader.GetString(3));
         }
 
+        return ValidateObservedForeignKey(
+            foreignKey,
+            referencedSchema,
+            referencedTable,
+            columns,
+            referencedColumns);
+    }
+
+    internal static ForeignKeyMetadata ValidateObservedForeignKey(
+        ForeignKeyCopyPlan foreignKey,
+        string? referencedSchema,
+        string? referencedTable,
+        IReadOnlyList<string> columns,
+        IReadOnlyList<string> referencedColumns)
+    {
+        ArgumentNullException.ThrowIfNull(foreignKey);
         return referencedSchema is null ||
             referencedTable is null ||
-            !columns.SequenceEqual(foreignKey.Columns, StringComparer.Ordinal)
+            !string.Equals(
+                referencedSchema,
+                foreignKey.SourceReferencedSchema ?? foreignKey.ReferencedSchema,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                referencedTable,
+                foreignKey.SourceReferencedTable ?? foreignKey.ReferencedTable,
+                StringComparison.Ordinal) ||
+            !columns.SequenceEqual(foreignKey.Columns, StringComparer.Ordinal) ||
+            !referencedColumns.SequenceEqual(
+                foreignKey.SourceReferencedColumns ?? foreignKey.ReferencedColumns,
+                StringComparer.Ordinal)
             ? throw new MigrationExecutionException(
                 "source_foreign_key_drift",
                 $"The source foreign key {foreignKey.Name} does not match the signed schema plan.")
@@ -319,7 +434,7 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         }
     }
 
-    private sealed record ForeignKeyMetadata(
+    internal sealed record ForeignKeyMetadata(
         string ReferencedSchema,
         string ReferencedTable,
         IReadOnlyList<string> Columns,

@@ -139,6 +139,63 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     }
 
     [Fact]
+    public async Task WholeDatabaseTransaction_CreatesAndReconcilesEverySignedSchemaObject()
+    {
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        string runId = Guid.NewGuid().ToString("D");
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Order",
+            $"legacy_shadow_order_{Guid.NewGuid():N}",
+            runId,
+            CancellationToken.None);
+
+        try
+        {
+            TableCopyPlan table = SchemaPlanSemanticsTests.CreateTable() with
+            {
+                OrderedColumns = ["Id", "Quantity", "CreatedAt", "Code", "NormalizedCode"],
+                SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["Id"] = "int",
+                    ["Quantity"] = "int",
+                    ["CreatedAt"] = "datetime2",
+                    ["Code"] = "nvarchar",
+                    ["NormalizedCode"] = "nvarchar",
+                },
+                ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["Id"] = "integer",
+                    ["Quantity"] = "integer",
+                    ["CreatedAt"] = "timestamp without time zone",
+                    ["Code"] = "text",
+                    ["NormalizedCode"] = "text",
+                },
+                NullableColumns = ["CreatedAt"],
+                Collations = new Dictionary<string, string>(StringComparer.Ordinal) { ["Code"] = "C" },
+                GeneratedColumns = [new GeneratedColumnCopyPlan("NormalizedCode", "lower(\"Code\")")],
+            };
+            var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
+            DatabaseSchemaPlan plan = draft with
+            {
+                TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft),
+            };
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+            string actual = await transaction.InspectSchemaAsync(plan, CancellationToken.None);
+            _ = await transaction.InspectTableAsync(table, CancellationToken.None);
+            await transaction.CommitAsync(CancellationToken.None);
+
+            Assert.Equal(plan.TargetSchemaSha256, actual);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public void TypePolicy_ArbitrarySqlType_FailsClosed()
     {
         MigrationExecutionException exception = Assert.Throws<MigrationExecutionException>(() =>
@@ -151,6 +208,11 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     {
         return new TableCopyPlan("dbo", "Order", "public", "orders", ["Id", "Name"], ["Id"])
         {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "int",
+                ["Name"] = "nvarchar",
+            },
             ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 ["Id"] = "integer",
