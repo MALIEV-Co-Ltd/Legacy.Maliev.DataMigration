@@ -8,13 +8,25 @@ to PostgreSQL data migration. It now contains two deliberately separated layers:
    injected read-only SQL Server source, PostgreSQL-only shadow target, and
    atomic migration-run journal.
 
-The repository still contains no concrete database, cluster, cloud, process, or
-secret adapter. Nothing in this slice can connect to production by itself.
+The repository now contains concrete database adapters, but no executable host,
+cluster, cloud, process, secret, promotion, or canonical-target adapter. Runtime
+composition requires connection strings supplied by a separately reviewed host;
+nothing in this repository discovers or projects production credentials.
 
 ## Safety boundary
 
-- No SQL Server or PostgreSQL client package is referenced yet; concrete adapters
-  remain a separately reviewed slice.
+- The SQL Server adapter forces `ApplicationIntent=ReadOnly`, uses a snapshot
+  transaction per source database, and exposes only deterministic catalog
+  inspection and `SELECT` operations.
+- The PostgreSQL adapter can create, inspect, transact within, and delete only a
+  uniquely named `legacy_shadow_*` database carrying the exact run-ownership
+  marker. It exposes no rename, swap, promotion, or canonical mutation API.
+- The runner, not either adapter, owns and exhausts source enumeration in
+  bounded 512-row batches. PostgreSQL acknowledges each binary `COPY` batch
+  inside one whole-database transaction. Commit is refused until the
+  independently re-read schema and every planned table have been inspected.
+- The persistent PostgreSQL journal atomically acquires run IDs and retains
+  immutable completed or signed failure evidence across process restarts.
 - No Kubernetes, GKE, GCS, Google Secret Manager, or GitHub client is present.
 - No command, process, network, deployment, restore, promotion, or canonical
   database mutation method is exposed by the production assembly.
@@ -39,7 +51,10 @@ whole-database PostgreSQL transaction in a deterministic, run-owned, uniquely
 named empty shadow database. Reconciliation must pass before commit. Any failure
 rolls back the active database, removes every shadow created by the run, and
 releases the atomic journal lease. Completed replays return the immutable prior
-receipt without database I/O; conflicting or concurrent replays fail closed.
+receipt only after its exact identity and trusted P-256 signature are verified,
+without database I/O; conflicting or concurrent replays fail closed. Ordered
+and modular multiset content digests are computed in bounded memory. Success and
+failure paths retain signed reconciliation and shadow-cleanup evidence.
 
 ## Approved database disposition
 
@@ -100,14 +115,18 @@ normal invalid contract and performs no external work.
 ```powershell
 dotnet build .\Legacy.Maliev.DataMigration.slnx --configuration Release
 dotnet test .\Legacy.Maliev.DataMigration.slnx --configuration Release
+dotnet test .\Legacy.Maliev.DataMigration.slnx --configuration Release `
+  --settings .\coverlet.runsettings --collect:"XPlat Code Coverage"
 dotnet format .\Legacy.Maliev.DataMigration.slnx --verify-no-changes --no-restore
 ```
 
-Tests are zero-I/O unit tests using stateful source/target/journal doubles. They
-prove orchestration, transaction, cleanup, authorization, disposition, schema
-drift, and replay behavior. Concrete adapters must add disposable SQL Server and
-PostgreSQL integration tests; PostgreSQL tests must use Testcontainers rather
-than SQLite or an in-memory provider.
+The unit tests use stateful source/target/journal doubles for orchestration. The
+adapter suite also runs against a disposable PostgreSQL 18 Testcontainer to
+prove shadow ownership, whole-database commit gating, binary copy, independent
+schema/data reconciliation, atomic concurrent leases, persistent replay, and
+failure retry. SQL Server command and connection behavior is covered by
+fail-closed contract tests; live SQL Server integration remains blocked until a
+disposable SQL Server fixture is available without using production.
 
 ## Downstream evidence compatibility
 
@@ -121,9 +140,9 @@ while continuing to require exact row/data/null/FK/sequence parity.
 
 ## Remaining release blockers
 
-This slice does not implement or approve a backup producer, concrete database
-adapters, or daily production synchronization. Before a real shadow copy is
-allowed, the program still needs:
+This slice does not implement or approve a backup producer, an executable host,
+or daily production synchronization. Before a real shadow copy is allowed, the
+program still needs:
 
 1. an independently reviewed producer that creates current verified full-backup
    receipts, observes hashes itself, protects its private signing key, and emits
@@ -132,9 +151,9 @@ allowed, the program still needs:
    to the current source commit;
 3. a bounded source write freeze or a reviewed change-capture mechanism (the
    legacy source does not currently provide a proven complete daily delta);
-4. reviewed SQL Server snapshot and PostgreSQL shadow adapters with disposable
-   integration tests, bounded streaming, deletion parity, and crash recovery;
-5. signed reconciliation/rollback receipts and the corrected AppHost schema-v2
+4. a disposable SQL Server integration fixture and crash-restart tests for the
+   concrete source adapter (production SQL Server is not a test fixture);
+5. independent review and integration of the corrected AppHost schema-v2
    aggregate described above;
 6. pre/post table, row, key, relationship, sequence, and business-invariant
    parity proofs;
