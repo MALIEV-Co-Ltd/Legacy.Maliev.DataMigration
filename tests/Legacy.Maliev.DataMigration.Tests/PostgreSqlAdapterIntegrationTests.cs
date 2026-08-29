@@ -32,6 +32,37 @@ public sealed class PostgreSqlAdapterFixture : IAsyncLifetime
 public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixture fixture)
 {
     [Fact]
+    public async Task FinalizeSchema_CyclicForeignKeys_AreAddedOnlyAfterAllDataAndIdentityReseeds()
+    {
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
+        try
+        {
+            TableCopyPlan left = CyclicTable("Left", "Right", "FK_Left_Right");
+            TableCopyPlan right = CyclicTable("Right", "Left", "FK_Right_Left");
+            var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [left, right]);
+            DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+            Assert.Equal(1, await transaction.CopyBatchAsync(left,
+                [new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["OtherId"] = 1 })], CancellationToken.None));
+            Assert.Equal(1, await transaction.CopyBatchAsync(right,
+                [new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["OtherId"] = 1 })], CancellationToken.None));
+            await transaction.FinalizeSchemaAsync(plan, CancellationToken.None);
+
+            Assert.Equal(plan.TargetSchemaSha256, await transaction.InspectSchemaAsync(plan, CancellationToken.None));
+            await transaction.RollbackAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task CopyAndReconcile_LargeTextValue_StreamsWithoutFourMiBRejection()
     {
         var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
@@ -94,6 +125,28 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
         {
             await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
         }
+    }
+
+    private static TableCopyPlan CyclicTable(string tableName, string referencedTable, string foreignKeyName)
+    {
+        return new TableCopyPlan("dbo", tableName, "public", tableName.ToLowerInvariant(), ["Id", "OtherId"], ["Id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal) { ["Id"] = "int", ["OtherId"] = "int" },
+            ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal) { ["Id"] = "integer", ["OtherId"] = "integer" },
+            SourceColumns = [new("Id", "int", Hash($"{tableName}.Id"), null), new("OtherId", "int", Hash($"{tableName}.OtherId"), null)],
+            IdentityColumns = ["Id"],
+            Identities = [new("Id", 1, 1, 1, true)],
+            PrimaryKey = new PrimaryKeyCopyPlan($"PK_{tableName}", ["Id"]),
+            ForeignKeys =
+            [
+                new ForeignKeyCopyPlan(foreignKeyName, ["OtherId"], "public", referencedTable.ToLowerInvariant(), ["Id"])
+                {
+                    SourceReferencedSchema = "dbo",
+                    SourceReferencedTable = referencedTable,
+                    SourceReferencedColumns = ["Id"],
+                },
+            ],
+        };
     }
 
     [Fact]
@@ -471,6 +524,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
                     SchemaRow(110, 2, "B", "b"),
                 ],
                 CancellationToken.None);
+            await transaction.FinalizeSchemaAsync(plan, CancellationToken.None);
             string actual = await transaction.InspectSchemaAsync(plan, CancellationToken.None);
             _ = await transaction.InspectTableAsync(table, CancellationToken.None);
             await transaction.CommitAsync(CancellationToken.None);

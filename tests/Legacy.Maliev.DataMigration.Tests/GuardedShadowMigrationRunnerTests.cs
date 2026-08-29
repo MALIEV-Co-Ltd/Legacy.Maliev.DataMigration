@@ -824,6 +824,11 @@ public sealed class GuardedShadowMigrationRunnerTests
             return Task.CompletedTask;
         }
 
+        public Task FinalizeSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
         public Task<long> CopyBatchAsync(
             TableCopyPlan table,
             IReadOnlyList<MigrationRow> rows,

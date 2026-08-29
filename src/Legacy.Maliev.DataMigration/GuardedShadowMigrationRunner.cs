@@ -214,6 +214,8 @@ public interface IPostgreSqlWholeDatabaseTransaction : IAsyncDisposable
 {
     Task ApplySchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken);
 
+    Task FinalizeSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken);
+
     Task<long> CopyBatchAsync(
         TableCopyPlan table,
         IReadOnlyList<MigrationRow> rows,
@@ -667,6 +669,8 @@ public sealed partial class GuardedShadowMigrationRunner
 
                 sourceTables.Add(sourceEvidence);
             }
+
+            await transaction.FinalizeSchemaAsync(databasePlan, cancellationToken).ConfigureAwait(false);
 
             string targetSchema = await transaction.InspectSchemaAsync(databasePlan, cancellationToken)
                 .ConfigureAwait(false);

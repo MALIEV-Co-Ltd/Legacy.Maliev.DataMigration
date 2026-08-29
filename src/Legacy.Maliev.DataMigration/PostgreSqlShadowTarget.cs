@@ -247,6 +247,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     private bool _completed;
     private bool _schemaInspected;
     private bool _inspectionStarted;
+    private bool _schemaFinalized;
     private readonly HashSet<string> _expectedTableInspections = new(StringComparer.Ordinal);
     private readonly HashSet<string> _completedTableInspections = new(StringComparer.Ordinal);
 
@@ -347,6 +348,27 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     cancellationToken).ConfigureAwait(false);
             }
 
+        }
+    }
+
+    public async Task FinalizeSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (_schemaFinalized || _inspectionStarted)
+        {
+            throw new MigrationExecutionException("shadow_schema_finalization_invalid", "The shadow schema can be finalized exactly once before inspection.");
+        }
+
+        foreach (TableCopyPlan table in plan.Tables)
+        {
+            foreach (IdentityCopyPlan identity in table.Identities)
+            {
+                await ReseedIdentityAsync(table, identity, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        foreach (TableCopyPlan table in plan.Tables)
+        {
             foreach (ForeignKeyCopyPlan foreignKey in table.ForeignKeys)
             {
                 string columns = string.Join(", ", foreignKey.Columns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
@@ -355,10 +377,13 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     $"ALTER TABLE {Qualified(table.TargetSchema, table.TargetTable)} " +
                     $"ADD CONSTRAINT {PostgreSqlShadowTarget.QuoteIdentifier(foreignKey.Name)} " +
                     $"FOREIGN KEY ({columns}) REFERENCES {Qualified(foreignKey.ReferencedSchema, foreignKey.ReferencedTable)} ({referenced}) " +
-                    $"ON DELETE {ReferentialActionSql(foreignKey.OnDelete)} ON UPDATE {ReferentialActionSql(foreignKey.OnUpdate)} NOT DEFERRABLE;",
+                    $"ON DELETE {ReferentialActionSql(foreignKey.OnDelete)} ON UPDATE {ReferentialActionSql(foreignKey.OnUpdate)} NOT DEFERRABLE NOT VALID; " +
+                    $"ALTER TABLE {Qualified(table.TargetSchema, table.TargetTable)} VALIDATE CONSTRAINT {PostgreSqlShadowTarget.QuoteIdentifier(foreignKey.Name)};",
                     cancellationToken).ConfigureAwait(false);
             }
         }
+
+        _schemaFinalized = true;
     }
 
     public async Task<long> CopyBatchAsync(
@@ -736,11 +761,6 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             orphanCounts.Add(
                 foreignKey.Name,
                 Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture));
-        }
-
-        foreach (IdentityCopyPlan identity in table.Identities)
-        {
-            await ReseedIdentityAsync(table, identity, cancellationToken).ConfigureAwait(false);
         }
 
         _ = _completedTableInspections.Add($"{table.TargetSchema}.{table.TargetTable}");

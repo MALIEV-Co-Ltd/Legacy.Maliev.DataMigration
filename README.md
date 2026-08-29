@@ -36,6 +36,10 @@ nothing in this repository discovers or projects production credentials.
   PostgreSQL acknowledges each binary `COPY` batch
   inside one whole-database transaction. Commit is refused until the
   independently re-read schema and every planned table have been inspected.
+  The transaction creates base schemas, tables, keys, checks, and indexes first;
+  copies every table second; reseeds identities third; and only then adds and
+  validates foreign keys. This ordering preserves cyclic relationships without
+  disabling integrity checks or relying on table order.
 - The persistent PostgreSQL journal atomically acquires run IDs and retains
   immutable completed or signed failure evidence across process restarts.
 - No Kubernetes, GKE, GCS, Google Secret Manager, or GitHub client is present.
