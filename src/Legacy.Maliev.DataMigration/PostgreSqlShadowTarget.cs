@@ -65,7 +65,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
 
     public async Task<bool> IsEmptyAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
     {
-        await AssertOwnershipAsync(shadow, cancellationToken).ConfigureAwait(false);
+        _ = await AssertOwnershipAsync(shadow, cancellationToken).ConfigureAwait(false);
         await using NpgsqlConnection connection = CreateShadowConnection(shadow.Name);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         const string sql = """
@@ -85,7 +85,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         ShadowDatabase shadow,
         CancellationToken cancellationToken)
     {
-        await AssertOwnershipAsync(shadow, cancellationToken).ConfigureAwait(false);
+        _ = await AssertOwnershipAsync(shadow, cancellationToken).ConfigureAwait(false);
         NpgsqlConnection connection = CreateShadowConnection(shadow.Name);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
@@ -96,7 +96,11 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
 
     public async Task DeleteRunOwnedShadowAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
     {
-        await AssertOwnershipAsync(shadow, cancellationToken).ConfigureAwait(false);
+        if (!await AssertOwnershipAsync(shadow, allowMissing: true, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         await using var connection = new NpgsqlConnection(_administrativeConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = new NpgsqlCommand(
@@ -105,7 +109,15 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task AssertOwnershipAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
+    private Task<bool> AssertOwnershipAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
+    {
+        return AssertOwnershipAsync(shadow, allowMissing: false, cancellationToken);
+    }
+
+    private async Task<bool> AssertOwnershipAsync(
+        ShadowDatabase shadow,
+        bool allowMissing,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(shadow);
         ValidateShadowIdentity(shadow.Database, shadow.Name, shadow.OwnerRunId);
@@ -114,13 +126,18 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         const string sql = "SELECT pg_catalog.shobj_description(oid, 'pg_database') FROM pg_catalog.pg_database WHERE datname = $1;";
         await using var command = new NpgsqlCommand(sql, connection);
         _ = command.Parameters.AddWithValue(shadow.Name);
-        string? observed = (string?)await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(observed, OwnershipValue(shadow.Database, shadow.OwnerRunId), StringComparison.Ordinal))
+        object? scalar = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        if (scalar is null && allowMissing)
         {
-            throw new MigrationExecutionException(
+            return false;
+        }
+
+        string? observed = scalar as string;
+        return string.Equals(observed, OwnershipValue(shadow.Database, shadow.OwnerRunId), StringComparison.Ordinal)
+            ? true
+            : throw new MigrationExecutionException(
                 "shadow_ownership_invalid",
                 "The PostgreSQL database is not owned by this migration run.");
-        }
     }
 
     private NpgsqlConnection CreateShadowConnection(string database)

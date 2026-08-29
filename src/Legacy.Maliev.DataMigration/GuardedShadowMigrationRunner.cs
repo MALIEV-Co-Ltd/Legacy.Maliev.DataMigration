@@ -127,7 +127,15 @@ public enum MigrationRunStartStatus
 
 public sealed record MigrationRunStartResult(
     MigrationRunStartStatus Status,
-    MigrationExecutionReceipt? CompletedReceipt);
+    MigrationExecutionReceipt? CompletedReceipt,
+    MigrationRunLease? Lease = null,
+    IReadOnlyList<ShadowDatabase>? PendingShadows = null);
+
+public sealed record MigrationRunLease(
+    MigrationRunIdentity Identity,
+    string Owner,
+    int Attempt,
+    DateTimeOffset ExpiresAtUtc);
 
 public sealed class MigrationExecutionException(string code, string message, Exception? innerException = null) : Exception(message, innerException)
 {
@@ -200,7 +208,35 @@ public interface IMigrationRunJournal
 
     Task RecordCompletedAsync(MigrationExecutionReceipt receipt, CancellationToken cancellationToken);
 
+    Task RecordCompletedAsync(
+        MigrationRunLease lease,
+        MigrationExecutionReceipt receipt,
+        CancellationToken cancellationToken);
+
     Task RecordFailedAsync(MigrationFailureReceipt receipt, CancellationToken cancellationToken);
+
+    Task RecordFailedAsync(
+        MigrationRunLease lease,
+        MigrationFailureReceipt receipt,
+        CancellationToken cancellationToken);
+
+    Task<MigrationRunLease> HeartbeatAsync(
+        MigrationRunLease lease,
+        CancellationToken cancellationToken);
+
+    Task RegisterShadowAsync(
+        MigrationRunLease lease,
+        ShadowDatabase shadow,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ShadowDatabase>> GetPendingShadowsAsync(
+        MigrationRunLease lease,
+        CancellationToken cancellationToken);
+
+    Task RecordShadowCleanupAsync(
+        MigrationRunLease lease,
+        ShadowCleanupOutcome outcome,
+        CancellationToken cancellationToken);
 }
 
 public interface IMigrationEvidenceSigner
@@ -292,15 +328,34 @@ public sealed partial class GuardedShadowMigrationRunner
             throw new MigrationExecutionException("run_journal_invalid", "The migration journal returned an invalid lease state.");
         }
 
+        MigrationRunLease lease = start.Lease is { } acquiredLease && acquiredLease.Identity == identity
+            ? acquiredLease
+            : throw new MigrationExecutionException("run_journal_invalid", "The migration journal did not return an owned lease.");
+
         List<ShadowDatabase> createdShadows = [];
         List<MigratedShadowDatabase> migrated = [];
         List<DatabaseReconciliationEvidence> evidence = [];
         try
         {
+            IReadOnlyList<ShadowDatabase> pendingShadows = start.PendingShadows ??
+                await _journal.GetPendingShadowsAsync(lease, cancellationToken).ConfigureAwait(false);
+            if (pendingShadows.Count > 0)
+            {
+                IReadOnlyList<ShadowCleanupOutcome> recoveredCleanup = await DeleteCreatedShadowsAsync(lease, pendingShadows)
+                    .ConfigureAwait(false);
+                if (recoveredCleanup.Any(outcome => !outcome.Deleted))
+                {
+                    throw new MigrationExecutionException(
+                        "shadow_cleanup_failed",
+                        "A stale run-owned shadow could not be removed before retry.");
+                }
+            }
+
             foreach (DatabaseSchemaPlan databasePlan in request.SchemaPlan.Databases
                 .OrderBy(database => database.Database, StringComparer.Ordinal))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                lease = await _journal.HeartbeatAsync(lease, cancellationToken).ConfigureAwait(false);
                 await _source.BeginDatabaseSnapshotAsync(databasePlan.Database, cancellationToken).ConfigureAwait(false);
                 try
                 {
@@ -316,6 +371,12 @@ public sealed partial class GuardedShadowMigrationRunner
                     }
 
                     string shadowName = CreateShadowName(databasePlan.Database, request.Authorization.RunId);
+                    var plannedShadow = new ShadowDatabase(
+                        shadowName,
+                        request.Authorization.RunId.ToString("D"),
+                        databasePlan.Database);
+                    await _journal.RegisterShadowAsync(lease, plannedShadow, cancellationToken).ConfigureAwait(false);
+                    createdShadows.Add(plannedShadow);
                     ShadowDatabase shadow = await _target
                         .CreateUniqueEmptyShadowAsync(
                             databasePlan.Database,
@@ -323,7 +384,12 @@ public sealed partial class GuardedShadowMigrationRunner
                             request.Authorization.RunId.ToString("D"),
                             cancellationToken)
                         .ConfigureAwait(false);
-                    createdShadows.Add(shadow);
+                    if (shadow != plannedShadow)
+                    {
+                        await _journal.RegisterShadowAsync(lease, shadow, cancellationToken).ConfigureAwait(false);
+                        createdShadows.Add(shadow);
+                    }
+
                     ValidateShadowLease(shadow, shadowName, databasePlan.Database, request.Authorization.RunId);
                     if (!await _target.IsEmptyAsync(shadow, cancellationToken).ConfigureAwait(false))
                     {
@@ -362,12 +428,13 @@ public sealed partial class GuardedShadowMigrationRunner
                 _evidenceSigner.KeyId,
                 null);
             MigrationExecutionReceipt receipt = SignAndVerify(unsignedReceipt);
-            await _journal.RecordCompletedAsync(receipt, cancellationToken).ConfigureAwait(false);
+            lease = await _journal.HeartbeatAsync(lease, cancellationToken).ConfigureAwait(false);
+            await _journal.RecordCompletedAsync(lease, receipt, cancellationToken).ConfigureAwait(false);
             return new MigrationExecutionResult(MigrationExecutionStatus.Completed, receipt);
         }
         catch (Exception exception)
         {
-            IReadOnlyList<ShadowCleanupOutcome> cleanup = await DeleteCreatedShadowsAsync(createdShadows)
+            IReadOnlyList<ShadowCleanupOutcome> cleanup = await DeleteCreatedShadowsAsync(lease, createdShadows)
                 .ConfigureAwait(false);
             string failureCode = exception is MigrationExecutionException migrationException
                 ? migrationException.Code
@@ -385,7 +452,7 @@ public sealed partial class GuardedShadowMigrationRunner
                 cleanup,
                 _evidenceSigner.KeyId,
                 null);
-            await _journal.RecordFailedAsync(SignAndVerify(unsignedFailure), CancellationToken.None)
+            await _journal.RecordFailedAsync(lease, SignAndVerify(unsignedFailure), CancellationToken.None)
                 .ConfigureAwait(false);
 
             if (cleanup.Any(outcome => !outcome.Deleted))
@@ -560,7 +627,9 @@ public sealed partial class GuardedShadowMigrationRunner
         }
     }
 
-    private async Task<IReadOnlyList<ShadowCleanupOutcome>> DeleteCreatedShadowsAsync(IEnumerable<ShadowDatabase> shadows)
+    private async Task<IReadOnlyList<ShadowCleanupOutcome>> DeleteCreatedShadowsAsync(
+        MigrationRunLease lease,
+        IEnumerable<ShadowDatabase> shadows)
     {
         List<ShadowCleanupOutcome> outcomes = [];
         foreach (ShadowDatabase shadow in shadows.Reverse())
@@ -568,11 +637,22 @@ public sealed partial class GuardedShadowMigrationRunner
             try
             {
                 await _target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None).ConfigureAwait(false);
-                outcomes.Add(new ShadowCleanupOutcome(shadow.Name, true, null));
+                var outcome = new ShadowCleanupOutcome(shadow.Name, true, null);
+                outcomes.Add(outcome);
+                await _journal.RecordShadowCleanupAsync(lease, outcome, CancellationToken.None).ConfigureAwait(false);
             }
             catch
             {
-                outcomes.Add(new ShadowCleanupOutcome(shadow.Name, false, "shadow_delete_failed"));
+                var outcome = new ShadowCleanupOutcome(shadow.Name, false, "shadow_delete_failed");
+                outcomes.Add(outcome);
+                try
+                {
+                    await _journal.RecordShadowCleanupAsync(lease, outcome, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // The durable lease may have expired. A later owner will retry the still-pending inventory.
+                }
             }
         }
 

@@ -54,6 +54,29 @@ public sealed class GuardedShadowMigrationRunnerTests
         Assert.Contains(DatabaseInventory.ActiveDatabases[1], harness.Source.SnapshotsRolledBack);
         Assert.Equal(harness.Target.Created.Select(shadow => shadow.Name).Order(), harness.Target.Deleted.Order());
         Assert.Empty(harness.Journal.Completed);
+        Assert.Equal(
+            harness.Target.Created.Select(shadow => shadow.Name).Order(),
+            harness.Journal.Cleanup.Select(outcome => outcome.ShadowName).Order());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RecoveredPendingShadow_IsDeletedBeforeNewSourceSnapshotStarts()
+    {
+        Harness harness = CreateHarness();
+        GuardedMigrationRequest request = CreateRequest();
+        MigrationRunIdentity identity = MigrationRunIdentity.FromRequest(request);
+        var abandoned = new ShadowDatabase(
+            $"legacy_shadow_order_{Guid.NewGuid():N}",
+            identity.RunId.ToString("D"),
+            "Order");
+        harness.Journal.SeedPendingShadow(identity, abandoned);
+        harness.Target.BeforeDelete = () => Assert.Empty(harness.Source.SnapshotsStarted);
+
+        MigrationExecutionResult result = await harness.Runner.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.Equal(MigrationExecutionStatus.Completed, result.Status);
+        Assert.Contains(abandoned.Name, harness.Target.Deleted);
+        Assert.Contains(harness.Journal.Cleanup, outcome => outcome.ShadowName == abandoned.Name && outcome.Deleted);
     }
 
     [Fact]
@@ -367,7 +390,7 @@ public sealed class GuardedShadowMigrationRunnerTests
 
         Assert.Equal("shadow_ownership_invalid", exception.Code);
         ShadowDatabase created = Assert.Single(harness.Target.Created);
-        Assert.Equal(created.Name, Assert.Single(harness.Target.Deleted));
+        Assert.Contains(created.Name, harness.Target.Deleted);
         Assert.Contains(Assert.Single(harness.Journal.Failed).Cleanup,
             outcome => outcome.ShadowName == created.Name && outcome.Deleted);
     }
@@ -399,6 +422,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         FakeSource source = new();
         FakeTarget target = new();
         InMemoryJournal journal = new();
+        target.IsRegistered = journal.IsRegistered;
         MutableTimeProvider timeProvider = new(Now);
         var runner = new GuardedShadowMigrationRunner(
             new PreflightService(new NeverExternalCommandExecutor(), trustStore),
@@ -656,6 +680,8 @@ public sealed class GuardedShadowMigrationRunnerTests
         public string? Corruption { get; set; }
         public bool ReturnMalformedLease { get; set; }
         public bool FailDelete { get; set; }
+        public Func<ShadowDatabase, bool>? IsRegistered { get; set; }
+        public Action? BeforeDelete { get; set; }
 
         public Task<ShadowDatabase> CreateUniqueEmptyShadowAsync(
             string database,
@@ -663,9 +689,11 @@ public sealed class GuardedShadowMigrationRunnerTests
             string ownerRunId,
             CancellationToken cancellationToken)
         {
+            var requested = new ShadowDatabase(shadowName, ownerRunId, database);
+            Assert.True(IsRegistered?.Invoke(requested) ?? false, "Shadow inventory must be durable before CREATE DATABASE.");
             var shadow = ReturnMalformedLease
                 ? new ShadowDatabase(shadowName + "_malformed", ownerRunId, database)
-                : new ShadowDatabase(shadowName, ownerRunId, database);
+                : requested;
             Created.Add(shadow);
             return Task.FromResult(shadow);
         }
@@ -689,6 +717,7 @@ public sealed class GuardedShadowMigrationRunnerTests
 
         public Task DeleteRunOwnedShadowAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
         {
+            BeforeDelete?.Invoke();
             if (FailDelete)
             {
                 throw new InvalidOperationException("simulated cleanup failure");
@@ -804,7 +833,10 @@ public sealed class GuardedShadowMigrationRunnerTests
     {
         public List<MigrationExecutionReceipt> Completed { get; } = [];
         public List<MigrationFailureReceipt> Failed { get; } = [];
+        public List<ShadowCleanupOutcome> Cleanup { get; } = [];
         private readonly Dictionary<Guid, MigrationRunIdentity> _inProgress = [];
+        private readonly Dictionary<Guid, MigrationRunLease> _leases = [];
+        private readonly Dictionary<Guid, List<ShadowDatabase>> _pendingShadows = [];
         private MigrationExecutionReceipt? _forcedCompleted;
 
         public Task<MigrationRunStartResult> TryBeginAsync(
@@ -836,7 +868,12 @@ public sealed class GuardedShadowMigrationRunnerTests
             }
 
             _inProgress.Add(identity.RunId, identity);
-            return Task.FromResult(new MigrationRunStartResult(MigrationRunStartStatus.Acquired, null));
+            var lease = new MigrationRunLease(identity, "test-runner", 1, DateTimeOffset.MaxValue);
+            _leases.Add(identity.RunId, lease);
+            IReadOnlyList<ShadowDatabase> pending = _pendingShadows.TryGetValue(identity.RunId, out List<ShadowDatabase>? shadows)
+                ? [.. shadows]
+                : [];
+            return Task.FromResult(new MigrationRunStartResult(MigrationRunStartStatus.Acquired, null, lease, pending));
         }
 
         public Task RecordCompletedAsync(MigrationExecutionReceipt receipt, CancellationToken cancellationToken)
@@ -846,11 +883,75 @@ public sealed class GuardedShadowMigrationRunnerTests
             return Task.CompletedTask;
         }
 
+        public Task RecordCompletedAsync(
+            MigrationRunLease lease,
+            MigrationExecutionReceipt receipt,
+            CancellationToken cancellationToken)
+        {
+            return RecordCompletedAsync(receipt, cancellationToken);
+        }
+
         public Task RecordFailedAsync(MigrationFailureReceipt receipt, CancellationToken cancellationToken)
         {
             _ = _inProgress.Remove(receipt.RunId);
             Failed.Add(receipt);
             return Task.CompletedTask;
+        }
+
+        public Task RecordFailedAsync(
+            MigrationRunLease lease,
+            MigrationFailureReceipt receipt,
+            CancellationToken cancellationToken)
+        {
+            return RecordFailedAsync(receipt, cancellationToken);
+        }
+
+        public Task<MigrationRunLease> HeartbeatAsync(MigrationRunLease lease, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(lease);
+        }
+
+        public Task RegisterShadowAsync(MigrationRunLease lease, ShadowDatabase shadow, CancellationToken cancellationToken)
+        {
+            if (!_pendingShadows.TryGetValue(lease.Identity.RunId, out List<ShadowDatabase>? shadows))
+            {
+                shadows = [];
+                _pendingShadows.Add(lease.Identity.RunId, shadows);
+            }
+
+            shadows.Add(shadow);
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<ShadowDatabase>> GetPendingShadowsAsync(MigrationRunLease lease, CancellationToken cancellationToken)
+        {
+            IReadOnlyList<ShadowDatabase> shadows = _pendingShadows.TryGetValue(lease.Identity.RunId, out List<ShadowDatabase>? pending)
+                ? pending
+                : [];
+            return Task.FromResult(shadows);
+        }
+
+        public Task RecordShadowCleanupAsync(MigrationRunLease lease, ShadowCleanupOutcome outcome, CancellationToken cancellationToken)
+        {
+            Cleanup.Add(outcome);
+            if (outcome.Deleted && _pendingShadows.TryGetValue(lease.Identity.RunId, out List<ShadowDatabase>? pending))
+            {
+                _ = pending.RemoveAll(shadow => string.Equals(shadow.Name, outcome.ShadowName, StringComparison.Ordinal));
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public void SeedPendingShadow(MigrationRunIdentity identity, ShadowDatabase shadow)
+        {
+            _pendingShadows[identity.RunId] = [shadow];
+        }
+
+        public bool IsRegistered(ShadowDatabase shadow)
+        {
+            return Guid.TryParse(shadow.OwnerRunId, out Guid runId) &&
+                _pendingShadows.TryGetValue(runId, out List<ShadowDatabase>? pending) &&
+                pending.Contains(shadow);
         }
 
         public void ForceInProgress(MigrationRunIdentity identity)
