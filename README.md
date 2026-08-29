@@ -123,6 +123,15 @@ checks, defaults, generated columns, and lossless type mappings. Unsupported
 types, untrusted constraints, or tables without a proven total ordering fail
 closed; a checked-in or hand-maintained schema plan is not accepted as fresh.
 
+`execute-shadow` reads the signed receipt, freshly generated plan, and separate
+signed execution authorization from protected file references. SQL Server and
+PostgreSQL connection strings plus the evidence-signing private-key path are
+accepted only through environment references. It uses the durable PostgreSQL
+journal and uniquely named, run-owned `legacy_shadow_*` databases; replay,
+fencing, lease expiry, crash cleanup, and wrong-target checks remain enforced by
+the guarded runner. The command writes a new signed execution receipt and has no
+canonical-target or deployment mode.
+
 `PreflightService.Validate` accepts an in-memory `BackupReceipt` and
 `MigrationPlan`. A valid receipt must:
 

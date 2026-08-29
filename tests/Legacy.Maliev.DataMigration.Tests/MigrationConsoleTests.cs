@@ -73,6 +73,36 @@ public sealed class MigrationConsoleTests : IDisposable
         Assert.Equal(string.Empty, output.ToString());
     }
 
+    [Fact]
+    public async Task RunAsync_ExecuteShadow_MissingRuntimeReferencesFailsClosed()
+    {
+        _ = Directory.CreateDirectory(_root);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            executeShadow = new
+            {
+                receiptPath = "receipt.json",
+                planPath = "plan.json",
+                authorizationPath = "authorization.json",
+                outputPath = "execution.json",
+                runnerDigestSha256 = new string('a', 64),
+                receiptTrustedKeys = Array.Empty<object>(),
+                authorizationTrustedKeys = Array.Empty<object>(),
+                evidenceKeyId = "evidence-key",
+            },
+        }, JsonOptions));
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["execute-shadow", "--config", configPath], output, error, _ => null, CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal("shadow_runtime_reference_missing" + Environment.NewLine, error.ToString());
+        Assert.Equal(string.Empty, output.ToString());
+    }
+
     private static JsonSerializerOptions JsonOptions { get; } = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
     public void Dispose()

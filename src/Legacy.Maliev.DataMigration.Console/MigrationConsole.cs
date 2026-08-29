@@ -8,6 +8,8 @@ public static class MigrationConsole
 {
     private const string SigningKeyEnvironmentVariable = "LEGACY_MIGRATION_RECEIPT_SIGNING_KEY_FILE";
     private const string SqlServerConnectionEnvironmentVariable = "LEGACY_MIGRATION_SQLSERVER_CONNECTION";
+    private const string PostgreSqlConnectionEnvironmentVariable = "LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION";
+    private const string EvidenceKeyEnvironmentVariable = "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -38,6 +40,10 @@ public static class MigrationConsole
                     await ProducePlanAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("plan_complete").ConfigureAwait(false);
                     return 0;
+                case "execute-shadow":
+                    await ExecuteShadowAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("execute_shadow_complete").ConfigureAwait(false);
+                    return 0;
                 default:
                     await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
                     return 2;
@@ -58,6 +64,68 @@ public static class MigrationConsole
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 65;
         }
+        catch (MigrationExecutionException exception)
+        {
+            await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
+            return 70;
+        }
+    }
+
+    private static async Task ExecuteShadowAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
+            .ConfigureAwait(false);
+        ExecuteShadowCommandConfiguration execute = configuration.ExecuteShadow ??
+            throw new MigrationConsoleException("shadow_configuration_missing", "Shadow execution configuration is required.");
+        string? sourceConnection = getEnvironmentVariable(SqlServerConnectionEnvironmentVariable);
+        string? targetConnection = getEnvironmentVariable(PostgreSqlConnectionEnvironmentVariable);
+        string? evidenceKeyPath = getEnvironmentVariable(EvidenceKeyEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(sourceConnection) || string.IsNullOrWhiteSpace(targetConnection) || string.IsNullOrWhiteSpace(evidenceKeyPath))
+        {
+            throw new MigrationConsoleException("shadow_runtime_reference_missing", "Shadow runtime references are required.");
+        }
+
+        BackupReceipt receipt = await ReadJsonAsync<BackupReceipt>(execute.ReceiptPath, cancellationToken).ConfigureAwait(false);
+        FreshSchemaPlan plan = await ReadJsonAsync<FreshSchemaPlan>(execute.PlanPath, cancellationToken).ConfigureAwait(false);
+        ExecutionAuthorizationReceipt authorization = await ReadJsonAsync<ExecutionAuthorizationReceipt>(execute.AuthorizationPath, cancellationToken)
+            .ConfigureAwait(false);
+        ReceiptAttestationTrustStore receiptTrust = await ReadTrustStoreAsync(execute.ReceiptTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(execute.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
+        string privateKeyPem = await File.ReadAllTextAsync(evidenceKeyPath, cancellationToken).ConfigureAwait(false);
+        using var evidenceSigner = new P256MigrationEvidenceSigner(execute.EvidenceKeyId, privateKeyPem);
+        await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(sourceConnection));
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(targetConnection));
+        var journal = new PostgreSqlMigrationRunJournal(new PostgreSqlMigrationRunJournalOptions(targetConnection));
+        var runner = new GuardedShadowMigrationRunner(
+            new PreflightService(new DisabledExternalCommandExecutor(), receiptTrust),
+            authorizationTrust,
+            source,
+            target,
+            journal,
+            evidenceSigner,
+            TimeProvider.System,
+            new GuardedRunnerPolicy(plan.SourceCommitSha, execute.RunnerDigestSha256));
+        MigrationExecutionResult result = await runner.ExecuteAsync(
+            new GuardedMigrationRequest(receipt, plan, authorization),
+            cancellationToken).ConfigureAwait(false);
+        await WriteNewJsonAsync(execute.OutputPath, result, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<ReceiptAttestationTrustStore> ReadTrustStoreAsync(
+        IReadOnlyList<TrustedKeyReference> references,
+        CancellationToken cancellationToken)
+    {
+        var keys = new List<TrustedAttestationKey>(references.Count);
+        foreach (TrustedKeyReference reference in references)
+        {
+            byte[] publicKey = Convert.FromBase64String(await File.ReadAllTextAsync(reference.SubjectPublicKeyInfoPath, cancellationToken)
+                .ConfigureAwait(false));
+            keys.Add(new(reference.KeyId, publicKey));
+        }
+        return new(keys);
     }
 
     private static async Task ProducePlanAsync(
@@ -148,13 +216,34 @@ public static class MigrationConsole
 
     private sealed record MigrationConsoleConfiguration(
         ReceiptCommandConfiguration? Receipt = null,
-        PlanCommandConfiguration? Plan = null);
+        PlanCommandConfiguration? Plan = null,
+        ExecuteShadowCommandConfiguration? ExecuteShadow = null);
 
     private sealed record ReceiptCommandConfiguration(string BackupStatePath, string OutputPath, string KeyId);
 
     private sealed record PlanCommandConfiguration(string OutputPath, string SourceCommitSha);
 
+    private sealed record ExecuteShadowCommandConfiguration(
+        string ReceiptPath,
+        string PlanPath,
+        string AuthorizationPath,
+        string OutputPath,
+        string RunnerDigestSha256,
+        IReadOnlyList<TrustedKeyReference> ReceiptTrustedKeys,
+        IReadOnlyList<TrustedKeyReference> AuthorizationTrustedKeys,
+        string EvidenceKeyId);
+
+    private sealed record TrustedKeyReference(string KeyId, string SubjectPublicKeyInfoPath);
+
     private sealed record BackupStateDocument(IReadOnlyList<VerifiedBackupStateArtifact> Artifacts);
+
+    private sealed class DisabledExternalCommandExecutor : IExternalCommandExecutor
+    {
+        public Task<int> ExecuteAsync(string command, CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException("External commands are disabled in the guarded shadow runner.");
+        }
+    }
 }
 
 public sealed class MigrationConsoleException(string code, string message) : Exception(message)
