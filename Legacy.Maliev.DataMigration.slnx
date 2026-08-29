@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Legacy.Maliev.DataMigration/Legacy.Maliev.DataMigration.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Legacy.Maliev.DataMigration.Tests/Legacy.Maliev.DataMigration.Tests.csproj" />
+  </Folder>
+</Solution>
