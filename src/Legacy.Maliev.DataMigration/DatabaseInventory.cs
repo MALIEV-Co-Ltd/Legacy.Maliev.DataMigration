@@ -18,9 +18,11 @@ public static class DatabaseInventory
                 ["DataProtectionKeys"] = Migrate("Legacy.Maliev.AuthService"),
                 ["EmployeeIdentity"] = Migrate("Legacy.Maliev.AuthService"),
                 ["Employee"] = Migrate("Legacy.Maliev.EmployeeService"),
+                ["Hangfire"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.ArchiveOnly),
                 ["Invoice"] = Migrate("Legacy.Maliev.AccountingService"),
                 ["JobOffers"] = Migrate("Legacy.Maliev.CareerService"),
                 ["Log"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.ArchiveOnly),
+                ["MachineLearning"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.Excluded),
                 ["MachineLearningData"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.Excluded),
                 ["Material"] = Migrate("Legacy.Maliev.CatalogService"),
                 ["Message"] = Migrate("Legacy.Maliev.ContactService"),
@@ -33,6 +35,8 @@ public static class DatabaseInventory
                 ["Receipt"] = Migrate("Legacy.Maliev.AccountingService"),
                 ["Supplier"] = Migrate("Legacy.Maliev.ProcurementService"),
                 ["Upload"] = Migrate("Legacy.Maliev.FileService"),
+                ["ContactRequest"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.ReviewHold),
+                ["LocationData"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.ReviewHold),
             });
 
     public static IReadOnlyList<string> ActiveDatabases { get; } = [.. Entries

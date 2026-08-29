@@ -5,6 +5,7 @@ public enum DatabaseDisposition
     Migrate,
     ArchiveOnly,
     Excluded,
+    ReviewHold,
 }
 
 public sealed record DatabaseDispositionEntry(

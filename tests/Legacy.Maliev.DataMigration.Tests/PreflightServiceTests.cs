@@ -12,10 +12,14 @@ public sealed class PreflightServiceTests
     [Fact]
     public void Inventory_ApprovedContract_ContainsExactlyTwentyOneActiveDatabases()
     {
-        Assert.Equal(23, DatabaseInventory.Entries.Count);
+        Assert.Equal(27, DatabaseInventory.Entries.Count);
         Assert.Equal(21, DatabaseInventory.ActiveDatabases.Count);
+        Assert.Equal(DatabaseDisposition.ArchiveOnly, DatabaseInventory.Entries["Hangfire"].Disposition);
         Assert.Equal(DatabaseDisposition.ArchiveOnly, DatabaseInventory.Entries["Log"].Disposition);
+        Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["MachineLearning"].Disposition);
         Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["MachineLearningData"].Disposition);
+        Assert.Equal(DatabaseDisposition.ReviewHold, DatabaseInventory.Entries["ContactRequest"].Disposition);
+        Assert.Equal(DatabaseDisposition.ReviewHold, DatabaseInventory.Entries["LocationData"].Disposition);
     }
 
     [Fact]
