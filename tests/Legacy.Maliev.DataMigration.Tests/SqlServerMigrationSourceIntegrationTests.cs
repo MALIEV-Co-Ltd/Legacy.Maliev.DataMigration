@@ -178,15 +178,14 @@ public sealed class SqlServerMigrationSourceIntegrationTests
         Assert.Equal(1234.5678m, rows[0].Values["Amount"]);
         Assert.Equal("2026-08-29T17:45:12.1234567", rows[0].Values["LocalTime"]);
         Assert.Equal("2026-08-29T17:45:12.1234567+07:00", rows[0].Values["OffsetTime"]);
-        ReplayableLob largeTextValue = Assert.IsType<ReplayableLob>(rows[0].Values["LargeText"]);
-        ReplayableLob largeBinaryValue = Assert.IsType<ReplayableLob>(rows[0].Values["LargeBinary"]);
-        Assert.Equal(9L * 1024 * 1024, largeTextValue.ByteLength);
-        Assert.Equal(5L * 1024 * 1024, largeBinaryValue.ByteLength);
+        StreamingLob largeTextValue = Assert.IsType<StreamingLob>(rows[0].Values["LargeText"]);
+        StreamingLob largeBinaryValue = Assert.IsType<StreamingLob>(rows[0].Values["LargeBinary"]);
+        await largeTextValue.ConsumeAsync(Stream.Null, CancellationToken.None);
+        await largeBinaryValue.ConsumeAsync(Stream.Null, CancellationToken.None);
+        Assert.Equal(9L * 1024 * 1024, largeTextValue.CanonicalByteLength);
+        Assert.Equal(5L * 1024 * 1024, largeBinaryValue.CanonicalByteLength);
         IReadOnlyDictionary<string, long> orphans = await source.InspectForeignKeyOrphansAsync(database, table, CancellationToken.None);
         Assert.Equal(0, orphans["FK_Child_Parent"]);
-
-        await largeTextValue.DisposeAsync();
-        await largeBinaryValue.DisposeAsync();
 
         await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
         await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);

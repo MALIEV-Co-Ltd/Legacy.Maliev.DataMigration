@@ -863,7 +863,7 @@ public sealed partial class GuardedShadowMigrationRunner
             .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             long rowBytes = MigrationRowSizeEstimator.Estimate(row);
-            bool hasStreamingValue = row.Values.Values.Any(value => value is ReplayableLob);
+            bool hasStreamingValue = row.Values.Values.Any(value => value is StreamingLob);
             if (!hasStreamingValue && rowBytes > GuardedRunnerPolicy.CopyBatchByteLimit)
             {
                 throw new MigrationExecutionException(
@@ -871,28 +871,18 @@ public sealed partial class GuardedShadowMigrationRunner
                     $"{database}.{table.SourceSchema}.{table.SourceTable} contains a row larger than the approved copy batch byte limit.");
             }
 
-            collector.Append(row);
             if (hasStreamingValue)
             {
-                try
+                if (batch.Count > 0)
                 {
-                    if (batch.Count > 0)
-                    {
-                        copied += await CopyBatchExactlyAsync(transaction, table, batch, cancellationToken).ConfigureAwait(false);
-                        batch.Clear();
-                        batchBytes = 0;
-                    }
-
-                    var streamingBatch = new List<MigrationRow> { row };
-                    copied += await CopyBatchExactlyAsync(transaction, table, streamingBatch, cancellationToken).ConfigureAwait(false);
+                    copied += await CopyBatchExactlyAsync(transaction, table, batch, cancellationToken).ConfigureAwait(false);
+                    batch.ForEach(collector.Append);
+                    batch.Clear();
+                    batchBytes = 0;
                 }
-                finally
-                {
-                    foreach (ReplayableLob lob in row.Values.Values.OfType<ReplayableLob>())
-                    {
-                        await lob.DisposeAsync().ConfigureAwait(false);
-                    }
-                }
+                var streamingBatch = new List<MigrationRow> { row };
+                copied += await CopyBatchExactlyAsync(transaction, table, streamingBatch, cancellationToken).ConfigureAwait(false);
+                collector.Append(row);
                 continue;
             }
             if (batch.Count > 0 &&
@@ -900,6 +890,7 @@ public sealed partial class GuardedShadowMigrationRunner
                     rowBytes > GuardedRunnerPolicy.CopyBatchByteLimit - batchBytes))
             {
                 copied += await CopyBatchExactlyAsync(transaction, table, batch, cancellationToken).ConfigureAwait(false);
+                batch.ForEach(collector.Append);
                 batch.Clear();
                 batchBytes = 0;
             }
@@ -910,6 +901,7 @@ public sealed partial class GuardedShadowMigrationRunner
                 batchBytes >= GuardedRunnerPolicy.CopyBatchByteLimit)
             {
                 copied += await CopyBatchExactlyAsync(transaction, table, batch, cancellationToken).ConfigureAwait(false);
+                batch.ForEach(collector.Append);
                 batch.Clear();
                 batchBytes = 0;
             }
@@ -918,6 +910,7 @@ public sealed partial class GuardedShadowMigrationRunner
         if (batch.Count > 0)
         {
             copied += await CopyBatchExactlyAsync(transaction, table, batch, cancellationToken).ConfigureAwait(false);
+            batch.ForEach(collector.Append);
         }
 
         return copied;

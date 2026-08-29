@@ -299,7 +299,11 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
     {
         ArgumentNullException.ThrowIfNull(table);
         SnapshotLease lease = GetSnapshot(database);
-        await using var command = new SqlCommand(BuildReadTableCommand(table), lease.Connection, lease.Transaction)
+        bool hasLargeValues = table.OrderedColumns.Any(column => IsLargeValueType(table.SourceColumnTypes[column]));
+        await using var command = new SqlCommand(
+            hasLargeValues ? BuildStreamingReadTableCommand(table) : BuildReadTableCommand(table),
+            lease.Connection,
+            lease.Transaction)
         {
             CommandTimeout = 0,
         };
@@ -309,34 +313,29 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var values = new Dictionary<string, object?>(table.OrderedColumns.Count, StringComparer.Ordinal);
-            for (var ordinal = 0; ordinal < table.OrderedColumns.Count; ordinal++)
+            string[] materializedColumns = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
+            for (var ordinal = 0; ordinal < materializedColumns.Length; ordinal++)
             {
-                string sourceType = table.SourceColumnTypes[table.OrderedColumns[ordinal]];
-                object? value;
+                string column = materializedColumns[ordinal];
+                string sourceType = table.SourceColumnTypes[column];
+                object? value = await reader.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false)
+                    ? null
+                    : reader.GetValue(ordinal);
+                values.Add(column, NormalizeSourceValue(value, sourceType, table.ColumnTypes[column]));
+            }
+            string[] streamedColumns = [.. table.OrderedColumns.Where(column => IsLargeValueType(table.SourceColumnTypes[column]))];
+            for (var index = 0; index < streamedColumns.Length; index++)
+            {
+                string column = streamedColumns[index];
+                int ordinal = materializedColumns.Length + index;
                 if (await reader.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false))
                 {
-                    value = null;
-                }
-                else if (IsLargeValueType(sourceType) && sourceType is "varbinary(max)" or "image")
-                {
-                    await using Stream stream = reader.GetStream(ordinal);
-                    value = await ReplayableLob.FromStreamAsync(stream, cancellationToken).ConfigureAwait(false);
-                }
-                else if (IsLargeValueType(sourceType))
-                {
-                    using TextReader text = reader.GetTextReader(ordinal);
-                    value = await ReplayableLob.FromTextReaderAsync(text, cancellationToken).ConfigureAwait(false);
+                    values.Add(column, null);
                 }
                 else
                 {
-                    value = reader.GetValue(ordinal);
+                    values.Add(column, CreateStreamingLob(lease, table, column, values));
                 }
-                values.Add(
-                    table.OrderedColumns[ordinal],
-                    NormalizeSourceValue(
-                        value,
-                        sourceType,
-                        table.ColumnTypes[table.OrderedColumns[ordinal]]));
             }
 
             yield return new MigrationRow(values);
@@ -424,7 +423,7 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         {
             InitialCatalog = database,
             ApplicationIntent = ApplicationIntent.ReadOnly,
-            MultipleActiveResultSets = false,
+            MultipleActiveResultSets = true,
         };
         return builder.ConnectionString;
     }
@@ -442,6 +441,68 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
     internal static object? NormalizeSourceValue(object? value, string sourceType)
     {
         return NormalizeSourceValue(value, sourceType, string.Empty);
+    }
+
+    private static string BuildStreamingReadTableCommand(TableCopyPlan table)
+    {
+        IReadOnlyList<string> keys = table.PrimaryKey?.Columns ?? table.OrderByColumns;
+        if (keys.Count == 0 || keys.Any(column => IsLargeValueType(table.SourceColumnTypes[column])))
+        {
+            throw new MigrationExecutionException("streaming_lob_key_invalid", "A streamed value requires a materialized deterministic row key.");
+        }
+        string[] materialized = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
+        string[] nullProbes = [.. table.OrderedColumns.Where(column => IsLargeValueType(table.SourceColumnTypes[column]))
+            .Select(column => $"DATALENGTH({QuoteIdentifier(column)})")];
+        return $"SELECT {string.Join(", ", materialized.Concat(nullProbes))} " +
+            $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)} " +
+            $"ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
+    }
+
+    private static StreamingLob CreateStreamingLob(SnapshotLease lease, TableCopyPlan table, string column, Dictionary<string, object?> values)
+    {
+        IReadOnlyList<string> keys = table.PrimaryKey?.Columns ?? table.OrderByColumns;
+        object?[] keyValues = [.. keys.Select(key => values[key])];
+        string predicate = string.Join(" AND ", keys.Select((key, index) =>
+            keyValues[index] is null or DBNull ? $"{QuoteIdentifier(key)} IS NULL" : $"{QuoteIdentifier(key)} = @key{index}"));
+        string sql = $"SELECT {QuoteIdentifier(column)} FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)} WHERE {predicate};";
+        bool binary = table.SourceColumnTypes[column] is "varbinary(max)" or "image";
+        return new StreamingLob(binary ? StreamingLobKind.Binary : StreamingLobKind.Text, async (destination, cancellationToken) =>
+        {
+            await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction) { CommandTimeout = 0 };
+            for (var index = 0; index < keys.Count; index++)
+            {
+                if (keyValues[index] is not null and not DBNull)
+                {
+                    _ = command.Parameters.AddWithValue($"key{index}", keyValues[index]);
+                }
+            }
+            await using SqlDataReader reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false))
+            {
+                throw new MigrationExecutionException("streaming_lob_row_missing", "The deterministic source row for a streamed value is missing or null.");
+            }
+            if (binary)
+            {
+                await using Stream input = reader.GetStream(0);
+                await input.CopyToAsync(destination, 64 * 1024, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                using TextReader input = reader.GetTextReader(0);
+                await using var writer = new StreamWriter(destination, new UTF8Encoding(false, true), 32 * 1024, leaveOpen: true);
+                char[] buffer = new char[32 * 1024];
+                int read;
+                while ((read = await input.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) != 0)
+                {
+                    await writer.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                }
+                await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new MigrationExecutionException("streaming_lob_row_ambiguous", "The deterministic source key selected multiple rows.");
+            }
+        });
     }
 
     internal static object? NormalizeSourceValue(object? value, string sourceType, string targetType)

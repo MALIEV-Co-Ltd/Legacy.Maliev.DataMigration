@@ -39,27 +39,52 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
             "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
         try
         {
-            TableCopyPlan table = CreateTablePlan() with
+            TableCopyPlan table = new TableCopyPlan("dbo", "Order", "public", "orders", ["Id", "Name", "Payload"], ["Id"])
             {
+                SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["Id"] = "int",
+                    ["Name"] = "nvarchar(max)",
+                    ["Payload"] = "varbinary(max)",
+                },
+                ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["Id"] = "integer",
+                    ["Name"] = "text",
+                    ["Payload"] = "bytea",
+                },
+                PrimaryKey = new PrimaryKeyCopyPlan("PK_orders", ["Id"]),
                 SourceColumns =
                 [
                     new("Id", "int", Hash("Id:int"), null),
                     new("Name", "nvarchar(max)", Hash("Name:nvarchar(max)"), 10 * 1024 * 1024),
+                    new("Payload", "varbinary(max)", Hash("Payload:varbinary(max)"), 6 * 1024 * 1024),
                 ],
             };
             var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
             DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
-            await using ReplayableLob lob = await ReplayableLob.FromTextReaderAsync(
-                new StringReader(new string('ก', 3 * 1024 * 1024)), CancellationToken.None);
-            var row = new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["Name"] = lob });
-            using var expectedCollector = new TableEvidenceCollector(table);
-            expectedCollector.Append(row);
-            string expected = expectedCollector.Finish().ContentSha256;
+            string largeText = new('ก', 3 * 1024 * 1024);
+            var lob = new StreamingLob(StreamingLobKind.Text, async (destination, cancellationToken) =>
+            {
+                await using var writer = new StreamWriter(destination, new UTF8Encoding(false, true), 32 * 1024, leaveOpen: true);
+                await writer.WriteAsync(largeText.AsMemory(), cancellationToken);
+                await writer.FlushAsync(cancellationToken);
+            });
+            byte[] largeBinary = Enumerable.Range(0, 5 * 1024 * 1024).Select(index => (byte)(index % 251)).ToArray();
+            var binaryLob = new StreamingLob(StreamingLobKind.Binary, async (destination, cancellationToken) =>
+            {
+                await using var source = new MemoryStream(largeBinary, writable: false);
+                await source.CopyToAsync(destination, 64 * 1024, cancellationToken);
+            });
+            var row = new MigrationRow(new Dictionary<string, object?> { ["Id"] = 1, ["Name"] = lob, ["Payload"] = binaryLob });
 
             await using IPostgreSqlWholeDatabaseTransaction transaction =
                 await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
             await transaction.ApplySchemaAsync(plan, CancellationToken.None);
             Assert.Equal(1, await transaction.CopyBatchAsync(table, [row], CancellationToken.None));
+            using var expectedCollector = new TableEvidenceCollector(table);
+            expectedCollector.Append(row);
+            string expected = expectedCollector.Finish().ContentSha256;
             _ = await transaction.InspectSchemaAsync(plan, CancellationToken.None);
             TableReconciliationEvidence evidence = await transaction.InspectTableAsync(table, CancellationToken.None);
             Assert.Equal(expected, evidence.ContentSha256);

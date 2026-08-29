@@ -3,6 +3,7 @@ using System.Data;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Runtime.ExceptionServices;
 using Npgsql;
 
 namespace Legacy.Maliev.DataMigration;
@@ -381,105 +382,217 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         string columns = string.Join(", ", copyColumns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
         string sql = $"COPY {Qualified(table.TargetSchema, table.TargetTable)} ({columns}) FROM STDIN (FORMAT BINARY);";
         long count = 0;
-        await using (NpgsqlBinaryImporter importer = await connection.BeginBinaryImportAsync(sql, cancellationToken)
-            .ConfigureAwait(false))
+        var stagedRows = new List<(MigrationRow Row, Dictionary<string, uint> Oids)>();
+        var operationSucceeded = false;
+        Exception? operationFailure = null;
+        try
         {
             foreach (MigrationRow row in rows)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 ValidateRow(table, row);
-                await importer.StartRowAsync(cancellationToken).ConfigureAwait(false);
-                foreach (string column in copyColumns)
+                var oids = new Dictionary<string, uint>(StringComparer.Ordinal);
+                stagedRows.Add((row, oids));
+                foreach ((string column, StreamingLob lob) in row.Values
+                    .Where(item => item.Value is StreamingLob)
+                    .Select(item => (item.Key, (StreamingLob)item.Value!)))
                 {
-                    object? rawValue = row.Values[column];
-                    object? value = rawValue is ReplayableLob lob
-                        ? lob.Kind == ReplayableLobKind.Binary ? Array.Empty<byte>() : string.Empty
-                        : NormalizeValue(rawValue, table.ColumnTypes[column]);
-                    if (value is null)
-                    {
-                        await importer.WriteNullAsync(cancellationToken).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await importer.WriteAsync(value, PostgreSqlTypePolicy.Validate(table.ColumnTypes[column]), cancellationToken)
-                            .ConfigureAwait(false);
-                    }
+                    uint oid = await CreateLargeObjectAsync(cancellationToken).ConfigureAwait(false);
+                    oids.Add(column, oid);
+                    await using Stream destination = await OpenLargeObjectWriteStreamAsync(oid, cancellationToken).ConfigureAwait(false);
+                    await lob.ConsumeAsync(destination, cancellationToken).ConfigureAwait(false);
                 }
-
-                count++;
             }
 
-            _ = await importer.CompleteAsync(cancellationToken).ConfigureAwait(false);
+            await using (NpgsqlBinaryImporter importer = await connection.BeginBinaryImportAsync(sql, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                foreach (MigrationRow row in rows)
+                {
+                    await importer.StartRowAsync(cancellationToken).ConfigureAwait(false);
+                    foreach (string column in copyColumns)
+                    {
+                        object? rawValue = row.Values[column];
+                        object? value = rawValue is StreamingLob lob
+                            ? lob.Kind == StreamingLobKind.Binary ? Array.Empty<byte>() : string.Empty
+                            : NormalizeValue(rawValue, table.ColumnTypes[column]);
+                        if (value is null)
+                        {
+                            await importer.WriteNullAsync(cancellationToken).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await importer.WriteAsync(value, PostgreSqlTypePolicy.Validate(table.ColumnTypes[column]), cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                    }
+                    count++;
+                }
+
+                _ = await importer.CompleteAsync(cancellationToken).ConfigureAwait(false);
+            }
+            foreach ((MigrationRow row, Dictionary<string, uint> oids) in stagedRows.Where(item => item.Oids.Count > 0))
+            {
+                await WriteStreamingValuesAsync(table, row, oids, cancellationToken).ConfigureAwait(false);
+            }
+            operationSucceeded = true;
         }
-        foreach (MigrationRow row in rows.Where(item => item.Values.Values.Any(value => value is ReplayableLob)))
+        catch (Exception exception)
         {
-            await WriteReplayableValuesAsync(table, row, cancellationToken).ConfigureAwait(false);
+            operationFailure = exception;
+        }
+        Exception? cleanupFailure = null;
+        foreach (uint oid in stagedRows.SelectMany(item => item.Oids.Values))
+        {
+            try
+            {
+                await UnlinkLargeObjectAsync(oid, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (PostgresException) when (!operationSucceeded)
+            {
+                // A failed transaction rolls its temporary large objects back atomically.
+            }
+            catch (Exception exception)
+            {
+                cleanupFailure ??= exception;
+            }
+        }
+        if (operationSucceeded && cleanupFailure is not null)
+        {
+            throw new MigrationExecutionException(
+                "streaming_lob_cleanup_failed",
+                "PostgreSQL did not remove every transaction-scoped large-object staging value.",
+                cleanupFailure);
+        }
+        if (operationFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(operationFailure).Throw();
         }
         return count;
     }
 
-    private async Task WriteReplayableValuesAsync(
+    private async Task<uint> CreateLargeObjectAsync(CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("SELECT lo_create(0)::bigint;", connection, transaction);
+        return checked((uint)Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture));
+    }
+
+    private async Task<Stream> OpenLargeObjectWriteStreamAsync(uint oid, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("SELECT lo_open(@oid, 131072);", connection, transaction);
+        _ = command.Parameters.AddWithValue("oid", (long)oid);
+        int descriptor = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+        return new PostgreSqlLargeObjectWriteStream(connection, transaction, descriptor);
+    }
+
+    private async Task UnlinkLargeObjectAsync(uint oid, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("SELECT lo_unlink(@oid);", connection, transaction);
+        _ = command.Parameters.AddWithValue("oid", (long)oid);
+        _ = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private sealed class PostgreSqlLargeObjectWriteStream(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        int descriptor) : Stream
+    {
+        private const int MaximumChunkBytes = 64 * 1024;
+        private bool _disposed;
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => !_disposed;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException("Use bounded asynchronous writes.");
+        }
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            for (var offset = 0; offset < buffer.Length; offset += MaximumChunkBytes)
+            {
+                ReadOnlyMemory<byte> chunk = buffer.Slice(offset, Math.Min(MaximumChunkBytes, buffer.Length - offset));
+                await using var command = new NpgsqlCommand("SELECT lowrite(@descriptor, @chunk);", connection, transaction);
+                _ = command.Parameters.AddWithValue("descriptor", descriptor);
+                _ = command.Parameters.AddWithValue("chunk", chunk.ToArray());
+                int written = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+                if (written != chunk.Length)
+                {
+                    throw new MigrationExecutionException("streaming_lob_short_write", "PostgreSQL did not acknowledge the complete bounded large-object chunk.");
+                }
+            }
+        }
+
+        public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            await WriteAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            if (!_disposed)
+            {
+                _disposed = true;
+                await using var command = new NpgsqlCommand("SELECT lo_close(@descriptor);", connection, transaction);
+                _ = command.Parameters.AddWithValue("descriptor", descriptor);
+                _ = await command.ExecuteScalarAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            await base.DisposeAsync().ConfigureAwait(false);
+            GC.SuppressFinalize(this);
+        }
+    }
+
+    private async Task WriteStreamingValuesAsync(
         TableCopyPlan table,
         MigrationRow row,
+        IReadOnlyDictionary<string, uint> oids,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<string> keys = table.PrimaryKey?.Columns ?? table.OrderByColumns;
-        if (keys.Count == 0 || keys.Any(column => row.Values[column] is ReplayableLob))
+        if (keys.Count == 0 || keys.Any(column => row.Values[column] is StreamingLob))
         {
             throw new MigrationExecutionException("streaming_lob_key_invalid", "A streamed value requires a materialized deterministic row key.");
         }
 
         string predicate = string.Join(" AND ", keys.Select((column, index) =>
             $"{PostgreSqlShadowTarget.QuoteIdentifier(column)} IS NOT DISTINCT FROM @key{index}"));
-        foreach ((string column, ReplayableLob lob) in row.Values
-            .Where(item => item.Value is ReplayableLob)
-            .Select(item => (item.Key, (ReplayableLob)item.Value!)))
-        {
-            await using Stream input = lob.OpenRead();
-            if (lob.Kind == ReplayableLobKind.Binary)
-            {
-                byte[] buffer = new byte[64 * 1024];
-                int read;
-                while ((read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) != 0)
-                {
-                    await AppendLobChunkAsync(table, row, column, predicate, keys, buffer[..read], cancellationToken).ConfigureAwait(false);
-                }
-            }
-            else
-            {
-                using var reader = new StreamReader(input, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: false, 64 * 1024, leaveOpen: false);
-                char[] buffer = new char[(32 * 1024) + 1];
-                int read;
-                while ((read = await reader.ReadAsync(buffer.AsMemory(0, 32 * 1024), cancellationToken).ConfigureAwait(false)) != 0)
-                {
-                    if (char.IsHighSurrogate(buffer[read - 1]))
-                    {
-                        int suffix = await reader.ReadAsync(buffer.AsMemory(read, 1), cancellationToken).ConfigureAwait(false);
-                        if (suffix != 1 || !char.IsLowSurrogate(buffer[read]))
-                        {
-                            throw new MigrationExecutionException("streaming_lob_unicode_invalid", "A streamed text value contains an unpaired UTF-16 surrogate.");
-                        }
-                        read++;
-                    }
-                    await AppendLobChunkAsync(table, row, column, predicate, keys, new string(buffer, 0, read), cancellationToken).ConfigureAwait(false);
-                }
-            }
-        }
-    }
-
-    private async Task AppendLobChunkAsync(
-        TableCopyPlan table,
-        MigrationRow row,
-        string column,
-        string predicate,
-        IReadOnlyList<string> keys,
-        object chunk,
-        CancellationToken cancellationToken)
-    {
-        string quotedColumn = PostgreSqlShadowTarget.QuoteIdentifier(column);
-        string sql = $"UPDATE {Qualified(table.TargetSchema, table.TargetTable)} SET {quotedColumn} = {quotedColumn} || @chunk WHERE {predicate};";
+        string assignments = string.Join(", ", oids.Select((item, index) =>
+            $"{PostgreSqlShadowTarget.QuoteIdentifier(item.Key)} = " +
+            (string.Equals(table.ColumnTypes[item.Key], "bytea", StringComparison.Ordinal)
+                ? $"lo_get(@oid{index})"
+                : $"convert_from(lo_get(@oid{index}), 'UTF8')")));
+        string sql = $"UPDATE {Qualified(table.TargetSchema, table.TargetTable)} SET {assignments} WHERE {predicate};";
         await using var command = new NpgsqlCommand(sql, connection, transaction);
-        _ = command.Parameters.AddWithValue("chunk", chunk);
+        var oidIndex = 0;
+        foreach (uint oid in oids.Values)
+        {
+            _ = command.Parameters.AddWithValue($"oid{oidIndex++}", (long)oid);
+        }
         for (var index = 0; index < keys.Count; index++)
         {
             _ = command.Parameters.AddWithValue($"key{index}", NormalizeValue(row.Values[keys[index]], table.ColumnTypes[keys[index]]) ?? DBNull.Value);
@@ -717,7 +830,6 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 var values = new Dictionary<string, object?>(table.OrderedColumns.Count, StringComparer.Ordinal);
-                var lobs = new List<ReplayableLob>();
                 for (var ordinal = 0; ordinal < table.OrderedColumns.Count; ordinal++)
                 {
                     string column = table.OrderedColumns[ordinal];
@@ -729,36 +841,38 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     else if (table.SourceColumns.FirstOrDefault(item => item.Column == column)?.MaxObservedDataLength is not null &&
                         string.Equals(table.ColumnTypes[column], "bytea", StringComparison.Ordinal))
                     {
-                        await using Stream stream = reader.GetStream(ordinal);
-                        value = await ReplayableLob.FromStreamAsync(stream, cancellationToken).ConfigureAwait(false);
+                        var lob = new StreamingLob(StreamingLobKind.Binary, async (destination, token) =>
+                        {
+                            await using Stream input = reader.GetStream(ordinal);
+                            await input.CopyToAsync(destination, 64 * 1024, token).ConfigureAwait(false);
+                        });
+                        await lob.ConsumeAsync(Stream.Null, cancellationToken).ConfigureAwait(false);
+                        value = lob;
                     }
                     else if (table.SourceColumns.FirstOrDefault(item => item.Column == column)?.MaxObservedDataLength is not null)
                     {
-                        using TextReader text = reader.GetTextReader(ordinal);
-                        value = await ReplayableLob.FromTextReaderAsync(text, cancellationToken).ConfigureAwait(false);
+                        var lob = new StreamingLob(StreamingLobKind.Text, async (destination, token) =>
+                        {
+                            using TextReader input = reader.GetTextReader(ordinal);
+                            await using var writer = new StreamWriter(destination, new UTF8Encoding(false, true), 32 * 1024, leaveOpen: true);
+                            char[] buffer = new char[32 * 1024];
+                            int readCount;
+                            while ((readCount = await input.ReadAsync(buffer.AsMemory(), token).ConfigureAwait(false)) != 0)
+                            {
+                                await writer.WriteAsync(buffer.AsMemory(0, readCount), token).ConfigureAwait(false);
+                            }
+                            await writer.FlushAsync(token).ConfigureAwait(false);
+                        });
+                        await lob.ConsumeAsync(Stream.Null, cancellationToken).ConfigureAwait(false);
+                        value = lob;
                     }
                     else
                     {
                         value = reader.GetValue(ordinal);
                     }
                     values.Add(column, value);
-                    if (value is ReplayableLob lob)
-                    {
-                        lobs.Add(lob);
-                    }
                 }
-
-                try
-                {
-                    collector.Append(new MigrationRow(values));
-                }
-                finally
-                {
-                    foreach (ReplayableLob lob in lobs)
-                    {
-                        await lob.DisposeAsync().ConfigureAwait(false);
-                    }
-                }
+                collector.Append(new MigrationRow(values));
             }
         }
 

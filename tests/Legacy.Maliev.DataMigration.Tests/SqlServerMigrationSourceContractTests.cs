@@ -22,7 +22,7 @@ public sealed class SqlServerMigrationSourceContractTests
 
         Assert.Equal("Order", builder.InitialCatalog);
         Assert.Equal(ApplicationIntent.ReadOnly, builder.ApplicationIntent);
-        Assert.False(builder.MultipleActiveResultSets);
+        Assert.True(builder.MultipleActiveResultSets);
     }
 
     [Fact]
