@@ -58,6 +58,30 @@ public sealed class StreamingLobTests
         _ = await Assert.ThrowsAsync<InvalidOperationException>(() => lob.ConsumeAsync(Stream.Null, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task OpenReadAsync_ProducerFailure_DisposeAlwaysCompletesAndReleasesTheReader()
+    {
+        var lob = new StreamingLob(StreamingLobKind.Binary, 4, async (destination, cancellationToken) =>
+        {
+            await destination.WriteAsync(new byte[] { 1, 2 }, cancellationToken);
+            throw new InvalidOperationException("producer failed");
+        });
+        Stream stream = await lob.OpenReadAsync(CancellationToken.None);
+        byte[] buffer = new byte[8];
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            while (await stream.ReadAsync(buffer) != 0)
+            {
+            }
+        });
+        await stream.DisposeAsync();
+        await stream.DisposeAsync();
+
+        Assert.False(stream.CanRead);
+        Assert.False(lob.IsConsumed);
+    }
+
     private static string SourcePath(string file)
     {
         return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../src/Legacy.Maliev.DataMigration", file));

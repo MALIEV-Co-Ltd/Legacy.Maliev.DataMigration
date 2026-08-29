@@ -767,7 +767,14 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     {
         if (!_completed)
         {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                // A failed COPY may dispose its transaction; disposal already guarantees rollback.
+            }
             _completed = true;
         }
     }
@@ -776,7 +783,15 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     {
         if (!_completed)
         {
-            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                // A failed COPY may dispose its transaction; disposal already guarantees rollback.
+            }
+            _completed = true;
         }
 
         await transaction.DisposeAsync().ConfigureAwait(false);

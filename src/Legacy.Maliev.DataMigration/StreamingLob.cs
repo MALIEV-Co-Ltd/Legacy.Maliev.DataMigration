@@ -112,7 +112,9 @@ public sealed class StreamingLob
         private bool _disposed;
 
         public override bool CanRead => !_disposed;
-        public override bool CanSeek => false;
+        // Npgsql 10.0.3 selects its bounded Stream converter through CanSeek and then reads only
+        // Length/Position. This single-pass stream deliberately rejects every replay/seek request.
+        public override bool CanSeek => expectedByteLength is not null && !_disposed;
         public override bool CanWrite => false;
         public override long Length => expectedByteLength ?? throw new NotSupportedException("The exact streamed field length is required by this consumer.");
         public override long Position { get => _byteLength; set => throw new NotSupportedException(); }
@@ -161,22 +163,34 @@ public sealed class StreamingLob
             if (!_disposed)
             {
                 _disposed = true;
-                if (!_completed)
+                try
                 {
-                    await cancellation.CancelAsync().ConfigureAwait(false);
+                    if (!_completed)
+                    {
+                        await cancellation.CancelAsync().ConfigureAwait(false);
+                        try
+                        {
+                            await producer.ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // The consumer stopped before EOF; cancellation is the intended cleanup path.
+                        }
+                        Finish(success: false);
+                    }
+                }
+                finally
+                {
                     try
                     {
-                        await producer.ConfigureAwait(false);
+                        await inner.DisposeAsync().ConfigureAwait(false);
                     }
-                    catch (OperationCanceledException)
+                    finally
                     {
-                        // The consumer stopped before EOF; cancellation is the intended cleanup path.
+                        cancellation.Dispose();
+                        _hash.Dispose();
                     }
-                    Finish(success: false);
                 }
-                await inner.DisposeAsync().ConfigureAwait(false);
-                cancellation.Dispose();
-                _hash.Dispose();
             }
             await base.DisposeAsync().ConfigureAwait(false);
             GC.SuppressFinalize(this);

@@ -31,6 +31,8 @@ nothing in this repository discovers or projects production credentials.
   field through a bounded in-memory pipe without client-side whole-value
   materialization; the final PostgreSQL varlena/WAL representation is capped by
   the signed source maximum and a conservative 1,000,000,000-byte target limit.
+  The pinned Npgsql 10.0.3 converter receives an exact length-known, single-pass
+  stream; replay or seek attempts fail closed and are covered by integration tests.
   PostgreSQL acknowledges each binary `COPY` batch
   inside one whole-database transaction. Commit is refused until the
   independently re-read schema and every planned table have been inspected.
