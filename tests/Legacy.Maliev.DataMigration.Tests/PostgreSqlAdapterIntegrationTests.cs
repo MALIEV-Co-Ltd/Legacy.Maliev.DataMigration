@@ -67,9 +67,15 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
             TableReconciliationEvidence reconciliation = await transaction.InspectTableAsync(
                 table,
                 CancellationToken.None);
+            MigrationExecutionException lateCopy = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                transaction.CopyBatchAsync(
+                    table,
+                    [new MigrationRow(new Dictionary<string, object?> { ["Id"] = 3, ["Name"] = "late" })],
+                    CancellationToken.None));
             await transaction.CommitAsync(CancellationToken.None);
 
             Assert.Equal(2, rows);
+            Assert.Equal("shadow_copy_after_inspection", lateCopy.Code);
             Assert.Equal(plan.TargetSchemaSha256, schemaHash);
             Assert.Equal(2, reconciliation.RowCount);
             Assert.Matches("^[0-9a-f]{64}$", reconciliation.ContentSha256);

@@ -168,6 +168,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
 {
     private bool _completed;
     private bool _schemaInspected;
+    private bool _inspectionStarted;
     private readonly HashSet<string> _expectedTableInspections = new(StringComparer.Ordinal);
     private readonly HashSet<string> _completedTableInspections = new(StringComparer.Ordinal);
 
@@ -225,6 +226,13 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     {
         ArgumentNullException.ThrowIfNull(table);
         ArgumentNullException.ThrowIfNull(rows);
+        if (_inspectionStarted)
+        {
+            throw new MigrationExecutionException(
+                "shadow_copy_after_inspection",
+                "A shadow transaction cannot accept more rows after reconciliation inspection begins.");
+        }
+
         string columns = string.Join(", ", table.OrderedColumns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
         string sql = $"COPY {Qualified(table.TargetSchema, table.TargetTable)} ({columns}) FROM STDIN (FORMAT BINARY);";
         long count = 0;
@@ -261,6 +269,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        _inspectionStarted = true;
         List<PostgreSqlSchemaFingerprint.TableShape> tables = [];
         const string tableSql = """
             SELECT n.nspname, c.relname
@@ -361,6 +370,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(table);
+        _inspectionStarted = true;
         using var collector = new TableEvidenceCollector(table);
         string columns = string.Join(", ", table.OrderedColumns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
         string ordering = string.Join(", ", table.OrderByColumns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
