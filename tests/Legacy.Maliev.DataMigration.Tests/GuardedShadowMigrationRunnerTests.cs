@@ -74,6 +74,46 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_CompletedRunWithTamperedSignature_FailsBeforeDatabaseIo()
+    {
+        Harness harness = CreateHarness();
+        GuardedMigrationRequest request = CreateRequest();
+        _ = await harness.Runner.ExecuteAsync(request, CancellationToken.None);
+        harness.Journal.Completed[0] = harness.Journal.Completed[0] with
+        {
+            AttestationSignature = Convert.ToBase64String([1, 2, 3]),
+        };
+        harness.Source.Reset();
+        harness.Target.Reset();
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(request, CancellationToken.None));
+
+        Assert.Equal("completed_receipt_invalid", exception.Code);
+        Assert.Empty(harness.Source.SchemaInspections);
+        Assert.Empty(harness.Target.Created);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_JournalClaimsCompletedWithMismatchedIdentity_FailsBeforeDatabaseIo()
+    {
+        Harness harness = CreateHarness();
+        GuardedMigrationRequest request = CreateRequest();
+        MigrationExecutionResult first = await harness.Runner.ExecuteAsync(request, CancellationToken.None);
+        MigrationExecutionReceipt mismatched = first.Receipt with { TargetGeneration = "tampered-generation" };
+        harness.Journal.ForceCompletedResult(mismatched);
+        harness.Source.Reset();
+        harness.Target.Reset();
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(request, CancellationToken.None));
+
+        Assert.Equal("completed_receipt_invalid", exception.Code);
+        Assert.Empty(harness.Source.SchemaInspections);
+        Assert.Empty(harness.Target.Created);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_SameRunAlreadyInProgress_FailsBeforeDatabaseIo()
     {
         Harness harness = CreateHarness();
@@ -301,6 +341,22 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_TargetRetainsOnlyPrefix_StillExhaustsSourceAndFailsReconciliation()
+    {
+        Harness harness = CreateHarness();
+        harness.Source.RowsPerTable = 10_000;
+        harness.Target.CorruptDatabase = DatabaseInventory.ActiveDatabases[0];
+        harness.Target.Corruption = "prefix";
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
+
+        Assert.Equal("shadow_reconciliation_failed", exception.Code);
+        Assert.Equal(10_000, harness.Source.RowsYielded);
+        Assert.InRange(Assert.Single(harness.Target.Transactions).MaximumBatchSize, 1, GuardedRunnerPolicy.CopyBatchSize);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_MalformedLease_IsStillDurablyTrackedForCleanup()
     {
         Harness harness = CreateHarness();
@@ -523,6 +579,8 @@ public sealed class GuardedShadowMigrationRunnerTests
         public List<string> SnapshotsCompleted { get; } = [];
         public List<string> SnapshotsRolledBack { get; } = [];
         public Dictionary<string, string> SchemaOverrides { get; } = new(StringComparer.Ordinal);
+        public int RowsPerTable { get; set; } = 1;
+        public int RowsYielded { get; private set; }
 
         public Task BeginDatabaseSnapshotAsync(string database, CancellationToken cancellationToken)
         {
@@ -544,8 +602,12 @@ public sealed class GuardedShadowMigrationRunnerTests
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new MigrationRow(new Dictionary<string, object?> { ["ID"] = 1, ["Value"] = database });
-            await Task.CompletedTask;
+            for (int index = 1; index <= RowsPerTable; index++)
+            {
+                RowsYielded++;
+                yield return new MigrationRow(new Dictionary<string, object?> { ["ID"] = index, ["Value"] = database });
+                await Task.Yield();
+            }
         }
 
         public Task<IReadOnlyDictionary<string, long>> InspectForeignKeyOrphansAsync(
@@ -578,6 +640,7 @@ public sealed class GuardedShadowMigrationRunnerTests
             SnapshotsStarted.Clear();
             SnapshotsCompleted.Clear();
             SnapshotsRolledBack.Clear();
+            RowsYielded = 0;
         }
     }
 
@@ -651,15 +714,16 @@ public sealed class GuardedShadowMigrationRunnerTests
         public bool VerifiedBeforeCommit { get; private set; }
         private bool _verified;
         private readonly List<MigrationRow> _rows = [];
+        public int MaximumBatchSize { get; private set; }
 
         public Task ApplySchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
         {
             return Task.CompletedTask;
         }
 
-        public async Task<long> CopyTableAsync(
+        public Task<long> CopyBatchAsync(
             TableCopyPlan table,
-            IAsyncEnumerable<MigrationRow> rows,
+            IReadOnlyList<MigrationRow> rows,
             CancellationToken cancellationToken)
         {
             if (cancelCopy)
@@ -672,14 +736,13 @@ public sealed class GuardedShadowMigrationRunnerTests
                 throw new InvalidOperationException("simulated copy failure");
             }
 
-            long count = 0;
-            await foreach (MigrationRow row in rows.WithCancellation(cancellationToken))
+            MaximumBatchSize = Math.Max(MaximumBatchSize, rows.Count);
+            if (corruption != "prefix" || _rows.Count == 0)
             {
-                _rows.Add(row);
-                count++;
+                _rows.AddRange(rows);
             }
 
-            return count;
+            return Task.FromResult<long>(rows.Count);
         }
 
         public Task<string> InspectSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
@@ -709,16 +772,13 @@ public sealed class GuardedShadowMigrationRunnerTests
                 });
             }
 
-            List<string> rowHashes = [.. observed.Select(row => CanonicalRowFingerprint.Compute(table, [row]))];
-            Dictionary<string, long> nulls = table.OrderedColumns.ToDictionary(
-                column => column,
-                column => observed.LongCount(row => row.Values.GetValueOrDefault(column) is null or DBNull),
-                StringComparer.Ordinal);
-            string content = Hash(string.Join('\n', rowHashes));
-            string aggregate = Hash(string.Join('\n', rowHashes.Order(StringComparer.Ordinal)));
-            return Task.FromResult(new TableReconciliationEvidence(
-                $"{table.TargetSchema}.{table.TargetTable}", observed.Count, content, aggregate, nulls,
-                table.ForeignKeys.ToDictionary(foreignKey => foreignKey.Name, _ => 0L, StringComparer.Ordinal)));
+            using var collector = new TableEvidenceCollector(table);
+            foreach (MigrationRow row in observed)
+            {
+                collector.Append(row);
+            }
+
+            return Task.FromResult(collector.Finish());
         }
 
         public Task CommitAsync(CancellationToken cancellationToken)
@@ -745,11 +805,19 @@ public sealed class GuardedShadowMigrationRunnerTests
         public List<MigrationExecutionReceipt> Completed { get; } = [];
         public List<MigrationFailureReceipt> Failed { get; } = [];
         private readonly Dictionary<Guid, MigrationRunIdentity> _inProgress = [];
+        private MigrationExecutionReceipt? _forcedCompleted;
 
         public Task<MigrationRunStartResult> TryBeginAsync(
             MigrationRunIdentity identity,
             CancellationToken cancellationToken)
         {
+            if (_forcedCompleted is not null)
+            {
+                return Task.FromResult(new MigrationRunStartResult(
+                    MigrationRunStartStatus.AlreadyCompleted,
+                    _forcedCompleted));
+            }
+
             MigrationExecutionReceipt? completed = Completed.SingleOrDefault(receipt => receipt.RunId == identity.RunId);
             if (completed is not null)
             {
@@ -788,6 +856,11 @@ public sealed class GuardedShadowMigrationRunnerTests
         public void ForceInProgress(MigrationRunIdentity identity)
         {
             _inProgress.Add(identity.RunId, identity);
+        }
+
+        public void ForceCompletedResult(MigrationExecutionReceipt receipt)
+        {
+            _forcedCompleted = receipt;
         }
     }
 }

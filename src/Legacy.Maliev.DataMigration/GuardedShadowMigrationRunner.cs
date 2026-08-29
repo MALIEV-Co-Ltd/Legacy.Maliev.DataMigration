@@ -10,6 +10,8 @@ public sealed record GuardedRunnerPolicy(string ExpectedSourceCommitSha, string 
     public static TimeSpan MaximumSchemaPlanAge { get; } = TimeSpan.FromHours(6);
 
     public static TimeSpan MaximumAuthorizationLifetime { get; } = TimeSpan.FromHours(1);
+
+    public const int CopyBatchSize = 512;
 }
 
 public sealed record GuardedMigrationRequest(
@@ -174,9 +176,9 @@ public interface IPostgreSqlWholeDatabaseTransaction : IAsyncDisposable
 {
     Task ApplySchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken);
 
-    Task<long> CopyTableAsync(
+    Task<long> CopyBatchAsync(
         TableCopyPlan table,
-        IAsyncEnumerable<MigrationRow> rows,
+        IReadOnlyList<MigrationRow> rows,
         CancellationToken cancellationToken);
 
     Task<string> InspectSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken);
@@ -267,6 +269,7 @@ public sealed partial class GuardedShadowMigrationRunner
             .ConfigureAwait(false);
         if (start.Status == MigrationRunStartStatus.AlreadyCompleted && start.CompletedReceipt is not null)
         {
+            ValidateCompletedReplay(start.CompletedReceipt, identity);
             return new MigrationExecutionResult(MigrationExecutionStatus.AlreadyCompleted, start.CompletedReceipt);
         }
 
@@ -420,13 +423,9 @@ public sealed partial class GuardedShadowMigrationRunner
             List<TableReconciliationEvidence> sourceTables = [];
             foreach (TableCopyPlan table in databasePlan.Tables)
             {
-                var collector = new TableEvidenceCollector(table);
-                long count = await transaction.CopyTableAsync(
-                    table,
-                    collector.ObserveAsync(
-                        _source.ReadTableAsync(databasePlan.Database, table, cancellationToken),
-                        cancellationToken),
-                    cancellationToken).ConfigureAwait(false);
+                using var collector = new TableEvidenceCollector(table);
+                long count = await CopySourceTableAsync(transaction, databasePlan.Database, table, collector, cancellationToken)
+                    .ConfigureAwait(false);
                 TableReconciliationEvidence sourceEvidence = collector.Finish();
                 IReadOnlyDictionary<string, long> sourceOrphans = await _source
                     .InspectForeignKeyOrphansAsync(databasePlan.Database, table, cancellationToken)
@@ -597,6 +596,84 @@ public sealed partial class GuardedShadowMigrationRunner
             .Select(item => $"{item.Table}|{item.RowCount}|{item.ContentSha256}|{item.AggregateSha256}"));
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    private async Task<long> CopySourceTableAsync(
+        IPostgreSqlWholeDatabaseTransaction transaction,
+        string database,
+        TableCopyPlan table,
+        TableEvidenceCollector collector,
+        CancellationToken cancellationToken)
+    {
+        List<MigrationRow> batch = new(GuardedRunnerPolicy.CopyBatchSize);
+        long copied = 0;
+        await foreach (MigrationRow row in _source.ReadTableAsync(database, table, cancellationToken)
+            .WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            collector.Append(row);
+            batch.Add(row);
+            if (batch.Count == GuardedRunnerPolicy.CopyBatchSize)
+            {
+                copied += await CopyBatchExactlyAsync(transaction, table, batch, cancellationToken).ConfigureAwait(false);
+                batch.Clear();
+            }
+        }
+
+        if (batch.Count > 0)
+        {
+            copied += await CopyBatchExactlyAsync(transaction, table, batch, cancellationToken).ConfigureAwait(false);
+        }
+
+        return copied;
+    }
+
+    private static async Task<long> CopyBatchExactlyAsync(
+        IPostgreSqlWholeDatabaseTransaction transaction,
+        TableCopyPlan table,
+        List<MigrationRow> batch,
+        CancellationToken cancellationToken)
+    {
+        long copied = await transaction.CopyBatchAsync(table, batch, cancellationToken).ConfigureAwait(false);
+        return copied != batch.Count
+            ? throw new MigrationExecutionException(
+                "shadow_copy_count_mismatch",
+                "The PostgreSQL target did not acknowledge every row in the runner-owned batch.")
+            : copied;
+    }
+
+    private void ValidateCompletedReplay(MigrationExecutionReceipt receipt, MigrationRunIdentity expectedIdentity)
+    {
+        if (MigrationRunIdentity.FromReceipt(receipt) != expectedIdentity ||
+            string.IsNullOrWhiteSpace(receipt.AttestationKeyId) ||
+            string.IsNullOrWhiteSpace(receipt.AttestationSignature))
+        {
+            throw new MigrationExecutionException(
+                "completed_receipt_invalid",
+                "Stored completion evidence does not match the requested immutable run.");
+        }
+
+        byte[] signature;
+        try
+        {
+            signature = Convert.FromBase64String(receipt.AttestationSignature);
+        }
+        catch (FormatException exception)
+        {
+            throw new MigrationExecutionException(
+                "completed_receipt_invalid",
+                "Stored completion evidence signature is malformed.",
+                exception);
+        }
+
+        if (!_authorizationTrustStore.Verify(
+            receipt.AttestationKeyId,
+            MigrationEvidenceAttestation.CreatePayload(receipt),
+            signature))
+        {
+            throw new MigrationExecutionException(
+                "completed_receipt_invalid",
+                "Stored completion evidence signature is not trusted.");
+        }
     }
 
     private MigrationExecutionReceipt SignAndVerify(MigrationExecutionReceipt receipt)

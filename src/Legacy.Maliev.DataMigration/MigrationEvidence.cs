@@ -23,39 +23,43 @@ public static class MigrationEvidenceAttestation
     }
 }
 
-internal sealed class TableEvidenceCollector(TableCopyPlan table)
+internal sealed class TableEvidenceCollector(TableCopyPlan table) : IDisposable
 {
-    private readonly List<string> _rowFingerprints = [];
+    private readonly IncrementalHash _ordered = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+    private readonly byte[] _multisetSum = new byte[SHA256.HashSizeInBytes];
     private readonly Dictionary<string, long> _nullCounts = table.OrderedColumns
         .ToDictionary(column => column, _ => 0L, StringComparer.Ordinal);
+    private long _rowCount;
 
-    public async IAsyncEnumerable<MigrationRow> ObserveAsync(
-        IAsyncEnumerable<MigrationRow> rows,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    public void Append(MigrationRow row)
     {
-        await foreach (MigrationRow row in rows.WithCancellation(cancellationToken).ConfigureAwait(false))
+        ArgumentNullException.ThrowIfNull(row);
+        string fingerprint = CanonicalRowFingerprint.Compute(table, [row]);
+        byte[] fingerprintBytes = Convert.FromHexString(fingerprint);
+        if (_rowCount > 0)
         {
-            string fingerprint = CanonicalRowFingerprint.Compute(table, [row]);
-            _rowFingerprints.Add(fingerprint);
-            foreach (string column in table.OrderedColumns)
-            {
-                if (row.Values.GetValueOrDefault(column) is null or DBNull)
-                {
-                    _nullCounts[column]++;
-                }
-            }
+            _ordered.AppendData("\n"u8);
+        }
 
-            yield return row;
+        _ordered.AppendData(Encoding.ASCII.GetBytes(fingerprint));
+        AddModulo256(_multisetSum, fingerprintBytes);
+        _rowCount++;
+        foreach (string column in table.OrderedColumns)
+        {
+            if (row.Values.GetValueOrDefault(column) is null or DBNull)
+            {
+                _nullCounts[column]++;
+            }
         }
     }
 
     public TableReconciliationEvidence Finish()
     {
-        string content = Hash(string.Join('\n', _rowFingerprints));
-        string aggregate = Hash(string.Join('\n', _rowFingerprints.Order(StringComparer.Ordinal)));
+        string content = Convert.ToHexString(_ordered.GetHashAndReset()).ToLowerInvariant();
+        string aggregate = Convert.ToHexString(SHA256.HashData(_multisetSum)).ToLowerInvariant();
         return new(
             $"{table.TargetSchema}.{table.TargetTable}",
-            _rowFingerprints.Count,
+            _rowCount,
             content,
             aggregate,
             new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(_nullCounts),
@@ -66,8 +70,19 @@ internal sealed class TableEvidenceCollector(TableCopyPlan table)
                     StringComparer.Ordinal)));
     }
 
-    private static string Hash(string value)
+    public void Dispose()
     {
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+        _ordered.Dispose();
+    }
+
+    private static void AddModulo256(Span<byte> accumulator, ReadOnlySpan<byte> value)
+    {
+        int carry = 0;
+        for (int index = accumulator.Length - 1; index >= 0; index--)
+        {
+            int sum = accumulator[index] + value[index] + carry;
+            accumulator[index] = (byte)sum;
+            carry = sum >> 8;
+        }
     }
 }
