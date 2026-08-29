@@ -103,6 +103,31 @@ public sealed class MigrationConsoleTests : IDisposable
         Assert.Equal(string.Empty, output.ToString());
     }
 
+    [Fact]
+    public async Task RunAsync_ExportLocalSnapshot_MissingProtectedRuntimeReferencesFailsClosed()
+    {
+        _ = Directory.CreateDirectory(_root);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            exportLocalSnapshot = new
+            {
+                executionResultPath = "execution.json",
+                outputDirectory = Path.Combine(_root, "snapshot"),
+                pgDumpPath = "pg_dump",
+            },
+        }, JsonOptions));
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["export-local-snapshot", "--config", configPath], output, error, _ => null, CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal("snapshot_runtime_reference_missing" + Environment.NewLine, error.ToString());
+        Assert.Equal(string.Empty, output.ToString());
+    }
+
     private static JsonSerializerOptions JsonOptions { get; } = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
     public void Dispose()

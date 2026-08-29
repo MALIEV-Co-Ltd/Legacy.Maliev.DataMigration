@@ -10,6 +10,7 @@ public static class MigrationConsole
     private const string SqlServerConnectionEnvironmentVariable = "LEGACY_MIGRATION_SQLSERVER_CONNECTION";
     private const string PostgreSqlConnectionEnvironmentVariable = "LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION";
     private const string EvidenceKeyEnvironmentVariable = "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE";
+    private const string SnapshotKeyEnvironmentVariable = "LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -44,6 +45,10 @@ public static class MigrationConsole
                     await ExecuteShadowAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("execute_shadow_complete").ConfigureAwait(false);
                     return 0;
+                case "export-local-snapshot":
+                    await ExportLocalSnapshotAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("export_local_snapshot_complete").ConfigureAwait(false);
+                    return 0;
                 default:
                     await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
                     return 2;
@@ -68,6 +73,61 @@ public static class MigrationConsole
         {
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 70;
+        }
+    }
+
+    private static async Task ExportLocalSnapshotAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
+            .ConfigureAwait(false);
+        ExportLocalSnapshotCommandConfiguration export = configuration.ExportLocalSnapshot ??
+            throw new MigrationConsoleException("snapshot_configuration_missing", "Snapshot export configuration is required.");
+        string? targetConnection = getEnvironmentVariable(PostgreSqlConnectionEnvironmentVariable);
+        string? keyPath = getEnvironmentVariable(SnapshotKeyEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(targetConnection) || string.IsNullOrWhiteSpace(keyPath))
+        {
+            throw new MigrationConsoleException("snapshot_runtime_reference_missing", "Snapshot runtime references are required.");
+        }
+
+        MigrationExecutionResult result = await ReadJsonAsync<MigrationExecutionResult>(export.ExecutionResultPath, cancellationToken)
+            .ConfigureAwait(false);
+        if (result.Status is not (MigrationExecutionStatus.Completed or MigrationExecutionStatus.AlreadyCompleted) ||
+            result.Receipt.Databases.Count != DatabaseInventory.ActiveDatabases.Count)
+        {
+            throw new MigrationConsoleException("snapshot_execution_result_invalid", "A completed exact migration result is required.");
+        }
+
+        byte[] key;
+        try
+        {
+            key = Convert.FromBase64String((await File.ReadAllTextAsync(keyPath, cancellationToken).ConfigureAwait(false)).Trim());
+        }
+        catch (FormatException)
+        {
+            throw new MigrationConsoleException("snapshot_key_invalid", "The snapshot encryption key file is invalid.");
+        }
+        if (key.Length != 32)
+        {
+            CryptographicOperations.ZeroMemory(key);
+            throw new MigrationConsoleException("snapshot_key_invalid", "The snapshot encryption key file is invalid.");
+        }
+
+        try
+        {
+            var dumpSource = new PgDumpSource(export.PgDumpPath, targetConnection);
+            _ = await LocalSnapshotExporter.ExportAsync(
+                result.Receipt.Databases,
+                export.OutputDirectory,
+                key,
+                dumpSource,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
         }
     }
 
@@ -217,7 +277,8 @@ public static class MigrationConsole
     private sealed record MigrationConsoleConfiguration(
         ReceiptCommandConfiguration? Receipt = null,
         PlanCommandConfiguration? Plan = null,
-        ExecuteShadowCommandConfiguration? ExecuteShadow = null);
+        ExecuteShadowCommandConfiguration? ExecuteShadow = null,
+        ExportLocalSnapshotCommandConfiguration? ExportLocalSnapshot = null);
 
     private sealed record ReceiptCommandConfiguration(string BackupStatePath, string OutputPath, string KeyId);
 
@@ -234,6 +295,11 @@ public static class MigrationConsole
         string EvidenceKeyId);
 
     private sealed record TrustedKeyReference(string KeyId, string SubjectPublicKeyInfoPath);
+
+    private sealed record ExportLocalSnapshotCommandConfiguration(
+        string ExecutionResultPath,
+        string OutputDirectory,
+        string PgDumpPath);
 
     private sealed record BackupStateDocument(IReadOnlyList<VerifiedBackupStateArtifact> Artifacts);
 
