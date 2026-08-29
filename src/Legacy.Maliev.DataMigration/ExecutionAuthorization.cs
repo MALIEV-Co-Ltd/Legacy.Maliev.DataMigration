@@ -103,6 +103,11 @@ internal static partial class ExecutionAuthorizationValidator
             errors.Add(new("execution_authorization_expired", "The execution authorization is not currently valid."));
         }
 
+        if (receipt.ExpiresAtUtc - receipt.IssuedAtUtc > GuardedRunnerPolicy.MaximumAuthorizationLifetime)
+        {
+            errors.Add(new("execution_authorization_lifetime_invalid", "The execution authorization lifetime exceeds policy."));
+        }
+
         if (!string.Equals(receipt.Mode, "shadow-only", StringComparison.Ordinal))
         {
             errors.Add(new("execution_mode_forbidden", "Only shadow-only execution is authorized."));

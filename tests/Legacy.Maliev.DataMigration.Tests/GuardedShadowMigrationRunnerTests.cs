@@ -21,6 +21,7 @@ public sealed class GuardedShadowMigrationRunnerTests
 
         Assert.Equal(MigrationExecutionStatus.Completed, result.Status);
         Assert.Equal(21, result.Receipt.Databases.Count);
+        Assert.Equal(Now, result.Receipt.CompletedAtUtc);
         Assert.Equal(21, harness.Source.SchemaInspections.Count);
         Assert.Equal(21, harness.Source.SnapshotsStarted.Count);
         Assert.Equal(21, harness.Source.SnapshotsCompleted.Count);
@@ -31,6 +32,11 @@ public sealed class GuardedShadowMigrationRunnerTests
         Assert.Equal(21, harness.Target.Created.Select(shadow => shadow.Name).Distinct(StringComparer.Ordinal).Count());
         Assert.All(harness.Target.Created, shadow => Assert.StartsWith("legacy_shadow_", shadow.Name, StringComparison.Ordinal));
         Assert.Empty(harness.Target.Deleted);
+        Assert.True(MigrationEvidenceAttestation.CreatePayload(result.Receipt).Length > 0);
+        Assert.True(SigningKey.VerifyData(
+            MigrationEvidenceAttestation.CreatePayload(result.Receipt),
+            Convert.FromBase64String(result.Receipt.AttestationSignature!),
+            HashAlgorithmName.SHA256));
         _ = Assert.Single(harness.Journal.Completed);
     }
 
@@ -78,6 +84,42 @@ public sealed class GuardedShadowMigrationRunnerTests
             harness.Runner.ExecuteAsync(request, CancellationToken.None));
 
         Assert.Equal("run_already_in_progress", exception.Code);
+        Assert.Empty(harness.Source.SchemaInspections);
+        Assert.Empty(harness.Target.Created);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CompletedRunReplayedAfterAuthorizationExpiry_FailsBeforeDatabaseIo()
+    {
+        Harness harness = CreateHarness();
+        GuardedMigrationRequest request = CreateRequest();
+        _ = await harness.Runner.ExecuteAsync(request, CancellationToken.None);
+        harness.Source.Reset();
+        harness.Target.Reset();
+        harness.TimeProvider.Advance(TimeSpan.FromHours(2));
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(request, CancellationToken.None));
+
+        Assert.Equal("execution_authorization_expired", exception.Code);
+        Assert.Empty(harness.Source.SchemaInspections);
+        Assert.Empty(harness.Target.Created);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CompletedRunReplayedWithStaleSchemaPlan_FailsBeforeDatabaseIo()
+    {
+        Harness harness = CreateHarness();
+        GuardedMigrationRequest request = CreateRequest();
+        _ = await harness.Runner.ExecuteAsync(request, CancellationToken.None);
+        harness.Source.Reset();
+        harness.Target.Reset();
+        harness.TimeProvider.Advance(TimeSpan.FromHours(7));
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(request, CancellationToken.None));
+
+        Assert.Equal("schema_plan_stale", exception.Code);
         Assert.Empty(harness.Source.SchemaInspections);
         Assert.Empty(harness.Target.Created);
     }
@@ -209,6 +251,22 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_CallerCannotExtendAuthorizationFreshnessPolicy()
+    {
+        Harness harness = CreateHarness();
+        GuardedMigrationRequest request = CreateRequest();
+        ExecutionAuthorizationReceipt extended = request.Authorization with { ExpiresAtUtc = Now.AddHours(2) };
+        request = request with { Authorization = SignAuthorization(extended) };
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(request, CancellationToken.None));
+
+        Assert.Equal("execution_authorization_lifetime_invalid", exception.Code);
+        Assert.Empty(harness.Source.SchemaInspections);
+        Assert.Empty(harness.Target.Created);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_CancelledCopy_RollsBackAndDeletesEveryRunOwnedShadow()
     {
         Harness harness = CreateHarness();
@@ -222,6 +280,62 @@ public sealed class GuardedShadowMigrationRunnerTests
         Assert.Empty(harness.Journal.Completed);
     }
 
+    [Theory]
+    [InlineData("drop")]
+    [InlineData("duplicate")]
+    [InlineData("transform")]
+    public async Task ExecuteAsync_TargetRowsDifferFromSnapshot_RollsBackAndDeletesShadows(string corruption)
+    {
+        Harness harness = CreateHarness();
+        harness.Target.CorruptDatabase = DatabaseInventory.ActiveDatabases[0];
+        harness.Target.Corruption = corruption;
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
+
+        Assert.Equal("shadow_reconciliation_failed", exception.Code);
+        Assert.True(Assert.Single(harness.Target.Transactions).RolledBack);
+        Assert.Equal(harness.Target.Created.Select(item => item.Name), harness.Target.Deleted);
+        MigrationFailureReceipt failure = Assert.Single(harness.Journal.Failed);
+        Assert.False(string.IsNullOrWhiteSpace(failure.AttestationSignature));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MalformedLease_IsStillDurablyTrackedForCleanup()
+    {
+        Harness harness = CreateHarness();
+        harness.Target.ReturnMalformedLease = true;
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
+
+        Assert.Equal("shadow_ownership_invalid", exception.Code);
+        ShadowDatabase created = Assert.Single(harness.Target.Created);
+        Assert.Equal(created.Name, Assert.Single(harness.Target.Deleted));
+        Assert.Contains(Assert.Single(harness.Journal.Failed).Cleanup,
+            outcome => outcome.ShadowName == created.Name && outcome.Deleted);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CleanupFails_RecordsSignedFailureAndFailsClosed()
+    {
+        Harness harness = CreateHarness();
+        harness.Target.NonEmptyDatabase = DatabaseInventory.ActiveDatabases[0];
+        harness.Target.FailDelete = true;
+
+        MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
+
+        Assert.Equal("shadow_cleanup_failed", exception.Code);
+        MigrationFailureReceipt receipt = Assert.Single(harness.Journal.Failed);
+        Assert.Equal("shadow_database_not_empty", receipt.FailureCode);
+        Assert.Contains(receipt.Cleanup, outcome => !outcome.Deleted && outcome.ErrorCode == "shadow_delete_failed");
+        Assert.True(SigningKey.VerifyData(
+            MigrationEvidenceAttestation.CreatePayload(receipt),
+            Convert.FromBase64String(receipt.AttestationSignature!),
+            HashAlgorithmName.SHA256));
+    }
+
     private static Harness CreateHarness()
     {
         TrustedAttestationKey trustedKey = new(KeyId, SigningKey.ExportSubjectPublicKeyInfo());
@@ -229,14 +343,17 @@ public sealed class GuardedShadowMigrationRunnerTests
         FakeSource source = new();
         FakeTarget target = new();
         InMemoryJournal journal = new();
+        MutableTimeProvider timeProvider = new(Now);
         var runner = new GuardedShadowMigrationRunner(
             new PreflightService(new NeverExternalCommandExecutor(), trustStore),
             trustStore,
             source,
             target,
             journal,
+            new TestEvidenceSigner(KeyId, SigningKey),
+            timeProvider,
             new GuardedRunnerPolicy(CurrentSourceCommit, RunnerDigest));
-        return new(runner, source, target, journal);
+        return new(runner, source, target, journal, timeProvider);
     }
 
     private static GuardedMigrationRequest CreateRequest(FreshSchemaPlan? plan = null)
@@ -246,10 +363,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         return new(
             CreateBackupReceipt(),
             schemaPlan,
-            SignAuthorization(CreateAuthorization(runId, schemaPlan)),
-            Now,
-            TimeSpan.FromHours(26),
-            TimeSpan.FromHours(6));
+            SignAuthorization(CreateAuthorization(runId, schemaPlan)));
     }
 
     private static FreshSchemaPlan CreateSchemaPlan()
@@ -295,7 +409,7 @@ public sealed class GuardedShadowMigrationRunnerTests
             SchemaVersion: "2.0",
             RunId: runId,
             IssuedAtUtc: Now.AddMinutes(-5),
-            ExpiresAtUtc: Now.AddHours(1),
+            ExpiresAtUtc: Now.AddMinutes(55),
             SourceCommitSha: CurrentSourceCommit,
             SchemaPlanSha256: SchemaPlanCanonicalizer.ComputeSha256(plan),
             BackupManifestSha256: CreateBackupReceipt().ManifestSha256,
@@ -366,7 +480,33 @@ public sealed class GuardedShadowMigrationRunnerTests
         GuardedShadowMigrationRunner Runner,
         FakeSource Source,
         FakeTarget Target,
-        InMemoryJournal Journal);
+        InMemoryJournal Journal,
+        MutableTimeProvider TimeProvider);
+
+    private sealed class MutableTimeProvider(DateTimeOffset current) : TimeProvider
+    {
+        private DateTimeOffset _current = current;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            return _current;
+        }
+
+        public void Advance(TimeSpan duration)
+        {
+            _current = _current.Add(duration);
+        }
+    }
+
+    private sealed class TestEvidenceSigner(string keyId, ECDsa signingKey) : IMigrationEvidenceSigner
+    {
+        public string KeyId => keyId;
+
+        public byte[] Sign(ReadOnlySpan<byte> payload)
+        {
+            return signingKey.SignData(payload, HashAlgorithmName.SHA256);
+        }
+    }
 
     private sealed class NeverExternalCommandExecutor : IExternalCommandExecutor
     {
@@ -408,6 +548,18 @@ public sealed class GuardedShadowMigrationRunnerTests
             await Task.CompletedTask;
         }
 
+        public Task<IReadOnlyDictionary<string, long>> InspectForeignKeyOrphansAsync(
+            string database,
+            TableCopyPlan table,
+            CancellationToken cancellationToken)
+        {
+            IReadOnlyDictionary<string, long> result = table.ForeignKeys.ToDictionary(
+                foreignKey => foreignKey.Name,
+                _ => 0L,
+                StringComparer.Ordinal);
+            return Task.FromResult(result);
+        }
+
         public Task CompleteDatabaseSnapshotAsync(string database, CancellationToken cancellationToken)
         {
             SnapshotsCompleted.Add(database);
@@ -437,6 +589,10 @@ public sealed class GuardedShadowMigrationRunnerTests
         public string? FailCopyForDatabase { get; set; }
         public string? CancelCopyForDatabase { get; set; }
         public string? NonEmptyDatabase { get; set; }
+        public string? CorruptDatabase { get; set; }
+        public string? Corruption { get; set; }
+        public bool ReturnMalformedLease { get; set; }
+        public bool FailDelete { get; set; }
 
         public Task<ShadowDatabase> CreateUniqueEmptyShadowAsync(
             string database,
@@ -444,7 +600,9 @@ public sealed class GuardedShadowMigrationRunnerTests
             string ownerRunId,
             CancellationToken cancellationToken)
         {
-            var shadow = new ShadowDatabase(shadowName, ownerRunId, database);
+            var shadow = ReturnMalformedLease
+                ? new ShadowDatabase(shadowName + "_malformed", ownerRunId, database)
+                : new ShadowDatabase(shadowName, ownerRunId, database);
             Created.Add(shadow);
             return Task.FromResult(shadow);
         }
@@ -459,15 +617,20 @@ public sealed class GuardedShadowMigrationRunnerTests
             CancellationToken cancellationToken)
         {
             var transaction = new FakeTransaction(
-                shadow.Database,
                 string.Equals(shadow.Database, FailCopyForDatabase, StringComparison.Ordinal),
-                string.Equals(shadow.Database, CancelCopyForDatabase, StringComparison.Ordinal));
+                string.Equals(shadow.Database, CancelCopyForDatabase, StringComparison.Ordinal),
+                string.Equals(shadow.Database, CorruptDatabase, StringComparison.Ordinal) ? Corruption : null);
             Transactions.Add(transaction);
             return Task.FromResult<IPostgreSqlWholeDatabaseTransaction>(transaction);
         }
 
         public Task DeleteRunOwnedShadowAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
         {
+            if (FailDelete)
+            {
+                throw new InvalidOperationException("simulated cleanup failure");
+            }
+
             Deleted.Add(shadow.Name);
             return Task.CompletedTask;
         }
@@ -480,13 +643,14 @@ public sealed class GuardedShadowMigrationRunnerTests
         }
     }
 
-    private sealed class FakeTransaction(string database, bool failCopy, bool cancelCopy)
+    private sealed class FakeTransaction(bool failCopy, bool cancelCopy, string? corruption)
         : IPostgreSqlWholeDatabaseTransaction
     {
         public bool Committed { get; private set; }
         public bool RolledBack { get; private set; }
         public bool VerifiedBeforeCommit { get; private set; }
         private bool _verified;
+        private readonly List<MigrationRow> _rows = [];
 
         public Task ApplySchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
         {
@@ -509,21 +673,52 @@ public sealed class GuardedShadowMigrationRunnerTests
             }
 
             long count = 0;
-            await foreach (MigrationRow _ in rows.WithCancellation(cancellationToken))
+            await foreach (MigrationRow row in rows.WithCancellation(cancellationToken))
             {
+                _rows.Add(row);
                 count++;
             }
 
             return count;
         }
 
-        public Task<DatabaseReconciliationResult> ReconcileAsync(
-            DatabaseSchemaPlan plan,
-            IReadOnlyDictionary<string, long> copiedRows,
-            CancellationToken cancellationToken)
+        public Task<string> InspectSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
         {
             _verified = true;
-            return Task.FromResult(new DatabaseReconciliationResult(true, copiedRows.Values.Sum(), Hash(database), []));
+            return Task.FromResult(plan.TargetSchemaSha256);
+        }
+
+        public Task<TableReconciliationEvidence> InspectTableAsync(
+            TableCopyPlan table,
+            CancellationToken cancellationToken)
+        {
+            List<MigrationRow> observed = [.. _rows];
+            if (corruption == "drop")
+            {
+                observed.Clear();
+            }
+            else if (corruption == "duplicate" && observed.Count > 0)
+            {
+                observed.Add(observed[0]);
+            }
+            else if (corruption == "transform" && observed.Count > 0)
+            {
+                observed[0] = new MigrationRow(new Dictionary<string, object?>(observed[0].Values, StringComparer.Ordinal)
+                {
+                    ["Value"] = "corrupted",
+                });
+            }
+
+            List<string> rowHashes = [.. observed.Select(row => CanonicalRowFingerprint.Compute(table, [row]))];
+            Dictionary<string, long> nulls = table.OrderedColumns.ToDictionary(
+                column => column,
+                column => observed.LongCount(row => row.Values.GetValueOrDefault(column) is null or DBNull),
+                StringComparer.Ordinal);
+            string content = Hash(string.Join('\n', rowHashes));
+            string aggregate = Hash(string.Join('\n', rowHashes.Order(StringComparer.Ordinal)));
+            return Task.FromResult(new TableReconciliationEvidence(
+                $"{table.TargetSchema}.{table.TargetTable}", observed.Count, content, aggregate, nulls,
+                table.ForeignKeys.ToDictionary(foreignKey => foreignKey.Name, _ => 0L, StringComparer.Ordinal)));
         }
 
         public Task CommitAsync(CancellationToken cancellationToken)
@@ -548,6 +743,7 @@ public sealed class GuardedShadowMigrationRunnerTests
     private sealed class InMemoryJournal : IMigrationRunJournal
     {
         public List<MigrationExecutionReceipt> Completed { get; } = [];
+        public List<MigrationFailureReceipt> Failed { get; } = [];
         private readonly Dictionary<Guid, MigrationRunIdentity> _inProgress = [];
 
         public Task<MigrationRunStartResult> TryBeginAsync(
@@ -582,9 +778,10 @@ public sealed class GuardedShadowMigrationRunnerTests
             return Task.CompletedTask;
         }
 
-        public Task RecordFailedAsync(Guid runId, CancellationToken cancellationToken)
+        public Task RecordFailedAsync(MigrationFailureReceipt receipt, CancellationToken cancellationToken)
         {
-            _ = _inProgress.Remove(runId);
+            _ = _inProgress.Remove(receipt.RunId);
+            Failed.Add(receipt);
             return Task.CompletedTask;
         }
 

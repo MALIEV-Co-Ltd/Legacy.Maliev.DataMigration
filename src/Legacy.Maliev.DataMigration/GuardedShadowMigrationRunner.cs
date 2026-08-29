@@ -3,15 +3,19 @@ using System.Text.RegularExpressions;
 
 namespace Legacy.Maliev.DataMigration;
 
-public sealed record GuardedRunnerPolicy(string ExpectedSourceCommitSha, string ExpectedRunnerDigestSha256);
+public sealed record GuardedRunnerPolicy(string ExpectedSourceCommitSha, string ExpectedRunnerDigestSha256)
+{
+    public static TimeSpan MaximumBackupReceiptAge { get; } = TimeSpan.FromHours(26);
+
+    public static TimeSpan MaximumSchemaPlanAge { get; } = TimeSpan.FromHours(6);
+
+    public static TimeSpan MaximumAuthorizationLifetime { get; } = TimeSpan.FromHours(1);
+}
 
 public sealed record GuardedMigrationRequest(
     BackupReceipt BackupReceipt,
     FreshSchemaPlan SchemaPlan,
-    ExecutionAuthorizationReceipt Authorization,
-    DateTimeOffset NowUtc,
-    TimeSpan MaximumBackupReceiptAge,
-    TimeSpan MaximumSchemaPlanAge);
+    ExecutionAuthorizationReceipt Authorization);
 
 public sealed record SourceSchemaEvidence(string Database, string SchemaSha256);
 
@@ -19,11 +23,19 @@ public sealed record MigrationRow(IReadOnlyDictionary<string, object?> Values);
 
 public sealed record ShadowDatabase(string Name, string OwnerRunId, string Database);
 
-public sealed record DatabaseReconciliationResult(
-    bool IsValid,
-    long TotalRows,
+public sealed record TableReconciliationEvidence(
+    string Table,
+    long RowCount,
     string ContentSha256,
-    IReadOnlyList<string> Errors);
+    string AggregateSha256,
+    IReadOnlyDictionary<string, long> NullCounts,
+    IReadOnlyDictionary<string, long> ForeignKeyOrphanCounts);
+
+public sealed record DatabaseReconciliationEvidence(
+    string Database,
+    string SourceSchemaSha256,
+    string TargetSchemaSha256,
+    IReadOnlyList<TableReconciliationEvidence> Tables);
 
 public sealed record MigratedShadowDatabase(
     string Database,
@@ -39,7 +51,26 @@ public sealed record MigrationExecutionReceipt(
     string RunnerDigestSha256,
     string TargetGeneration,
     DateTimeOffset CompletedAtUtc,
-    IReadOnlyList<MigratedShadowDatabase> Databases);
+    IReadOnlyList<MigratedShadowDatabase> Databases,
+    IReadOnlyList<DatabaseReconciliationEvidence> Reconciliation,
+    string AttestationKeyId,
+    string? AttestationSignature);
+
+public sealed record ShadowCleanupOutcome(string ShadowName, bool Deleted, string? ErrorCode);
+
+public sealed record MigrationFailureReceipt(
+    Guid RunId,
+    string SourceCommitSha,
+    string SchemaPlanSha256,
+    string BackupManifestSha256,
+    string RunnerDigestSha256,
+    string TargetGeneration,
+    DateTimeOffset FailedAtUtc,
+    string FailureCode,
+    IReadOnlyList<DatabaseReconciliationEvidence> Reconciliation,
+    IReadOnlyList<ShadowCleanupOutcome> Cleanup,
+    string AttestationKeyId,
+    string? AttestationSignature);
 
 public enum MigrationExecutionStatus
 {
@@ -112,6 +143,11 @@ public interface IReadOnlySqlServerMigrationSource
         TableCopyPlan table,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyDictionary<string, long>> InspectForeignKeyOrphansAsync(
+        string database,
+        TableCopyPlan table,
+        CancellationToken cancellationToken);
+
     Task CompleteDatabaseSnapshotAsync(string database, CancellationToken cancellationToken);
 
     Task RollbackDatabaseSnapshotAsync(string database, CancellationToken cancellationToken);
@@ -143,9 +179,10 @@ public interface IPostgreSqlWholeDatabaseTransaction : IAsyncDisposable
         IAsyncEnumerable<MigrationRow> rows,
         CancellationToken cancellationToken);
 
-    Task<DatabaseReconciliationResult> ReconcileAsync(
-        DatabaseSchemaPlan plan,
-        IReadOnlyDictionary<string, long> copiedRows,
+    Task<string> InspectSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken);
+
+    Task<TableReconciliationEvidence> InspectTableAsync(
+        TableCopyPlan table,
         CancellationToken cancellationToken);
 
     Task CommitAsync(CancellationToken cancellationToken);
@@ -161,7 +198,14 @@ public interface IMigrationRunJournal
 
     Task RecordCompletedAsync(MigrationExecutionReceipt receipt, CancellationToken cancellationToken);
 
-    Task RecordFailedAsync(Guid runId, CancellationToken cancellationToken);
+    Task RecordFailedAsync(MigrationFailureReceipt receipt, CancellationToken cancellationToken);
+}
+
+public interface IMigrationEvidenceSigner
+{
+    string KeyId { get; }
+
+    byte[] Sign(ReadOnlySpan<byte> payload);
 }
 
 public sealed partial class GuardedShadowMigrationRunner
@@ -171,6 +215,8 @@ public sealed partial class GuardedShadowMigrationRunner
     private readonly IReadOnlySqlServerMigrationSource _source;
     private readonly IPostgreSqlShadowTarget _target;
     private readonly IMigrationRunJournal _journal;
+    private readonly IMigrationEvidenceSigner _evidenceSigner;
+    private readonly TimeProvider _timeProvider;
     private readonly GuardedRunnerPolicy _policy;
 
     public GuardedShadowMigrationRunner(
@@ -179,6 +225,8 @@ public sealed partial class GuardedShadowMigrationRunner
         IReadOnlySqlServerMigrationSource source,
         IPostgreSqlShadowTarget target,
         IMigrationRunJournal journal,
+        IMigrationEvidenceSigner evidenceSigner,
+        TimeProvider timeProvider,
         GuardedRunnerPolicy policy)
     {
         ArgumentNullException.ThrowIfNull(backupPreflight);
@@ -186,6 +234,8 @@ public sealed partial class GuardedShadowMigrationRunner
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(journal);
+        ArgumentNullException.ThrowIfNull(evidenceSigner);
+        ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(policy);
         if (!CommitSha().IsMatch(policy.ExpectedSourceCommitSha) || !Sha256().IsMatch(policy.ExpectedRunnerDigestSha256))
         {
@@ -197,6 +247,8 @@ public sealed partial class GuardedShadowMigrationRunner
         _source = source;
         _target = target;
         _journal = journal;
+        _evidenceSigner = evidenceSigner;
+        _timeProvider = timeProvider;
         _policy = policy;
     }
 
@@ -205,7 +257,8 @@ public sealed partial class GuardedShadowMigrationRunner
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ValidateRequest(request);
+        DateTimeOffset nowUtc = _timeProvider.GetUtcNow();
+        ValidateRequest(request, nowUtc);
 
         MigrationRunIdentity identity = MigrationRunIdentity.FromRequest(request);
         string schemaPlanHash = identity.SchemaPlanSha256;
@@ -238,6 +291,7 @@ public sealed partial class GuardedShadowMigrationRunner
 
         List<ShadowDatabase> createdShadows = [];
         List<MigratedShadowDatabase> migrated = [];
+        List<DatabaseReconciliationEvidence> evidence = [];
         try
         {
             foreach (DatabaseSchemaPlan databasePlan in request.SchemaPlan.Databases
@@ -266,8 +320,8 @@ public sealed partial class GuardedShadowMigrationRunner
                             request.Authorization.RunId.ToString("D"),
                             cancellationToken)
                         .ConfigureAwait(false);
-                    ValidateShadowLease(shadow, shadowName, databasePlan.Database, request.Authorization.RunId);
                     createdShadows.Add(shadow);
+                    ValidateShadowLease(shadow, shadowName, databasePlan.Database, request.Authorization.RunId);
                     if (!await _target.IsEmptyAsync(shadow, cancellationToken).ConfigureAwait(false))
                     {
                         throw new MigrationExecutionException(
@@ -278,6 +332,7 @@ public sealed partial class GuardedShadowMigrationRunner
                     MigratedShadowDatabase result = await CopyWholeDatabaseAsync(
                         shadow,
                         databasePlan,
+                        evidence,
                         cancellationToken).ConfigureAwait(false);
                     migrated.Add(result);
                     await _source.CompleteDatabaseSnapshotAsync(databasePlan.Database, cancellationToken)
@@ -291,28 +346,51 @@ public sealed partial class GuardedShadowMigrationRunner
                 }
             }
 
-            var receipt = new MigrationExecutionReceipt(
+            var unsignedReceipt = new MigrationExecutionReceipt(
                 request.Authorization.RunId,
                 request.SchemaPlan.SourceCommitSha,
                 schemaPlanHash,
                 request.BackupReceipt.ManifestSha256!,
                 _policy.ExpectedRunnerDigestSha256,
                 request.Authorization.TargetGeneration!,
-                request.NowUtc,
-                new ReadOnlyCollection<MigratedShadowDatabase>(migrated));
+                _timeProvider.GetUtcNow(),
+                new ReadOnlyCollection<MigratedShadowDatabase>(migrated),
+                new ReadOnlyCollection<DatabaseReconciliationEvidence>(evidence),
+                _evidenceSigner.KeyId,
+                null);
+            MigrationExecutionReceipt receipt = SignAndVerify(unsignedReceipt);
             await _journal.RecordCompletedAsync(receipt, cancellationToken).ConfigureAwait(false);
             return new MigrationExecutionResult(MigrationExecutionStatus.Completed, receipt);
         }
         catch (Exception exception)
         {
-            try
+            IReadOnlyList<ShadowCleanupOutcome> cleanup = await DeleteCreatedShadowsAsync(createdShadows)
+                .ConfigureAwait(false);
+            string failureCode = exception is MigrationExecutionException migrationException
+                ? migrationException.Code
+                : exception is OperationCanceledException ? "operation_cancelled" : "shadow_execution_failed";
+            var unsignedFailure = new MigrationFailureReceipt(
+                identity.RunId,
+                identity.SourceCommitSha,
+                identity.SchemaPlanSha256,
+                identity.BackupManifestSha256,
+                identity.RunnerDigestSha256,
+                identity.TargetGeneration,
+                _timeProvider.GetUtcNow(),
+                failureCode,
+                new ReadOnlyCollection<DatabaseReconciliationEvidence>(evidence),
+                cleanup,
+                _evidenceSigner.KeyId,
+                null);
+            await _journal.RecordFailedAsync(SignAndVerify(unsignedFailure), CancellationToken.None)
+                .ConfigureAwait(false);
+
+            if (cleanup.Any(outcome => !outcome.Deleted))
             {
-                await DeleteCreatedShadowsAsync(createdShadows).ConfigureAwait(false);
-            }
-            finally
-            {
-                await _journal.RecordFailedAsync(request.Authorization.RunId, CancellationToken.None)
-                    .ConfigureAwait(false);
+                throw new MigrationExecutionException(
+                    "shadow_cleanup_failed",
+                    "One or more run-owned shadow databases could not be removed.",
+                    exception);
             }
 
             if (exception is OperationCanceledException or MigrationExecutionException)
@@ -330,6 +408,7 @@ public sealed partial class GuardedShadowMigrationRunner
     private async Task<MigratedShadowDatabase> CopyWholeDatabaseAsync(
         ShadowDatabase shadow,
         DatabaseSchemaPlan databasePlan,
+        List<DatabaseReconciliationEvidence> evidence,
         CancellationToken cancellationToken)
     {
         await using IPostgreSqlWholeDatabaseTransaction transaction = await _target
@@ -338,32 +417,70 @@ public sealed partial class GuardedShadowMigrationRunner
         try
         {
             await transaction.ApplySchemaAsync(databasePlan, cancellationToken).ConfigureAwait(false);
-            Dictionary<string, long> copiedRows = new(StringComparer.Ordinal);
+            List<TableReconciliationEvidence> sourceTables = [];
             foreach (TableCopyPlan table in databasePlan.Tables)
             {
+                var collector = new TableEvidenceCollector(table);
                 long count = await transaction.CopyTableAsync(
                     table,
-                    _source.ReadTableAsync(databasePlan.Database, table, cancellationToken),
+                    collector.ObserveAsync(
+                        _source.ReadTableAsync(databasePlan.Database, table, cancellationToken),
+                        cancellationToken),
                     cancellationToken).ConfigureAwait(false);
-                copiedRows.Add($"{table.TargetSchema}.{table.TargetTable}", count);
+                TableReconciliationEvidence sourceEvidence = collector.Finish();
+                IReadOnlyDictionary<string, long> sourceOrphans = await _source
+                    .InspectForeignKeyOrphansAsync(databasePlan.Database, table, cancellationToken)
+                    .ConfigureAwait(false);
+                sourceEvidence = sourceEvidence with { ForeignKeyOrphanCounts = sourceOrphans };
+                if (count != sourceEvidence.RowCount)
+                {
+                    throw new MigrationExecutionException(
+                        "shadow_copy_count_mismatch",
+                        $"{databasePlan.Database} did not acknowledge every source row.");
+                }
+
+                sourceTables.Add(sourceEvidence);
             }
 
-            DatabaseReconciliationResult reconciliation = await transaction
-                .ReconcileAsync(databasePlan, copiedRows, cancellationToken)
+            string targetSchema = await transaction.InspectSchemaAsync(databasePlan, cancellationToken)
                 .ConfigureAwait(false);
-            if (!reconciliation.IsValid || reconciliation.Errors.Count > 0 || !Sha256().IsMatch(reconciliation.ContentSha256))
+            if (!string.Equals(targetSchema, databasePlan.TargetSchemaSha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new MigrationExecutionException(
                     "shadow_reconciliation_failed",
                     $"{databasePlan.Database} failed shadow reconciliation.");
             }
 
+            List<TableReconciliationEvidence> targetTables = [];
+            foreach (TableCopyPlan table in databasePlan.Tables)
+            {
+                TableReconciliationEvidence targetEvidence = await transaction
+                    .InspectTableAsync(table, cancellationToken)
+                    .ConfigureAwait(false);
+                TableReconciliationEvidence sourceEvidence = sourceTables.Single(item =>
+                    string.Equals(item.Table, targetEvidence.Table, StringComparison.Ordinal));
+                if (!EvidenceEquals(sourceEvidence, targetEvidence))
+                {
+                    throw new MigrationExecutionException(
+                        "shadow_reconciliation_failed",
+                        $"{databasePlan.Database} failed shadow reconciliation.");
+                }
+
+                targetTables.Add(targetEvidence);
+            }
+
+            evidence.Add(new DatabaseReconciliationEvidence(
+                databasePlan.Database,
+                databasePlan.SourceSchemaSha256,
+                targetSchema,
+                new ReadOnlyCollection<TableReconciliationEvidence>(targetTables)));
+
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return new MigratedShadowDatabase(
                 databasePlan.Database,
                 shadow.Name,
-                reconciliation.TotalRows,
-                reconciliation.ContentSha256);
+                targetTables.Sum(item => item.RowCount),
+                HashEvidence(targetTables));
         }
         catch (Exception exception)
         {
@@ -380,13 +497,13 @@ public sealed partial class GuardedShadowMigrationRunner
         }
     }
 
-    private void ValidateRequest(GuardedMigrationRequest request)
+    private void ValidateRequest(GuardedMigrationRequest request, DateTimeOffset nowUtc)
     {
         IReadOnlyList<PreflightError> schemaErrors = SchemaPlanCanonicalizer.Validate(
             request.SchemaPlan,
             _policy,
-            request.NowUtc,
-            request.MaximumSchemaPlanAge);
+            nowUtc,
+            GuardedRunnerPolicy.MaximumSchemaPlanAge);
         if (schemaErrors.Count > 0)
         {
             throw FromPreflight(schemaErrors[0]);
@@ -397,7 +514,7 @@ public sealed partial class GuardedShadowMigrationRunner
             request.SchemaPlan,
             request.BackupReceipt,
             _policy,
-            request.NowUtc,
+            nowUtc,
             _authorizationTrustStore);
         if (authorizationErrors.Count > 0)
         {
@@ -415,8 +532,8 @@ public sealed partial class GuardedShadowMigrationRunner
         PreflightResult backupResult = _backupPreflight.Validate(
             request.BackupReceipt,
             planOnly,
-            request.NowUtc,
-            request.MaximumBackupReceiptAge);
+            nowUtc,
+            GuardedRunnerPolicy.MaximumBackupReceiptAge);
         if (!backupResult.IsValid)
         {
             throw FromPreflight(backupResult.Errors[0]);
@@ -444,28 +561,60 @@ public sealed partial class GuardedShadowMigrationRunner
         }
     }
 
-    private async Task DeleteCreatedShadowsAsync(IEnumerable<ShadowDatabase> shadows)
+    private async Task<IReadOnlyList<ShadowCleanupOutcome>> DeleteCreatedShadowsAsync(IEnumerable<ShadowDatabase> shadows)
     {
-        List<Exception> errors = [];
+        List<ShadowCleanupOutcome> outcomes = [];
         foreach (ShadowDatabase shadow in shadows.Reverse())
         {
             try
             {
                 await _target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None).ConfigureAwait(false);
+                outcomes.Add(new ShadowCleanupOutcome(shadow.Name, true, null));
             }
-            catch (Exception exception)
+            catch
             {
-                errors.Add(exception);
+                outcomes.Add(new ShadowCleanupOutcome(shadow.Name, false, "shadow_delete_failed"));
             }
         }
 
-        if (errors.Count > 0)
-        {
-            throw new MigrationExecutionException(
-                "shadow_cleanup_failed",
-                "One or more run-owned shadow databases could not be removed.",
-                new AggregateException(errors));
-        }
+        return new ReadOnlyCollection<ShadowCleanupOutcome>(outcomes);
+    }
+
+    private static bool EvidenceEquals(TableReconciliationEvidence source, TableReconciliationEvidence target)
+    {
+        return source.RowCount == target.RowCount &&
+        string.Equals(source.ContentSha256, target.ContentSha256, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(source.AggregateSha256, target.AggregateSha256, StringComparison.OrdinalIgnoreCase) &&
+        source.NullCounts.OrderBy(item => item.Key, StringComparer.Ordinal)
+            .SequenceEqual(target.NullCounts.OrderBy(item => item.Key, StringComparer.Ordinal)) &&
+        source.ForeignKeyOrphanCounts.OrderBy(item => item.Key, StringComparer.Ordinal)
+            .SequenceEqual(target.ForeignKeyOrphanCounts.OrderBy(item => item.Key, StringComparer.Ordinal));
+    }
+
+    private static string HashEvidence(IEnumerable<TableReconciliationEvidence> tables)
+    {
+        string canonical = string.Join('\n', tables.OrderBy(item => item.Table, StringComparer.Ordinal)
+            .Select(item => $"{item.Table}|{item.RowCount}|{item.ContentSha256}|{item.AggregateSha256}"));
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    private MigrationExecutionReceipt SignAndVerify(MigrationExecutionReceipt receipt)
+    {
+        byte[] payload = MigrationEvidenceAttestation.CreatePayload(receipt);
+        byte[] signature = _evidenceSigner.Sign(payload);
+        return !_authorizationTrustStore.Verify(_evidenceSigner.KeyId, payload, signature)
+            ? throw new MigrationExecutionException("evidence_signature_invalid", "Migration evidence signer is not trusted.")
+            : (receipt with { AttestationSignature = Convert.ToBase64String(signature) });
+    }
+
+    private MigrationFailureReceipt SignAndVerify(MigrationFailureReceipt receipt)
+    {
+        byte[] payload = MigrationEvidenceAttestation.CreatePayload(receipt);
+        byte[] signature = _evidenceSigner.Sign(payload);
+        return !_authorizationTrustStore.Verify(_evidenceSigner.KeyId, payload, signature)
+            ? throw new MigrationExecutionException("evidence_signature_invalid", "Migration evidence signer is not trusted.")
+            : (receipt with { AttestationSignature = Convert.ToBase64String(signature) });
     }
 
     private static string CreateShadowName(string database, Guid runId)
