@@ -231,6 +231,15 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
             : $"\"{identifier.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
     }
 
+    internal static string QuoteQualifiedIdentifier(string identifier)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(identifier);
+        string[] parts = identifier.Split('.', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length is < 1 or > 2
+            ? throw new MigrationExecutionException("target_sequence_evidence_invalid", "PostgreSQL returned an invalid sequence identifier.")
+            : string.Join('.', parts.Select(part => QuoteIdentifier(part.Trim('"').Replace("\"\"", "\"", StringComparison.Ordinal))));
+    }
+
     private static string QuoteLiteral(string value)
     {
         return $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
@@ -747,6 +756,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
 
         TableReconciliationEvidence evidence = collector.Finish();
         var orphanCounts = new Dictionary<string, long>(StringComparer.Ordinal);
+        var relationshipCounts = new Dictionary<string, long>(StringComparer.Ordinal);
         foreach (ForeignKeyCopyPlan foreignKey in table.ForeignKeys.OrderBy(item => item.Name, StringComparer.Ordinal))
         {
             string join = string.Join(" AND ", foreignKey.Columns.Zip(
@@ -761,13 +771,57 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             orphanCounts.Add(
                 foreignKey.Name,
                 Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture));
+            string relationshipSql = $"SELECT COUNT(*) FROM {Qualified(table.TargetSchema, table.TargetTable)} AS child WHERE {required};";
+            await using var relationshipCommand = new NpgsqlCommand(relationshipSql, connection, transaction);
+            relationshipCounts.Add(
+                foreignKey.Name,
+                Convert.ToInt64(await relationshipCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture));
         }
 
         _ = _completedTableInspections.Add($"{table.TargetSchema}.{table.TargetTable}");
         return evidence with
         {
             ForeignKeyOrphanCounts = new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(orphanCounts),
+            ForeignKeyRelationshipCounts = new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(relationshipCounts),
         };
+    }
+
+    public async Task<IReadOnlyDictionary<string, long>> InspectSequenceNextValuesAsync(
+        DatabaseSchemaPlan plan,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        var results = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (TableCopyPlan table in plan.Tables)
+        {
+            foreach (IdentityCopyPlan identity in table.Identities.OrderBy(item => item.Column, StringComparer.Ordinal))
+            {
+                const string sequenceSql = "SELECT pg_get_serial_sequence($1, $2);";
+                await using var sequence = new NpgsqlCommand(sequenceSql, connection, transaction);
+                _ = sequence.Parameters.AddWithValue($"{table.TargetSchema}.{table.TargetTable}");
+                _ = sequence.Parameters.AddWithValue(identity.Column);
+                string? sequenceName = (string?)await sequence.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(sequenceName))
+                {
+                    throw new MigrationExecutionException("target_sequence_evidence_missing", $"{plan.Database}.{table.TargetTable}.{identity.Column} sequence evidence is unavailable.");
+                }
+
+                string stateSql = $"SELECT last_value, is_called FROM {PostgreSqlShadowTarget.QuoteQualifiedIdentifier(sequenceName)};";
+                await using var state = new NpgsqlCommand(stateSql, connection, transaction);
+                await using NpgsqlDataReader reader = await state.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    throw new MigrationExecutionException("target_sequence_evidence_missing", $"{plan.Database}.{table.TargetTable}.{identity.Column} sequence evidence is unavailable.");
+                }
+
+                long lastValue = reader.GetInt64(0);
+                bool isCalled = reader.GetBoolean(1);
+                long next = isCalled ? checked(lastValue + identity.IncrementValue) : lastValue;
+                results.Add($"{table.TargetSchema}.{table.TargetTable}.{identity.Column}", next);
+            }
+        }
+
+        return new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(results);
     }
 
     public async Task CommitAsync(CancellationToken cancellationToken)

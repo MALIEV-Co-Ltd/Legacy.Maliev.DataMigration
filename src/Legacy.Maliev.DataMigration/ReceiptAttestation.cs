@@ -8,6 +8,8 @@ public interface IReceiptAttestationTrustStore
 {
     bool ContainsKey(string keyId);
 
+    bool TryGetPublicKeyFingerprintSha256(string keyId, out string fingerprintSha256);
+
     bool Verify(string keyId, ReadOnlySpan<byte> payload, ReadOnlySpan<byte> signature);
 }
 
@@ -26,8 +28,7 @@ public sealed class ReceiptAttestationTrustStore : IReceiptAttestationTrustStore
             ArgumentException.ThrowIfNullOrWhiteSpace(trustedKey.KeyId);
             ArgumentNullException.ThrowIfNull(trustedKey.SubjectPublicKeyInfo);
 
-            byte[] subjectPublicKeyInfo = trustedKey.SubjectPublicKeyInfo.ToArray();
-            ValidateP256SubjectPublicKeyInfo(subjectPublicKeyInfo);
+            byte[] subjectPublicKeyInfo = NormalizeP256SubjectPublicKeyInfo(trustedKey.SubjectPublicKeyInfo);
             if (!keys.TryAdd(trustedKey.KeyId, subjectPublicKeyInfo))
             {
                 throw new ArgumentException("Trusted attestation keys must be valid and have unique identifiers.", nameof(trustedKeys));
@@ -63,7 +64,19 @@ public sealed class ReceiptAttestationTrustStore : IReceiptAttestationTrustStore
         }
     }
 
-    private static void ValidateP256SubjectPublicKeyInfo(byte[] subjectPublicKeyInfo)
+    public bool TryGetPublicKeyFingerprintSha256(string keyId, out string fingerprintSha256)
+    {
+        if (!_trustedKeys.TryGetValue(keyId, out byte[]? publicKey))
+        {
+            fingerprintSha256 = string.Empty;
+            return false;
+        }
+
+        fingerprintSha256 = Convert.ToHexString(SHA256.HashData(publicKey)).ToLowerInvariant();
+        return true;
+    }
+
+    private static byte[] NormalizeP256SubjectPublicKeyInfo(byte[] subjectPublicKeyInfo)
     {
         using ECDsa verifier = ECDsa.Create();
         try
@@ -79,10 +92,9 @@ public sealed class ReceiptAttestationTrustStore : IReceiptAttestationTrustStore
             throw CreateTrustedKeyException("trusted_attestation_key_algorithm_invalid");
         }
 
-        if (!IsP256(verifier))
-        {
-            throw CreateTrustedKeyException("trusted_attestation_key_curve_invalid");
-        }
+        return !IsP256(verifier)
+            ? throw CreateTrustedKeyException("trusted_attestation_key_curve_invalid")
+            : verifier.ExportSubjectPublicKeyInfo();
     }
 
     private static bool IsP256(ECDsa verifier)

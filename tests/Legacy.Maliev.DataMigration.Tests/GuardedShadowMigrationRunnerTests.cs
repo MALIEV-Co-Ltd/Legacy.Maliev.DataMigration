@@ -41,6 +41,33 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_ReceiptRetainsObservedRelationshipAndSequenceEvidence()
+    {
+        Harness harness = CreateHarness();
+        string database = DatabaseInventory.ActiveDatabases[0];
+        FreshSchemaPlan plan = MutateDatabasePlan(CreateSchemaPlan(), database, item => item with
+        {
+            Tables = [item.Tables[0] with
+            {
+                IdentityColumns = ["ID"],
+                Identities = [new IdentityCopyPlan("ID", 1, 1, 1, true)],
+                ForeignKeys = [new ForeignKeyCopyPlan("FK_Primary_Self", ["ID"], "public", "Primary", ["ID"])
+                {
+                    SourceReferencedSchema = "dbo",
+                    SourceReferencedTable = "Primary",
+                    SourceReferencedColumns = ["ID"],
+                }],
+            }],
+        });
+
+        MigrationExecutionResult result = await harness.Runner.ExecuteAsync(CreateRequest(plan), CancellationToken.None);
+
+        DatabaseReconciliationEvidence evidence = result.Receipt.Reconciliation.Single(item => item.Database == database);
+        Assert.Equal(1, Assert.Single(evidence.Tables).ForeignKeyRelationshipCounts["FK_Primary_Self"]);
+        Assert.Equal(2, evidence.SequenceNextValues["public.Primary.ID"]);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_TargetCopyFails_RollsBackCurrentTransactionAndDeletesEveryRunOwnedShadow()
     {
         Harness harness = CreateHarness();
@@ -634,6 +661,9 @@ public sealed class GuardedShadowMigrationRunnerTests
     {
         public string KeyId => keyId;
 
+        public string PublicKeyFingerprintSha256 { get; } = Convert.ToHexString(
+            SHA256.HashData(signingKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant();
+
         public byte[] Sign(ReadOnlySpan<byte> payload)
         {
             return signingKey.SignData(payload, HashAlgorithmName.SHA256);
@@ -720,6 +750,31 @@ public sealed class GuardedShadowMigrationRunnerTests
                 foreignKey => foreignKey.Name,
                 _ => 0L,
                 StringComparer.Ordinal);
+            return Task.FromResult(result);
+        }
+
+        public Task<IReadOnlyDictionary<string, long>> InspectForeignKeyRelationshipsAsync(
+            string database,
+            TableCopyPlan table,
+            CancellationToken cancellationToken)
+        {
+            IReadOnlyDictionary<string, long> result = table.ForeignKeys.ToDictionary(
+                foreignKey => foreignKey.Name,
+                _ => (long)RowsPerTable,
+                StringComparer.Ordinal);
+            return Task.FromResult(result);
+        }
+
+        public Task<IReadOnlyDictionary<string, long>> InspectSequenceNextValuesAsync(
+            string database,
+            DatabaseSchemaPlan plan,
+            CancellationToken cancellationToken)
+        {
+            IReadOnlyDictionary<string, long> result = plan.Tables.SelectMany(table => table.Identities.Select(identity =>
+                    new KeyValuePair<string, long>(
+                        $"{table.TargetSchema}.{table.TargetTable}.{identity.Column}",
+                        identity.IsCalled ? identity.CurrentValue + identity.IncrementValue : identity.CurrentValue)))
+                .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
             return Task.FromResult(result);
         }
 
@@ -886,7 +941,25 @@ public sealed class GuardedShadowMigrationRunnerTests
                 collector.Append(row);
             }
 
-            return Task.FromResult(collector.Finish());
+            TableReconciliationEvidence evidence = collector.Finish();
+            return Task.FromResult(evidence with
+            {
+                ForeignKeyRelationshipCounts = new Dictionary<string, long>(
+                    table.ForeignKeys.ToDictionary(item => item.Name, _ => (long)observed.Count, StringComparer.Ordinal),
+                    StringComparer.Ordinal),
+            });
+        }
+
+        public Task<IReadOnlyDictionary<string, long>> InspectSequenceNextValuesAsync(
+            DatabaseSchemaPlan plan,
+            CancellationToken cancellationToken)
+        {
+            IReadOnlyDictionary<string, long> result = plan.Tables.SelectMany(table => table.Identities.Select(identity =>
+                    new KeyValuePair<string, long>(
+                        $"{table.TargetSchema}.{table.TargetTable}.{identity.Column}",
+                        identity.IsCalled ? identity.CurrentValue + identity.IncrementValue : identity.CurrentValue)))
+                .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
+            return Task.FromResult(result);
         }
 
         public Task CommitAsync(CancellationToken cancellationToken)
