@@ -30,6 +30,20 @@ public sealed class RuntimeAttestationTests : IDisposable
     }
 
     [Fact]
+    public async Task Linux_path_identity_matches_the_exclusive_open_handle_without_reopening_the_file()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        string runnerPath = await CreateSingleFilePublicationAsync();
+        await using FileStream stream = SecureLocalFile.OpenRead(runnerPath);
+
+        Assert.Equal(SecureLocalFile.GetHandleIdentity(stream), SecureLocalFile.GetPathIdentity(runnerPath));
+    }
+
+    [Fact]
     public async Task Runner_manifest_rejects_a_symbolic_link_inside_the_publication()
     {
         CreateOwnerOnlyDirectory(_root);

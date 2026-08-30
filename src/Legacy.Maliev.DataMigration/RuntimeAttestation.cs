@@ -124,7 +124,16 @@ public static class RunnerArtifactManifestMeasurer
                     throw Error("runtime_runner_manifest_mutated", "A published runner artifact changed while it was measured.");
                 }
 
-                if (!OperatingSystem.IsWindows())
+                if (OperatingSystem.IsLinux())
+                {
+                    // The original handle deliberately remains exclusive. Compare the live path via statx;
+                    // reopening it would conflict with FileShare.None on Linux before identity can be checked.
+                    if (!string.Equals(artifact.Identity, SecureLocalFile.GetPathIdentity(artifact.FullPath), StringComparison.Ordinal))
+                    {
+                        throw Error("runtime_runner_manifest_mutated", "A published runner artifact identity changed while it was measured.");
+                    }
+                }
+                else if (!OperatingSystem.IsWindows())
                 {
                     await using FileStream reopened = SecureLocalFile.OpenRead(artifact.FullPath);
                     if (!string.Equals(artifact.Identity, SecureLocalFile.GetHandleIdentity(reopened), StringComparison.Ordinal))

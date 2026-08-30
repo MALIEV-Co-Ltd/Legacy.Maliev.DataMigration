@@ -136,6 +136,19 @@ internal static class SecureLocalFile
             : $"path:{Path.GetFullPath(finalPath).ToUpperInvariant()}";
     }
 
+    internal static string GetPathIdentity(string path)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException("Path identity observation is available only on Linux.");
+        }
+
+        string full = Path.GetFullPath(path);
+        return Statx(AtCurrentWorkingDirectory, full, AtSymlinkNoFollow, StatxBasicStats, out LinuxStatx stat) != 0
+            ? throw new Exact25FullBackupException("local_backup_type_invalid", "The file path identity could not be observed.")
+            : $"linux:{stat.DeviceMajor:x8}:{stat.DeviceMinor:x8}:{stat.Inode:x16}";
+    }
+
     public static void EnsurePathWithin(string root, string path)
     {
         string relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path));
