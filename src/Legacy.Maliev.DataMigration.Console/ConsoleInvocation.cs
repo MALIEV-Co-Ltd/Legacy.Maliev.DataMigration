@@ -11,6 +11,8 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "backup-full",
         "restore-backups",
         "cleanup-restore",
+        "authorize-shadow",
+        "sign-provenance",
     ];
 
     private static readonly string[] SecretOptionFragments =

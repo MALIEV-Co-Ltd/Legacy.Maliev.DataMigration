@@ -47,12 +47,13 @@ public sealed class MigrationConsoleTests : IDisposable
     [Fact]
     public async Task RunAsync_Plan_MissingSourceReferenceFailsWithoutPrintingConfiguration()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         string configPath = Path.Combine(_root, "config.json");
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
         {
             plan = new { outputPath = Path.Combine(_root, "plan.json"), sourceCommitSha = new string('a', 40) },
         }, JsonOptions));
+        ProtectFileOnUnix(configPath);
         using var output = new StringWriter();
         using var error = new StringWriter();
 
@@ -67,7 +68,7 @@ public sealed class MigrationConsoleTests : IDisposable
     [Fact]
     public async Task RunAsync_ExecuteShadow_MissingRuntimeReferencesFailsClosed()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         string configPath = Path.Combine(_root, "config.json");
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
         {
@@ -85,11 +86,13 @@ public sealed class MigrationConsoleTests : IDisposable
                 expectedShadowAdminRole = "legacy_migration_shadow_admin",
             },
         }, JsonOptions));
+        ProtectFileOnUnix(configPath);
         using var output = new StringWriter();
         using var error = new StringWriter();
 
         int exitCode = await MigrationConsole.RunAsync(
-            ["execute-shadow", "--config", configPath], output, error, _ => null, CancellationToken.None);
+            ["execute-shadow", "--config", configPath], output, error,
+            name => name == "LEGACY_DEPLOY_ENABLED" ? "false" : null, CancellationToken.None);
 
         Assert.Equal(65, exitCode);
         Assert.Equal("shadow_runtime_reference_missing" + Environment.NewLine, error.ToString());
@@ -97,9 +100,28 @@ public sealed class MigrationConsoleTests : IDisposable
     }
 
     [Fact]
-    public async Task RunAsync_ExecuteShadow_SamePostgreSqlRoleBoundaryFailsBeforeReadingArtifacts()
+    public async Task RunAsync_ExecuteShadow_DeployEnabledFailsBeforeReadingConfigurationOrRuntimeReferences()
     {
         _ = Directory.CreateDirectory(_root);
+        string configPath = Path.Combine(_root, "unprotected-config.json");
+        await File.WriteAllTextAsync(configPath, "must-not-be-read");
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["execute-shadow", "--config", configPath], output, error,
+            name => name == "LEGACY_DEPLOY_ENABLED" ? "true" : "must-not-be-read",
+            CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal("shadow_deploy_gate_invalid" + Environment.NewLine, error.ToString());
+        Assert.Equal(string.Empty, output.ToString());
+    }
+
+    [Fact]
+    public async Task RunAsync_ExecuteShadow_SamePostgreSqlRoleBoundaryFailsBeforeReadingArtifacts()
+    {
+        OwnerProtectedDirectory.CreateNew(_root);
         string configPath = Path.Combine(_root, "config.json");
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
         {
@@ -117,6 +139,7 @@ public sealed class MigrationConsoleTests : IDisposable
                 expectedShadowAdminRole = "same_role",
             },
         }, JsonOptions));
+        ProtectFileOnUnix(configPath);
         using var output = new StringWriter();
         using var error = new StringWriter();
         const string placeholder = "Host=127.0.0.1;Port=1;Database=postgres;Username=unused;Password=unused;Timeout=1";
@@ -131,7 +154,8 @@ public sealed class MigrationConsoleTests : IDisposable
                 "LEGACY_MIGRATION_CNPG_API_SERVER" => "https://kubernetes.example",
                 "LEGACY_MIGRATION_CNPG_TOKEN_FILE" => "missing-token",
                 "LEGACY_MIGRATION_CNPG_CA_FILE" => "missing-ca",
-                "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE" => "missing-key.pem",
+                "LEGACY_MIGRATION_EXECUTION_SIGNING_KEY_FILE" => "missing-key.pem",
+                "LEGACY_DEPLOY_ENABLED" => "false",
                 _ => null,
             },
             CancellationToken.None);
@@ -144,7 +168,7 @@ public sealed class MigrationConsoleTests : IDisposable
     [Fact]
     public async Task RunAsync_Evidence_MissingProtectedSigningKeyFailsClosed()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         string configPath = Path.Combine(_root, "config.json");
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
         {
@@ -171,6 +195,7 @@ public sealed class MigrationConsoleTests : IDisposable
                 evidenceKeyId = "evidence-key",
             },
         }, JsonOptions));
+        ProtectFileOnUnix(configPath);
         using var output = new StringWriter();
         using var error = new StringWriter();
 
@@ -185,7 +210,7 @@ public sealed class MigrationConsoleTests : IDisposable
     [Fact]
     public async Task RunAsync_ExportLocalSnapshot_MissingProtectedRuntimeReferencesFailsClosed()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         string configPath = Path.Combine(_root, "config.json");
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
         {
@@ -196,6 +221,7 @@ public sealed class MigrationConsoleTests : IDisposable
                 pgDumpPath = "pg_dump",
             },
         }, JsonOptions));
+        ProtectFileOnUnix(configPath);
         using var output = new StringWriter();
         using var error = new StringWriter();
 

@@ -18,10 +18,10 @@ to PostgreSQL data migration. It now contains two deliberately separated layers:
    injected read-only SQL Server source, PostgreSQL-only shadow target, and
    atomic migration-run journal.
 
-The repository now contains concrete database adapters, but no executable host,
-cluster, cloud, process, secret, promotion, or canonical-target adapter. Runtime
-composition requires connection strings supplied by a separately reviewed host;
-nothing in this repository discovers or projects production credentials.
+The repository contains concrete database adapters and a guarded executable host.
+The host accepts only protected configuration-file references and external runtime
+references. It has no promotion or canonical-target adapter, and nothing in this
+repository discovers or projects production credentials.
 
 ## Safety boundary
 
@@ -107,11 +107,19 @@ No executable migration logic was copied from those files.
 ## Receipt and execution contracts
 
 The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan`,
-`execute-shadow`, `evidence`, and `export-local-snapshot`. Command lines may carry a protected
+`authorize-shadow`, `execute-shadow`, `export-local-snapshot`, `cleanup-restore`,
+`sign-provenance`, and `evidence`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
-cannot leak through process listings or logs. The receipt producer independently
-re-reads all 25 local backup files and binds their approved GCS object names,
+cannot leak through process listings or logs. The host requires owner-only,
+no-link files for every configuration, trust, signing-key,
+and signed-artifact read. Authorization and execution also resolve the reviewed
+backup, authorization, execution, provenance, and final-evidence public keys and
+reject any duplicate fingerprint before shadow provisioning can begin. The
+`execute-shadow` command independently requires `LEGACY_DEPLOY_ENABLED=false`;
+the wrapper is not the security boundary.
+The receipt producer independently re-reads all 25 local backup files and binds
+their approved GCS object names,
 immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
 Signing keys are externally supplied and are never stored in this repository.
 
@@ -189,9 +197,15 @@ disposable SQL Server 2022 instance. It runs `RESTORE
 VERIFYONLY`, discovers every logical file with `RESTORE FILELISTONLY`, supplies
 an explicit `WITH MOVE`, refuses existing targets, and makes every restored
 source database snapshot-isolation capable, verifies that state, and then makes
-it read-only. `scripts/invoke-shadow-migration.ps1` then runs the
-five gates in order and refuses to start unless `LEGACY_DEPLOY_ENABLED=false`.
-Neither script contains deployment, GKE, GCS mutation, or Secret Manager logic.
+it read-only. The former all-in-one orchestration script was removed because it
+could regenerate a plan and cross the owner-review boundary in one invocation.
+The replacements are deliberately separate: `prepare-shadow-migration.ps1`
+stops after backup, restore, and plan; `execute-approved-shadow-migration.ps1`
+requires the exact reviewed plan digest and explicit allow flag before signing
+and executing; and `finalize-shadow-migration.ps1` exports the snapshot, removes
+the disposable restore, signs provenance, and only then produces evidence. Every
+phase requires `LEGACY_DEPLOY_ENABLED=false`. See
+[`docs/shadow-migration-runbook.md`](docs/shadow-migration-runbook.md).
 
 The `plan` command opens a SQL Server snapshot for each approved database and
 generates a new deterministic plan directly from the restored source catalogs.
@@ -203,7 +217,7 @@ closed; a checked-in or hand-maintained schema plan is not accepted as fresh.
 
 `execute-shadow` reads the signed receipt, freshly generated plan, and separate
 signed execution authorization from protected file references. SQL Server and
-PostgreSQL connection strings plus the evidence-signing private-key path are
+PostgreSQL connection strings plus the execution-signing private-key path are
 accepted only through environment references. The target-administration
 connection is supplied through `LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION`.
 That connection is the unprivileged shadow runtime role; it must be `NOCREATEDB`.
