@@ -98,8 +98,8 @@ No executable migration logic was copied from those files.
 
 ## Receipt and execution contracts
 
-The .NET 10 executable host exposes only `receipt`, `plan`, `execute-shadow`,
-`evidence`, and `export-local-snapshot`. Command lines may carry a protected
+The .NET 10 executable host exposes only `backup-full`, `receipt`, `plan`,
+`execute-shadow`, `evidence`, and `export-local-snapshot`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
 cannot leak through process listings or logs. The receipt producer independently
@@ -108,25 +108,46 @@ immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
 Signing keys are externally supplied and are never stored in this repository.
 
 `Exact25FullBackupProducer` is the fail-closed producer used by the daily backup
-adapter. It accepts only the exact 25-database migrate inventory, requires every
-source database to be `ONLINE`, binds the expected Kubernetes namespace, pod,
-pod UID, container, and immutable UTC cutoff, and creates uniquely named full
-backups only. It performs `RESTORE VERIFYONLY` before copying each artifact,
-hashes the retained local copy, uploads with create-only semantics, and verifies
-the immutable GCS generation, size, URI, and SHA-256 readback before producing
-the canonical signed receipt. Ambiguous backup or upload operations are never
-retried; only explicitly classified copy transport failures have a bounded
-three-attempt maximum. Recovery backups are retained on every failure.
+adapter. It requires the exact 27-database source disposition inventory to be
+`ONLINE`, but creates full backups only for the 25 approved migrate databases;
+the retired `MachineLearning` and `MachineLearningData` databases are observed
+but never copied. The producer binds the expected Kubernetes namespace, pod,
+pod UID, container, immutable UTC cutoff, cutoff date, and run identifier. It
+creates a unique owner-only remote run directory and uniquely named full backups
+with `COPY_ONLY` and `CHECKSUM`, performs `RESTORE VERIFYONLY`, compares the
+remote SHA-256 to the owner-only retained local copy, then uploads with
+create-only semantics. The exact immutable GCS generation, size, URI, and
+SHA-256 metadata are read back before the canonical receipt is signed.
+Ambiguous backup or upload operations are never retried; only an allowlist of
+explicit copy transport failures has a bounded three-attempt maximum. Recovery
+backups are retained on every failure.
 
 SQL credentials cross the `kubectl exec` child-process boundary only through
 standard input. The invocation diagnostic redacts standard input, and neither
 credentials nor SQL text appear in process arguments. The signed receipt is
 written into an owner-only staging directory and becomes visible through one
 new-directory atomic rename; an existing destination is never overwritten.
-The process and immutable-object-storage adapters remain injectable so their
-production implementations and workload identities can be reviewed separately.
-Differential backups and the retired `MachineLearning` and
-`MachineLearningData` databases are rejected by this contract.
+`KubernetesSqlServerFullBackupProcess` uses structured process arguments and
+standard input, validates the observed pod JSON and full database inventory,
+and copies through a unique temporary file before an atomic local rename.
+`GoogleCloudImmutableBackupObjectStorage` uses Application Default Credentials,
+so GKE Workload Identity or an authorized local ADC identity supplies access
+without a key file. It sets `ifGenerationMatch=0`, records the local SHA-256 as
+object metadata, and reads that exact generation back. Both adapters remain
+injectable for deterministic no-network contract tests. Differential backups
+and backup artifacts for either retired ML database are rejected.
+
+`backup-full --config <protected-json-path>` is the guarded executable
+composition path. The protected JSON must set `fullBackup.allowSourceBackup`
+to `true`; `LEGACY_DEPLOY_ENABLED` must remain exactly `false`. SQL username and
+password are read only from `LEGACY_MIGRATION_BACKUP_SQL_USERNAME` and
+`LEGACY_MIGRATION_BACKUP_SQL_PASSWORD`, while the P-256 private-key path is read
+only from `LEGACY_MIGRATION_RECEIPT_SIGNING_KEY_FILE`. No secret value is
+accepted on the command line or written to standard output, standard error, or
+the receipt. The default runtime composes the structured Kubernetes/sqlcmd
+adapter, the Application Default Credentials GCS adapter, and atomic receipt
+publisher. Contract tests replace that runtime before any process or network
+operation, so repository validation never performs a live backup.
 
 `scripts/restore-verified-sqlserver-backups.ps1` restores only the exact signed
 inventory into a disposable SQL Server 2022 instance. It runs `RESTORE
@@ -254,9 +275,9 @@ or filesystem path is emitted.
 This slice does not approve a production run or daily production
 synchronization. Before a real shadow copy is allowed, the program still needs:
 
-1. independently reviewed concrete Kubernetes/sqlcmd and immutable GCS adapters
-   for the exact-25 producer, including workload identity and protected external
-   signing-key injection;
+1. owner-reviewed runtime configuration that binds the daily adapter to the
+   concrete Kubernetes/sqlcmd and Workload Identity GCS adapters plus protected
+   external signing-key injection;
 2. a freshly generated and independently reviewed 25-database schema plan bound
    to the current source commit;
 3. a bounded source write freeze or a reviewed change-capture mechanism (the

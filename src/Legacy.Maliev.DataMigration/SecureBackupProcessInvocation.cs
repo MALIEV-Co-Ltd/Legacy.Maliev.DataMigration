@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -31,7 +32,7 @@ public static class SecureKubectlSqlCmdInvocation
 {
     private const string ShellScript =
         "IFS= read -r SQLCMDUSER; IFS= read -r SQLCMDPASSWORD; export SQLCMDUSER SQLCMDPASSWORD; " +
-        "exec /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -r 1";
+        "exec /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -r 1 -W -h -1 -s '|'";
 
     public static SecureBackupProcessInvocation Create(
         string @namespace,
@@ -142,6 +143,132 @@ public sealed class AtomicBackupReceiptPublisher : IBackupReceiptPublisher
         }
 
         _ = Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void CreateOwnerProtectedWindowsDirectory(string path)
+    {
+        SecurityIdentifier owner = WindowsIdentity.GetCurrent().User ??
+            throw new UnauthorizedAccessException("The current Windows owner identity is unavailable.");
+        var security = new DirectorySecurity();
+        security.SetOwner(owner);
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(
+            owner,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+        new DirectoryInfo(path).Create(security);
+    }
+}
+
+public sealed record BackupProcessResult(int ExitCode, string StandardOutput, string StandardError);
+
+public interface IBackupProcessRunner
+{
+    Task<BackupProcessResult> RunAsync(SecureBackupProcessInvocation invocation, CancellationToken cancellationToken);
+}
+
+public sealed class SystemBackupProcessRunner : IBackupProcessRunner
+{
+    public async Task<BackupProcessResult> RunAsync(
+        SecureBackupProcessInvocation invocation,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(invocation);
+        var startInfo = new ProcessStartInfo(invocation.FileName)
+        {
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        foreach (string argument in invocation.Arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = new Process { StartInfo = startInfo };
+        try
+        {
+            if (!process.Start())
+            {
+                throw new Exact25BackupTransportException("process_start_failed", $"Failed to start {invocation}.", retryable: false);
+            }
+        }
+        catch (Exception exception) when (exception is not Exact25BackupTransportException and not OperationCanceledException)
+        {
+            throw new Exact25BackupTransportException("process_start_failed", $"Failed to start {invocation}: {exception.GetType().Name}.", retryable: false);
+        }
+
+        Task<string> stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        Task<string> stderr = process.StandardError.ReadToEndAsync(cancellationToken);
+        if (invocation.StandardInput.Length > 0)
+        {
+            await process.StandardInput.WriteAsync(invocation.StandardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
+        }
+
+        process.StandardInput.Close();
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            throw;
+        }
+
+        return new(process.ExitCode, await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false));
+    }
+}
+
+internal static class OwnerProtectedDirectory
+{
+    public static void CreateNew(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        string? parent = Path.GetDirectoryName(fullPath);
+        string name = Path.GetFileName(fullPath);
+        if (string.IsNullOrWhiteSpace(parent) || string.IsNullOrWhiteSpace(name))
+        {
+            throw new IOException("The owner-protected directory requires a parent and a new name.");
+        }
+
+        _ = Directory.CreateDirectory(parent);
+        string staging = Path.Combine(parent, $".{name}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            CreateOwnerProtected(staging);
+            Directory.Move(staging, fullPath);
+        }
+        catch
+        {
+            if (Directory.Exists(staging))
+            {
+                Directory.Delete(staging, recursive: true);
+            }
+
+            throw;
+        }
+    }
+
+    private static void CreateOwnerProtected(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            CreateOwnerProtectedWindowsDirectory(path);
+            return;
+        }
+
+        _ = Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     [SupportedOSPlatform("windows")]

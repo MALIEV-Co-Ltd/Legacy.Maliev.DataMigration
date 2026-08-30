@@ -11,6 +11,9 @@ public static class MigrationConsole
     private const string PostgreSqlConnectionEnvironmentVariable = "LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION";
     private const string EvidenceKeyEnvironmentVariable = "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE";
     private const string SnapshotKeyEnvironmentVariable = "LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE";
+    private const string BackupSqlUserEnvironmentVariable = "LEGACY_MIGRATION_BACKUP_SQL_USERNAME";
+    private const string BackupSqlPasswordEnvironmentVariable = "LEGACY_MIGRATION_BACKUP_SQL_PASSWORD";
+    private const string DeployEnabledEnvironmentVariable = "LEGACY_DEPLOY_ENABLED";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -24,10 +27,39 @@ public static class MigrationConsole
         Func<string, string?> getEnvironmentVariable,
         CancellationToken cancellationToken)
     {
+        return await RunCoreAsync(
+            arguments,
+            output,
+            error,
+            getEnvironmentVariable,
+            new DefaultExact25BackupRuntimeFactory(),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static Task<int> RunForTestsAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        Func<string, string?> getEnvironmentVariable,
+        IExact25BackupRuntimeFactory backupRuntimeFactory,
+        CancellationToken cancellationToken)
+    {
+        return RunCoreAsync(arguments, output, error, getEnvironmentVariable, backupRuntimeFactory, cancellationToken);
+    }
+
+    private static async Task<int> RunCoreAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        Func<string, string?> getEnvironmentVariable,
+        IExact25BackupRuntimeFactory backupRuntimeFactory,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(error);
         ArgumentNullException.ThrowIfNull(getEnvironmentVariable);
+        ArgumentNullException.ThrowIfNull(backupRuntimeFactory);
         try
         {
             ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
@@ -53,6 +85,14 @@ public static class MigrationConsole
                     await ExportLocalSnapshotAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("export_local_snapshot_complete").ConfigureAwait(false);
                     return 0;
+                case "backup-full":
+                    await ProduceFullBackupAsync(
+                        invocation.ConfigPath,
+                        getEnvironmentVariable,
+                        backupRuntimeFactory,
+                        cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("backup_full_complete").ConfigureAwait(false);
+                    return 0;
                 default:
                     await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
                     return 2;
@@ -73,6 +113,16 @@ public static class MigrationConsole
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 65;
         }
+        catch (Exact25FullBackupException exception)
+        {
+            await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
+            return 65;
+        }
+        catch (Exact25BackupTransportException exception)
+        {
+            await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
+            return 70;
+        }
         catch (MigrationExecutionException exception)
         {
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
@@ -83,6 +133,68 @@ public static class MigrationConsole
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 65;
         }
+    }
+
+    private static async Task ProduceFullBackupAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        IExact25BackupRuntimeFactory backupRuntimeFactory,
+        CancellationToken cancellationToken)
+    {
+        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
+            .ConfigureAwait(false);
+        FullBackupCommandConfiguration backup = configuration.FullBackup ??
+            throw new MigrationConsoleException("backup_configuration_missing", "Full backup configuration is required.");
+        if (!backup.AllowSourceBackup)
+        {
+            throw new MigrationConsoleException("backup_source_gate_invalid", "The protected configuration does not authorize a source backup.");
+        }
+
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new MigrationConsoleException("backup_deploy_gate_invalid", "Legacy application deployment must remain disabled during backup production.");
+        }
+
+        string? sqlUser = getEnvironmentVariable(BackupSqlUserEnvironmentVariable);
+        string? sqlPassword = getEnvironmentVariable(BackupSqlPasswordEnvironmentVariable);
+        string? keyPath = getEnvironmentVariable(SigningKeyEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(sqlUser) || string.IsNullOrWhiteSpace(sqlPassword) || string.IsNullOrWhiteSpace(keyPath))
+        {
+            throw new MigrationConsoleException("backup_runtime_reference_missing", "Protected SQL and signing-key runtime references are required.");
+        }
+
+        using ECDsa key = ECDsa.Create();
+        try
+        {
+            key.ImportFromPem(await File.ReadAllTextAsync(keyPath, cancellationToken).ConfigureAwait(false));
+        }
+        catch (CryptographicException)
+        {
+            throw new MigrationConsoleException("backup_signing_key_invalid", "The backup signing key file is invalid.");
+        }
+
+        Exact25BackupRuntime runtime = await backupRuntimeFactory.CreateAsync(cancellationToken).ConfigureAwait(false);
+        var request = new Exact25FullBackupRequest(
+            backup.Namespace,
+            backup.ExpectedPodName,
+            backup.ExpectedPodUid,
+            backup.ContainerName,
+            backup.GcsPrefix,
+            backup.LocalWorkingDirectory,
+            backup.RunId,
+            backup.ImmutableCutoffUtc,
+            backup.MaximumTransportAttempts);
+        var credential = new SecureSqlBackupCredential(sqlUser, sqlPassword);
+        var publisher = new AtomicBackupReceiptPublisher(backup.PublicationDirectory);
+        _ = await Exact25FullBackupProducer.ProduceAsync(
+            request,
+            credential,
+            runtime.Process,
+            runtime.Storage,
+            publisher,
+            backup.KeyId,
+            key,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task ProduceEvidenceAsync(
@@ -348,7 +460,22 @@ public static class MigrationConsole
         PlanCommandConfiguration? Plan = null,
         ExecuteShadowCommandConfiguration? ExecuteShadow = null,
         EvidenceCommandConfiguration? Evidence = null,
-        ExportLocalSnapshotCommandConfiguration? ExportLocalSnapshot = null);
+        ExportLocalSnapshotCommandConfiguration? ExportLocalSnapshot = null,
+        FullBackupCommandConfiguration? FullBackup = null);
+
+    private sealed record FullBackupCommandConfiguration(
+        string Namespace,
+        string ExpectedPodName,
+        string ExpectedPodUid,
+        string ContainerName,
+        string GcsPrefix,
+        string LocalWorkingDirectory,
+        string RunId,
+        DateTimeOffset ImmutableCutoffUtc,
+        int MaximumTransportAttempts,
+        string PublicationDirectory,
+        string KeyId,
+        bool AllowSourceBackup);
 
     private sealed record ReceiptCommandConfiguration(string BackupStatePath, string OutputPath, string KeyId);
 
@@ -400,6 +527,26 @@ public static class MigrationConsole
         {
             throw new InvalidOperationException("External commands are disabled in the guarded shadow runner.");
         }
+    }
+}
+
+internal sealed record Exact25BackupRuntime(
+    IExact25FullBackupProcess Process,
+    IImmutableBackupObjectStorage Storage);
+
+internal interface IExact25BackupRuntimeFactory
+{
+    Task<Exact25BackupRuntime> CreateAsync(CancellationToken cancellationToken);
+}
+
+internal sealed class DefaultExact25BackupRuntimeFactory : IExact25BackupRuntimeFactory
+{
+    public async Task<Exact25BackupRuntime> CreateAsync(CancellationToken cancellationToken)
+    {
+        var process = new KubernetesSqlServerFullBackupProcess(new SystemBackupProcessRunner());
+        GoogleCloudImmutableBackupObjectStorage storage = await GoogleCloudImmutableBackupObjectStorage
+            .CreateWithApplicationDefaultCredentialsAsync(cancellationToken).ConfigureAwait(false);
+        return new(process, storage);
     }
 }
 

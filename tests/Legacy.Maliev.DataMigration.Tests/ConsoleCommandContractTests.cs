@@ -11,6 +11,7 @@ public sealed class ConsoleCommandContractTests
         "execute-shadow",
         "evidence",
         "export-local-snapshot",
+        "backup-full",
     ];
 
     [Theory]

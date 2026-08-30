@@ -53,7 +53,7 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
     [InlineData("missing")]
     [InlineData("extra")]
     [InlineData("offline")]
-    [InlineData("retired-ml")]
+    [InlineData("duplicate")]
     public async Task ProduceAsync_NonExactOnlineInventoryFailsBeforeBackup(string drift)
     {
         var process = new FakeProcess { InventoryDrift = drift };
@@ -120,6 +120,89 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         Assert.Equal("cloud_backup_parity_invalid", exception.Code);
         Assert.Null(publisher.Published);
         Assert.NotEmpty(Directory.EnumerateFiles(_root, "*.bak", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task ProduceAsync_SameLengthCopyCorruptionFailsBeforeUploadOrPublication()
+    {
+        var process = new FakeProcess { CorruptCopiedBytes = true };
+        var storage = new FakeStorage();
+        var publisher = new FakePublisher();
+
+        Exact25FullBackupException exception = await Assert.ThrowsAsync<Exact25FullBackupException>(() =>
+            Exact25FullBackupProducer.ProduceAsync(
+                Request(), Credential(), process, storage, publisher, "backup-key", _signingKey, CancellationToken.None));
+
+        Assert.Equal("local_backup_hash_invalid", exception.Code);
+        Assert.Empty(storage.Uploads);
+        Assert.Null(publisher.Published);
+    }
+
+    [Theory]
+    [InlineData("gs://maliev.com/database/full/2026-08-29/run-1/")]
+    [InlineData("gs://maliev.com/database/full/2026-08-30/run-2/")]
+    public async Task ProduceAsync_GcsPrefixNotBoundToCutoffAndRunFailsBeforeInspection(string gcsPrefix)
+    {
+        var process = new FakeProcess();
+
+        Exact25FullBackupException exception = await Assert.ThrowsAsync<Exact25FullBackupException>(() =>
+            Exact25FullBackupProducer.ProduceAsync(
+                Request() with { GcsPrefix = gcsPrefix }, Credential(), process, new FakeStorage(), new FakePublisher(),
+                "backup-key", _signingKey, CancellationToken.None));
+
+        Assert.Equal("backup_request_invalid", exception.Code);
+        Assert.Equal(0, process.InspectAttempts);
+    }
+
+    [Fact]
+    public async Task ProduceAsync_RecoveryDirectoryIsOwnerOnly()
+    {
+        _ = await Exact25FullBackupProducer.ProduceAsync(
+            Request(), Credential(), new FakeProcess(), new FakeStorage(), new FakePublisher(),
+            "backup-key", _signingKey, CancellationToken.None);
+
+        if (OperatingSystem.IsWindows())
+        {
+            AssertOwnerOnlyWindowsDirectory(_root);
+        }
+        else
+        {
+            Assert.Equal(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+                File.GetUnixFileMode(_root));
+        }
+    }
+
+    [Fact]
+    public async Task ProduceAsync_PreExistingSymbolicLinkDestinationIsRejectedWithoutTouchingTarget()
+    {
+        string target = _root + "-target";
+        _ = Directory.CreateDirectory(target);
+        string marker = Path.Combine(target, "owner-data.txt");
+        await File.WriteAllTextAsync(marker, "preserve");
+        _ = Directory.CreateSymbolicLink(_root, target);
+
+        Exact25FullBackupException exception = await Assert.ThrowsAsync<Exact25FullBackupException>(() => Exact25FullBackupProducer.ProduceAsync(
+            Request(), Credential(), new FakeProcess(), new FakeStorage(), new FakePublisher(),
+            "backup-key", _signingKey, CancellationToken.None));
+
+        Assert.Equal("local_backup_destination_exists", exception.Code);
+        Assert.Equal("preserve", await File.ReadAllTextAsync(marker));
+        Directory.Delete(_root);
+        Directory.Delete(target, recursive: true);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static void AssertOwnerOnlyWindowsDirectory(string path)
+    {
+        System.Security.AccessControl.DirectorySecurity security = new DirectoryInfo(path).GetAccessControl();
+        Assert.True(security.AreAccessRulesProtected);
+        System.Security.Principal.SecurityIdentifier owner = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        Assert.All(
+            security.GetAccessRules(includeExplicit: true, includeInherited: true, typeof(System.Security.Principal.SecurityIdentifier))
+                .Cast<System.Security.AccessControl.FileSystemAccessRule>()
+                .Where(rule => rule.AccessControlType == System.Security.AccessControl.AccessControlType.Allow),
+            rule => Assert.Equal(owner, rule.IdentityReference));
     }
 
     [Fact]
@@ -300,6 +383,8 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         public bool FailVerify { get; init; }
         public int CopyTransportFailuresRemaining { get; set; }
         public bool NonRetryableCopyFailure { get; init; }
+        public bool CorruptCopiedBytes { get; init; }
+        public int InspectAttempts { get; private set; }
         public int CreateAttempts { get; private set; }
         public int CopyAttempts { get; private set; }
         public List<string> Created { get; } = [];
@@ -308,23 +393,31 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
 
         public Task<Exact25BackupSourceObservation> InspectSourceAsync(Exact25FullBackupRequest request, SecureSqlBackupCredential credential, CancellationToken cancellationToken)
         {
+            InspectAttempts++;
             string ns = SourceDrift == "namespace" ? "other" : request.Namespace;
             string pod = SourceDrift == "pod" ? "other" : request.ExpectedPodName;
             string uid = SourceDrift == "uid" ? "other" : request.ExpectedPodUid;
             bool ready = SourceDrift != "not-ready";
             DateTimeOffset cutoff = SourceDrift == "cutoff" ? request.ImmutableCutoffUtc.AddSeconds(1) : request.ImmutableCutoffUtc;
-            List<SqlServerDatabaseState> databases = DatabaseInventory.ActiveDatabases.Select(name => new SqlServerDatabaseState(name, "ONLINE")).ToList();
+            List<SqlServerDatabaseState> databases = DatabaseInventory.Entries.Keys
+                .Order(StringComparer.Ordinal)
+                .Select(name => new SqlServerDatabaseState(name, "ONLINE")).ToList();
             switch (InventoryDrift)
             {
                 case "missing": databases.RemoveAt(0); break;
                 case "extra": databases.Add(new("Unexpected", "ONLINE")); break;
                 case "offline": databases[0] = databases[0] with { State = "OFFLINE" }; break;
-                case "retired-ml": databases.Add(new("MachineLearningData", "ONLINE")); break;
+                case "duplicate": databases.Add(databases[0]); break;
                 default:
                     break;
             }
 
             return Task.FromResult(new Exact25BackupSourceObservation(ns, pod, uid, request.ContainerName, ready, cutoff, true, databases));
+        }
+
+        public Task PrepareRunAsync(Exact25BackupSourceObservation source, string runId, CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
         }
 
         public Task<RemoteFullBackupArtifact> CreateUniqueFullBackupAsync(Exact25BackupSourceObservation source, string database, string remoteRelativePath, SecureSqlBackupCredential credential, CancellationToken cancellationToken)
@@ -337,7 +430,8 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
 
             Created.Add(database);
             byte[] content = System.Text.Encoding.UTF8.GetBytes($"verified-full-backup:{database}");
-            return Task.FromResult(new RemoteFullBackupArtifact(database, remoteRelativePath, content.LongLength));
+            string sha256 = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
+            return Task.FromResult(new RemoteFullBackupArtifact(database, remoteRelativePath, content.LongLength, sha256));
         }
 
         public Task VerifyRestoreAsync(Exact25BackupSourceObservation source, RemoteFullBackupArtifact artifact, SecureSqlBackupCredential credential, CancellationToken cancellationToken)
@@ -366,7 +460,13 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
 
             string path = Path.Combine(workingDirectory, localRelativePath);
             _ = Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await File.WriteAllTextAsync(path, $"verified-full-backup:{artifact.Database}", cancellationToken);
+            string content = $"verified-full-backup:{artifact.Database}";
+            if (CorruptCopiedBytes)
+            {
+                content = "x" + content[1..];
+            }
+
+            await File.WriteAllTextAsync(path, content, cancellationToken);
             Copied.Add(artifact.Database);
         }
     }

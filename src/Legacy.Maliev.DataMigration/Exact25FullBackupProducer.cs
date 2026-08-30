@@ -56,7 +56,7 @@ public sealed record Exact25BackupSourceObservation(
     bool CutoffIsImmutable,
     IReadOnlyList<SqlServerDatabaseState> UserDatabases);
 
-public sealed record RemoteFullBackupArtifact(string Database, string RemoteRelativePath, long ByteLength);
+public sealed record RemoteFullBackupArtifact(string Database, string RemoteRelativePath, long ByteLength, string Sha256);
 
 public sealed record ImmutableBackupObject(
     string Uri,
@@ -70,6 +70,11 @@ public interface IExact25FullBackupProcess
     Task<Exact25BackupSourceObservation> InspectSourceAsync(
         Exact25FullBackupRequest request,
         SecureSqlBackupCredential credential,
+        CancellationToken cancellationToken);
+
+    Task PrepareRunAsync(
+        Exact25BackupSourceObservation source,
+        string runId,
         CancellationToken cancellationToken);
 
     Task<RemoteFullBackupArtifact> CreateUniqueFullBackupAsync(
@@ -149,7 +154,8 @@ public static partial class Exact25FullBackupProducer
             throw new Exact25FullBackupException("local_backup_destination_exists", "The unique backup working directory already exists.");
         }
 
-        _ = Directory.CreateDirectory(workingDirectory);
+        OwnerProtectedDirectory.CreateNew(workingDirectory);
+        await process.PrepareRunAsync(source, request.RunId, cancellationToken).ConfigureAwait(false);
         var states = new List<VerifiedBackupStateArtifact>(DatabaseInventory.ActiveDatabases.Count);
         foreach (string database in DatabaseInventory.ActiveDatabases)
         {
@@ -159,7 +165,8 @@ public static partial class Exact25FullBackupProducer
             RemoteFullBackupArtifact remote = await process.CreateUniqueFullBackupAsync(
                 source, database, remoteRelativePath, credential, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(remote.Database, database, StringComparison.Ordinal) ||
-                !string.Equals(remote.RemoteRelativePath, remoteRelativePath, StringComparison.Ordinal) || remote.ByteLength <= 0)
+                !string.Equals(remote.RemoteRelativePath, remoteRelativePath, StringComparison.Ordinal) || remote.ByteLength <= 0 ||
+                !Sha256Value().IsMatch(remote.Sha256))
             {
                 throw new Exact25FullBackupException("remote_backup_artifact_invalid", "SQL Server returned an invalid full-backup artifact.");
             }
@@ -178,6 +185,11 @@ public static partial class Exact25FullBackupProducer
             }
 
             string sha256 = await ComputeSha256Async(localPath, cancellationToken).ConfigureAwait(false);
+            if (!FixedHashEquals(sha256, remote.Sha256))
+            {
+                throw new Exact25FullBackupException("local_backup_hash_invalid", "The copied recovery backup does not match the verified SQL Server artifact.");
+            }
+
             string objectUri = request.GcsPrefix + fileName;
             ImmutableBackupObject cloud = await storage
                 .UploadNewAndReadBackAsync(localPath, objectUri, sha256, cancellationToken).ConfigureAwait(false);
@@ -204,9 +216,13 @@ public static partial class Exact25FullBackupProducer
     private static void ValidateRequest(Exact25FullBackupRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        Match prefix = FullBackupPrefix().Match(request.GcsPrefix ?? string.Empty);
+        string expectedDate = request.ImmutableCutoffUtc.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         if (!KubernetesName().IsMatch(request.Namespace) || !KubernetesName().IsMatch(request.ExpectedPodName) ||
             !SafeIdentifier().IsMatch(request.ExpectedPodUid) || !KubernetesName().IsMatch(request.ContainerName) ||
-            !SafeIdentifier().IsMatch(request.RunId) || !FullBackupPrefix().IsMatch(request.GcsPrefix) ||
+            !SafeIdentifier().IsMatch(request.RunId) || !prefix.Success ||
+            !string.Equals(prefix.Groups["date"].Value, expectedDate, StringComparison.Ordinal) ||
+            !string.Equals(prefix.Groups["run"].Value, request.RunId, StringComparison.Ordinal) ||
             request.ImmutableCutoffUtc == default || request.ImmutableCutoffUtc.Offset != TimeSpan.Zero ||
             request.MaximumTransportAttempts is < 1 or > 3)
         {
@@ -226,11 +242,12 @@ public static partial class Exact25FullBackupProducer
         }
 
         string[] observed = [.. source.UserDatabases.Select(database => database.Name)];
+        string[] expected = [.. DatabaseInventory.Entries.Keys.Order(StringComparer.Ordinal)];
         if (source.UserDatabases.Any(database => !string.Equals(database.State, "ONLINE", StringComparison.Ordinal)) ||
             observed.Distinct(StringComparer.Ordinal).Count() != observed.Length ||
-            !observed.Order(StringComparer.Ordinal).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
+            !observed.Order(StringComparer.Ordinal).SequenceEqual(expected, StringComparer.Ordinal))
         {
-            throw new Exact25FullBackupException("source_database_inventory_invalid", "The source must expose exactly the 25 approved ONLINE databases.");
+            throw new Exact25FullBackupException("source_database_inventory_invalid", "The source must expose the exact approved 27-database ONLINE disposition inventory.");
         }
     }
 
@@ -277,6 +294,6 @@ public static partial class Exact25FullBackupProducer
 
     [GeneratedRegex("^[a-z0-9](?:[-a-z0-9.]{0,61}[a-z0-9])?$", RegexOptions.CultureInvariant)] private static partial Regex KubernetesName();
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.CultureInvariant)] private static partial Regex SafeIdentifier();
-    [GeneratedRegex("^gs://[A-Za-z0-9._-]+/database/full/[0-9]{4}-[0-9]{2}-[0-9]{2}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/$", RegexOptions.CultureInvariant)] private static partial Regex FullBackupPrefix();
+    [GeneratedRegex("^gs://[A-Za-z0-9._-]+/database/full/(?<date>[0-9]{4}-[0-9]{2}-[0-9]{2})/(?<run>[A-Za-z0-9][A-Za-z0-9._-]{0,127})/$", RegexOptions.CultureInvariant)] private static partial Regex FullBackupPrefix();
     [GeneratedRegex("^[0-9a-fA-F]{64}$", RegexOptions.CultureInvariant)] private static partial Regex Sha256Value();
 }
