@@ -123,7 +123,7 @@ public sealed class SystemBackupProcessRunnerTests : IDisposable
             () => new SystemBackupProcessRunner(io).RunAsync(invocation, CancellationToken.None));
 
         Assert.Equal("forced stderr read failure", failure.Message);
-        Assert.True(io.KillCalls > 0);
+        Assert.True(io.KillCalls >= (cleanupFailure == ProcessIoFailure.Kill ? 2 : 1));
         Assert.True(io.WaitCalls > 0);
         AssertProcessExited(io.ProcessId);
     }
@@ -275,14 +275,14 @@ public sealed class SystemBackupProcessRunnerTests : IDisposable
         public void Kill(Process process)
         {
             KillCalls++;
+            if (failure == ProcessIoFailure.Kill)
+            {
+                throw new System.ComponentModel.Win32Exception("forced kill failure without termination");
+            }
+
             if (!process.HasExited)
             {
                 process.Kill(entireProcessTree: true);
-            }
-
-            if (failure == ProcessIoFailure.Kill)
-            {
-                throw new System.ComponentModel.Win32Exception("forced kill failure");
             }
         }
 

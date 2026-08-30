@@ -160,12 +160,20 @@ operation, so repository validation never performs a live backup.
 
 `restore-backups` re-verifies the producer signature and exact 25-item inventory,
 derives every local recovery path from the signed filenames, securely reopens and
-re-hashes each owner-only artifact, and retains the verified file handle throughout
-the corresponding SQL restore. Before `RESTORE VERIFYONLY`, SQL Server independently
-reads that path with `OPENROWSET(BULK...)`; its `SHA2_256` digest must match the signed
-artifact hash. This fail-closed probe enforces the same-filesystem or correctly mounted
-path contract instead of assuming a host path is visible inside a disposable container.
-No unsigned intermediate restore manifest exists.
+re-hashes each owner-only artifact, and retains the verified file handle while a pinned
+helper image streams those exact bytes into a create-only object in a run-owned Docker
+named volume. The helper verifies both byte length and SHA-256, changes ownership to the
+SQL Server runtime UID, and exits before restore. The disposable SQL Server's exact
+container name and image ID are verified and it must mount that separate volume read-only;
+the original host recovery path is never mounted into SQL Server. The target runs scalable
+`RESTORE VERIFYONLY ... WITH CHECKSUM` without the 2 GiB `SINGLE_BLOB` ceiling. Restore
+and catalog commands disable the client-side 30-second command timeout and remain bounded
+by the caller cancellation token. No unsigned intermediate restore manifest exists.
+The guarded command itself provisions the create-only named volume and disposable SQL
+Server 2022 container from a digest-pinned image. It rejects pre-existing run names,
+publishes only to an explicit loopback port, binds a protected run label, and passes the
+SA password through the child environment rather than command-line arguments. Partial
+provisioning and partial database restores are cleaned up fail-closed.
 The standalone receipt-signing command has been removed; callers cannot sign
 hand-authored state. `scripts/restore-verified-sqlserver-backups.ps1` delegates only
 to that guarded .NET command, which restores the exact signed inventory into a

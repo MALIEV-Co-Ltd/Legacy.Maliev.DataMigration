@@ -46,9 +46,13 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         var trust = new ReceiptAttestationTrustStore([
             new TrustedAttestationKey("backup-key", _signingKey.ExportSubjectPublicKeyInfo()),
         ]);
+        var semanticErrors = new List<PreflightError>();
+        PreflightService.ValidateReceipt(receipt, receipt.CapturedAtUtc.AddMinutes(1), TimeSpan.FromHours(1), semanticErrors);
+        Assert.True(semanticErrors.Count == 0, string.Join("; ", semanticErrors.Select(error => $"{error.Code}: {error.Message}")));
         var restoreTarget = new FakeRestoreTarget();
         await VerifiedBackupRestorer.RestoreAsync(
-            receipt, trust, request.LocalWorkingDirectory, restoreTarget, CancellationToken.None);
+            receipt, trust, request.LocalWorkingDirectory, restoreTarget,
+            receipt.CapturedAtUtc.AddMinutes(1), TimeSpan.FromHours(1), CancellationToken.None);
         Assert.Equal(DatabaseInventory.ActiveDatabases, restoreTarget.Restored);
         Assert.All(receipt.Artifacts!, artifact =>
         {
@@ -72,7 +76,38 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         var target = new FakeRestoreTarget();
 
         Exact25FullBackupException failure = await Assert.ThrowsAsync<Exact25FullBackupException>(
-            () => VerifiedBackupRestorer.RestoreAsync(tampered, Trust(), _root, target, CancellationToken.None));
+            () => RestoreAsync(tampered, target));
+
+        Assert.Equal("restore_receipt_invalid", failure.Code);
+        Assert.Empty(target.Restored);
+    }
+
+    [Theory]
+    [InlineData("type")]
+    [InlineData("length")]
+    [InlineData("observed-hash")]
+    [InlineData("manifest")]
+    public async Task RestoreAsync_ValidSignatureWithInvalidReceiptSemanticsFailsBeforeRestore(string drift)
+    {
+        BackupReceipt receipt = await ProduceReceiptAsync();
+        BackupArtifact first = receipt.Artifacts![0]!;
+        BackupArtifact changed = drift switch
+        {
+            "type" => first with { BackupType = "Differential" },
+            "length" => first with { ByteLength = 0 },
+            "observed-hash" => first with { ObservedSha256 = new string('0', 64) },
+            _ => first,
+        };
+        BackupReceipt invalid = receipt with
+        {
+            Artifacts = [changed, .. receipt.Artifacts.Skip(1)],
+            ManifestSha256 = drift == "manifest" ? new string('0', 64) : receipt.ManifestSha256,
+        };
+        invalid = Sign(invalid);
+        var target = new FakeRestoreTarget();
+
+        Exact25FullBackupException failure = await Assert.ThrowsAsync<Exact25FullBackupException>(
+            () => RestoreAsync(invalid, target));
 
         Assert.Equal("restore_receipt_invalid", failure.Code);
         Assert.Empty(target.Restored);
@@ -93,7 +128,7 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         var target = new FakeRestoreTarget();
 
         Exact25FullBackupException failure = await Assert.ThrowsAsync<Exact25FullBackupException>(
-            () => VerifiedBackupRestorer.RestoreAsync(receipt, Trust(), _root, target, CancellationToken.None));
+            () => RestoreAsync(receipt, target));
 
         Assert.Equal("restore_artifact_invalid", failure.Code);
         Assert.Empty(target.Restored);
@@ -112,7 +147,7 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
         var target = new FakeRestoreTarget();
         _ = await Assert.ThrowsAsync<Exact25FullBackupException>(
-            () => VerifiedBackupRestorer.RestoreAsync(receipt, Trust(), _root, target, CancellationToken.None));
+            () => RestoreAsync(receipt, target));
         Assert.Empty(target.Restored);
 
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
@@ -122,7 +157,7 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         {
             _ = File.CreateSymbolicLink(path, outside);
             _ = await Assert.ThrowsAsync<Exact25FullBackupException>(
-                () => VerifiedBackupRestorer.RestoreAsync(receipt, Trust(), _root, target, CancellationToken.None));
+                () => RestoreAsync(receipt, target));
             Assert.Empty(target.Restored);
         }
         finally
@@ -506,6 +541,22 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
     private ReceiptAttestationTrustStore Trust()
     {
         return new([new TrustedAttestationKey("backup-key", _signingKey.ExportSubjectPublicKeyInfo())]);
+    }
+
+    private BackupReceipt Sign(BackupReceipt receipt)
+    {
+        Assert.True(ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload));
+        return receipt with
+        {
+            AttestationSignature = Convert.ToBase64String(_signingKey.SignData(payload, HashAlgorithmName.SHA256)),
+        };
+    }
+
+    private Task RestoreAsync(BackupReceipt receipt, IVerifiedBackupRestoreTarget target)
+    {
+        return VerifiedBackupRestorer.RestoreAsync(
+            receipt, Trust(), _root, target,
+            receipt.CapturedAtUtc.AddMinutes(1), TimeSpan.FromHours(1), CancellationToken.None);
     }
 
     public void Dispose()

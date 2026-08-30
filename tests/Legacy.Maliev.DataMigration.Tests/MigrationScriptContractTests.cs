@@ -20,12 +20,23 @@ public sealed class MigrationScriptContractTests
     public void DotNetRestoreTarget_ProvesSqlServerReadsTheVerifiedBytesBeforeRestore()
     {
         string source = File.ReadAllText(SourceCodePath("VerifiedBackupRestorer.cs"));
-        int hashProbe = source.IndexOf("OPENROWSET(BULK", StringComparison.Ordinal);
-        int verifyOnly = source.IndexOf("RESTORE VERIFYONLY", StringComparison.Ordinal);
-
-        Assert.True(hashProbe >= 0 && verifyOnly > hashProbe);
-        Assert.Contains("HASHBYTES('SHA2_256'", source, StringComparison.Ordinal);
-        Assert.Contains("FixedTimeEquals", source, StringComparison.Ordinal);
+        string staging = File.ReadAllText(SourceCodePath("DockerVolumeBackupStager.cs"));
+        string provisioning = File.ReadAllText(SourceCodePath("DockerDisposableSqlServerProvisioner.cs"));
+        Assert.Contains("RESTORE VERIFYONLY", source, StringComparison.Ordinal);
+        Assert.Contains("WITH CHECKSUM", source, StringComparison.Ordinal);
+        Assert.Contains("CommandTimeout = 0", source, StringComparison.Ordinal);
+        Assert.Contains("DockerVolumeBackupStager", staging, StringComparison.Ordinal);
+        Assert.Contains("type=volume", staging, StringComparison.Ordinal);
+        Assert.Contains("!mount.RW", staging, StringComparison.Ordinal);
+        Assert.Contains("sha256sum", staging, StringComparison.Ordinal);
+        Assert.Contains("artifact.ByteLength", staging, StringComparison.Ordinal);
+        Assert.Contains("volume", provisioning, StringComparison.Ordinal);
+        Assert.Contains("readonly", provisioning, StringComparison.Ordinal);
+        Assert.Contains("MSSQL_SA_PASSWORD", provisioning, StringComparison.Ordinal);
+        Assert.Contains("startInfo.Environment", provisioning, StringComparison.Ordinal);
+        Assert.DoesNotContain("connection.Password]", provisioning, StringComparison.Ordinal);
+        Assert.DoesNotContain("SINGLE_BLOB", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("HASHBYTES", source, StringComparison.Ordinal);
         Assert.Contains("SET ALLOW_SNAPSHOT_ISOLATION ON", source, StringComparison.Ordinal);
         Assert.Contains("snapshot_isolation_state", source, StringComparison.Ordinal);
         Assert.Contains("SET READ_ONLY", source, StringComparison.Ordinal);

@@ -1,5 +1,9 @@
 using Microsoft.Data.SqlClient;
 using Testcontainers.MsSql;
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -19,6 +23,167 @@ public sealed class SqlServerIntegrationFactAttribute : FactAttribute
 
 public sealed class SqlServerMigrationSourceIntegrationTests
 {
+    [SqlServerIntegrationFact]
+    public async Task BackupRestoreTarget_RestoresFromPrivateReadOnlyContainerMountWithoutReplacement()
+    {
+        const string password = "MALIEV_test_Only!123456";
+        const string image = "mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04";
+        string root = Path.Combine(Path.GetTempPath(), $"verified-restore-e2e-{Guid.NewGuid():N}");
+        string volume = $"legacy-restore-{Guid.NewGuid():N}";
+        string targetContainerName = $"legacy-restore-sql-{Guid.NewGuid():N}";
+        OwnerProtectedDirectory.CreateNew(root);
+        const string backupFileName = "Full_Country_run-1.bak";
+        string localBackup = Path.Combine(root, backupFileName);
+        try
+        {
+            await using (MsSqlContainer producer = new MsSqlBuilder(image)
+                .WithPassword(password)
+                .Build())
+            {
+                await producer.StartAsync();
+                await using var connection = new SqlConnection(producer.GetConnectionString());
+                await connection.OpenAsync();
+                foreach (string sql in new[] {
+                    "CREATE DATABASE [Country];",
+                    "CREATE TABLE [Country].dbo.Probe(Id int NOT NULL PRIMARY KEY, Value nvarchar(20) NOT NULL); INSERT [Country].dbo.Probe VALUES (1, N'custody-ok');",
+                    $"BACKUP DATABASE [Country] TO DISK=N'/var/opt/mssql/backup/{backupFileName}' WITH COPY_ONLY, CHECKSUM, INIT;",
+                })
+                {
+                    await using var command = new SqlCommand(sql, connection) { CommandTimeout = 0 };
+                    _ = await command.ExecuteNonQueryAsync();
+                }
+                await DockerCopyAsync(producer.Id, $"/var/opt/mssql/backup/{backupFileName}", localBackup);
+            }
+
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(localBackup, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            SecureLocalFile.EnsureOwnerOnlyDirectory(root);
+            Assert.True(SecureLocalFile.IsOwnerOnlyFile(new FileInfo(localBackup)));
+
+            string pinnedImage = await DockerInspectAsync(image, "{{index .RepoDigests 0}}");
+            string targetImageId = await DockerInspectAsync(image, "{{.Id}}");
+            int port = GetFreeTcpPort();
+            string targetConnection = new SqlConnectionStringBuilder
+            {
+                DataSource = $"127.0.0.1,{port}",
+                UserID = "sa",
+                Password = password,
+                Encrypt = true,
+                TrustServerCertificate = true,
+                InitialCatalog = "master",
+            }.ConnectionString;
+            await DockerDisposableSqlServerProvisioner.ProvisionAsync(
+                targetConnection, volume, targetContainerName, "/var/opt/mssql/backup",
+                pinnedImage, "run-1", CancellationToken.None);
+            var sourceArtifact = new VerifiedBackupRestoreArtifact(
+                "Country",
+                localBackup,
+                new FileInfo(localBackup).Length,
+                await HashAsync(localBackup),
+                SecureLocalFile.OpenReadShared(localBackup));
+            SqlServerStagedBackup staged;
+            await using (sourceArtifact.RetainedHandle)
+            {
+                var stager = new DockerVolumeBackupStager(
+                    volume, "/var/opt/mssql/backup", pinnedImage, targetContainerName, targetImageId);
+                staged = await stager.StageAsync(sourceArtifact, CancellationToken.None);
+            }
+
+            await File.WriteAllTextAsync(localBackup, "host replacement that must not reach staged bytes");
+            await using var unusedHandle = SecureLocalFile.OpenReadShared(localBackup);
+            var target = new SqlServerBackupRestoreTarget(
+                targetConnection, "/var/opt/mssql/data", new FixedStager(staged));
+            await target.RestoreAsync(sourceArtifact with { RetainedHandle = unusedHandle }, CancellationToken.None);
+
+            (int replacementExit, _, _) = await RunDockerAsync(
+                ["exec", targetContainerName, "sh", "-c", $"printf replacement > /var/opt/mssql/backup/{backupFileName}"]);
+            Assert.NotEqual(0, replacementExit);
+
+            await using var verify = new SqlConnection(targetConnection);
+            await verify.OpenAsync();
+            await using var state = new SqlCommand(
+                "SELECT d.is_read_only, d.snapshot_isolation_state, (SELECT Value FROM Country.dbo.Probe WHERE Id=1) " +
+                "FROM sys.databases d WHERE d.name=N'Country';", verify);
+            await using SqlDataReader reader = await state.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.True(reader.GetBoolean(0));
+            Assert.Equal(1, reader.GetByte(1));
+            Assert.Equal("custody-ok", reader.GetString(2));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            _ = await RunDockerAsync(["rm", "-f", targetContainerName]);
+            _ = await RunDockerAsync(["volume", "rm", "-f", volume]);
+        }
+    }
+
+    private static async Task DockerCopyAsync(string containerId, string source, string destination)
+    {
+        var startInfo = new ProcessStartInfo("docker")
+        {
+            UseShellExecute = false,
+            RedirectStandardError = true,
+        };
+        startInfo.ArgumentList.Add("cp");
+        startInfo.ArgumentList.Add($"{containerId}:{source}");
+        startInfo.ArgumentList.Add(destination);
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("docker cp could not start.");
+        string error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        Assert.True(process.ExitCode == 0, error);
+    }
+
+    private static async Task<string> DockerInspectAsync(string image, string format)
+    {
+        (int exitCode, string output, string error) = await RunDockerAsync(["image", "inspect", "--format", format, image]);
+        Assert.True(exitCode == 0, error);
+        return output.Trim();
+    }
+
+    private static async Task<(int ExitCode, string Output, string Error)> RunDockerAsync(IReadOnlyList<string> arguments)
+    {
+        var startInfo = new ProcessStartInfo("docker") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (string argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("docker could not start.");
+        Task<string> output = process.StandardOutput.ReadToEndAsync();
+        Task<string> error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode, await output, await error);
+    }
+
+    private static async Task<string> HashAsync(string path)
+    {
+        await using FileStream stream = File.OpenRead(path);
+        return Convert.ToHexString(await SHA256.HashDataAsync(stream)).ToLowerInvariant();
+    }
+
+    private static int GetFreeTcpPort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
+    }
+
+    private sealed class FixedStager(SqlServerStagedBackup staged) : ISqlServerBackupStager
+    {
+        public Task<SqlServerStagedBackup> StageAsync(VerifiedBackupRestoreArtifact artifact, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(staged);
+        }
+    }
+
     [SqlServerIntegrationFact]
     public async Task DisposeAfterInterruptedSnapshot_RollsBackTransactionAndFreshAdapterCanRestart()
     {

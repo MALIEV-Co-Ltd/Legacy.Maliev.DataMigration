@@ -239,6 +239,7 @@ internal sealed class SystemBackupProcessIo : IBackupProcessIo
 
 public sealed class SystemBackupProcessRunner : IBackupProcessRunner
 {
+    private static readonly TimeSpan CleanupTimeout = TimeSpan.FromSeconds(5);
     private readonly IBackupProcessIo _io;
 
     public SystemBackupProcessRunner() : this(new SystemBackupProcessIo())
@@ -281,16 +282,18 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
             throw new Exact25BackupTransportException("process_start_failed", $"Failed to start {invocation}: {exception.GetType().Name}.", retryable: false);
         }
 
-        Task<string> stdout = _io.ReadStandardOutputAsync(process, cancellationToken);
-        Task<string> stderr = _io.ReadStandardErrorAsync(process, cancellationToken);
+        Task<string>? stdout = null;
+        Task<string>? stderr = null;
         try
         {
+            stdout = _io.ReadStandardOutputAsync(process, cancellationToken);
+            stderr = _io.ReadStandardErrorAsync(process, cancellationToken);
             if (invocation.StandardInput.Length > 0)
             {
                 await _io.WriteStandardInputAsync(process, invocation.StandardInput, cancellationToken).ConfigureAwait(false);
             }
 
-            process.StandardInput.Close();
+            TryCloseStandardInput(process);
             Task exited = _io.WaitForExitAsync(process, cancellationToken);
             await ThrowIfAnyCompletesFaultedAsync(exited, stdout, stderr).ConfigureAwait(false);
             await Task.WhenAll(exited, stdout, stderr).ConfigureAwait(false);
@@ -303,7 +306,7 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
         }
         finally
         {
-            process.StandardInput.Close();
+            TryCloseStandardInput(process);
         }
 
     }
@@ -341,16 +344,17 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
             throw new Exact25BackupTransportException("process_start_failed", $"Failed to start {invocation}: {exception.GetType().Name}.", false);
         }
 
-        Task<string> stderr = _io.ReadStandardErrorAsync(process, cancellationToken);
+        Task<string>? stderr = null;
         Task? copy = null;
         try
         {
+            stderr = _io.ReadStandardErrorAsync(process, cancellationToken);
             await using Stream destination = _io.CreateDestination(fullDestination);
             if (invocation.StandardInput.Length > 0)
             {
                 await _io.WriteStandardInputAsync(process, invocation.StandardInput, cancellationToken).ConfigureAwait(false);
             }
-            process.StandardInput.Close();
+            TryCloseStandardInput(process);
             copy = _io.CopyStandardOutputAsync(process, destination, cancellationToken);
             Task exited = _io.WaitForExitAsync(process, cancellationToken);
             await ThrowIfAnyCompletesFaultedAsync(exited, copy, stderr).ConfigureAwait(false);
@@ -365,7 +369,7 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
         }
         finally
         {
-            process.StandardInput.Close();
+            TryCloseStandardInput(process);
         }
     }
 
@@ -377,30 +381,39 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
 
     private async Task TerminateAndObserveAsync(Process process, params Task?[] backgroundTasks)
     {
-        try
+        TryCloseStandardInput(process);
+
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            process.StandardInput.Close();
-        }
-        catch (InvalidOperationException)
-        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    _io.Kill(process);
+                }
+            }
+            catch (Exception)
+            {
+                // A transient platform failure must not skip a second termination attempt.
+            }
         }
 
         try
         {
             if (!process.HasExited)
             {
-                _io.Kill(process);
+                process.Kill(entireProcessTree: true);
             }
         }
         catch (Exception)
         {
-            // Cleanup must continue through wait and task observation even when the
-            // platform cannot deliver or report process-tree termination.
+            // The bounded wait below still observes a concurrent or platform-specific exit.
         }
 
+        using var cleanupTimeout = new CancellationTokenSource(CleanupTimeout);
         try
         {
-            await _io.WaitForExitAsync(process, CancellationToken.None).ConfigureAwait(false);
+            await _io.WaitForExitAsync(process, cleanupTimeout.Token).ConfigureAwait(false);
         }
         catch (Exception)
         {
@@ -411,12 +424,28 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
         {
             try
             {
-                await task.ConfigureAwait(false);
+                await task.WaitAsync(CleanupTimeout).ConfigureAwait(false);
             }
             catch (Exception)
             {
                 // Preserve the original failure after every child I/O task has been observed.
+                _ = task.ContinueWith(
+                    completed => _ = completed.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
+        }
+    }
+
+    private static void TryCloseStandardInput(Process process)
+    {
+        try
+        {
+            process.StandardInput.Close();
+        }
+        catch (InvalidOperationException)
+        {
         }
     }
 }

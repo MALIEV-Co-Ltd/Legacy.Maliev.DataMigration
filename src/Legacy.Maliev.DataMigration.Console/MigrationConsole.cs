@@ -435,12 +435,49 @@ public static class MigrationConsole
         BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
             restore.ReceiptPath, "backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore trust = await ReadTrustStoreAsync(restore.ReceiptTrustedKeys, cancellationToken).ConfigureAwait(false);
-        await VerifiedBackupRestorer.RestoreAsync(
-            receipt,
-            trust,
-            restore.RecoveryDirectory,
-            new SqlServerBackupRestoreTarget(connectionString, restore.SqlServerDataDirectory),
+        DateTimeOffset nowUtc = TimeProvider.System.GetUtcNow();
+        TimeSpan maximumReceiptAge = TimeSpan.FromMinutes(restore.MaximumReceiptAgeMinutes);
+        VerifiedBackupRestorer.ValidateReceipt(receipt, trust, nowUtc, maximumReceiptAge);
+        await DockerDisposableSqlServerProvisioner.ProvisionAsync(
+            connectionString,
+            restore.StagingVolumeName,
+            restore.SqlServerContainerName,
+            restore.SqlServerVisibleRecoveryDirectory,
+            restore.SqlServerImage,
+            restore.RunBinding,
             cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await VerifiedBackupRestorer.RestoreAsync(
+                receipt,
+                trust,
+                restore.RecoveryDirectory,
+                new SqlServerBackupRestoreTarget(
+                    connectionString,
+                    restore.SqlServerDataDirectory,
+                    new DockerVolumeBackupStager(
+                        restore.StagingVolumeName,
+                        restore.SqlServerVisibleRecoveryDirectory,
+                        restore.StagingImage,
+                        restore.SqlServerContainerName,
+                        restore.SqlServerImageId)),
+                nowUtc,
+                maximumReceiptAge,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                await DockerDisposableSqlServerProvisioner.CleanupAsync(
+                    restore.SqlServerContainerName, restore.StagingVolumeName, cleanup.Token).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+            }
+            throw;
+        }
     }
 
     private static async Task<T> ReadProtectedJsonAsync<T>(
@@ -508,6 +545,14 @@ public static class MigrationConsole
         string ReceiptPath,
         string RecoveryDirectory,
         string SqlServerDataDirectory,
+        string SqlServerVisibleRecoveryDirectory,
+        string StagingVolumeName,
+        string StagingImage,
+        string SqlServerContainerName,
+        string SqlServerImageId,
+        string SqlServerImage,
+        string RunBinding,
+        double MaximumReceiptAgeMinutes,
         IReadOnlyList<TrustedKeyReference> ReceiptTrustedKeys);
 
     private sealed record ExecuteShadowCommandConfiguration(

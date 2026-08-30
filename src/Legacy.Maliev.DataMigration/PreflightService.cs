@@ -39,7 +39,7 @@ public sealed partial class PreflightService
         return new PreflightResult(errors);
     }
 
-    private static void ValidateReceipt(
+    internal static void ValidateReceipt(
         BackupReceipt receipt,
         DateTimeOffset nowUtc,
         TimeSpan maximumReceiptAge,
@@ -275,6 +275,6 @@ public sealed partial class PreflightService
     [GeneratedRegex("^[0-9a-fA-F]{64}$", RegexOptions.CultureInvariant)]
     private static partial Regex Sha256();
 
-    [GeneratedRegex("^Full_[A-Za-z][A-Za-z0-9]*_\\d{4}-\\d{2}-\\d{2}_\\d{6}\\.bak$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^Full_[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.bak$", RegexOptions.CultureInvariant)]
     private static partial Regex FullBackupFileName();
 }
