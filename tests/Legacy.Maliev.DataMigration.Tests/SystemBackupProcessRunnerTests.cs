@@ -111,6 +111,23 @@ public sealed class SystemBackupProcessRunnerTests : IDisposable
         AssertProcessExited(io.ProcessId);
     }
 
+    [Theory]
+    [InlineData(ProcessIoFailure.Kill)]
+    [InlineData(ProcessIoFailure.WaitDuringCleanup)]
+    public async Task RunAsync_CleanupPlatformFailureStillObservesChildAndPreservesOriginalFailure(ProcessIoFailure cleanupFailure)
+    {
+        (SecureBackupProcessInvocation invocation, _) = await CreateHoldingInvocationAsync($"cleanup-{cleanupFailure}");
+        var io = new FaultingBackupProcessIo(cleanupFailure, failStandardError: true);
+
+        IOException failure = await Assert.ThrowsAsync<IOException>(
+            () => new SystemBackupProcessRunner(io).RunAsync(invocation, CancellationToken.None));
+
+        Assert.Equal("forced stderr read failure", failure.Message);
+        Assert.True(io.KillCalls > 0);
+        Assert.True(io.WaitCalls > 0);
+        AssertProcessExited(io.ProcessId);
+    }
+
     private async Task<(SecureBackupProcessInvocation Invocation, string PidFile)> CreateHoldingInvocationAsync(string name, int seconds = 30)
     {
         _ = Directory.CreateDirectory(_root);
@@ -202,11 +219,17 @@ public sealed class SystemBackupProcessRunnerTests : IDisposable
         StdoutCopy,
         DestinationFlush,
         StderrRead,
+        Kill,
+        WaitDuringCleanup,
     }
 
-    private sealed class FaultingBackupProcessIo(ProcessIoFailure failure) : IBackupProcessIo
+    private sealed class FaultingBackupProcessIo(ProcessIoFailure failure, bool failStandardError = false) : IBackupProcessIo
     {
+        private int _waitCalls;
+
         public int ProcessId { get; private set; }
+        public int KillCalls { get; private set; }
+        public int WaitCalls => _waitCalls;
 
         public Stream CreateDestination(string path)
         {
@@ -223,7 +246,7 @@ public sealed class SystemBackupProcessRunnerTests : IDisposable
         public Task<string> ReadStandardErrorAsync(Process process, CancellationToken cancellationToken)
         {
             ProcessId = process.Id;
-            return failure == ProcessIoFailure.StderrRead
+            return failure == ProcessIoFailure.StderrRead || failStandardError
                 ? Task.FromException<string>(new IOException("forced stderr read failure"))
                 : process.StandardError.ReadToEndAsync(cancellationToken);
         }
@@ -247,6 +270,30 @@ public sealed class SystemBackupProcessRunnerTests : IDisposable
             return failure == ProcessIoFailure.DestinationFlush
                 ? Task.FromException(new IOException("forced destination flush failure"))
                 : destination.FlushAsync(cancellationToken);
+        }
+
+        public void Kill(Process process)
+        {
+            KillCalls++;
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            if (failure == ProcessIoFailure.Kill)
+            {
+                throw new System.ComponentModel.Win32Exception("forced kill failure");
+            }
+        }
+
+        public async Task WaitForExitAsync(Process process, CancellationToken cancellationToken)
+        {
+            int call = Interlocked.Increment(ref _waitCalls);
+            await process.WaitForExitAsync(cancellationToken);
+            if (failure == ProcessIoFailure.WaitDuringCleanup && call > 1)
+            {
+                throw new InvalidOperationException("forced cleanup wait failure");
+            }
         }
     }
 }

@@ -46,12 +46,10 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         var trust = new ReceiptAttestationTrustStore([
             new TrustedAttestationKey("backup-key", _signingKey.ExportSubjectPublicKeyInfo()),
         ]);
-        BackupRestoreManifest restoreManifest = await BackupRestoreManifestVerifier.CreateAsync(
-            receipt, trust, request.LocalWorkingDirectory, CancellationToken.None);
-        Assert.Equal("1.0", restoreManifest.SchemaVersion);
-        Assert.Equal(25, restoreManifest.Artifacts.Count);
-        Assert.All(restoreManifest.Artifacts, artifact =>
-            Assert.StartsWith(Path.GetFullPath(request.LocalWorkingDirectory), artifact.LocalPath, StringComparison.Ordinal));
+        var restoreTarget = new FakeRestoreTarget();
+        await VerifiedBackupRestorer.RestoreAsync(
+            receipt, trust, request.LocalWorkingDirectory, restoreTarget, CancellationToken.None);
+        Assert.Equal(DatabaseInventory.ActiveDatabases, restoreTarget.Restored);
         Assert.All(receipt.Artifacts!, artifact =>
         {
             Assert.Equal("Full", artifact!.BackupType);
@@ -60,6 +58,78 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         });
         Assert.DoesNotContain("MachineLearning", string.Join('|', process.Created), StringComparison.Ordinal);
         Assert.DoesNotContain("MachineLearningData", string.Join('|', process.Created), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RestoreAsync_TamperedSignedReceiptFailsBeforeRestore()
+    {
+        BackupReceipt receipt = await ProduceReceiptAsync();
+        BackupArtifact first = receipt.Artifacts![0]!;
+        BackupReceipt tampered = receipt with
+        {
+            Artifacts = [first with { Sha256 = new string('0', 64) }, .. receipt.Artifacts.Skip(1)],
+        };
+        var target = new FakeRestoreTarget();
+
+        Exact25FullBackupException failure = await Assert.ThrowsAsync<Exact25FullBackupException>(
+            () => VerifiedBackupRestorer.RestoreAsync(tampered, Trust(), _root, target, CancellationToken.None));
+
+        Assert.Equal("restore_receipt_invalid", failure.Code);
+        Assert.Empty(target.Restored);
+    }
+
+    [Fact]
+    public async Task RestoreAsync_SameLengthArtifactCorruptionFailsBeforeRestore()
+    {
+        BackupReceipt receipt = await ProduceReceiptAsync();
+        string path = Path.Combine(_root, receipt.Artifacts![0]!.FileName!);
+        byte[] bytes = await File.ReadAllBytesAsync(path);
+        bytes[0] ^= 0xff;
+        await File.WriteAllBytesAsync(path, bytes);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        var target = new FakeRestoreTarget();
+
+        Exact25FullBackupException failure = await Assert.ThrowsAsync<Exact25FullBackupException>(
+            () => VerifiedBackupRestorer.RestoreAsync(receipt, Trust(), _root, target, CancellationToken.None));
+
+        Assert.Equal("restore_artifact_invalid", failure.Code);
+        Assert.Empty(target.Restored);
+    }
+
+    [Fact]
+    public async Task RestoreAsync_UnprotectedOrSymlinkedArtifactFailsBeforeRestore()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        BackupReceipt receipt = await ProduceReceiptAsync();
+        string path = Path.Combine(_root, receipt.Artifacts![0]!.FileName!);
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
+        var target = new FakeRestoreTarget();
+        _ = await Assert.ThrowsAsync<Exact25FullBackupException>(
+            () => VerifiedBackupRestorer.RestoreAsync(receipt, Trust(), _root, target, CancellationToken.None));
+        Assert.Empty(target.Restored);
+
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        string outside = Path.Combine(Path.GetTempPath(), $"restore-link-{Guid.NewGuid():N}.bak");
+        File.Move(path, outside);
+        try
+        {
+            _ = File.CreateSymbolicLink(path, outside);
+            _ = await Assert.ThrowsAsync<Exact25FullBackupException>(
+                () => VerifiedBackupRestorer.RestoreAsync(receipt, Trust(), _root, target, CancellationToken.None));
+            Assert.Empty(target.Restored);
+        }
+        finally
+        {
+            File.Delete(path);
+            File.Delete(outside);
+        }
     }
 
     [Theory]
@@ -426,6 +496,18 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         return new("KubernetesAccess", "test-only-password");
     }
 
+    private async Task<BackupReceipt> ProduceReceiptAsync()
+    {
+        return await Exact25FullBackupProducer.ProduceAsync(
+            Request(), Credential(), new FakeProcess(), new FakeStorage(), new FakePublisher(),
+            "backup-key", _signingKey, CancellationToken.None);
+    }
+
+    private ReceiptAttestationTrustStore Trust()
+    {
+        return new([new TrustedAttestationKey("backup-key", _signingKey.ExportSubjectPublicKeyInfo())]);
+    }
+
     public void Dispose()
     {
         _signingKey.Dispose();
@@ -573,6 +655,20 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
             }
 
             Published = receipt;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeRestoreTarget : IVerifiedBackupRestoreTarget
+    {
+        public List<string> Restored { get; } = [];
+
+        public Task RestoreAsync(VerifiedBackupRestoreArtifact artifact, CancellationToken cancellationToken)
+        {
+            Assert.True(artifact.RetainedHandle.CanRead);
+            Assert.Equal(artifact.ByteLength, artifact.RetainedHandle.Length);
+            Assert.StartsWith(Path.GetFullPath(Path.GetDirectoryName(artifact.LocalPath)!), artifact.LocalPath, StringComparison.Ordinal);
+            Restored.Add(artifact.Database);
             return Task.CompletedTask;
         }
     }

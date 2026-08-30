@@ -98,7 +98,7 @@ No executable migration logic was copied from those files.
 
 ## Receipt and execution contracts
 
-The .NET 10 executable host exposes only `backup-full`, `verify-backup`, `plan`,
+The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan`,
 `execute-shadow`, `evidence`, and `export-local-snapshot`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
@@ -158,12 +158,18 @@ adapter, the Application Default Credentials GCS adapter, and atomic receipt
 publisher. Contract tests replace that runtime before any process or network
 operation, so repository validation never performs a live backup.
 
-`verify-backup` re-verifies the producer signature and exact 25-item inventory,
-derives every local recovery path from the signed filenames, and re-hashes the
-owner-only retained bytes into a new versioned restore manifest. The standalone
-receipt-signing command has been removed; callers cannot sign hand-authored state.
-`scripts/restore-verified-sqlserver-backups.ps1` consumes that manifest and restores
-only the exact signed inventory into a disposable SQL Server 2022 instance. It runs `RESTORE
+`restore-backups` re-verifies the producer signature and exact 25-item inventory,
+derives every local recovery path from the signed filenames, securely reopens and
+re-hashes each owner-only artifact, and retains the verified file handle throughout
+the corresponding SQL restore. Before `RESTORE VERIFYONLY`, SQL Server independently
+reads that path with `OPENROWSET(BULK...)`; its `SHA2_256` digest must match the signed
+artifact hash. This fail-closed probe enforces the same-filesystem or correctly mounted
+path contract instead of assuming a host path is visible inside a disposable container.
+No unsigned intermediate restore manifest exists.
+The standalone receipt-signing command has been removed; callers cannot sign
+hand-authored state. `scripts/restore-verified-sqlserver-backups.ps1` delegates only
+to that guarded .NET command, which restores the exact signed inventory into a
+disposable SQL Server 2022 instance. It runs `RESTORE
 VERIFYONLY`, discovers every logical file with `RESTORE FILELISTONLY`, supplies
 an explicit `WITH MOVE`, refuses existing targets, and makes every restored
 source database snapshot-isolation capable, verifies that state, and then makes

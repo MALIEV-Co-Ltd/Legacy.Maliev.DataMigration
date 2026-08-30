@@ -8,8 +8,11 @@ public sealed class MigrationConsoleTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"legacy-console-{Guid.NewGuid():N}");
 
-    [Fact]
-    public async Task RunAsync_ReceiptCommandIsDisabledBeforeReadingCallerSuppliedStateOrKey()
+    [Theory]
+    [InlineData("receipt")]
+    [InlineData("verify-backup")]
+    public async Task RunAsync_StandaloneReceiptAndManifestCommandsAreDisabledBeforeReadingCallerSuppliedStateOrKey(
+        string command)
     {
         _ = Directory.CreateDirectory(_root);
         string statePath = Path.Combine(_root, "backup-state.json");
@@ -29,7 +32,7 @@ public sealed class MigrationConsoleTests : IDisposable
         using var error = new StringWriter();
 
         int exitCode = await MigrationConsole.RunAsync(
-            ["receipt", "--config", configPath],
+            [command, "--config", configPath],
             output,
             error,
             name => name == "LEGACY_MIGRATION_RECEIPT_SIGNING_KEY_FILE" ? keyPath : null,

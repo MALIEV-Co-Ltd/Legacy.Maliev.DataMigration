@@ -188,6 +188,8 @@ internal interface IBackupProcessIo
     Task WriteStandardInputAsync(Process process, string input, CancellationToken cancellationToken);
     Task CopyStandardOutputAsync(Process process, Stream destination, CancellationToken cancellationToken);
     Task FlushDestinationAsync(Stream destination, CancellationToken cancellationToken);
+    void Kill(Process process);
+    Task WaitForExitAsync(Process process, CancellationToken cancellationToken);
 }
 
 internal sealed class SystemBackupProcessIo : IBackupProcessIo
@@ -222,6 +224,16 @@ internal sealed class SystemBackupProcessIo : IBackupProcessIo
     public Task FlushDestinationAsync(Stream destination, CancellationToken cancellationToken)
     {
         return destination.FlushAsync(cancellationToken);
+    }
+
+    public void Kill(Process process)
+    {
+        process.Kill(entireProcessTree: true);
+    }
+
+    public Task WaitForExitAsync(Process process, CancellationToken cancellationToken)
+    {
+        return process.WaitForExitAsync(cancellationToken);
     }
 }
 
@@ -279,7 +291,7 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
             }
 
             process.StandardInput.Close();
-            Task exited = process.WaitForExitAsync(cancellationToken);
+            Task exited = _io.WaitForExitAsync(process, cancellationToken);
             await ThrowIfAnyCompletesFaultedAsync(exited, stdout, stderr).ConfigureAwait(false);
             await Task.WhenAll(exited, stdout, stderr).ConfigureAwait(false);
             return new(process.ExitCode, stdout.Result, stderr.Result);
@@ -340,7 +352,7 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
             }
             process.StandardInput.Close();
             copy = _io.CopyStandardOutputAsync(process, destination, cancellationToken);
-            Task exited = process.WaitForExitAsync(cancellationToken);
+            Task exited = _io.WaitForExitAsync(process, cancellationToken);
             await ThrowIfAnyCompletesFaultedAsync(exited, copy, stderr).ConfigureAwait(false);
             await Task.WhenAll(exited, copy, stderr).ConfigureAwait(false);
             await _io.FlushDestinationAsync(destination, cancellationToken).ConfigureAwait(false);
@@ -363,7 +375,7 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
         await completed.ConfigureAwait(false);
     }
 
-    private static async Task TerminateAndObserveAsync(Process process, params Task?[] backgroundTasks)
+    private async Task TerminateAndObserveAsync(Process process, params Task?[] backgroundTasks)
     {
         try
         {
@@ -377,19 +389,22 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
         {
             if (!process.HasExited)
             {
-                process.Kill(entireProcessTree: true);
+                _io.Kill(process);
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception)
         {
+            // Cleanup must continue through wait and task observation even when the
+            // platform cannot deliver or report process-tree termination.
         }
 
         try
         {
-            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            await _io.WaitForExitAsync(process, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (InvalidOperationException)
+        catch (Exception)
         {
+            // Preserve the original operation failure after attempting every cleanup step.
         }
 
         foreach (Task task in backgroundTasks.OfType<Task>())

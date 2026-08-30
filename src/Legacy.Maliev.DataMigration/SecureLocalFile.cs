@@ -42,6 +42,16 @@ internal static class SecureLocalFile
 
     public static FileStream OpenRead(string path)
     {
+        return OpenRead(path, FileShare.None);
+    }
+
+    public static FileStream OpenReadShared(string path)
+    {
+        return OpenRead(path, FileShare.Read);
+    }
+
+    private static FileStream OpenRead(string path, FileShare share)
+    {
         string full = Path.GetFullPath(path);
         EnsureNoLinkAncestors(full);
         var file = new FileInfo(full);
@@ -49,7 +59,7 @@ internal static class SecureLocalFile
         {
             throw new Exact25FullBackupException("local_backup_type_invalid", "The local backup is not a regular non-link file.");
         }
-        var stream = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.None, 1024 * 1024,
+        var stream = new FileStream(full, FileMode.Open, FileAccess.Read, share, 1024 * 1024,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (!HandleResolvesTo(stream.SafeFileHandle, full))
         {

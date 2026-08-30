@@ -9,7 +9,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "evidence",
         "export-local-snapshot",
         "backup-full",
-        "verify-backup",
+        "restore-backups",
     ];
 
     private static readonly string[] SecretOptionFragments =

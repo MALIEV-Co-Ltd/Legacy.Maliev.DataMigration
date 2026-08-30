@@ -18,6 +18,7 @@ public static class MigrationConsole
     private const string SnapshotKeyEnvironmentVariable = "LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE";
     private const string BackupSqlUserEnvironmentVariable = "LEGACY_MIGRATION_BACKUP_SQL_USERNAME";
     private const string BackupSqlPasswordEnvironmentVariable = "LEGACY_MIGRATION_BACKUP_SQL_PASSWORD";
+    private const string RestoreSqlServerConnectionEnvironmentVariable = "LEGACY_SQLSERVER_ADMIN_CONNECTION";
     private const string DeployEnabledEnvironmentVariable = "LEGACY_DEPLOY_ENABLED";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -94,9 +95,10 @@ public static class MigrationConsole
                         cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("backup_full_complete").ConfigureAwait(false);
                     return 0;
-                case "verify-backup":
-                    await ProduceRestoreManifestAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
-                    await output.WriteLineAsync("backup_verified").ConfigureAwait(false);
+                case "restore-backups":
+                    await RestoreBackupsAsync(
+                        invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("backup_restore_complete").ConfigureAwait(false);
                     return 0;
                 default:
                     await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
@@ -121,6 +123,11 @@ public static class MigrationConsole
         catch (Exact25BackupTransportException exception)
         {
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
+            return 70;
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            await error.WriteLineAsync("restore_sql_failed").ConfigureAwait(false);
             return 70;
         }
         catch (MigrationExecutionException exception)
@@ -414,18 +421,26 @@ public static class MigrationConsole
         }
     }
 
-    private static async Task ProduceRestoreManifestAsync(string configPath, CancellationToken cancellationToken)
+    private static async Task RestoreBackupsAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
     {
         MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
             configPath, "backup_config_unprotected", cancellationToken).ConfigureAwait(false);
-        RestoreManifestCommandConfiguration restore = configuration.RestoreManifest ??
-            throw new MigrationConsoleException("restore_manifest_configuration_missing", "Restore manifest configuration is required.");
+        RestoreBackupsCommandConfiguration restore = configuration.RestoreBackups ??
+            throw new MigrationConsoleException("restore_configuration_missing", "Restore configuration is required.");
+        string connectionString = getEnvironmentVariable(RestoreSqlServerConnectionEnvironmentVariable) ??
+            throw new MigrationConsoleException("restore_connection_missing", "The disposable SQL Server admin connection is required.");
         BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
             restore.ReceiptPath, "backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore trust = await ReadTrustStoreAsync(restore.ReceiptTrustedKeys, cancellationToken).ConfigureAwait(false);
-        BackupRestoreManifest manifest = await BackupRestoreManifestVerifier.CreateAsync(
-            receipt, trust, restore.RecoveryDirectory, cancellationToken).ConfigureAwait(false);
-        await WriteNewJsonAsync(restore.OutputPath, manifest, cancellationToken).ConfigureAwait(false);
+        await VerifiedBackupRestorer.RestoreAsync(
+            receipt,
+            trust,
+            restore.RecoveryDirectory,
+            new SqlServerBackupRestoreTarget(connectionString, restore.SqlServerDataDirectory),
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<T> ReadProtectedJsonAsync<T>(
@@ -471,7 +486,7 @@ public static class MigrationConsole
         EvidenceCommandConfiguration? Evidence = null,
         ExportLocalSnapshotCommandConfiguration? ExportLocalSnapshot = null,
         FullBackupCommandConfiguration? FullBackup = null,
-        RestoreManifestCommandConfiguration? RestoreManifest = null);
+        RestoreBackupsCommandConfiguration? RestoreBackups = null);
 
     private sealed record FullBackupCommandConfiguration(
         string Namespace,
@@ -489,10 +504,10 @@ public static class MigrationConsole
 
     private sealed record PlanCommandConfiguration(string OutputPath, string SourceCommitSha);
 
-    private sealed record RestoreManifestCommandConfiguration(
+    private sealed record RestoreBackupsCommandConfiguration(
         string ReceiptPath,
         string RecoveryDirectory,
-        string OutputPath,
+        string SqlServerDataDirectory,
         IReadOnlyList<TrustedKeyReference> ReceiptTrustedKeys);
 
     private sealed record ExecuteShadowCommandConfiguration(
