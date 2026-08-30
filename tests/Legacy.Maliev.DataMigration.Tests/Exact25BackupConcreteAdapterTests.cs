@@ -263,7 +263,7 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
     {
         OwnerProtectedDirectory.CreateNew(_root);
         string local = Path.Combine(_root, "backup.bak");
-        await File.WriteAllTextAsync(local, "backup");
+        await WriteOwnerOnlyBackupAsync(local, "backup");
         string sha256 = Hash("backup");
         var gateway = new RecordingGoogleCloudBackupGateway(
             new GoogleCloudBackupObjectState("maliev.com", "database/full/2026-08-30/run-1/backup.bak", 42, 6, sha256),
@@ -286,7 +286,7 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
     {
         OwnerProtectedDirectory.CreateNew(_root);
         string local = Path.Combine(_root, "backup.bak");
-        await File.WriteAllTextAsync(local, "backup");
+        await WriteOwnerOnlyBackupAsync(local, "backup");
         string sha256 = Hash("backup");
         var gateway = new RecordingGoogleCloudBackupGateway(
             new GoogleCloudBackupObjectState("maliev.com", "database/full/2026-08-30/run-1/backup.bak", 42, 6, sha256),
@@ -311,6 +311,15 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
     }
 
+    private static async Task WriteOwnerOnlyBackupAsync(string path, string content)
+    {
+        await File.WriteAllTextAsync(path, content);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
     private static string InventoryOutput()
     {
         return "OBSERVED_AT_UTC|2026-08-30T01:02:03.0000000+00:00\n" +
@@ -322,7 +331,7 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
     {
         OwnerProtectedDirectory.CreateNew(_root);
         string local = Path.Combine(_root, "backup.bak");
-        await File.WriteAllTextAsync(local, "backup");
+        await WriteOwnerOnlyBackupAsync(local, "backup");
         string sha256 = Hash("backup");
         var state = new GoogleCloudBackupObjectState("maliev.com", "database/full/2026-08-30/run-1/backup.bak", 42, 6, sha256);
         var storage = new GoogleCloudImmutableBackupObjectStorage(

@@ -63,11 +63,12 @@ public sealed class SqlServerMigrationSourceIntegrationTests
             SecureLocalFile.EnsureOwnerOnlyDirectory(root);
             Assert.True(SecureLocalFile.IsOwnerOnlyFile(new FileInfo(localBackup)));
 
-            string pinnedImage = await DockerInspectAsync(image, "{{index .RepoDigests 0}}");
+            string pinnedImage = BindTagToRepoDigest(image, await DockerInspectAsync(image, "{{index .RepoDigests 0}}"));
             string targetImageId = await DockerInspectAsync(image, "{{.Id}}");
             const string stagingImage = "alpine:3.20";
             _ = await RunDockerAsync(["pull", stagingImage]);
-            string pinnedStagingImage = await DockerInspectAsync(stagingImage, "{{index .RepoDigests 0}}");
+            string pinnedStagingImage = BindTagToRepoDigest(
+                stagingImage, await DockerInspectAsync(stagingImage, "{{index .RepoDigests 0}}"));
             int port = GetFreeTcpPort();
             string targetConnection = new SqlConnectionStringBuilder
             {
@@ -128,6 +129,14 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                 _ = await RunDockerAsync(["volume", "rm", "-f", restoreResources.VolumeName]);
             }
         }
+    }
+
+    private static string BindTagToRepoDigest(string taggedImage, string repoDigest)
+    {
+        int digestSeparator = repoDigest.LastIndexOf("@sha256:", StringComparison.Ordinal);
+        return digestSeparator < 0
+            ? throw new InvalidOperationException("Docker did not report an immutable image digest.")
+            : $"{taggedImage}{repoDigest[digestSeparator..]}";
     }
 
     private static async Task DockerCopyAsync(string containerId, string source, string destination)

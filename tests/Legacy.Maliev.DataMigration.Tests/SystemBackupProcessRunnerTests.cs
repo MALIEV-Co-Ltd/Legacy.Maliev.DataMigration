@@ -10,13 +10,9 @@ public sealed class SystemBackupProcessRunnerTests : IDisposable
     public async Task RunAsync_CancellationDuringStandardInputWriteKillsAndAwaitsChild()
     {
         _ = Directory.CreateDirectory(_root);
-        string script = Path.Combine(_root, "hold.ps1");
         string pidFile = Path.Combine(_root, "pid.txt");
-        await File.WriteAllTextAsync(script, "$PID | Set-Content -LiteralPath $args[0]; Start-Sleep -Seconds 30");
-        var invocation = new SecureBackupProcessInvocation(
-            "powershell.exe",
-            ["-NoProfile", "-NonInteractive", "-File", script, pidFile],
-            new string('x', 32 * 1024 * 1024));
+        SecureBackupProcessInvocation invocation = await CreateHoldingInvocationAsync(
+            "hold", pidFile, 30, new string('x', 32 * 1024 * 1024));
         using var cancellation = new CancellationTokenSource();
         Task<BackupProcessResult> running = new SystemBackupProcessRunner().RunAsync(invocation, cancellation.Token);
         await WaitForFileAsync(pidFile);
@@ -32,14 +28,10 @@ public sealed class SystemBackupProcessRunnerTests : IDisposable
     public async Task RunToNewFileAsync_CancellationDuringStandardInputWriteKillsAndAwaitsChild()
     {
         _ = Directory.CreateDirectory(_root);
-        string script = Path.Combine(_root, "hold-stream.ps1");
         string pidFile = Path.Combine(_root, "stream-pid.txt");
         string destination = Path.Combine(_root, "streamed.bak");
-        await File.WriteAllTextAsync(script, "$PID | Set-Content -LiteralPath $args[0]; Start-Sleep -Seconds 30");
-        var invocation = new SecureBackupProcessInvocation(
-            "powershell.exe",
-            ["-NoProfile", "-NonInteractive", "-File", script, pidFile],
-            new string('x', 32 * 1024 * 1024));
+        SecureBackupProcessInvocation invocation = await CreateHoldingInvocationAsync(
+            "hold-stream", pidFile, 30, new string('x', 32 * 1024 * 1024));
         using var cancellation = new CancellationTokenSource();
         Task<BackupProcessResult> running = new SystemBackupProcessRunner()
             .RunToNewFileAsync(invocation, destination, cancellation.Token);
@@ -131,13 +123,30 @@ public sealed class SystemBackupProcessRunnerTests : IDisposable
     private async Task<(SecureBackupProcessInvocation Invocation, string PidFile)> CreateHoldingInvocationAsync(string name, int seconds = 30)
     {
         _ = Directory.CreateDirectory(_root);
-        string script = Path.Combine(_root, $"hold-{name}.ps1");
         string pidFile = Path.Combine(_root, $"pid-{name}.txt");
-        await File.WriteAllTextAsync(script, $"$PID | Set-Content -LiteralPath $args[0]; Start-Sleep -Seconds {seconds}");
-        return (new SecureBackupProcessInvocation(
-            "powershell.exe",
-            ["-NoProfile", "-NonInteractive", "-File", script, pidFile],
-            string.Empty), pidFile);
+        return (await CreateHoldingInvocationAsync(name, pidFile, seconds, string.Empty), pidFile);
+    }
+
+    private async Task<SecureBackupProcessInvocation> CreateHoldingInvocationAsync(
+        string name,
+        string pidFile,
+        int seconds,
+        string standardInput)
+    {
+        _ = Directory.CreateDirectory(_root);
+        if (OperatingSystem.IsWindows())
+        {
+            string script = Path.Combine(_root, $"{name}.ps1");
+            await File.WriteAllTextAsync(script, $"$PID | Set-Content -LiteralPath $args[0]; Start-Sleep -Seconds {seconds}");
+            return new SecureBackupProcessInvocation(
+                "powershell.exe",
+                ["-NoProfile", "-NonInteractive", "-File", script, pidFile],
+                standardInput);
+        }
+
+        string shellScript = Path.Combine(_root, $"{name}.sh");
+        await File.WriteAllTextAsync(shellScript, $"#!/bin/sh\nprintf '%s' \"$$\" > \"$1\"\nsleep {seconds}\n");
+        return new SecureBackupProcessInvocation("/bin/sh", [shellScript, pidFile], standardInput);
     }
 
     private static async Task WaitForFileAsync(string path)
