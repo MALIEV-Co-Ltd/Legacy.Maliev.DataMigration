@@ -1,5 +1,13 @@
 # Legacy.Maliev.DataMigration
 
+Local PostgreSQL review snapshots use the fail-closed `MLVSNP02` contract. The exporter stages each
+dump in a newly created owner-only directory, records the exact migration run id and canonical exact-25
+semantic manifest digest, derives separate AES-GCM and HMAC-SHA256 keys from the external 32-byte root
+key with HKDF-SHA256, binds every archive to the run id, database name, and manifest digest as AEAD AAD,
+then authenticates the complete manifest including ciphertext metadata. Version 1 is not accepted.
+An interrupted export leaves only an owner-only, incomplete directory; reruns refuse to reuse it and
+require explicit operator removal after inspection. Root key bytes are never written to the snapshot.
+
 [![CI - Main](https://github.com/MALIEV-Co-Ltd/Legacy.Maliev.DataMigration/actions/workflows/ci-main.yml/badge.svg)](https://github.com/MALIEV-Co-Ltd/Legacy.Maliev.DataMigration/actions/workflows/ci-main.yml)
 
 This repository is the fail-closed execution boundary for the legacy SQL Server

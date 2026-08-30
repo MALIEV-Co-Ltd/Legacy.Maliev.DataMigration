@@ -48,6 +48,11 @@ public sealed class WorkflowContractTests
             source,
             StringComparison.Ordinal);
         Assert.Contains("solution: Legacy.Maliev.DataMigration.slnx", source, StringComparison.Ordinal);
+        Assert.Contains("POSTGRES_HOST_AUTH_METHOD: trust", source, StringComparison.Ordinal);
+        Assert.Contains("if [[ \"${1:-}\" == \"--version\" ]]", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("POSTGRES_PASSWORD", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PGPASSWORD", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Password=", source, StringComparison.Ordinal);
         Assert.DoesNotContain("secrets: inherit", source, StringComparison.OrdinalIgnoreCase);
     }
 
