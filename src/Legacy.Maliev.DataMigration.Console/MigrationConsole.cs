@@ -16,9 +16,6 @@ public static class MigrationConsole
     private const string SqlServerConnectionEnvironmentVariable = "LEGACY_MIGRATION_SQLSERVER_CONNECTION";
     private const string PostgreSqlConnectionEnvironmentVariable = "LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION";
     private const string PostgreSqlControlConnectionEnvironmentVariable = "LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION";
-    private const string CloudNativePgApiServerEnvironmentVariable = "LEGACY_MIGRATION_CNPG_API_SERVER";
-    private const string CloudNativePgTokenFileEnvironmentVariable = "LEGACY_MIGRATION_CNPG_TOKEN_FILE";
-    private const string CloudNativePgCaFileEnvironmentVariable = "LEGACY_MIGRATION_CNPG_CA_FILE";
     private const string ExecutionSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_EXECUTION_SIGNING_KEY_FILE";
     private const string FinalEvidenceSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_FINAL_EVIDENCE_SIGNING_KEY_FILE";
     private const string SnapshotKeyEnvironmentVariable = "LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE";
@@ -30,6 +27,9 @@ public static class MigrationConsole
     private const string AuthorizationSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE";
     private const string LegacyNamespace = "maliev-legacy";
     private const string LegacyPostgreSqlCluster = "legacy-postgres-main";
+    private const string KubernetesApiServer = "https://kubernetes.default.svc";
+    private const string KubernetesServiceAccountTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+    private const string KubernetesServiceAccountCaFile = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -235,7 +235,7 @@ public static class MigrationConsole
             "authorization_signing_key_untrusted", "authorization_key_role_reuse");
         RunnerArtifactManifest runnerManifest = await runtimeAttestationFactory.MeasureRunnerAsync(cancellationToken).ConfigureAwait(false);
         CloudNativePgTargetObservation targetObservation = await runtimeAttestationFactory.ObserveTargetAsync(
-            LegacyNamespace, LegacyPostgreSqlCluster, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+            LegacyNamespace, LegacyPostgreSqlCluster, cancellationToken).ConfigureAwait(false);
         ExecutionAuthorizationReceipt signed = ReviewedExecutionAuthorizationProducer.Produce(
             new(
                 authorize.ExpectedSourceCommitSha,
@@ -546,14 +546,9 @@ public static class MigrationConsole
         string? sourceConnection = getEnvironmentVariable(SqlServerConnectionEnvironmentVariable);
         string? targetConnection = getEnvironmentVariable(PostgreSqlConnectionEnvironmentVariable);
         string? controlConnection = getEnvironmentVariable(PostgreSqlControlConnectionEnvironmentVariable);
-        string? cloudNativePgApiServer = getEnvironmentVariable(CloudNativePgApiServerEnvironmentVariable);
-        string? cloudNativePgTokenFile = getEnvironmentVariable(CloudNativePgTokenFileEnvironmentVariable);
-        string? cloudNativePgCaFile = getEnvironmentVariable(CloudNativePgCaFileEnvironmentVariable);
         string? evidenceKeyPath = getEnvironmentVariable(ExecutionSigningKeyEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(sourceConnection) || string.IsNullOrWhiteSpace(targetConnection) ||
-            string.IsNullOrWhiteSpace(controlConnection) || string.IsNullOrWhiteSpace(evidenceKeyPath) ||
-            string.IsNullOrWhiteSpace(cloudNativePgApiServer) || string.IsNullOrWhiteSpace(cloudNativePgTokenFile) ||
-            string.IsNullOrWhiteSpace(cloudNativePgCaFile))
+            string.IsNullOrWhiteSpace(controlConnection) || string.IsNullOrWhiteSpace(evidenceKeyPath))
         {
             throw new MigrationConsoleException("shadow_runtime_reference_missing", "Shadow runtime references are required.");
         }
@@ -596,15 +591,15 @@ public static class MigrationConsole
         }
         await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(sourceConnection));
         using var provisioner = new CloudNativePgShadowDatabaseProvisioner(new(
-            new Uri(cloudNativePgApiServer, UriKind.Absolute),
+            new Uri(KubernetesApiServer, UriKind.Absolute),
             LegacyNamespace,
             LegacyPostgreSqlCluster,
             execute.ExpectedShadowAdminRole,
-            cloudNativePgTokenFile,
-            cloudNativePgCaFile,
+            KubernetesServiceAccountTokenFile,
+            KubernetesServiceAccountCaFile,
             TimeSpan.FromMinutes(5)));
         using var targetObserver = new CloudNativePgTargetObserver(new(
-            new Uri(cloudNativePgApiServer, UriKind.Absolute), cloudNativePgTokenFile, cloudNativePgCaFile));
+            new Uri(KubernetesApiServer, UriKind.Absolute), KubernetesServiceAccountTokenFile, KubernetesServiceAccountCaFile));
         var runtimeVerifier = new RuntimeAttestationVerifier(
             AppContext.BaseDirectory, targetObserver, LegacyNamespace, LegacyPostgreSqlCluster);
         var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(targetConnection, provisioner));
@@ -1156,7 +1151,6 @@ internal interface IAuthorizationRuntimeAttestationFactory
     Task<CloudNativePgTargetObservation> ObserveTargetAsync(
         string namespaceName,
         string cluster,
-        Func<string, string?> getEnvironmentVariable,
         CancellationToken cancellationToken);
 }
 
@@ -1170,18 +1164,12 @@ internal sealed class DefaultAuthorizationRuntimeAttestationFactory : IAuthoriza
     public async Task<CloudNativePgTargetObservation> ObserveTargetAsync(
         string namespaceName,
         string cluster,
-        Func<string, string?> getEnvironmentVariable,
         CancellationToken cancellationToken)
     {
-        string? apiServer = getEnvironmentVariable("LEGACY_MIGRATION_CNPG_API_SERVER");
-        string? tokenFile = getEnvironmentVariable("LEGACY_MIGRATION_CNPG_TOKEN_FILE");
-        string? caFile = getEnvironmentVariable("LEGACY_MIGRATION_CNPG_CA_FILE");
-        if (string.IsNullOrWhiteSpace(apiServer) || string.IsNullOrWhiteSpace(tokenFile) || string.IsNullOrWhiteSpace(caFile))
-        {
-            throw new OperatorAttestationException("authorization_runtime_reference_missing", "Read-only CloudNativePG observation references are required.");
-        }
-
-        using var observer = new CloudNativePgTargetObserver(new(new Uri(apiServer, UriKind.Absolute), tokenFile, caFile));
+        using var observer = new CloudNativePgTargetObserver(new(
+            new Uri("https://kubernetes.default.svc", UriKind.Absolute),
+            "/var/run/secrets/kubernetes.io/serviceaccount/token",
+            "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"));
         return await observer.ObserveAsync(namespaceName, cluster, cancellationToken).ConfigureAwait(false);
     }
 }

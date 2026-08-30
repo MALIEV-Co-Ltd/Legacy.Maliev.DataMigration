@@ -25,6 +25,8 @@ public sealed class MigrationConsoleTests : IDisposable
                 runnerPublishDirectory = "release-publish",
                 runnerDigestSha256 = new string('c', 64),
                 targetGeneration = "caller-substitute",
+                cloudNativePgApiServer = "https://attacker.example",
+                cloudNativePgNamespace = "attacker",
                 issuedAtUtc = DateTimeOffset.UtcNow,
                 expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(30),
                 keyId = "authorization-key",

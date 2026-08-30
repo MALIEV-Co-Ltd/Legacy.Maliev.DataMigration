@@ -222,12 +222,13 @@ accepted only through environment references. The target-administration
 connection is supplied through `LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION`.
 That connection is the unprivileged shadow runtime role; it must be `NOCREATEDB`.
 Database lifecycle is requested through the CloudNativePG `Database` API using
-`LEGACY_MIGRATION_CNPG_API_SERVER` and the projected service-account token path in
-`LEGACY_MIGRATION_CNPG_TOKEN_FILE`. `LEGACY_MIGRATION_CNPG_CA_FILE` must point to
-the projected Kubernetes service-account CA. The client requires HTTPS, validates
-the API server against that CA, and rereads the short-lived bound token for every
-request. The protected command configuration pins the
-`cloudNativePgNamespace` and `cloudNativePgCluster` values.
+the fixed in-cluster `https://kubernetes.default.svc` endpoint and fixed projected
+service-account token and CA paths. Caller-supplied API endpoints, trust paths,
+namespaces, clusters, runner paths, and runner digests are rejected. The client
+validates the API server against the projected CA and rereads the short-lived
+bound token for every request. Authorization and execution independently measure
+the owner-only, non-link Release publication and observe exactly
+`maliev-legacy/legacy-postgres-main` before any journal or shadow mutation.
 The durable journal uses an independently supplied
 `LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION` whose database must be exactly
 `legacy_migration_control`. The protected command configuration names the

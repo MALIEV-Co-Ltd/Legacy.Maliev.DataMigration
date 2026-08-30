@@ -18,15 +18,27 @@ public sealed record RunnerArtifactManifest(string ManifestSha256, IReadOnlyList
 
 public static class RunnerArtifactManifestMeasurer
 {
-    public static async Task<RunnerArtifactManifest> MeasureAsync(string publishDirectory, CancellationToken cancellationToken)
+    public static Task<RunnerArtifactManifest> MeasureAsync(string publishDirectory, CancellationToken cancellationToken)
+    {
+        return MeasureAsync(publishDirectory, afterInitialMeasurement: null, cancellationToken);
+    }
+
+    internal static async Task<RunnerArtifactManifest> MeasureAsync(
+        string publishDirectory,
+        Func<CancellationToken, Task>? afterInitialMeasurement,
+        CancellationToken cancellationToken)
     {
         try
         {
-            return await MeasureCoreAsync(publishDirectory, cancellationToken).ConfigureAwait(false);
+            return await MeasureCoreAsync(publishDirectory, afterInitialMeasurement, cancellationToken).ConfigureAwait(false);
         }
         catch (RuntimeAttestationException)
         {
             throw;
+        }
+        catch (Exact25FullBackupException)
+        {
+            throw Error("runtime_runner_boundary_invalid", "The Release publication is not owner-only or stable.");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -34,7 +46,10 @@ public static class RunnerArtifactManifestMeasurer
         }
     }
 
-    private static async Task<RunnerArtifactManifest> MeasureCoreAsync(string publishDirectory, CancellationToken cancellationToken)
+    private static async Task<RunnerArtifactManifest> MeasureCoreAsync(
+        string publishDirectory,
+        Func<CancellationToken, Task>? afterInitialMeasurement,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(publishDirectory))
         {
@@ -42,6 +57,110 @@ public static class RunnerArtifactManifestMeasurer
         }
 
         string root = Path.GetFullPath(publishDirectory);
+        SecureLocalFile.EnsureOwnerOnlyDirectory(root);
+        ValidateDirectoryTree(root);
+        string[] paths = EnumerateFiles(root);
+        if (paths.Length == 0)
+        {
+            throw Error("runtime_runner_manifest_empty", "The Release publish directory is empty.");
+        }
+
+        var opened = new List<OpenedArtifact>(paths.Length);
+        try
+        {
+            foreach (string path in paths)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                EnsureNoLinks(root, path);
+                var info = new FileInfo(path);
+                info.Refresh();
+                if (!info.Exists || IsLink(info))
+                {
+                    throw Error("runtime_runner_manifest_invalid", "A published runner artifact is not a regular file.");
+                }
+
+                FileStream stream = SecureLocalFile.OpenRead(path);
+                try
+                {
+                    string sha = await SecureLocalFile.ComputeSha256Async(stream, cancellationToken).ConfigureAwait(false);
+                    opened.Add(new(path, NormalizeRelative(root, path), info.Length, info.LastWriteTimeUtc,
+                        SecureLocalFile.GetHandleIdentity(stream), sha, stream));
+                }
+                catch
+                {
+                    await stream.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
+            }
+
+            if (afterInitialMeasurement is not null)
+            {
+                await afterInitialMeasurement(cancellationToken).ConfigureAwait(false);
+            }
+
+            SecureLocalFile.EnsureOwnerOnlyDirectory(root);
+            ValidateDirectoryTree(root);
+            string[] afterPaths = EnumerateFiles(root).Select(path => NormalizeRelative(root, path)).ToArray();
+            if (!afterPaths.SequenceEqual(opened.Select(file => file.RelativePath), StringComparer.Ordinal))
+            {
+                throw Error("runtime_runner_manifest_mutated", "The published runner file set changed while it was measured.");
+            }
+
+            foreach (OpenedArtifact artifact in opened)
+            {
+                var current = new FileInfo(artifact.FullPath);
+                current.Refresh();
+                if (!current.Exists || IsLink(current) || current.Length != artifact.Length ||
+                    current.LastWriteTimeUtc != artifact.LastWriteUtc ||
+                    !SecureLocalFile.HandleResolvesToApprovedPath(artifact.Stream, artifact.FullPath))
+                {
+                    throw Error("runtime_runner_manifest_mutated", "A published runner artifact was replaced while it was measured.");
+                }
+
+                artifact.Stream.Position = 0;
+                string secondHash = await SecureLocalFile.ComputeSha256Async(artifact.Stream, cancellationToken).ConfigureAwait(false);
+                if (!FixedHashEquals(artifact.Sha256, secondHash))
+                {
+                    throw Error("runtime_runner_manifest_mutated", "A published runner artifact changed while it was measured.");
+                }
+
+                if (!OperatingSystem.IsWindows())
+                {
+                    await using FileStream reopened = SecureLocalFile.OpenRead(artifact.FullPath);
+                    if (!string.Equals(artifact.Identity, SecureLocalFile.GetHandleIdentity(reopened), StringComparison.Ordinal))
+                    {
+                        throw Error("runtime_runner_manifest_mutated", "A published runner artifact identity changed while it was measured.");
+                    }
+                }
+            }
+
+            RunnerArtifactFile[] files = [.. opened.Select(file => new RunnerArtifactFile(file.RelativePath, file.Length, file.Sha256))];
+            using var buffer = new MemoryStream();
+            using (var writer = new BinaryWriter(buffer, new UTF8Encoding(false), leaveOpen: true))
+            {
+                Write(writer, "Legacy.Maliev.DataMigration.RunnerArtifactManifest.v1");
+                writer.Write(files.Length);
+                foreach (RunnerArtifactFile file in files)
+                {
+                    Write(writer, file.RelativePath);
+                    writer.Write(file.Length);
+                    Write(writer, file.Sha256);
+                }
+            }
+
+            return new(Convert.ToHexString(SHA256.HashData(buffer.ToArray())).ToLowerInvariant(), files);
+        }
+        finally
+        {
+            foreach (OpenedArtifact artifact in opened)
+            {
+                await artifact.Stream.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static void ValidateDirectoryTree(string root)
+    {
         var rootInfo = new DirectoryInfo(root);
         rootInfo.Refresh();
         if (!rootInfo.Exists || IsLink(rootInfo))
@@ -55,62 +174,16 @@ public static class RunnerArtifactManifestMeasurer
             {
                 throw Error("runtime_runner_link_forbidden", "Published runner links and reparse points are forbidden.");
             }
-        }
 
-        string[] paths = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            SecureLocalFile.EnsureOwnerOnlyDirectory(directory);
+        }
+    }
+
+    private static string[] EnumerateFiles(string root)
+    {
+        return [.. Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
             .Select(Path.GetFullPath)
-            .OrderBy(path => NormalizeRelative(root, path), StringComparer.Ordinal)
-            .ToArray();
-        if (paths.Length == 0)
-        {
-            throw Error("runtime_runner_manifest_empty", "The Release publish directory is empty.");
-        }
-
-        var files = new List<RunnerArtifactFile>(paths.Length);
-        foreach (string path in paths)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            EnsureNoLinks(root, path);
-            string relative = NormalizeRelative(root, path);
-            var before = new FileInfo(path);
-            before.Refresh();
-            if (!before.Exists || IsLink(before))
-            {
-                throw Error("runtime_runner_manifest_invalid", "A published runner artifact is not a regular file.");
-            }
-
-            long length = before.Length;
-            DateTime lastWriteUtc = before.LastWriteTimeUtc;
-            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            string sha = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)).ToLowerInvariant();
-            before.Refresh();
-            if (!before.Exists || before.Length != length || before.LastWriteTimeUtc != lastWriteUtc || IsLink(before))
-            {
-                throw Error("runtime_runner_manifest_mutated", "The published runner changed while it was measured.");
-            }
-
-            files.Add(new(relative, length, sha));
-        }
-
-        string[] afterPaths = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
-            .Select(path => NormalizeRelative(root, Path.GetFullPath(path))).Order(StringComparer.Ordinal).ToArray();
-        if (!afterPaths.SequenceEqual(files.Select(file => file.RelativePath), StringComparer.Ordinal))
-        {
-            throw Error("runtime_runner_manifest_mutated", "The published runner file set changed while it was measured.");
-        }
-
-        using var buffer = new MemoryStream();
-        using (var writer = new BinaryWriter(buffer, new UTF8Encoding(false), leaveOpen: true))
-        {
-            Write(writer, "Legacy.Maliev.DataMigration.RunnerArtifactManifest.v1");
-            writer.Write(files.Count);
-            foreach (RunnerArtifactFile file in files)
-            {
-                Write(writer, file.RelativePath); writer.Write(file.Length); Write(writer, file.Sha256);
-            }
-        }
-        return new(Convert.ToHexString(SHA256.HashData(buffer.ToArray())).ToLowerInvariant(), files);
+            .OrderBy(path => NormalizeRelative(root, path), StringComparer.Ordinal)];
     }
 
     private static string NormalizeRelative(string root, string path)
@@ -136,6 +209,7 @@ public static class RunnerArtifactManifestMeasurer
                 return;
             }
         }
+
         throw Error("runtime_runner_path_escape", "A published runner artifact escaped the approved directory.");
     }
 
@@ -147,13 +221,30 @@ public static class RunnerArtifactManifestMeasurer
 
     private static void Write(BinaryWriter writer, string value)
     {
-        byte[] bytes = Encoding.UTF8.GetBytes(value); writer.Write(bytes.Length); writer.Write(bytes);
+        byte[] bytes = Encoding.UTF8.GetBytes(value);
+        writer.Write(bytes.Length);
+        writer.Write(bytes);
+    }
+
+    private static bool FixedHashEquals(string left, string right)
+    {
+        return left.Length == right.Length && CryptographicOperations.FixedTimeEquals(
+            Encoding.ASCII.GetBytes(left), Encoding.ASCII.GetBytes(right));
     }
 
     private static RuntimeAttestationException Error(string code, string message)
     {
         return new(code, message);
     }
+
+    private sealed record OpenedArtifact(
+        string FullPath,
+        string RelativePath,
+        long Length,
+        DateTime LastWriteUtc,
+        string Identity,
+        string Sha256,
+        FileStream Stream);
 }
 
 public sealed record CloudNativePgTargetObservation(
@@ -282,9 +373,12 @@ public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, 
     public CloudNativePgTargetObserver(CloudNativePgTargetObserverOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        if (!options.ApiServer.IsAbsoluteUri || options.ApiServer.Scheme != Uri.UriSchemeHttps)
+        if (!options.ApiServer.IsAbsoluteUri ||
+            !string.Equals(options.ApiServer.AbsoluteUri.TrimEnd('/'), "https://kubernetes.default.svc", StringComparison.Ordinal) ||
+            !string.Equals(options.ServiceAccountTokenFile, "/var/run/secrets/kubernetes.io/serviceaccount/token", StringComparison.Ordinal) ||
+            !string.Equals(options.ServiceAccountCaFile, "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", StringComparison.Ordinal))
         {
-            throw new ArgumentException("A HTTPS API server is required.", nameof(options));
+            throw new ArgumentException("Only fixed in-cluster Kubernetes trust references are permitted.", nameof(options));
         }
 
         _tokenFile = options.ServiceAccountTokenFile;

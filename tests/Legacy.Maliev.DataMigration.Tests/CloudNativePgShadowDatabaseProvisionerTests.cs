@@ -124,6 +124,19 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
     }
 
     [Fact]
+    public void PublicProvisioner_RejectsSubstitutedApiAndTrustReferences()
+    {
+        _ = Assert.Throws<ArgumentException>(() => new CloudNativePgShadowDatabaseProvisioner(new(
+            new Uri("https://attacker.example"),
+            "maliev-legacy",
+            "legacy-postgres-main",
+            "legacy_migration_shadow_test",
+            "C:/caller/token",
+            "C:/caller/ca.crt",
+            TimeSpan.FromSeconds(10))));
+    }
+
+    [Fact]
     public async Task Delete_RecreatedResourceUid_IsRejectedBeforeMutation()
     {
         await File.WriteAllTextAsync(_tokenFile, "test-token");

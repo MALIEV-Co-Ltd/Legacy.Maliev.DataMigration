@@ -501,7 +501,6 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         public Task<CloudNativePgTargetObservation> ObserveTargetAsync(
             string namespaceName,
             string cluster,
-            Func<string, string?> getEnvironmentVariable,
             CancellationToken cancellationToken)
         {
             return Task.FromResult(new CloudNativePgTargetObservation(

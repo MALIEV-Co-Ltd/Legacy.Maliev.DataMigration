@@ -9,10 +9,14 @@ public sealed class RuntimeAttestationTests : IDisposable
     [Fact]
     public async Task Runner_manifest_is_deterministic_and_binds_every_published_file()
     {
-        _ = Directory.CreateDirectory(_root);
-        await File.WriteAllTextAsync(Path.Combine(_root, "runner.dll"), "runner-v1");
-        _ = Directory.CreateDirectory(Path.Combine(_root, "runtimes"));
-        await File.WriteAllTextAsync(Path.Combine(_root, "runtimes", "dependency.dll"), "dependency-v1");
+        CreateOwnerOnlyDirectory(_root);
+        string runnerPath = Path.Combine(_root, "runner.dll");
+        await File.WriteAllTextAsync(runnerPath, "runner-v1");
+        ProtectFile(runnerPath);
+        CreateOwnerOnlyDirectory(Path.Combine(_root, "runtimes"));
+        string dependencyPath = Path.Combine(_root, "runtimes", "dependency.dll");
+        await File.WriteAllTextAsync(dependencyPath, "dependency-v1");
+        ProtectFile(dependencyPath);
 
         RunnerArtifactManifest first = await RunnerArtifactManifestMeasurer.MeasureAsync(_root, CancellationToken.None);
         RunnerArtifactManifest second = await RunnerArtifactManifestMeasurer.MeasureAsync(_root, CancellationToken.None);
@@ -20,7 +24,7 @@ public sealed class RuntimeAttestationTests : IDisposable
         Assert.Equal(first.ManifestSha256, second.ManifestSha256);
         Assert.Equal(["runner.dll", "runtimes/dependency.dll"], first.Files.Select(file => file.RelativePath));
 
-        await File.WriteAllTextAsync(Path.Combine(_root, "runtimes", "dependency.dll"), "dependency-v2");
+        await File.WriteAllTextAsync(dependencyPath, "dependency-v2");
         RunnerArtifactManifest changed = await RunnerArtifactManifestMeasurer.MeasureAsync(_root, CancellationToken.None);
         Assert.NotEqual(first.ManifestSha256, changed.ManifestSha256);
     }
@@ -28,12 +32,13 @@ public sealed class RuntimeAttestationTests : IDisposable
     [Fact]
     public async Task Runner_manifest_rejects_a_symbolic_link_inside_the_publication()
     {
-        _ = Directory.CreateDirectory(_root);
+        CreateOwnerOnlyDirectory(_root);
         string external = Path.Combine(Path.GetTempPath(), $"legacy-runtime-external-{Guid.NewGuid():N}");
         _ = Directory.CreateDirectory(external);
         try
         {
             await File.WriteAllTextAsync(Path.Combine(_root, "runner.dll"), "runner-v1");
+            ProtectFile(Path.Combine(_root, "runner.dll"));
             await File.WriteAllTextAsync(Path.Combine(external, "injected.dll"), "injected");
             try
             {
@@ -58,6 +63,102 @@ public sealed class RuntimeAttestationTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Runner_manifest_rejects_concurrent_in_place_mutation()
+    {
+        string runnerPath = await CreateSingleFilePublicationAsync();
+
+        RuntimeAttestationException exception = await Assert.ThrowsAsync<RuntimeAttestationException>(() =>
+            RunnerArtifactManifestMeasurer.MeasureAsync(_root, async cancellationToken =>
+            {
+                await File.WriteAllTextAsync(runnerPath, "mutated-content", cancellationToken);
+            }, CancellationToken.None));
+
+        AssertMutationRejected(exception);
+    }
+
+    [Fact]
+    public async Task Runner_manifest_rejects_same_file_set_replacement()
+    {
+        string runnerPath = await CreateSingleFilePublicationAsync();
+        string displaced = Path.Combine(Path.GetTempPath(), $"displaced-runner-{Guid.NewGuid():N}.dll");
+        try
+        {
+            RuntimeAttestationException exception = await Assert.ThrowsAsync<RuntimeAttestationException>(() =>
+                RunnerArtifactManifestMeasurer.MeasureAsync(_root, async cancellationToken =>
+                {
+                    File.Move(runnerPath, displaced);
+                    await File.WriteAllTextAsync(runnerPath, "replacement", cancellationToken);
+                    ProtectFile(runnerPath);
+                }, CancellationToken.None));
+
+            AssertMutationRejected(exception);
+        }
+        finally
+        {
+            if (File.Exists(displaced))
+            {
+                File.Delete(displaced);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Runner_manifest_rejects_publication_directory_swap()
+    {
+        _ = await CreateSingleFilePublicationAsync();
+        string displacedRoot = _root + "-displaced";
+        try
+        {
+            RuntimeAttestationException exception = await Assert.ThrowsAsync<RuntimeAttestationException>(() =>
+                RunnerArtifactManifestMeasurer.MeasureAsync(_root, async cancellationToken =>
+                {
+                    Directory.Move(_root, displacedRoot);
+                    CreateOwnerOnlyDirectory(_root);
+                    string replacement = Path.Combine(_root, "runner.dll");
+                    await File.WriteAllTextAsync(replacement, "runner-v1", cancellationToken);
+                    ProtectFile(replacement);
+                }, CancellationToken.None));
+
+            AssertMutationRejected(exception);
+        }
+        finally
+        {
+            if (Directory.Exists(displacedRoot))
+            {
+                Directory.Delete(displacedRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Runner_manifest_rejects_file_to_symlink_swap()
+    {
+        string runnerPath = await CreateSingleFilePublicationAsync();
+        string external = Path.Combine(Path.GetTempPath(), $"external-runner-{Guid.NewGuid():N}.dll");
+        await File.WriteAllTextAsync(external, "runner-v1");
+        try
+        {
+            RuntimeAttestationException exception = await Assert.ThrowsAsync<RuntimeAttestationException>(() =>
+                RunnerArtifactManifestMeasurer.MeasureAsync(_root, cancellationToken =>
+                {
+                    File.Delete(runnerPath);
+                    FileSystemInfo link = File.CreateSymbolicLink(runnerPath, external);
+                    Assert.NotNull(link);
+                    return Task.CompletedTask;
+                }, CancellationToken.None));
+
+            AssertMutationRejected(exception);
+        }
+        finally
+        {
+            if (File.Exists(external))
+            {
+                File.Delete(external);
+            }
+        }
+    }
+
     [Theory]
     [InlineData("Failed", 2, 2, "runtime_target_unhealthy")]
     [InlineData("Cluster in healthy state", 2, 1, "runtime_target_unhealthy")]
@@ -78,8 +179,10 @@ public sealed class RuntimeAttestationTests : IDisposable
     [Fact]
     public async Task Verifier_rejects_target_replacement_or_resource_version_drift()
     {
-        _ = Directory.CreateDirectory(_root);
-        await File.WriteAllTextAsync(Path.Combine(_root, "runner.dll"), "runner-v1");
+        CreateOwnerOnlyDirectory(_root);
+        string runnerPath = Path.Combine(_root, "runner.dll");
+        await File.WriteAllTextAsync(runnerPath, "runner-v1");
+        ProtectFile(runnerPath);
         RunnerArtifactManifest manifest = await RunnerArtifactManifestMeasurer.MeasureAsync(_root, CancellationToken.None);
         CloudNativePgTargetObservation authorized = HealthyObservation("uid-a", "100");
         var authorization = new ExecutionAuthorizationReceipt(
@@ -117,6 +220,15 @@ public sealed class RuntimeAttestationTests : IDisposable
         Assert.NotEqual(original, replaced);
     }
 
+    [Theory]
+    [InlineData("https://attacker.example", "/var/run/secrets/kubernetes.io/serviceaccount/token", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")]
+    [InlineData("https://kubernetes.default.svc", "C:/caller/token", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")]
+    [InlineData("https://kubernetes.default.svc", "/var/run/secrets/kubernetes.io/serviceaccount/token", "C:/caller/ca.crt")]
+    public void Target_observer_rejects_substituted_endpoint_or_trust_paths(string apiServer, string tokenPath, string caPath)
+    {
+        _ = Assert.Throws<ArgumentException>(() => new CloudNativePgTargetObserver(new(new Uri(apiServer), tokenPath, caPath)));
+    }
+
     private static CloudNativePgTargetObservation HealthyObservation(string uid, string resourceVersion)
     {
         return new(
@@ -151,6 +263,45 @@ public sealed class RuntimeAttestationTests : IDisposable
         {
             Directory.Delete(_root, recursive: true);
         }
+    }
+
+    private static void CreateOwnerOnlyDirectory(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            OwnerProtectedDirectory.CreateNew(path);
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    private static void ProtectFile(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    private async Task<string> CreateSingleFilePublicationAsync()
+    {
+        CreateOwnerOnlyDirectory(_root);
+        string path = Path.Combine(_root, "runner.dll");
+        await File.WriteAllTextAsync(path, "runner-v1");
+        ProtectFile(path);
+        return path;
+    }
+
+    private static void AssertMutationRejected(RuntimeAttestationException exception)
+    {
+        Assert.True(exception.Code is
+            "runtime_runner_manifest_mutated" or
+            "runtime_runner_measurement_failed" or
+            "runtime_runner_boundary_invalid" or
+            "runtime_runner_link_forbidden", exception.Code);
     }
 
     private sealed class StubObserver(CloudNativePgTargetObservation observation) : ICloudNativePgTargetObserver
