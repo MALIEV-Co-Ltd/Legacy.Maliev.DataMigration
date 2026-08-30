@@ -281,11 +281,30 @@ is included in the target schema fingerprint.
 This deliberately permits value-preserving SQL Server-to-PostgreSQL schema
 conversion; it never pretends the two engines have byte-identical DDL.
 
-The current remote source binding is `25418c95b5ac79400029ce274541f0e51728da3e`.
-The two commits after the previously recorded `6de82fd` schema baseline affect
-Upload workload identity/storage authorization, not migration schema files.
-Nevertheless, every run must still carry a newly captured observed schema
-fingerprint matching its signed plan.
+The current remote source binding is
+`7b4b2af697207d36a6e7b7784dddefa150193e97`. The reviewed source contract binds
+the byte SHA-256 of the 2026-08-12 analytics lifecycle, 2026-08-23 qualified
+quotation outcome, and 2026-08-30 analytics source-reconciliation scripts. It
+also freezes the exact 19-column `dbo.GoogleAnalyticsOutbox` and seven-column
+`dbo.QuotationOutcomeOutbox` inventories. Every run must still carry a newly
+captured observed schema fingerprint matching its signed plan.
+
+`QuotationOutcomeOutbox` adoption is a separately signed, deterministic,
+lossless contract. It maps only the seven actual source fields into the
+EF-created `QuotationAcceptedOutcome` table, preserves source identities,
+nullable request/journey identifiers, `datetime2(7)` timestamps, and the next
+identity value, and treats an exact replay as already applied. A conflicting
+event key fails closed; the importer may not execute DDL or synthesize missing
+accepted quotations. Consumer implementation remains owned by
+Legacy.Maliev.QuotationService.
+
+`GoogleAnalyticsOutbox` is retained only as
+`legacy_compatibility.GoogleAnalyticsOutbox`: a SELECT-only compatibility
+archive with no runtime worker and no direct Google Analytics credentials. The
+adoption gate requires that the canonical target schema was created by EF,
+compares its signed digest before DML, and rejects source/target digest drift,
+extra archive privileges, importer DDL, worker configuration, or analytics
+credentials.
 
 Validation returns all detected errors as stable codes. It does not throw for a
 normal invalid contract and performs no external work.
@@ -314,6 +333,14 @@ adapter disposal rolls back the source snapshot before a fresh adapter restart
 when
 `MALIEV_RUN_SQLSERVER_INTEGRATION=1`; production SQL Server is never a test
 fixture.
+
+The gated current-source integration fixture executes the three pinned scripts
+on disposable SQL Server 2022, derives the live catalog rather than using a
+hand-written copy plan, inserts null-heavy and fully populated outbox rows, and
+copies every discovered table, column, and row into disposable PostgreSQL 18.
+It then reconciles schema, row/null inventories, and next-identity values before
+commit. This fixture also protects mixed-case dynamic table names during
+PostgreSQL identity reseeding and sequence inspection.
 
 ## Downstream evidence compatibility
 
