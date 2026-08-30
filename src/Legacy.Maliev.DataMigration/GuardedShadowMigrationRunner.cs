@@ -55,13 +55,21 @@ public sealed record TableReconciliationEvidence(
     string ContentSha256,
     string AggregateSha256,
     IReadOnlyDictionary<string, long> NullCounts,
-    IReadOnlyDictionary<string, long> ForeignKeyOrphanCounts);
+    IReadOnlyDictionary<string, long> ForeignKeyOrphanCounts)
+{
+    public IReadOnlyDictionary<string, long> ForeignKeyRelationshipCounts { get; init; } =
+        new ReadOnlyDictionary<string, long>(new Dictionary<string, long>(StringComparer.Ordinal));
+}
 
 public sealed record DatabaseReconciliationEvidence(
     string Database,
     string SourceSchemaSha256,
     string TargetSchemaSha256,
-    IReadOnlyList<TableReconciliationEvidence> Tables);
+    IReadOnlyList<TableReconciliationEvidence> Tables)
+{
+    public IReadOnlyDictionary<string, long> SequenceNextValues { get; init; } =
+        new ReadOnlyDictionary<string, long>(new Dictionary<string, long>(StringComparer.Ordinal));
+}
 
 public sealed record MigratedShadowDatabase(
     string Database,
@@ -190,6 +198,16 @@ public interface IReadOnlySqlServerMigrationSource
         TableCopyPlan table,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyDictionary<string, long>> InspectForeignKeyRelationshipsAsync(
+        string database,
+        TableCopyPlan table,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<string, long>> InspectSequenceNextValuesAsync(
+        string database,
+        DatabaseSchemaPlan plan,
+        CancellationToken cancellationToken);
+
     Task CompleteDatabaseSnapshotAsync(string database, CancellationToken cancellationToken);
 
     Task RollbackDatabaseSnapshotAsync(string database, CancellationToken cancellationToken);
@@ -225,6 +243,10 @@ public interface IPostgreSqlWholeDatabaseTransaction : IAsyncDisposable
 
     Task<TableReconciliationEvidence> InspectTableAsync(
         TableCopyPlan table,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<string, long>> InspectSequenceNextValuesAsync(
+        DatabaseSchemaPlan plan,
         CancellationToken cancellationToken);
 
     Task CommitAsync(CancellationToken cancellationToken);
@@ -659,7 +681,14 @@ public sealed partial class GuardedShadowMigrationRunner
                 IReadOnlyDictionary<string, long> sourceOrphans = await _source
                     .InspectForeignKeyOrphansAsync(databasePlan.Database, table, cancellationToken)
                     .ConfigureAwait(false);
-                sourceEvidence = sourceEvidence with { ForeignKeyOrphanCounts = sourceOrphans };
+                IReadOnlyDictionary<string, long> sourceRelationships = await _source
+                    .InspectForeignKeyRelationshipsAsync(databasePlan.Database, table, cancellationToken)
+                    .ConfigureAwait(false);
+                sourceEvidence = sourceEvidence with
+                {
+                    ForeignKeyOrphanCounts = sourceOrphans,
+                    ForeignKeyRelationshipCounts = sourceRelationships,
+                };
                 if (count != sourceEvidence.RowCount)
                 {
                     throw new MigrationExecutionException(
@@ -669,6 +698,10 @@ public sealed partial class GuardedShadowMigrationRunner
 
                 sourceTables.Add(sourceEvidence);
             }
+
+            IReadOnlyDictionary<string, long> sourceSequences = await _source
+                .InspectSequenceNextValuesAsync(databasePlan.Database, databasePlan, cancellationToken)
+                .ConfigureAwait(false);
 
             await transaction.FinalizeSchemaAsync(databasePlan, cancellationToken).ConfigureAwait(false);
 
@@ -699,11 +732,25 @@ public sealed partial class GuardedShadowMigrationRunner
                 targetTables.Add(targetEvidence);
             }
 
+            IReadOnlyDictionary<string, long> targetSequences = await transaction
+                .InspectSequenceNextValuesAsync(databasePlan, cancellationToken)
+                .ConfigureAwait(false);
+            if (!sourceSequences.OrderBy(item => item.Key, StringComparer.Ordinal)
+                .SequenceEqual(targetSequences.OrderBy(item => item.Key, StringComparer.Ordinal)))
+            {
+                throw new MigrationExecutionException(
+                    "shadow_reconciliation_failed",
+                    $"{databasePlan.Database} failed sequence reconciliation.");
+            }
+
             evidence.Add(new DatabaseReconciliationEvidence(
                 databasePlan.Database,
                 databasePlan.SourceSchemaSha256,
                 targetSchema,
-                new ReadOnlyCollection<TableReconciliationEvidence>(targetTables)));
+                new ReadOnlyCollection<TableReconciliationEvidence>(targetTables))
+            {
+                SequenceNextValues = targetSequences,
+            });
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return new MigratedShadowDatabase(
@@ -842,7 +889,9 @@ public sealed partial class GuardedShadowMigrationRunner
         source.NullCounts.OrderBy(item => item.Key, StringComparer.Ordinal)
             .SequenceEqual(target.NullCounts.OrderBy(item => item.Key, StringComparer.Ordinal)) &&
         source.ForeignKeyOrphanCounts.OrderBy(item => item.Key, StringComparer.Ordinal)
-            .SequenceEqual(target.ForeignKeyOrphanCounts.OrderBy(item => item.Key, StringComparer.Ordinal));
+            .SequenceEqual(target.ForeignKeyOrphanCounts.OrderBy(item => item.Key, StringComparer.Ordinal)) &&
+        source.ForeignKeyRelationshipCounts.OrderBy(item => item.Key, StringComparer.Ordinal)
+            .SequenceEqual(target.ForeignKeyRelationshipCounts.OrderBy(item => item.Key, StringComparer.Ordinal));
     }
 
     private static string HashEvidence(IEnumerable<TableReconciliationEvidence> tables)

@@ -104,6 +104,46 @@ public sealed class MigrationConsoleTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_Evidence_MissingProtectedSigningKeyFailsClosed()
+    {
+        _ = Directory.CreateDirectory(_root);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            evidence = new
+            {
+                executionResultPath = "execution.json",
+                receiptPath = "receipt.json",
+                planPath = "plan.json",
+                authorizationPath = "authorization.json",
+                outputPath = "evidence.json",
+                approvedBaselineOutputPath = "baseline.json",
+                sourceSnapshotId = "source-current",
+                backupUri = "gs://maliev.com/database/full/2026-08-30/",
+                backupObjectGeneration = "generation-20260830",
+                restoreId = "restore-current",
+                evidenceId = Guid.NewGuid(),
+                leaseId = Guid.NewGuid(),
+                leaseAcquiredAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5),
+                leaseExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(30),
+                backupTrustedKeys = Array.Empty<object>(),
+                authorizationTrustedKeys = Array.Empty<object>(),
+                executionTrustedKeys = Array.Empty<object>(),
+                evidenceKeyId = "evidence-key",
+            },
+        }, JsonOptions));
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["evidence", "--config", configPath], output, error, _ => null, CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal("evidence_runtime_reference_missing" + Environment.NewLine, error.ToString());
+        Assert.Equal(string.Empty, output.ToString());
+    }
+
+    [Fact]
     public async Task RunAsync_ExportLocalSnapshot_MissingProtectedRuntimeReferencesFailsClosed()
     {
         _ = Directory.CreateDirectory(_root);

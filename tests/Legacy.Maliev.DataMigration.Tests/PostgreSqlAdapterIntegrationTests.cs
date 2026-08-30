@@ -527,9 +527,11 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
             await transaction.FinalizeSchemaAsync(plan, CancellationToken.None);
             string actual = await transaction.InspectSchemaAsync(plan, CancellationToken.None);
             _ = await transaction.InspectTableAsync(table, CancellationToken.None);
+            IReadOnlyDictionary<string, long> sequences = await transaction.InspectSequenceNextValuesAsync(plan, CancellationToken.None);
             await transaction.CommitAsync(CancellationToken.None);
 
             Assert.Equal(plan.TargetSchemaSha256, actual);
+            Assert.Equal(150, sequences["sales.orders.Id"]);
             var shadowConnection = new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Database = shadow.Name };
             await using var connection = new NpgsqlConnection(shadowConnection.ConnectionString);
             await connection.OpenAsync();
