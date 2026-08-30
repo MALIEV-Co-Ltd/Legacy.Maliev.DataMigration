@@ -43,7 +43,7 @@ spec:
         resources: ["databases"]
   matchConditions:
     - name: shadow-resources-only
-      expression: "request.namespace == 'maliev-legacy' && ((object != null && object.metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$')) || (oldObject != null && oldObject.metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$')))"
+      expression: "request.namespace == 'maliev-legacy' && ((object != null && (object.metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$') || object.spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$'))) || (oldObject != null && (oldObject.metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$') || oldObject.spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$'))))"
   validations:
     - expression: "request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner'"
       message: Only the dedicated migration identity may mutate legacy shadow resources.

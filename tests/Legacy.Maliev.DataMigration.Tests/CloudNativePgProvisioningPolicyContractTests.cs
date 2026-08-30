@@ -1,6 +1,6 @@
 namespace Legacy.Maliev.DataMigration.Tests;
 
-public sealed class CloudNativePgProvisioningPolicyContractTests
+public sealed partial class CloudNativePgProvisioningPolicyContractTests
 {
     [Fact]
     public void DormantPolicy_BindsDedicatedIdentityAndExactRunOwnedBoundary()
@@ -30,6 +30,8 @@ public sealed class CloudNativePgProvisioningPolicyContractTests
         Assert.Contains("request.namespace == 'maliev-legacy'", policy, StringComparison.Ordinal);
         Assert.Contains("object.metadata.name.matches('^legacy-shadow-", policy, StringComparison.Ordinal);
         Assert.Contains("oldObject.metadata.name.matches('^legacy-shadow-", policy, StringComparison.Ordinal);
+        Assert.Contains("object.spec.name.matches('^legacy_shadow_", policy, StringComparison.Ordinal);
+        Assert.Contains("oldObject.spec.name.matches('^legacy_shadow_", policy, StringComparison.Ordinal);
         Assert.Contains("request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner'", policy, StringComparison.Ordinal);
         Assert.Contains("Only the dedicated migration identity may mutate legacy shadow resources.", policy, StringComparison.Ordinal);
 
@@ -37,6 +39,22 @@ public sealed class CloudNativePgProvisioningPolicyContractTests
         int validationStart = policy.IndexOf("validations:", matchStart, StringComparison.Ordinal);
         string matchConditions = policy[matchStart..validationStart];
         Assert.DoesNotContain("request.userInfo", matchConditions, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DormantPolicy_SelectsPhysicalShadowNameForEveryOperationButNotCanonicalNames()
+    {
+        const string canonicalMetadata = "legacy-postgres-order";
+        const string canonicalDatabase = "Order";
+        const string shadowDatabase = "legacy_shadow_order_0123456789abcdef0123456789abcdef";
+
+        Assert.True(SelectsShadow(canonicalMetadata, shadowDatabase, null, null)); // CREATE
+        Assert.True(SelectsShadow(canonicalMetadata, shadowDatabase, canonicalMetadata, shadowDatabase)); // UPDATE
+        Assert.True(SelectsShadow(null, null, canonicalMetadata, shadowDatabase)); // DELETE
+
+        Assert.False(SelectsShadow(canonicalMetadata, canonicalDatabase, null, null)); // CREATE
+        Assert.False(SelectsShadow(canonicalMetadata, canonicalDatabase, canonicalMetadata, canonicalDatabase)); // UPDATE
+        Assert.False(SelectsShadow(null, null, canonicalMetadata, canonicalDatabase)); // DELETE
     }
 
     [Fact]
@@ -56,6 +74,38 @@ public sealed class CloudNativePgProvisioningPolicyContractTests
         string root = FindRepositoryRoot();
         return File.ReadAllText(Path.Combine(root, "deploy", "cloudnativepg-shadow-provisioner-policy.yaml"));
     }
+
+    private static bool SelectsShadow(
+        string? currentMetadataName,
+        string? currentDatabaseName,
+        string? oldMetadataName,
+        string? oldDatabaseName)
+    {
+        return IsShadowMetadata(currentMetadataName) ||
+               IsShadowMetadata(oldMetadataName) ||
+               IsShadowDatabase(currentDatabaseName) ||
+               IsShadowDatabase(oldDatabaseName);
+    }
+
+    private static bool IsShadowMetadata(string? value)
+    {
+        return value is not null && ShadowMetadataRegex().IsMatch(value);
+    }
+
+    private static bool IsShadowDatabase(string? value)
+    {
+        return value is not null && value.Length <= 63 && ShadowDatabaseRegex().IsMatch(value);
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(
+        "^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex ShadowMetadataRegex();
+
+    [System.Text.RegularExpressions.GeneratedRegex(
+        "^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex ShadowDatabaseRegex();
 
     private static string FindRepositoryRoot()
     {
