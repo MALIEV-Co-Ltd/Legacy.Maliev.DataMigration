@@ -465,7 +465,8 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
                     break;
             }
 
-            return Task.FromResult(new Exact25BackupSourceObservation(ns, pod, uid, request.ContainerName, ready, observedAtUtc, databases));
+            return Task.FromResult(new Exact25BackupSourceObservation(ns, pod, uid, request.ContainerName, ready, observedAtUtc, databases)
+            { ContainerId = "containerd://container-1", ImageId = "sha256:image-1", SessionNonce = new string('a', 64) });
         }
 
         public Task PrepareRunAsync(Exact25BackupSourceObservation source, string runId, CancellationToken cancellationToken)
@@ -524,6 +525,11 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
             }
 
             await File.WriteAllTextAsync(path, content, cancellationToken);
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+
             Copied.Add(artifact.Database);
         }
     }

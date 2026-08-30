@@ -150,6 +150,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
                 ["system"] = "sqlserver",
                 ["snapshotId"] = request.Configuration.SourceSnapshotId,
                 ["capturedAtUtc"] = Utc(request.BackupReceipt.CapturedAtUtc),
+                ["observedAtUtc"] = Utc(request.BackupReceipt.SourceObservedAtUtc!.Value),
                 ["backup"] = new JsonObject
                 {
                     ["uri"] = request.Configuration.BackupUri,
@@ -158,6 +159,15 @@ public static partial class AppHostMigrationEvidenceV2Producer
                     ["objectGeneration"] = request.Configuration.BackupObjectGeneration,
                     ["immutable"] = true,
                 },
+                ["artifacts"] = new JsonArray(request.BackupReceipt.Artifacts!
+                    .Select(artifact => (JsonNode)new JsonObject
+                    {
+                        ["database"] = artifact!.Database,
+                        ["completedAtUtc"] = Utc(artifact.CompletedAtUtc!.Value),
+                        ["object"] = artifact.GcsObject,
+                        ["generation"] = artifact.GcsGeneration,
+                        ["sha256"] = artifact.GcsSha256,
+                    }).ToArray()),
             },
             ["mapping"] = new JsonObject
             {
@@ -516,7 +526,8 @@ public static partial class AppHostMigrationEvidenceV2Producer
 
     private static void VerifyBackup(BackupReceipt receipt, IReceiptAttestationTrustStore trust)
     {
-        if (!ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload) ||
+        if (!string.Equals(receipt.SchemaVersion, PreflightService.ReceiptSchemaVersion, StringComparison.Ordinal) ||
+            !ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload) ||
             !Verify(receipt.AttestationKeyId, receipt.AttestationSignature, payload, trust) ||
             !FixedHashEquals(receipt.DatabaseInventorySha256, DatabaseInventory.InventorySha256) ||
             receipt.Artifacts is null || !ExactNames(receipt.Artifacts.Where(item => item is not null).Select(item => item!.Database!), DatabaseInventory.ActiveDatabases))

@@ -4,7 +4,6 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
 {
     private static readonly HashSet<string> Commands =
     [
-        "receipt",
         "plan",
         "execute-shadow",
         "evidence",

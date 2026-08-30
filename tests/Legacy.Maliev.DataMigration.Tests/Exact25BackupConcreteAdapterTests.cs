@@ -12,6 +12,8 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
     {
         var runner = new RecordingBackupProcessRunner([
             Success(PodJson()),
+            Success(),
+            Success(PodJson()),
             Success(InventoryOutput()),
             Success(PodJson()),
             Success(PodJson()),
@@ -58,8 +60,16 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
         Assert.Contains("CHECKSUM", backup.StandardInput, StringComparison.Ordinal);
         Assert.Contains(runner.Invocations, item => item.StandardInput.Contains("RESTORE VERIFYONLY", StringComparison.Ordinal));
         Assert.DoesNotContain("ContactRequest", string.Join(' ', backup.Arguments), StringComparison.Ordinal);
-        SecureBackupProcessInvocation copy = Assert.Single(runner.Invocations, item => item.Arguments.Contains("cp", StringComparer.Ordinal));
+        SecureBackupProcessInvocation copy = Assert.Single(runner.StreamingInvocations);
         Assert.Equal("kubectl", copy.FileName);
+        Assert.Contains("exec cat", string.Join(' ', copy.Arguments), StringComparison.Ordinal);
+        Assert.Contains("/dev/shm/maliev-backup-session-", string.Join(' ', copy.Arguments), StringComparison.Ordinal);
+        SecureBackupProcessInvocation metadata = Assert.Single(runner.Invocations, item =>
+            string.Join(' ', item.Arguments).Contains("sha256sum", StringComparison.Ordinal));
+        string metadataArguments = string.Join(' ', metadata.Arguments);
+        Assert.Contains("stat -c %u", metadataArguments, StringComparison.Ordinal);
+        Assert.Contains("stat -c %a", metadataArguments, StringComparison.Ordinal);
+        Assert.Contains("realpath -e", metadataArguments, StringComparison.Ordinal);
         Assert.True(File.Exists(Path.Combine(_root, "Full_ContactRequest_run-1.bak")));
     }
 
@@ -68,7 +78,7 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
     {
         var runner = new RecordingBackupProcessRunner([
             Success(PodJson()),
-            Success(InventoryOutput()),
+            Success(),
             Success(PodJson(uid: "replacement-uid")),
         ]);
         var adapter = new KubernetesSqlServerFullBackupProcess(runner);
@@ -77,6 +87,23 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
             adapter.InspectSourceAsync(Request(), new("user", "password"), CancellationToken.None));
 
         Assert.Equal("source_identity_changed", exception.Code);
+    }
+
+    [Fact]
+    public async Task KubernetesAdapter_ContainerRestartBeforeCredentialsFailsAtSessionFence()
+    {
+        var runner = new RecordingBackupProcessRunner([
+            Success(PodJson()),
+            Success(),
+            Success(PodJson(containerId: "containerd://replacement")),
+        ]);
+        var adapter = new KubernetesSqlServerFullBackupProcess(runner);
+
+        Exact25FullBackupException exception = await Assert.ThrowsAsync<Exact25FullBackupException>(() =>
+            adapter.InspectSourceAsync(Request(), new("user", "password"), CancellationToken.None));
+
+        Assert.Equal("source_identity_changed", exception.Code);
+        Assert.DoesNotContain(runner.Invocations, invocation => invocation.StandardInput.Contains("user", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -120,13 +147,14 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
     [Fact]
     public async Task GoogleCloudAdapter_UsesCreateOnlyGenerationAndReadsExactGenerationBack()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         string local = Path.Combine(_root, "backup.bak");
         await File.WriteAllTextAsync(local, "backup");
         string sha256 = Hash("backup");
         var gateway = new RecordingGoogleCloudBackupGateway(
             new GoogleCloudBackupObjectState("maliev.com", "database/full/2026-08-30/run-1/backup.bak", 42, 6, sha256),
-            new GoogleCloudBackupObjectState("maliev.com", "database/full/2026-08-30/run-1/backup.bak", 42, 6, sha256));
+            new GoogleCloudBackupObjectState("maliev.com", "database/full/2026-08-30/run-1/backup.bak", 42, 6, sha256),
+            Encoding.UTF8.GetBytes("backup"));
         var storage = new GoogleCloudImmutableBackupObjectStorage(gateway);
 
         ImmutableBackupObject result = await storage.UploadNewAndReadBackAsync(
@@ -142,13 +170,14 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
     [Fact]
     public async Task GoogleCloudAdapter_ReadbackDriftFailsClosed()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         string local = Path.Combine(_root, "backup.bak");
         await File.WriteAllTextAsync(local, "backup");
         string sha256 = Hash("backup");
         var gateway = new RecordingGoogleCloudBackupGateway(
             new GoogleCloudBackupObjectState("maliev.com", "database/full/2026-08-30/run-1/backup.bak", 42, 6, sha256),
-            new GoogleCloudBackupObjectState("maliev.com", "database/full/2026-08-30/run-1/backup.bak", 42, 6, new string('0', 64)));
+            new GoogleCloudBackupObjectState("maliev.com", "database/full/2026-08-30/run-1/backup.bak", 42, 6, new string('0', 64)),
+            Encoding.UTF8.GetBytes("backup"));
         var storage = new GoogleCloudImmutableBackupObjectStorage(gateway);
 
         Exact25FullBackupException exception = await Assert.ThrowsAsync<Exact25FullBackupException>(() =>
@@ -174,13 +203,38 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
             string.Join('\n', DatabaseInventory.Entries.Keys.Order(StringComparer.Ordinal).Select(name => $"{name}|ONLINE"));
     }
 
-    private static string PodJson(string uid = "pod-uid-1")
+    [Fact]
+    public async Task GoogleCloudAdapter_SameLengthCorruptDownloadedGenerationFailsClosed()
+    {
+        OwnerProtectedDirectory.CreateNew(_root);
+        string local = Path.Combine(_root, "backup.bak");
+        await File.WriteAllTextAsync(local, "backup");
+        string sha256 = Hash("backup");
+        var state = new GoogleCloudBackupObjectState("maliev.com", "database/full/2026-08-30/run-1/backup.bak", 42, 6, sha256);
+        var storage = new GoogleCloudImmutableBackupObjectStorage(
+            new RecordingGoogleCloudBackupGateway(state, state, Encoding.UTF8.GetBytes("tamper")));
+
+        Exact25FullBackupException exception = await Assert.ThrowsAsync<Exact25FullBackupException>(() =>
+            storage.UploadNewAndReadBackAsync(local, "gs://maliev.com/database/full/2026-08-30/run-1/backup.bak", sha256, CancellationToken.None));
+
+        Assert.Equal("cloud_backup_parity_invalid", exception.Code);
+    }
+
+    private static string PodJson(string uid = "pod-uid-1", string containerId = "containerd://container-1")
     {
         return JsonSerializer.Serialize(new
         {
             metadata = new { uid, name = "maliev-mssql-0", @namespace = "maliev" },
             spec = new { containers = new[] { new { name = "mssql" } } },
-            status = new { conditions = new[] { new { type = "Ready", status = "True" } } },
+            status = new
+            {
+                conditions = new[] { new { type = "Ready", status = "True" } },
+                containerStatuses = new[] { new
+                {
+                    name = "mssql", ready = true, containerID = containerId, imageID = "sha256:image-1",
+                    state = new { running = new { startedAt = "2026-08-30T01:00:00Z" } },
+                } },
+            },
         });
     }
 
@@ -197,7 +251,8 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
         return new(
         "maliev", "maliev-mssql-0", "pod-uid-1", "mssql", true,
         new DateTimeOffset(2026, 8, 30, 1, 2, 3, TimeSpan.Zero),
-        DatabaseInventory.Entries.Keys.Order(StringComparer.Ordinal).Select(name => new SqlServerDatabaseState(name, "ONLINE")).ToArray());
+        DatabaseInventory.Entries.Keys.Order(StringComparer.Ordinal).Select(name => new SqlServerDatabaseState(name, "ONLINE")).ToArray())
+        { ContainerId = "containerd://container-1", ImageId = "sha256:image-1", SessionNonce = new string('a', 64) };
     }
 
     public void Dispose()
@@ -212,18 +267,21 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
     {
         private readonly Queue<BackupProcessResult> _results = new(results);
         public List<SecureBackupProcessInvocation> Invocations { get; } = [];
+        public List<SecureBackupProcessInvocation> StreamingInvocations { get; } = [];
 
         public Task<BackupProcessResult> RunAsync(SecureBackupProcessInvocation invocation, CancellationToken cancellationToken)
         {
             Invocations.Add(invocation);
             BackupProcessResult result = _results.Dequeue();
-            if (invocation.Arguments.Contains("cp", StringComparer.Ordinal) && result.ExitCode == 0)
-            {
-                string destination = invocation.Arguments[^3];
-                return WriteCopyAsync(destination, result, cancellationToken);
-            }
-
             return Task.FromResult(result);
+        }
+
+        public Task<BackupProcessResult> RunToNewFileAsync(SecureBackupProcessInvocation invocation, string destinationPath, CancellationToken cancellationToken)
+        {
+            Invocations.Add(invocation);
+            StreamingInvocations.Add(invocation);
+            BackupProcessResult result = _results.Dequeue();
+            return result.ExitCode == 0 ? WriteCopyAsync(destinationPath, result, cancellationToken) : Task.FromResult(result);
         }
 
         private static async Task<BackupProcessResult> WriteCopyAsync(string destination, BackupProcessResult result, CancellationToken cancellationToken)
@@ -235,7 +293,8 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
 
     private sealed class RecordingGoogleCloudBackupGateway(
         GoogleCloudBackupObjectState upload,
-        GoogleCloudBackupObjectState readback) : IGoogleCloudBackupGateway
+        GoogleCloudBackupObjectState readback,
+        byte[] downloadedBytes) : IGoogleCloudBackupGateway
     {
         public GoogleCloudBackupUploadRequest? UploadRequest { get; private set; }
         public long ReadGeneration { get; private set; }
@@ -257,6 +316,12 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
         {
             ReadGeneration = generation;
             return Task.FromResult(readback);
+        }
+
+        public Task DownloadAsync(string bucket, string objectName, long generation, Stream destination, CancellationToken cancellationToken)
+        {
+            Assert.Equal(ReadGeneration, generation);
+            return destination.WriteAsync(downloadedBytes, cancellationToken).AsTask();
         }
     }
 }

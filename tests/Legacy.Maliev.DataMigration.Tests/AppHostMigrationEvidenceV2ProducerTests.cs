@@ -37,6 +37,16 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         Assert.Equal(25, root.GetProperty("databases").GetArrayLength());
         Assert.Equal(27, root.GetProperty("inventory").GetArrayLength());
         Assert.Empty(root.GetProperty("archives").EnumerateArray());
+        JsonElement source = root.GetProperty("source");
+        Assert.Equal(fixture.Request.BackupReceipt.SourceObservedAtUtc, source.GetProperty("observedAtUtc").GetDateTimeOffset());
+        Assert.Equal(25, source.GetProperty("artifacts").GetArrayLength());
+        Assert.All(source.GetProperty("artifacts").EnumerateArray(), artifact =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(artifact.GetProperty("object").GetString()));
+            Assert.True(artifact.GetProperty("generation").GetInt64() > 0);
+            Assert.Equal(64, artifact.GetProperty("sha256").GetString()!.Length);
+            Assert.True(artifact.GetProperty("completedAtUtc").GetDateTimeOffset() >= fixture.Request.BackupReceipt.SourceObservedAtUtc);
+        });
         Assert.All(root.GetProperty("databases").EnumerateArray(), database =>
         {
             Assert.NotEqual(

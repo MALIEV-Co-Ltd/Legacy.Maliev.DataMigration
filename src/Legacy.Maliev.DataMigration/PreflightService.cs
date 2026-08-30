@@ -60,6 +60,12 @@ public sealed partial class PreflightService
             errors.Add(new("receipt_stale", "The backup receipt is stale or dated in the future."));
         }
 
+        if (receipt.SourceObservedAtUtc is null || receipt.SourceObservedAtUtc.Value.Offset != TimeSpan.Zero ||
+            receipt.SourceObservedAtUtc.Value > receipt.CapturedAtUtc)
+        {
+            errors.Add(new("receipt_capture_provenance_invalid", "The backup receipt source observation is missing or invalid."));
+        }
+
         if (!FixedTimeEquals(receipt.DatabaseInventorySha256, DatabaseInventory.InventorySha256))
         {
             errors.Add(new("inventory_hash_mismatch", "The database disposition inventory differs from the approved contract."));
@@ -104,6 +110,15 @@ public sealed partial class PreflightService
                 errors.Add(new("backup_artifact_invalid", $"{artifact.Database} backup evidence is malformed."));
             }
 
+            if (artifact.CompletedAtUtc is null || artifact.CompletedAtUtc.Value.Offset != TimeSpan.Zero ||
+                receipt.SourceObservedAtUtc is null || artifact.CompletedAtUtc.Value < receipt.SourceObservedAtUtc.Value ||
+                artifact.CompletedAtUtc.Value > receipt.CapturedAtUtc || string.IsNullOrWhiteSpace(artifact.GcsObject) ||
+                artifact.GcsGeneration is null or <= 0 || artifact.GcsSha256 is null || !Sha256().IsMatch(artifact.GcsSha256) ||
+                !FixedTimeEquals(artifact.GcsSha256, artifact.Sha256))
+            {
+                errors.Add(new("backup_artifact_provenance_invalid", $"{artifact.Database} immutable capture provenance is incomplete."));
+            }
+
             if (hashesAreValid && !FixedTimeEquals(artifact.ObservedSha256, artifact.Sha256))
             {
                 errors.Add(new("backup_hash_mismatch", $"{artifact.Database} observed SHA-256 does not match its receipt."));
@@ -117,6 +132,13 @@ public sealed partial class PreflightService
         else if (!FixedTimeEquals(receipt.ManifestSha256, computedManifestHash))
         {
             errors.Add(new("manifest_hash_mismatch", "The backup artifact manifest SHA-256 does not match its contents."));
+        }
+
+        DateTimeOffset? latestCompletion = artifacts.Where(item => item?.CompletedAtUtc is not null)
+            .Max(item => item!.CompletedAtUtc);
+        if (latestCompletion is null || latestCompletion.Value != receipt.CapturedAtUtc)
+        {
+            errors.Add(new("receipt_capture_provenance_invalid", "The receipt capture time must equal the latest artifact completion."));
         }
     }
 

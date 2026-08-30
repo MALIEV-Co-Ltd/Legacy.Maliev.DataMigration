@@ -11,7 +11,7 @@ public sealed class BackupReceiptProducerTests : IDisposable
     [Fact]
     public async Task ProduceAsync_ReReadsExactlyTwentyFiveLocalAndCloudArtifactsAndSignsCanonicalReceipt()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         var states = new List<VerifiedBackupStateArtifact>();
         foreach (string database in DatabaseInventory.ActiveDatabases)
         {
@@ -48,7 +48,7 @@ public sealed class BackupReceiptProducerTests : IDisposable
     [Fact]
     public async Task ProduceAsync_MissingOrUnexpectedDatabaseFailsClosed()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         var states = DatabaseInventory.ActiveDatabases.Skip(1)
             .Select(database => new VerifiedBackupStateArtifact(database, Path.Combine(_root, database), database, 1, 1, new string('a', 64))
             { CompletedAtUtc = DateTimeOffset.UtcNow })
@@ -66,7 +66,7 @@ public sealed class BackupReceiptProducerTests : IDisposable
     [Fact]
     public async Task ProduceAsync_TamperedLocalArtifactFailsBeforeSigning()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         var states = new List<VerifiedBackupStateArtifact>();
         foreach (string database in DatabaseInventory.ActiveDatabases)
         {

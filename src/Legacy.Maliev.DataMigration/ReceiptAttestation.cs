@@ -121,7 +121,7 @@ public static class ReceiptAttestation
         ArgumentNullException.ThrowIfNull(receipt);
         payload = [];
 
-        if (receipt.SchemaVersion is null ||
+        if (!string.Equals(receipt.SchemaVersion, PreflightService.ReceiptSchemaVersion, StringComparison.Ordinal) ||
             receipt.DatabaseInventorySha256 is null ||
             receipt.ManifestSha256 is null ||
             receipt.AttestationKeyId is null ||
@@ -135,6 +135,13 @@ public static class ReceiptAttestation
                 artifact.FileName is null ||
                 artifact.Sha256 is null ||
                 artifact.ObservedSha256 is null ||
+                string.IsNullOrWhiteSpace(artifact.GcsObject) ||
+                artifact.GcsGeneration is null or <= 0 ||
+                artifact.GcsSha256 is null ||
+                !IsSha256(artifact.GcsSha256) ||
+                !CryptographicOperations.FixedTimeEquals(
+                    Encoding.ASCII.GetBytes(artifact.GcsSha256.ToLowerInvariant()),
+                    Encoding.ASCII.GetBytes(artifact.Sha256.ToLowerInvariant())) ||
                 artifact.CompletedAtUtc is null ||
                 artifact.CompletedAtUtc.Value.Offset != TimeSpan.Zero ||
                 artifact.CompletedAtUtc.Value < receipt.SourceObservedAtUtc.Value ||
@@ -153,7 +160,7 @@ public static class ReceiptAttestation
         using (BinaryWriter writer = new(stream, new UTF8Encoding(false), leaveOpen: true))
         {
             WriteString(writer, DomainSeparator);
-            WriteString(writer, receipt.SchemaVersion);
+            WriteString(writer, receipt.SchemaVersion!);
             WriteString(writer, receipt.CapturedAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
             WriteString(writer, receipt.SourceObservedAtUtc.Value.ToString("O", CultureInfo.InvariantCulture));
             WriteString(writer, receipt.DatabaseInventorySha256);
@@ -182,6 +189,11 @@ public static class ReceiptAttestation
 
         payload = stream.ToArray();
         return true;
+    }
+
+    private static bool IsSha256(string value)
+    {
+        return value.Length == 64 && value.All(char.IsAsciiHexDigit);
     }
 
     private static void WriteString(BinaryWriter writer, string value)

@@ -98,7 +98,7 @@ No executable migration logic was copied from those files.
 
 ## Receipt and execution contracts
 
-The .NET 10 executable host exposes only `backup-full`, `receipt`, `plan`,
+The .NET 10 executable host exposes only `backup-full`, `plan`,
 `execute-shadow`, `evidence`, and `export-local-snapshot`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
@@ -186,7 +186,9 @@ canonical-target or deployment mode.
 `PreflightService.Validate` accepts an in-memory `BackupReceipt` and
 `MigrationPlan`. A valid receipt must:
 
-- use receipt schema version `1.0`;
+- use receipt schema version `1.1`, including the observed source time and each
+  artifact's completion time plus exact immutable GCS object, generation, size,
+  and SHA-256 evidence;
 - be no older than the caller-supplied positive maximum age and not be future-dated;
 - match the immutable database-disposition inventory SHA-256;
 - contain exactly one full `.bak` artifact for each of the 25 active databases;

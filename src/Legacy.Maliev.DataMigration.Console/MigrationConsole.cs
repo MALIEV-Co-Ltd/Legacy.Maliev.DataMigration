@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -68,10 +70,6 @@ public static class MigrationConsole
             ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
             switch (invocation.Command)
             {
-                case "receipt":
-                    await ProduceReceiptAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
-                    await output.WriteLineAsync("receipt_complete").ConfigureAwait(false);
-                    return 0;
                 case "plan":
                     await ProducePlanAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("plan_complete").ConfigureAwait(false);
@@ -394,39 +392,6 @@ public static class MigrationConsole
         await WriteNewJsonAsync(plan.OutputPath, schemaPlan, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task ProduceReceiptAsync(
-        string configPath,
-        Func<string, string?> getEnvironmentVariable,
-        CancellationToken cancellationToken)
-    {
-        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
-            .ConfigureAwait(false);
-        ReceiptCommandConfiguration receipt = configuration.Receipt ??
-            throw new MigrationConsoleException("receipt_configuration_missing", "Receipt configuration is required.");
-        string keyPath = getEnvironmentVariable(SigningKeyEnvironmentVariable) ??
-            throw new MigrationConsoleException("receipt_signing_key_reference_missing", "The signing key file reference is required.");
-        BackupStateDocument state = await ReadJsonAsync<BackupStateDocument>(receipt.BackupStatePath, cancellationToken)
-            .ConfigureAwait(false);
-
-        using ECDsa key = ECDsa.Create();
-        try
-        {
-            key.ImportFromPem(await File.ReadAllTextAsync(keyPath, cancellationToken).ConfigureAwait(false));
-        }
-        catch (CryptographicException)
-        {
-            throw new MigrationConsoleException("receipt_signing_key_invalid", "The signing key file is invalid.");
-        }
-
-        BackupReceipt backupReceipt = await BackupReceiptProducer.ProduceAsync(
-            state.Artifacts,
-            receipt.KeyId,
-            key,
-            state.SourceObservedAtUtc,
-            cancellationToken).ConfigureAwait(false);
-        await WriteNewJsonAsync(receipt.OutputPath, backupReceipt, cancellationToken).ConfigureAwait(false);
-    }
-
     private static async Task<T> ReadJsonAsync<T>(string path, CancellationToken cancellationToken)
     {
         try
@@ -488,7 +453,6 @@ public static class MigrationConsole
     }
 
     private sealed record MigrationConsoleConfiguration(
-        ReceiptCommandConfiguration? Receipt = null,
         PlanCommandConfiguration? Plan = null,
         ExecuteShadowCommandConfiguration? ExecuteShadow = null,
         EvidenceCommandConfiguration? Evidence = null,
@@ -508,8 +472,6 @@ public static class MigrationConsole
         string PublicationDirectory,
         string KeyId,
         bool AllowSourceBackup);
-
-    private sealed record ReceiptCommandConfiguration(string BackupStatePath, string OutputPath, string KeyId);
 
     private sealed record PlanCommandConfiguration(string OutputPath, string SourceCommitSha);
 
@@ -551,10 +513,6 @@ public static class MigrationConsole
         string OutputDirectory,
         string PgDumpPath);
 
-    private sealed record BackupStateDocument(
-        DateTimeOffset SourceObservedAtUtc,
-        IReadOnlyList<VerifiedBackupStateArtifact> Artifacts);
-
     private sealed class DisabledExternalCommandExecutor : IExternalCommandExecutor
     {
         public Task<int> ExecuteAsync(string command, CancellationToken cancellationToken)
@@ -588,16 +546,17 @@ internal static class OwnerProtectedFilePolicy
 {
     public static FileStream OpenRead(string path, string errorCode)
     {
-        if (!IsOwnerOnly(path))
+        string fullPath = Path.GetFullPath(path);
+        if (!HasNoLinkAncestors(fullPath) || !IsOwnerOnly(fullPath))
         {
             throw new MigrationConsoleException(errorCode, "The protected file must be owner-only and must not be a symbolic link.");
         }
 
         try
         {
-            var stream = new FileStream(Path.GetFullPath(path), FileMode.Open, FileAccess.Read, FileShare.Read,
+            var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.None,
                 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            if (!IsOwnerOnly(path))
+            if (!HasNoLinkAncestors(fullPath) || !IsOwnerOnly(fullPath) || !HandleResolvesTo(stream.SafeFileHandle, fullPath))
             {
                 stream.Dispose();
                 throw new MigrationConsoleException(errorCode, "The protected file changed while it was being opened.");
@@ -633,6 +592,60 @@ internal static class OwnerProtectedFilePolicy
             UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
         return (mode & forbidden) == 0 && (mode & UnixFileMode.UserRead) != 0;
     }
+
+    private static bool HasNoLinkAncestors(string path)
+    {
+        for (DirectoryInfo? current = new(Path.GetDirectoryName(Path.GetFullPath(path))!); current is not null; current = current.Parent)
+        {
+            current.Refresh();
+            if (current.Exists && (current.LinkTarget is not null || (current.Attributes & FileAttributes.ReparsePoint) != 0))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool HandleResolvesTo(SafeFileHandle handle, string expectedPath)
+    {
+        string? observed = OperatingSystem.IsWindows()
+            ? FinalWindowsPath(handle)
+            : OperatingSystem.IsLinux() ? FinalLinuxPath(handle) : expectedPath;
+        return observed is not null && string.Equals(
+            Path.GetFullPath(observed).TrimEnd(Path.DirectorySeparatorChar),
+            Path.GetFullPath(expectedPath).TrimEnd(Path.DirectorySeparatorChar),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string? FinalWindowsPath(SafeFileHandle handle)
+    {
+        var buffer = new char[4096];
+        uint length = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Length, 0);
+        if (length == 0 || length >= buffer.Length)
+        {
+            return null;
+        }
+        const string devicePrefix = @"\\?\";
+        string value = new(buffer, 0, checked((int)length));
+        return value.StartsWith(devicePrefix, StringComparison.Ordinal) ? value[devicePrefix.Length..] : value;
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static string? FinalLinuxPath(SafeFileHandle handle)
+    {
+        string fdPath = $"/proc/self/fd/{handle.DangerousGetHandle()}";
+        return File.ResolveLinkTarget(fdPath, returnFinalTarget: true)?.FullName;
+    }
+
+#pragma warning disable SYSLIB1054 // SafeFileHandle plus a fixed caller-owned character buffer has no source-generated safe alternative without enabling unsafe code.
+    [DllImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle handle,
+        [Out] char[] path,
+        uint capacity,
+        uint flags);
+#pragma warning restore SYSLIB1054
 
     [SupportedOSPlatform("windows")]
     private static bool IsOwnerOnlyWindows(string path)

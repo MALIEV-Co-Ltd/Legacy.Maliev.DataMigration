@@ -603,6 +603,9 @@ public sealed class GuardedShadowMigrationRunnerTests
                 hash)
             {
                 CompletedAtUtc = Now.AddHours(-1),
+                GcsObject = $"database/full/2026-08-30/run-1/Full_{database}.bak",
+                GcsGeneration = 1,
+                GcsSha256 = hash,
             };
         })];
         string manifestHash = ComputeManifestSha256(artifacts);

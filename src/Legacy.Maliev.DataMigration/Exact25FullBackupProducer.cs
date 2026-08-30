@@ -53,7 +53,12 @@ public sealed record Exact25BackupSourceObservation(
     string ContainerName,
     bool Ready,
     DateTimeOffset ObservedAtUtc,
-    IReadOnlyList<SqlServerDatabaseState> UserDatabases);
+    IReadOnlyList<SqlServerDatabaseState> UserDatabases)
+{
+    public string? ContainerId { get; init; }
+    public string? ImageId { get; init; }
+    public string? SessionNonce { get; init; }
+}
 
 public sealed record RemoteFullBackupArtifact(
     string Database,
@@ -159,6 +164,7 @@ public static partial class Exact25FullBackupProducer
         }
 
         OwnerProtectedDirectory.CreateNew(workingDirectory);
+        SecureLocalFile.EnsureOwnerOnlyDirectory(workingDirectory);
         await process.PrepareRunAsync(source, request.RunId, cancellationToken).ConfigureAwait(false);
         var states = new List<VerifiedBackupStateArtifact>(DatabaseInventory.ActiveDatabases.Count);
         DateTimeOffset latestCompletionUtc = source.ObservedAtUtc;
@@ -188,14 +194,20 @@ public static partial class Exact25FullBackupProducer
                 cancellationToken).ConfigureAwait(false);
 
             string localPath = Path.Combine(workingDirectory, fileName);
+            SecureLocalFile.EnsureOwnerOnlyDirectory(workingDirectory);
+            SecureLocalFile.EnsurePathWithin(workingDirectory, localPath);
             var local = new FileInfo(localPath);
-            if (!IsRegularNonLink(local) || local.Length != remote.ByteLength)
+            if (!SecureLocalFile.IsOwnerOnlyFile(local) || local.Length != remote.ByteLength)
             {
                 throw new Exact25FullBackupException("local_backup_size_invalid", "The copied recovery backup does not match SQL Server metadata.");
             }
 
-            string sha256 = await ComputeSha256Async(localPath, cancellationToken).ConfigureAwait(false);
-            if (!IsRegularNonLink(local))
+            string sha256;
+            await using (FileStream localRead = SecureLocalFile.OpenRead(localPath))
+            {
+                sha256 = await SecureLocalFile.ComputeSha256Async(localRead, cancellationToken).ConfigureAwait(false);
+            }
+            if (!SecureLocalFile.IsOwnerOnlyFile(local))
             {
                 throw new Exact25FullBackupException("local_backup_type_invalid", "The recovery backup is not a regular non-link file.");
             }
@@ -205,7 +217,7 @@ public static partial class Exact25FullBackupProducer
             }
 
             string objectUri = request.GcsPrefix + fileName;
-            if (!IsRegularNonLink(local))
+            if (!SecureLocalFile.IsOwnerOnlyFile(local))
             {
                 throw new Exact25FullBackupException("local_backup_type_invalid", "The recovery backup changed before immutable upload.");
             }
@@ -257,6 +269,8 @@ public static partial class Exact25FullBackupProducer
             !string.Equals(source.PodName, request.ExpectedPodName, StringComparison.Ordinal) ||
             !string.Equals(source.PodUid, request.ExpectedPodUid, StringComparison.Ordinal) ||
             !string.Equals(source.ContainerName, request.ContainerName, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(source.ContainerId) || string.IsNullOrWhiteSpace(source.ImageId) ||
+            string.IsNullOrWhiteSpace(source.SessionNonce) ||
             !source.Ready || source.ObservedAtUtc.Offset != TimeSpan.Zero || source.ObservedAtUtc < request.ApprovedRunUtc)
         {
             throw new Exact25FullBackupException("source_identity_invalid", "The observed SQL Server source identity or authoritative observation time is invalid.");
@@ -292,25 +306,12 @@ public static partial class Exact25FullBackupProducer
         }
     }
 
-    private static async Task<string> ComputeSha256Async(string path, CancellationToken cancellationToken)
-    {
-        await using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)).ToLowerInvariant();
-    }
-
     private static bool FixedHashEquals(string left, string right)
     {
         return Sha256Value().IsMatch(left) && Sha256Value().IsMatch(right) &&
             CryptographicOperations.FixedTimeEquals(
                 Encoding.ASCII.GetBytes(left.ToLowerInvariant()),
                 Encoding.ASCII.GetBytes(right.ToLowerInvariant()));
-    }
-
-    private static bool IsRegularNonLink(FileInfo file)
-    {
-        file.Refresh();
-        return file.Exists && file.LinkTarget is null && (file.Attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0;
     }
 
     private static string ObjectName(string uri)

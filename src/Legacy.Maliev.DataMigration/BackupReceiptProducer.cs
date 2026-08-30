@@ -58,12 +58,24 @@ public static class BackupReceiptProducer
             }
 
             var file = new FileInfo(state.LocalPath);
-            if (!file.Exists || file.Length != state.GcsByteLength)
+            string localDirectory = file.DirectoryName
+                ?? throw new BackupReceiptProductionException("backup_state_local_path_invalid", "A local backup path is invalid.");
+            try
+            {
+                SecureLocalFile.EnsureOwnerOnlyDirectory(localDirectory);
+                SecureLocalFile.EnsurePathWithin(localDirectory, state.LocalPath);
+            }
+            catch (Exact25FullBackupException exception)
+            {
+                throw new BackupReceiptProductionException("backup_state_local_path_invalid", exception.Message);
+            }
+            if (!SecureLocalFile.IsOwnerOnlyFile(file) || file.Length != state.GcsByteLength)
             {
                 throw new BackupReceiptProductionException("backup_state_local_size_mismatch", "A local backup does not match approved cloud metadata.");
             }
 
-            string localSha256 = await ComputeSha256Async(state.LocalPath, cancellationToken).ConfigureAwait(false);
+            await using FileStream localRead = SecureLocalFile.OpenRead(state.LocalPath);
+            string localSha256 = await SecureLocalFile.ComputeSha256Async(localRead, cancellationToken).ConfigureAwait(false);
             if (!CryptographicOperations.FixedTimeEquals(
                 Encoding.ASCII.GetBytes(localSha256),
                 Encoding.ASCII.GetBytes(state.GcsSha256.ToLowerInvariant())))
@@ -116,14 +128,6 @@ public static class BackupReceiptProducer
             .Select(artifact => string.Join('|', artifact.Database, artifact.BackupType, artifact.FileName,
                 artifact.ByteLength, artifact.Sha256!.ToLowerInvariant(), artifact.ObservedSha256!.ToLowerInvariant())));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
-    }
-
-    private static async Task<string> ComputeSha256Async(string path, CancellationToken cancellationToken)
-    {
-        await using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        byte[] hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
-        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     private static bool IsSha256(string value)

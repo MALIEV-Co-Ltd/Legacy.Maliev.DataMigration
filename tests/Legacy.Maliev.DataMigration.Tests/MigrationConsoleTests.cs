@@ -9,7 +9,7 @@ public sealed class MigrationConsoleTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"legacy-console-{Guid.NewGuid():N}");
 
     [Fact]
-    public async Task RunAsync_Receipt_ReadsKeyFromEnvironmentReferencedFileAndWritesNoLocalPaths()
+    public async Task RunAsync_ReceiptCommandIsDisabledBeforeReadingCallerSuppliedStateOrKey()
     {
         _ = Directory.CreateDirectory(_root);
         var states = new List<VerifiedBackupStateArtifact>();
@@ -51,13 +51,10 @@ public sealed class MigrationConsoleTests : IDisposable
             name => name == "LEGACY_MIGRATION_RECEIPT_SIGNING_KEY_FILE" ? keyPath : null,
             CancellationToken.None);
 
-        Assert.Equal(0, exitCode);
-        Assert.True(File.Exists(outputPath));
-        string receiptJson = await File.ReadAllTextAsync(outputPath);
-        Assert.DoesNotContain(_root, receiptJson, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("PRIVATE KEY", receiptJson, StringComparison.Ordinal);
-        Assert.Contains("receipt_complete", output.ToString(), StringComparison.Ordinal);
-        Assert.Equal(string.Empty, error.ToString());
+        Assert.Equal(64, exitCode);
+        Assert.False(File.Exists(outputPath));
+        Assert.Equal(string.Empty, output.ToString());
+        Assert.Equal("subcommand_invalid" + Environment.NewLine, error.ToString());
     }
 
     [Fact]
@@ -306,6 +303,29 @@ public sealed class MigrationConsoleTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_BackupFull_ProtectedFileThroughSymlinkAncestorFailsBeforeComposition()
+    {
+        string actual = Path.Combine(_root, "actual");
+        OwnerProtectedDirectory.CreateNew(actual);
+        string configPath = Path.Combine(actual, "config.json");
+        await File.WriteAllTextAsync(configPath, "{}");
+        ProtectFileOnUnix(configPath);
+        string linked = Path.Combine(_root, "linked");
+        _ = Directory.CreateSymbolicLink(linked, actual);
+        var factory = new FakeExact25BackupRuntimeFactory();
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunForTestsAsync(
+            ["backup-full", "--config", Path.Combine(linked, "config.json")], output, error,
+            name => name == "LEGACY_DEPLOY_ENABLED" ? "false" : null, factory, CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal(0, factory.CreateAttempts);
+        Assert.Equal("backup_config_unprotected" + Environment.NewLine, error.ToString());
+    }
+
+    [Fact]
     public async Task RunAsync_BackupFull_DeployEnabledFailsBeforeRuntimeComposition()
     {
         _ = Directory.CreateDirectory(_root);
@@ -382,7 +402,8 @@ public sealed class MigrationConsoleTests : IDisposable
                 request.Namespace, request.ExpectedPodName, request.ExpectedPodUid, request.ContainerName, true,
                 request.ApprovedRunUtc.AddMinutes(1),
                 DatabaseInventory.Entries.Keys.Order(StringComparer.Ordinal)
-                    .Select(name => new SqlServerDatabaseState(name, "ONLINE")).ToArray()));
+                    .Select(name => new SqlServerDatabaseState(name, "ONLINE")).ToArray())
+            { ContainerId = "containerd://container-1", ImageId = "sha256:image-1", SessionNonce = new string('a', 64) });
         }
 
         public Task PrepareRunAsync(Exact25BackupSourceObservation source, string runId, CancellationToken cancellationToken)
@@ -412,14 +433,19 @@ public sealed class MigrationConsoleTests : IDisposable
             return Task.CompletedTask;
         }
 
-        public Task CopyToLocalAsync(
+        public async Task CopyToLocalAsync(
             Exact25BackupSourceObservation source,
             RemoteFullBackupArtifact artifact,
             string localRelativePath,
             string workingDirectory,
             CancellationToken cancellationToken)
         {
-            return File.WriteAllTextAsync(Path.Combine(workingDirectory, localRelativePath), artifact.Database, cancellationToken);
+            string path = Path.Combine(workingDirectory, localRelativePath);
+            await File.WriteAllTextAsync(path, artifact.Database, cancellationToken);
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
         }
     }
 

@@ -41,6 +41,17 @@ public static class SecureKubectlSqlCmdInvocation
         string sql,
         SecureSqlBackupCredential credential)
     {
+        return Create(@namespace, pod, container, sql, credential, null);
+    }
+
+    public static SecureBackupProcessInvocation Create(
+        string @namespace,
+        string pod,
+        string container,
+        string sql,
+        SecureSqlBackupCredential credential,
+        string? sessionMarker)
+    {
         ValidateArgument(@namespace, nameof(@namespace));
         ValidateArgument(pod, nameof(pod));
         ValidateArgument(container, nameof(container));
@@ -48,9 +59,15 @@ public static class SecureKubectlSqlCmdInvocation
         ArgumentNullException.ThrowIfNull(credential);
 
         string standardInput = credential.CreateChildProcessStandardInput() + sql.TrimEnd('\r', '\n') + "\n";
-        string[] arguments = [
+        string shellScript = sessionMarker is null
+            ? ShellScript
+            : "marker=$1; shift; test -f \"$marker\"; test ! -L \"$marker\"; test \"$(stat -c %u -- \"$marker\")\" = \"$(id -u)\"; test \"$(stat -c %a -- \"$marker\")\" = 600; " + ShellScript;
+        string[] arguments = sessionMarker is null ? [
             "exec", pod, "-n", @namespace, "-c", container, "--",
-            "sh", "-ceu", ShellScript,
+            "sh", "-ceu", shellScript,
+        ] : [
+            "exec", pod, "-n", @namespace, "-c", container, "--",
+            "sh", "-ceu", shellScript, "sh", sessionMarker,
         ];
         return new SecureBackupProcessInvocation("kubectl", arguments, standardInput);
     }
@@ -103,15 +120,27 @@ public sealed class AtomicBackupReceiptPublisher : IBackupReceiptPublisher
             throw new IOException("The backup receipt destination must be a new directory.");
         }
 
-        _ = Directory.CreateDirectory(parent);
         string staging = Path.Combine(parent, $".{name}.{Guid.NewGuid():N}.tmp");
         try
         {
-            CreateOwnerProtectedDirectory(staging);
+            OwnerProtectedDirectory.CreateNew(staging);
+            SecureLocalFile.EnsureOwnerOnlyDirectory(staging);
             string json = JsonSerializer.Serialize(receipt, JsonOptions);
-            await _writeArtifact(Path.Combine(staging, ReceiptFileName), json, cancellationToken).ConfigureAwait(false);
+            string receiptPath = Path.Combine(staging, ReceiptFileName);
+            await _writeArtifact(receiptPath, json, cancellationToken).ConfigureAwait(false);
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(receiptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+
+            if (!SecureLocalFile.IsOwnerOnlyFile(new FileInfo(receiptPath)))
+            {
+                throw new IOException("The staged backup receipt is not a regular non-link file.");
+            }
             cancellationToken.ThrowIfCancellationRequested();
+            SecureLocalFile.EnsureOwnerOnlyDirectory(staging);
             Directory.Move(staging, _publicationDirectory);
+            SecureLocalFile.EnsureOwnerOnlyDirectory(_publicationDirectory);
         }
         catch
         {
@@ -134,33 +163,6 @@ public sealed class AtomicBackupReceiptPublisher : IBackupReceiptPublisher
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static void CreateOwnerProtectedDirectory(string path)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            CreateOwnerProtectedWindowsDirectory(path);
-            return;
-        }
-
-        _ = Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static void CreateOwnerProtectedWindowsDirectory(string path)
-    {
-        SecurityIdentifier owner = WindowsIdentity.GetCurrent().User ??
-            throw new UnauthorizedAccessException("The current Windows owner identity is unavailable.");
-        var security = new DirectorySecurity();
-        security.SetOwner(owner);
-        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-        security.AddAccessRule(new FileSystemAccessRule(
-            owner,
-            FileSystemRights.FullControl,
-            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-            PropagationFlags.None,
-            AccessControlType.Allow));
-        new DirectoryInfo(path).Create(security);
-    }
 }
 
 public sealed record BackupProcessResult(int ExitCode, string StandardOutput, string StandardError);
@@ -168,6 +170,14 @@ public sealed record BackupProcessResult(int ExitCode, string StandardOutput, st
 public interface IBackupProcessRunner
 {
     Task<BackupProcessResult> RunAsync(SecureBackupProcessInvocation invocation, CancellationToken cancellationToken);
+
+    Task<BackupProcessResult> RunToNewFileAsync(
+        SecureBackupProcessInvocation invocation,
+        string destinationPath,
+        CancellationToken cancellationToken)
+    {
+        throw new NotSupportedException("This process runner does not support binary streaming output.");
+    }
 }
 
 public sealed class SystemBackupProcessRunner : IBackupProcessRunner
@@ -238,6 +248,75 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
         }
 
         return new(process.ExitCode, await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false));
+    }
+
+    public async Task<BackupProcessResult> RunToNewFileAsync(
+        SecureBackupProcessInvocation invocation,
+        string destinationPath,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(invocation);
+        string fullDestination = Path.GetFullPath(destinationPath);
+        var startInfo = new ProcessStartInfo(invocation.FileName)
+        {
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        foreach (string argument in invocation.Arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = new Process { StartInfo = startInfo };
+        try
+        {
+            if (!process.Start())
+            {
+                throw new Exact25BackupTransportException("process_start_failed", $"Failed to start {invocation}.", false);
+            }
+        }
+        catch (Exception exception) when (exception is not Exact25BackupTransportException and not OperationCanceledException)
+        {
+            throw new Exact25BackupTransportException("process_start_failed", $"Failed to start {invocation}: {exception.GetType().Name}.", false);
+        }
+
+        Task<string> stderr = process.StandardError.ReadToEndAsync(cancellationToken);
+        try
+        {
+            await using FileStream destination = new(fullDestination, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                1024 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough);
+            if (invocation.StandardInput.Length > 0)
+            {
+                await process.StandardInput.WriteAsync(invocation.StandardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
+            }
+            process.StandardInput.Close();
+            await process.StandardOutput.BaseStream.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+            await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+        finally
+        {
+            process.StandardInput.Close();
+        }
+        return new(process.ExitCode, string.Empty, await stderr.ConfigureAwait(false));
     }
 }
 
