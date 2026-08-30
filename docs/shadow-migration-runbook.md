@@ -19,8 +19,6 @@ through these environment references:
 - authorization: `LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE`;
 - shadow execution: `LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION`,
   `LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION`,
-  `LEGACY_MIGRATION_CNPG_API_SERVER`, `LEGACY_MIGRATION_CNPG_TOKEN_FILE`,
-  `LEGACY_MIGRATION_CNPG_CA_FILE`, and
   `LEGACY_MIGRATION_EXECUTION_SIGNING_KEY_FILE`;
 - snapshot: `LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE`, containing an
   owner-only base64 encoding of exactly 32 random bytes; and
@@ -52,12 +50,14 @@ and rejects unknown properties.
 - `plan`: a create-new output path and the exact reviewed 40-character source
   commit SHA.
 - `authorizeShadow`: receipt/plan/create-new output paths, expected source commit,
-  independently reviewed schema-plan SHA-256, runner SHA-256, target generation,
+  independently reviewed schema-plan SHA-256,
   UTC issue/expiry times no more than one hour apart, authorization key ID,
   backup trust, receipt freshness limit, and `allowShadowAuthorization: true`.
 - `executeShadow`: receipt, plan, authorization, create-new result, trust stores,
-  runner digest, execution key ID, expected control/shadow roles, namespace
-  `maliev-legacy`, and cluster `legacy-postgres-main`.
+  execution key ID, and expected control/shadow roles. The runner publication,
+  namespace `maliev-legacy`, cluster `legacy-postgres-main`, Kubernetes API endpoint,
+  and projected service-account token/CA paths are runtime-measured or fixed and
+  cannot be supplied by the configuration.
 - `exportLocalSnapshot`: completed result path, a new output directory, and the
   pinned `pg_dump` path.
 - `signProvenance`: evidence-bound create-new output path, independently reviewed
@@ -70,8 +70,10 @@ and rejects unknown properties.
 
 `authorize-shadow` re-hashes the exact fresh plan, verifies the signed exact-25
 backup, validates plan freshness and source commit, rejects stale approval
-windows and backup/authorization key reuse, and publishes create-only. It cannot
-mint an authorization without the reviewed digest and explicit allow flag.
+windows and backup/authorization key reuse, measures the complete owner-only
+Release publication, and observes the exact healthy CloudNativePG target before
+publishing create-only. It cannot mint an authorization without the reviewed plan
+digest and explicit allow flag.
 
 `sign-provenance` verifies the exact-25 signed execution, authorization, backup,
 and final restore receipt. Cleanup must be `Removed`; a pending cleanup receipt
@@ -128,6 +130,14 @@ GCS objects. Approved execution creates or patches run-owned CloudNativePG
 `Database` resources and writes shadow databases and the migration-control
 journal. Applying RBAC/admission policies, PostgreSQL ACLs, secrets, or workload
 identity also mutates live state. Every such action needs explicit authorization.
+
+The dormant admission policy selects requests made by the dedicated migration
+service account or requests whose current/old object uses the `legacy-shadow-*`
+resource prefix or the `legacy_shadow_*` database-name prefix. It then requires
+both the exact service account and exact shadow
+resource/database names. Consequently migration-to-canonical and other-to-shadow
+mutations are denied, while unrelated controller operations on canonical resources
+are outside this policy rather than disrupted by it.
 
 Canonical promotion, traffic cutover, application deployment, and canonical
 production writes are absent and remain unauthorized.

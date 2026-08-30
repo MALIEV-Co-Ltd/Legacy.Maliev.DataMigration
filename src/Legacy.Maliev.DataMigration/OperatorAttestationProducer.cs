@@ -12,8 +12,8 @@ public sealed class OperatorAttestationException(string code, string message) : 
 public sealed record ReviewedExecutionAuthorizationRequest(
     string ExpectedSourceCommitSha,
     string ReviewedSchemaPlanSha256,
-    string RunnerDigestSha256,
-    string TargetGeneration,
+    RunnerArtifactManifest RunnerManifest,
+    CloudNativePgTargetObservation TargetObservation,
     DateTimeOffset IssuedAtUtc,
     DateTimeOffset ExpiresAtUtc,
     bool AllowShadowAuthorization,
@@ -40,8 +40,13 @@ public static partial class ReviewedExecutionAuthorizationProducer
         }
         if (!CommitSha().IsMatch(request.ExpectedSourceCommitSha) ||
             !Sha256().IsMatch(request.ReviewedSchemaPlanSha256) ||
-            !Sha256().IsMatch(request.RunnerDigestSha256) ||
-            !TargetGeneration().IsMatch(request.TargetGeneration))
+            request.RunnerManifest is null ||
+            request.TargetObservation is null ||
+            !Sha256().IsMatch(request.RunnerManifest.ManifestSha256) ||
+            request.RunnerManifest.Files.Count == 0 ||
+            !request.TargetObservation.IsHealthy ||
+            !string.Equals(request.TargetObservation.Namespace, "maliev-legacy", StringComparison.Ordinal) ||
+            !string.Equals(request.TargetObservation.Cluster, "legacy-postgres-main", StringComparison.Ordinal))
         {
             throw Error("authorization_review_binding_invalid", "The reviewed execution binding is invalid.");
         }
@@ -59,7 +64,7 @@ public static partial class ReviewedExecutionAuthorizationProducer
             throw Error("authorization_reviewed_plan_mismatch", "The fresh plan does not match the independently reviewed digest.");
         }
 
-        var policy = new GuardedRunnerPolicy(request.ExpectedSourceCommitSha, request.RunnerDigestSha256);
+        var policy = new GuardedRunnerPolicy(request.ExpectedSourceCommitSha, request.RunnerManifest.ManifestSha256);
         if (SchemaPlanCanonicalizer.Validate(plan, policy, nowUtc, GuardedRunnerPolicy.MaximumSchemaPlanAge).Count > 0)
         {
             throw Error("authorization_plan_invalid", "The fresh exact-25 schema plan is invalid or stale.");
@@ -82,19 +87,22 @@ public static partial class ReviewedExecutionAuthorizationProducer
         }
 
         var unsigned = new ExecutionAuthorizationReceipt(
-            "2.0",
+            "2.1",
             Guid.NewGuid(),
             request.IssuedAtUtc.ToUniversalTime(),
             request.ExpiresAtUtc.ToUniversalTime(),
             plan.SourceCommitSha,
             planSha256,
             backupReceipt.ManifestSha256,
-            request.RunnerDigestSha256.ToLowerInvariant(),
-            request.TargetGeneration,
+            request.RunnerManifest.ManifestSha256.ToLowerInvariant(),
+            request.TargetObservation.Generation.ToString(System.Globalization.CultureInfo.InvariantCulture),
             DatabaseInventory.ActiveDatabases,
             "shadow-only",
             authorizationSigner.KeyId,
-            null);
+            null)
+        {
+            TargetObservation = request.TargetObservation,
+        };
         var authorizationTrust = new ReceiptAttestationTrustStore(
         [
             new(authorizationSigner.KeyId, authorizationSigner.ExportSubjectPublicKeyInfo()),
@@ -131,7 +139,6 @@ public static partial class ReviewedExecutionAuthorizationProducer
 
     [GeneratedRegex("^[0-9a-fA-F]{40}$", RegexOptions.CultureInvariant)] private static partial Regex CommitSha();
     [GeneratedRegex("^[0-9a-fA-F]{64}$", RegexOptions.CultureInvariant)] private static partial Regex Sha256();
-    [GeneratedRegex("^[a-z0-9][a-z0-9-]{2,62}$", RegexOptions.CultureInvariant)] private static partial Regex TargetGeneration();
 }
 
 public sealed record ReviewedMigrationProvenanceRequest(

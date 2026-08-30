@@ -111,6 +111,44 @@ internal static class SecureLocalFile
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
+    internal static bool HandleResolvesToApprovedPath(FileStream stream, string expectedPath)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        return HandleResolvesTo(stream.SafeFileHandle, Path.GetFullPath(expectedPath));
+    }
+
+    internal static string GetHandleIdentity(FileStream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (OperatingSystem.IsLinux())
+        {
+            int fd = checked((int)stream.SafeFileHandle.DangerousGetHandle());
+            return Statx(fd, string.Empty, AtEmptyPath, StatxBasicStats, out LinuxStatx stat) != 0
+                ? throw new Exact25FullBackupException("local_backup_type_invalid", "The opened file identity could not be observed.")
+                : $"linux:{stat.DeviceMajor:x8}:{stat.DeviceMinor:x8}:{stat.Inode:x16}";
+        }
+
+        string? finalPath = OperatingSystem.IsWindows()
+            ? FinalWindowsPath(stream.SafeFileHandle)
+            : stream.Name;
+        return finalPath is null
+            ? throw new Exact25FullBackupException("local_backup_type_invalid", "The opened file identity could not be observed.")
+            : $"path:{Path.GetFullPath(finalPath).ToUpperInvariant()}";
+    }
+
+    internal static string GetPathIdentity(string path)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException("Path identity observation is available only on Linux.");
+        }
+
+        string full = Path.GetFullPath(path);
+        return Statx(AtCurrentWorkingDirectory, full, AtSymlinkNoFollow, StatxBasicStats, out LinuxStatx stat) != 0
+            ? throw new Exact25FullBackupException("local_backup_type_invalid", "The file path identity could not be observed.")
+            : $"linux:{stat.DeviceMajor:x8}:{stat.DeviceMinor:x8}:{stat.Inode:x16}";
+    }
+
     public static void EnsurePathWithin(string root, string path)
     {
         string relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path));
@@ -221,6 +259,9 @@ internal static class SecureLocalFile
     private struct LinuxStatx
     {
         [FieldOffset(20)] public uint Uid;
+        [FieldOffset(32)] public ulong Inode;
+        [FieldOffset(136)] public uint DeviceMajor;
+        [FieldOffset(140)] public uint DeviceMinor;
     }
 
 #pragma warning disable SYSLIB1054, CA2101 // Fixed Linux ABI; UTF-8 path is explicit and no unsafe source-generated marshaller is enabled.

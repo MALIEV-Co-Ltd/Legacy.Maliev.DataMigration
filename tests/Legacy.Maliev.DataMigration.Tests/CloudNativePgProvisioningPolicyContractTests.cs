@@ -10,6 +10,9 @@ public sealed partial class CloudNativePgProvisioningPolicyContractTests
 
         Assert.Contains("system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner", policy, StringComparison.Ordinal);
         Assert.Contains("verbs: [\"get\", \"create\", \"patch\", \"delete\"]", policy, StringComparison.Ordinal);
+        Assert.Contains("resources: [\"clusters\"]", policy, StringComparison.Ordinal);
+        Assert.Contains("resourceNames: [\"legacy-postgres-main\"]", policy, StringComparison.Ordinal);
+        Assert.Contains("verbs: [\"get\"]", policy, StringComparison.Ordinal);
         Assert.DoesNotContain("\"list\"", policy, StringComparison.Ordinal);
         Assert.DoesNotContain("\"watch\"", policy, StringComparison.Ordinal);
         Assert.Contains("legacy-postgres-main", policy, StringComparison.Ordinal);
@@ -22,39 +25,42 @@ public sealed partial class CloudNativePgProvisioningPolicyContractTests
     }
 
     [Fact]
-    public void DormantPolicy_FailsClosedForEveryShadowMutationAndPreservesCanonicalResources()
+    public void DormantPolicy_SelectsMigrationIdentityOrShadowObjectsAndPreservesUnrelatedCanonicalResources()
     {
         string policy = ReadPolicy();
 
-        Assert.Contains("name: shadow-resources-only", policy, StringComparison.Ordinal);
+        Assert.Contains("matchConditions:", policy, StringComparison.Ordinal);
+        Assert.Contains("name: migration-identity-or-shadow-object", policy, StringComparison.Ordinal);
+        Assert.Contains("request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner' || (object != null && (object.metadata.name.startsWith('legacy-shadow-') || object.spec.name.startsWith('legacy_shadow_'))) || (oldObject != null && (oldObject.metadata.name.startsWith('legacy-shadow-') || oldObject.spec.name.startsWith('legacy_shadow_')))", policy, StringComparison.Ordinal);
         Assert.Contains("request.namespace == 'maliev-legacy'", policy, StringComparison.Ordinal);
-        Assert.Contains("object.metadata.name.matches('^legacy-shadow-", policy, StringComparison.Ordinal);
-        Assert.Contains("oldObject.metadata.name.matches('^legacy-shadow-", policy, StringComparison.Ordinal);
-        Assert.Contains("object.spec.name.matches('^legacy_shadow_", policy, StringComparison.Ordinal);
-        Assert.Contains("oldObject.spec.name.matches('^legacy_shadow_", policy, StringComparison.Ordinal);
+        Assert.Contains("(object == null ? oldObject : object).metadata.name.matches('^legacy-shadow-", policy, StringComparison.Ordinal);
+        Assert.Contains("(object == null ? oldObject : object).spec.name.matches('^legacy_shadow_", policy, StringComparison.Ordinal);
         Assert.Contains("request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner'", policy, StringComparison.Ordinal);
         Assert.Contains("Only the dedicated migration identity may mutate legacy shadow resources.", policy, StringComparison.Ordinal);
 
-        int matchStart = policy.IndexOf("matchConditions:", StringComparison.Ordinal);
-        int validationStart = policy.IndexOf("validations:", matchStart, StringComparison.Ordinal);
-        string matchConditions = policy[matchStart..validationStart];
-        Assert.DoesNotContain("request.userInfo", matchConditions, StringComparison.Ordinal);
+        Assert.Contains("Only exact run-owned shadow Database resources are permitted.", policy, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void DormantPolicy_SelectsPhysicalShadowNameForEveryOperationButNotCanonicalNames()
+    [Theory]
+    [InlineData("CREATE")]
+    [InlineData("UPDATE")]
+    [InlineData("DELETE")]
+    public void DormantPolicy_AdmissionSelectionAndValidationMatchRequiredSemanticMatrix(string operation)
     {
-        const string canonicalMetadata = "legacy-postgres-order";
-        const string canonicalDatabase = "Order";
+        const string shadowMetadata = "legacy-shadow-order-0123456789abcdef0123456789abcdef";
         const string shadowDatabase = "legacy_shadow_order_0123456789abcdef0123456789abcdef";
+        const string migrationIdentity = "system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner";
+        const string otherIdentity = "system:serviceaccount:maliev-legacy:cloudnative-pg";
 
-        Assert.True(SelectsShadow(canonicalMetadata, shadowDatabase, null, null)); // CREATE
-        Assert.True(SelectsShadow(canonicalMetadata, shadowDatabase, canonicalMetadata, shadowDatabase)); // UPDATE
-        Assert.True(SelectsShadow(null, null, canonicalMetadata, shadowDatabase)); // DELETE
-
-        Assert.False(SelectsShadow(canonicalMetadata, canonicalDatabase, null, null)); // CREATE
-        Assert.False(SelectsShadow(canonicalMetadata, canonicalDatabase, canonicalMetadata, canonicalDatabase)); // UPDATE
-        Assert.False(SelectsShadow(null, null, canonicalMetadata, canonicalDatabase)); // DELETE
+        Assert.Contains("operations: [\"CREATE\", \"UPDATE\", \"DELETE\"]", ReadPolicy(), StringComparison.Ordinal);
+        AssertDecision(operation, migrationIdentity, shadowMetadata, shadowDatabase, selected: true, allowed: true);
+        AssertDecision(operation, migrationIdentity, "legacy-postgres-order", "Order", selected: true, allowed: false);
+        AssertDecision(operation, otherIdentity, shadowMetadata, shadowDatabase, selected: true, allowed: false);
+        AssertDecision(operation, otherIdentity, "legacy-postgres-order", "Order", selected: false, allowed: false);
+        AssertDecision(operation, otherIdentity, "legacy-postgres-order", shadowDatabase, selected: true, allowed: false);
+        AssertDecision(operation, otherIdentity, shadowMetadata, "Order", selected: true, allowed: false);
+        AssertDecision(operation, migrationIdentity, "legacy-postgres-order", shadowDatabase, selected: true, allowed: false);
+        AssertDecision(operation, migrationIdentity, shadowMetadata, "Order", selected: true, allowed: false);
     }
 
     [Fact]
@@ -75,16 +81,75 @@ public sealed partial class CloudNativePgProvisioningPolicyContractTests
         return File.ReadAllText(Path.Combine(root, "deploy", "cloudnativepg-shadow-provisioner-policy.yaml"));
     }
 
-    private static bool SelectsShadow(
+    private static void AssertDecision(
+        string operation,
+        string identity,
+        string metadataName,
+        string databaseName,
+        bool selected,
+        bool allowed)
+    {
+        string? currentMetadata = operation == "DELETE" ? null : metadataName;
+        string? currentDatabase = operation == "DELETE" ? null : databaseName;
+        string? oldMetadata = operation == "CREATE" ? null : metadataName;
+        string? oldDatabase = operation == "CREATE" ? null : databaseName;
+
+        Assert.Equal(selected, AdmissionSelected(
+            identity,
+            currentMetadata,
+            currentDatabase,
+            oldMetadata,
+            oldDatabase));
+        Assert.Equal(allowed, AdmissionAllows(
+            "maliev-legacy",
+            identity,
+            currentMetadata,
+            currentDatabase,
+            oldMetadata,
+            oldDatabase));
+    }
+
+    private static bool AdmissionSelected(
+        string identity,
         string? currentMetadataName,
         string? currentDatabaseName,
         string? oldMetadataName,
         string? oldDatabaseName)
     {
-        return IsShadowMetadata(currentMetadataName) ||
-               IsShadowMetadata(oldMetadataName) ||
-               IsShadowDatabase(currentDatabaseName) ||
-               IsShadowDatabase(oldDatabaseName);
+        return identity == "system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner" ||
+            IsShadowMetadataCandidate(currentMetadataName) || IsShadowDatabaseCandidate(currentDatabaseName) ||
+            IsShadowMetadataCandidate(oldMetadataName) || IsShadowDatabaseCandidate(oldDatabaseName);
+    }
+
+    private static bool AdmissionAllows(
+        string namespaceName,
+        string identity,
+        string? currentMetadataName,
+        string? currentDatabaseName,
+        string? oldMetadataName = null,
+        string? oldDatabaseName = null)
+    {
+        string? metadata = currentMetadataName ?? oldMetadataName;
+        string? database = currentDatabaseName ?? oldDatabaseName;
+        return AdmissionSelected(
+                identity,
+                currentMetadataName,
+                currentDatabaseName,
+                oldMetadataName,
+                oldDatabaseName) &&
+            namespaceName == "maliev-legacy" &&
+            identity == "system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner" &&
+            IsShadowMetadata(metadata) && IsShadowDatabase(database);
+    }
+
+    private static bool IsShadowMetadataCandidate(string? value)
+    {
+        return value?.StartsWith("legacy-shadow-", StringComparison.Ordinal) == true;
+    }
+
+    private static bool IsShadowDatabaseCandidate(string? value)
+    {
+        return value?.StartsWith("legacy_shadow_", StringComparison.Ordinal) == true;
     }
 
     private static bool IsShadowMetadata(string? value)

@@ -26,8 +26,19 @@ public sealed partial class CloudNativePgShadowDatabaseProvisioner : IPostgreSql
     private readonly ConcurrentDictionary<string, ResourceFence> _fences = new(StringComparer.Ordinal);
 
     public CloudNativePgShadowDatabaseProvisioner(CloudNativePgShadowDatabaseProvisionerOptions options)
-        : this(options, CreatePinnedHandler(options))
+        : this(options, CreatePinnedHandler(ValidateFixedInClusterOptions(options)))
     {
+    }
+
+    private static CloudNativePgShadowDatabaseProvisionerOptions ValidateFixedInClusterOptions(
+        CloudNativePgShadowDatabaseProvisionerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return !string.Equals(options.ApiServer.AbsoluteUri.TrimEnd('/'), "https://kubernetes.default.svc", StringComparison.Ordinal) ||
+            !string.Equals(options.ServiceAccountTokenFile, "/var/run/secrets/kubernetes.io/serviceaccount/token", StringComparison.Ordinal) ||
+            !string.Equals(options.ServiceAccountCaFile, "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", StringComparison.Ordinal)
+            ? throw new ArgumentException("Only fixed in-cluster Kubernetes trust references are permitted.", nameof(options))
+            : options;
     }
 
     internal CloudNativePgShadowDatabaseProvisioner(CloudNativePgShadowDatabaseProvisionerOptions options, HttpMessageHandler handler)

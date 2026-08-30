@@ -7,6 +7,19 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class GuardedShadowMigrationRunnerTests
 {
     [Fact]
+    public async Task Runtime_attestation_drift_stops_before_the_run_journal_or_any_shadow_mutation()
+    {
+        Harness harness = CreateHarness(new RejectingRuntimeVerifier());
+
+        RuntimeAttestationException exception = await Assert.ThrowsAsync<RuntimeAttestationException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
+
+        Assert.Equal("runtime_target_drift", exception.Code);
+        Assert.Equal(0, harness.Journal.TryBeginCount);
+        Assert.Empty(harness.Target.Created);
+    }
+
+    [Fact]
     public void CreateShadowName_AllExact25NamesAreDeterministicCollisionSafeAndWithinPostgresLimit()
     {
         Guid runId = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
@@ -503,7 +516,7 @@ public sealed class GuardedShadowMigrationRunnerTests
             HashAlgorithmName.SHA256));
     }
 
-    private static Harness CreateHarness()
+    private static Harness CreateHarness(IRuntimeAttestationVerifier? runtimeAttestationVerifier = null)
     {
         TrustedAttestationKey trustedKey = new(KeyId, SigningKey.ExportSubjectPublicKeyInfo());
         var trustStore = new ReceiptAttestationTrustStore([trustedKey]);
@@ -520,7 +533,8 @@ public sealed class GuardedShadowMigrationRunnerTests
             journal,
             new TestEvidenceSigner(KeyId, SigningKey),
             timeProvider,
-            new GuardedRunnerPolicy(CurrentSourceCommit, RunnerDigest));
+            new GuardedRunnerPolicy(CurrentSourceCommit, RunnerDigest),
+            runtimeAttestationVerifier ?? new AcceptingRuntimeVerifier());
         return new(runner, source, target, journal, timeProvider);
     }
 
@@ -1010,8 +1024,25 @@ public sealed class GuardedShadowMigrationRunnerTests
         }
     }
 
+    private sealed class RejectingRuntimeVerifier : IRuntimeAttestationVerifier
+    {
+        public Task VerifyAsync(ExecutionAuthorizationReceipt authorization, CancellationToken cancellationToken)
+        {
+            return Task.FromException(new RuntimeAttestationException("runtime_target_drift", "target drift"));
+        }
+    }
+
+    private sealed class AcceptingRuntimeVerifier : IRuntimeAttestationVerifier
+    {
+        public Task VerifyAsync(ExecutionAuthorizationReceipt authorization, CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class InMemoryJournal : IMigrationRunJournal
     {
+        public int TryBeginCount { get; private set; }
         public List<MigrationExecutionReceipt> Completed { get; } = [];
         public List<MigrationFailureReceipt> Failed { get; } = [];
         public List<ShadowCleanupOutcome> Cleanup { get; } = [];
@@ -1024,6 +1055,7 @@ public sealed class GuardedShadowMigrationRunnerTests
             MigrationRunIdentity identity,
             CancellationToken cancellationToken)
         {
+            TryBeginCount++;
             if (_forcedCompleted is not null)
             {
                 return Task.FromResult(new MigrationRunStartResult(

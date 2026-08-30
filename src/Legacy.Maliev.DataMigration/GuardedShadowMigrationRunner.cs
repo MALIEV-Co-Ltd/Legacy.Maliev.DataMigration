@@ -426,6 +426,7 @@ public sealed partial class GuardedShadowMigrationRunner
     private readonly IMigrationEvidenceSigner _evidenceSigner;
     private readonly TimeProvider _timeProvider;
     private readonly GuardedRunnerPolicy _policy;
+    private readonly IRuntimeAttestationVerifier _runtimeAttestationVerifier;
 
     public GuardedShadowMigrationRunner(
         PreflightService backupPreflight,
@@ -435,7 +436,8 @@ public sealed partial class GuardedShadowMigrationRunner
         IMigrationRunJournal journal,
         IMigrationEvidenceSigner evidenceSigner,
         TimeProvider timeProvider,
-        GuardedRunnerPolicy policy)
+        GuardedRunnerPolicy policy,
+        IRuntimeAttestationVerifier runtimeAttestationVerifier)
     {
         ArgumentNullException.ThrowIfNull(backupPreflight);
         ArgumentNullException.ThrowIfNull(authorizationTrustStore);
@@ -445,6 +447,7 @@ public sealed partial class GuardedShadowMigrationRunner
         ArgumentNullException.ThrowIfNull(evidenceSigner);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(runtimeAttestationVerifier);
         if (!CommitSha().IsMatch(policy.ExpectedSourceCommitSha) || !Sha256().IsMatch(policy.ExpectedRunnerDigestSha256))
         {
             throw new ArgumentException("Runner policy must bind an exact source commit and runner digest.", nameof(policy));
@@ -458,6 +461,7 @@ public sealed partial class GuardedShadowMigrationRunner
         _evidenceSigner = evidenceSigner;
         _timeProvider = timeProvider;
         _policy = policy;
+        _runtimeAttestationVerifier = runtimeAttestationVerifier;
     }
 
     public async Task<MigrationExecutionResult> ExecuteAsync(
@@ -467,6 +471,8 @@ public sealed partial class GuardedShadowMigrationRunner
         ArgumentNullException.ThrowIfNull(request);
         DateTimeOffset nowUtc = _timeProvider.GetUtcNow();
         ValidateRequest(request, nowUtc);
+
+        await _runtimeAttestationVerifier.VerifyAsync(request.Authorization, cancellationToken).ConfigureAwait(false);
 
         MigrationRunIdentity identity = MigrationRunIdentity.FromRequest(request);
         string schemaPlanHash = identity.SchemaPlanSha256;

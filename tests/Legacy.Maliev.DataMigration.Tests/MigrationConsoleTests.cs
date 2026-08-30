@@ -8,6 +8,44 @@ public sealed class MigrationConsoleTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"legacy-console-{Guid.NewGuid():N}");
 
+    [Fact]
+    public async Task AuthorizeShadow_RejectsCallerSuppliedRunnerDigestAndTargetGeneration()
+    {
+        OwnerProtectedDirectory.CreateNew(_root);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            authorizeShadow = new
+            {
+                receiptPath = "receipt.json",
+                planPath = "plan.json",
+                outputPath = "authorization.json",
+                expectedSourceCommitSha = new string('a', 40),
+                reviewedSchemaPlanSha256 = new string('b', 64),
+                runnerPublishDirectory = "release-publish",
+                runnerDigestSha256 = new string('c', 64),
+                targetGeneration = "caller-substitute",
+                cloudNativePgApiServer = "https://attacker.example",
+                cloudNativePgNamespace = "attacker",
+                issuedAtUtc = DateTimeOffset.UtcNow,
+                expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(30),
+                keyId = "authorization-key",
+                receiptTrustedKeys = Array.Empty<object>(),
+                maximumReceiptAgeMinutes = 180d,
+                allowShadowAuthorization = true,
+            },
+        }, JsonOptions));
+        ProtectFileOnUnix(configPath);
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["authorize-shadow", "--config", configPath], TextWriter.Null, error,
+            name => name == "LEGACY_DEPLOY_ENABLED" ? "false" : null, CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal("configuration_invalid" + Environment.NewLine, error.ToString());
+    }
+
     [Theory]
     [InlineData("receipt")]
     [InlineData("verify-backup")]
@@ -78,7 +116,6 @@ public sealed class MigrationConsoleTests : IDisposable
                 planPath = "plan.json",
                 authorizationPath = "authorization.json",
                 outputPath = "execution.json",
-                runnerDigestSha256 = new string('a', 64),
                 receiptTrustedKeys = Array.Empty<object>(),
                 authorizationTrustedKeys = Array.Empty<object>(),
                 evidenceKeyId = "evidence-key",
@@ -131,7 +168,6 @@ public sealed class MigrationConsoleTests : IDisposable
                 planPath = "missing-plan.json",
                 authorizationPath = "missing-authorization.json",
                 outputPath = "execution.json",
-                runnerDigestSha256 = new string('a', 64),
                 receiptTrustedKeys = Array.Empty<object>(),
                 authorizationTrustedKeys = Array.Empty<object>(),
                 evidenceKeyId = "evidence-key",

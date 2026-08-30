@@ -222,12 +222,13 @@ accepted only through environment references. The target-administration
 connection is supplied through `LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION`.
 That connection is the unprivileged shadow runtime role; it must be `NOCREATEDB`.
 Database lifecycle is requested through the CloudNativePG `Database` API using
-`LEGACY_MIGRATION_CNPG_API_SERVER` and the projected service-account token path in
-`LEGACY_MIGRATION_CNPG_TOKEN_FILE`. `LEGACY_MIGRATION_CNPG_CA_FILE` must point to
-the projected Kubernetes service-account CA. The client requires HTTPS, validates
-the API server against that CA, and rereads the short-lived bound token for every
-request. The protected command configuration pins the
-`cloudNativePgNamespace` and `cloudNativePgCluster` values.
+the fixed in-cluster `https://kubernetes.default.svc` endpoint and fixed projected
+service-account token and CA paths. Caller-supplied API endpoints, trust paths,
+namespaces, clusters, runner paths, and runner digests are rejected. The client
+validates the API server against the projected CA and rereads the short-lived
+bound token for every request. Authorization and execution independently measure
+the owner-only, non-link Release publication and observe exactly
+`maliev-legacy/legacy-postgres-main` before any journal or shadow mutation.
 The durable journal uses an independently supplied
 `LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION` whose database must be exactly
 `legacy_migration_control`. The protected command configuration names the
@@ -255,10 +256,15 @@ generation/status/spec and PostgreSQL owner/ACL before use. Direct SQL database
 creation by the migration credential is forbidden.
 
 The GitOps lane must supply namespace-scoped RBAC and a validating-admission
-policy that allow this service account to create/update/get only
-`postgresql.cnpg.io/v1 Database` resources for the pinned cluster, owner, labels,
-and `legacy_shadow_*` name contract. Those dormant manifests are deliberately not
-applied by this repository. This repository also does not apply PostgreSQL ACL
+policy that selects every mutation made by the dedicated migration service account
+and every current or old object whose metadata uses `legacy-shadow-*` or whose
+database name uses `legacy_shadow_*`. Validation allows only the exact
+service-account plus run-owned shadow-name combination. Migration attempts against
+canonical or malformed resources and non-migration attempts against shadow resources
+are denied, while unrelated identities acting on canonical Database resources are
+not selected. The allowed `postgresql.cnpg.io/v1 Database` resources remain bound
+to the pinned cluster, owner, labels, and `legacy_shadow_*` name contract. Those
+dormant manifests are deliberately not applied by this repository. This repository also does not apply PostgreSQL ACL
 changes automatically. Replay, fencing, lease expiry, crash cleanup,
 and wrong-target checks remain enforced by the guarded runner. The command writes
 a new signed execution receipt and has no canonical-target or deployment mode.

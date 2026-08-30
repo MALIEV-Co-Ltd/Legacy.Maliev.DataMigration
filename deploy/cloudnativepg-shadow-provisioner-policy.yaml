@@ -14,6 +14,10 @@ rules:
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["databases"]
     verbs: ["get", "create", "patch", "delete"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters"]
+    resourceNames: ["legacy-postgres-main"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -42,11 +46,15 @@ spec:
         operations: ["CREATE", "UPDATE", "DELETE"]
         resources: ["databases"]
   matchConditions:
-    - name: shadow-resources-only
-      expression: "request.namespace == 'maliev-legacy' && ((object != null && (object.metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$') || object.spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$'))) || (oldObject != null && (oldObject.metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$') || oldObject.spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$'))))"
+    - name: migration-identity-or-shadow-object
+      expression: "request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner' || (object != null && (object.metadata.name.startsWith('legacy-shadow-') || object.spec.name.startsWith('legacy_shadow_'))) || (oldObject != null && (oldObject.metadata.name.startsWith('legacy-shadow-') || oldObject.spec.name.startsWith('legacy_shadow_')))"
   validations:
+    - expression: "request.namespace == 'maliev-legacy'"
+      message: Migration Database mutations are restricted to the maliev-legacy namespace.
     - expression: "request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner'"
       message: Only the dedicated migration identity may mutate legacy shadow resources.
+    - expression: "(object == null ? oldObject : object).metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$') && (object == null ? oldObject : object).spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$')"
+      message: Only exact run-owned shadow Database resources are permitted.
     - expression: "(object == null ? oldObject : object).metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$')"
       message: Only exact run-owned legacy shadow resources are permitted.
     - expression: "(object == null ? oldObject : object).spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$') && size((object == null ? oldObject : object).spec.name) <= 63"
