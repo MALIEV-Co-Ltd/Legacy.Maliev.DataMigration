@@ -8,6 +8,33 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"exact25-adapters-{Guid.NewGuid():N}");
 
     [Fact]
+    public void DockerCleanup_RecordsNonZeroExitAndPreservesMachineReadableCode()
+    {
+        var failures = new List<Exception>();
+
+        DockerDisposableSqlServerProvisioner.AddCleanupFailure(
+            failures,
+            exitCode: 1,
+            code: "restore_container_cleanup_failed");
+
+        Exact25FullBackupException failure = Assert.IsType<Exact25FullBackupException>(Assert.Single(failures));
+        Assert.Equal("restore_container_cleanup_failed", failure.Code);
+    }
+
+    [Fact]
+    public void DockerCleanup_AcceptsOnlySuccessfulRemoval()
+    {
+        var failures = new List<Exception>();
+
+        DockerDisposableSqlServerProvisioner.AddCleanupFailure(
+            failures,
+            exitCode: 0,
+            code: "restore_volume_cleanup_failed");
+
+        Assert.Empty(failures);
+    }
+
+    [Fact]
     public async Task KubernetesAdapter_UsesPinnedPodIdentityExactInventoryAndSafeFixedCommands()
     {
         var runner = new RecordingBackupProcessRunner([

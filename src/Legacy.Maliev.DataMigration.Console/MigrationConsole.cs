@@ -465,7 +465,7 @@ public static class MigrationConsole
                 maximumReceiptAge,
                 cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (Exception restoreException)
         {
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             try
@@ -473,9 +473,14 @@ public static class MigrationConsole
                 await DockerDisposableSqlServerProvisioner.CleanupAsync(
                     restore.SqlServerContainerName, restore.StagingVolumeName, cleanup.Token).ConfigureAwait(false);
             }
-            catch (Exception)
+            catch (Exception cleanupException)
             {
+                throw new AggregateException(
+                    "The verified SQL Server restore failed and its run-owned Docker resources could not be fully removed.",
+                    restoreException,
+                    cleanupException);
             }
+
             throw;
         }
     }

@@ -22,6 +22,7 @@ public sealed class MigrationScriptContractTests
         string source = File.ReadAllText(SourceCodePath("VerifiedBackupRestorer.cs"));
         string staging = File.ReadAllText(SourceCodePath("DockerVolumeBackupStager.cs"));
         string provisioning = File.ReadAllText(SourceCodePath("DockerDisposableSqlServerProvisioner.cs"));
+        string console = File.ReadAllText(ConsoleSourceCodePath("MigrationConsole.cs"));
         Assert.Contains("RESTORE VERIFYONLY", source, StringComparison.Ordinal);
         Assert.Contains("WITH CHECKSUM", source, StringComparison.Ordinal);
         Assert.Contains("CommandTimeout = 0", source, StringComparison.Ordinal);
@@ -40,6 +41,10 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("SET ALLOW_SNAPSHOT_ISOLATION ON", source, StringComparison.Ordinal);
         Assert.Contains("snapshot_isolation_state", source, StringComparison.Ordinal);
         Assert.Contains("SET READ_ONLY", source, StringComparison.Ordinal);
+        Assert.Contains("restore_container_cleanup_failed", provisioning, StringComparison.Ordinal);
+        Assert.Contains("restore_volume_cleanup_failed", provisioning, StringComparison.Ordinal);
+        Assert.Contains("restoreException", console, StringComparison.Ordinal);
+        Assert.Contains("cleanupException", console, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -68,5 +73,11 @@ public sealed class MigrationScriptContractTests
     {
         return Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "../../../../../src/Legacy.Maliev.DataMigration", file));
+    }
+
+    private static string ConsoleSourceCodePath(string file)
+    {
+        return Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "../../../../../src/Legacy.Maliev.DataMigration.Console", file));
     }
 }

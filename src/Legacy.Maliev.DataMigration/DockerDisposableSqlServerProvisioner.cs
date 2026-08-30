@@ -66,17 +66,24 @@ public sealed partial class DockerDisposableSqlServerProvisioner
             containerCreated = true;
             await WaitUntilReadyAsync(connection.ConnectionString, cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (Exception provisionException)
         {
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            if (containerCreated)
+            try
             {
-                _ = await RunDockerAsync(["rm", "-f", containerName], null, cleanup.Token).ConfigureAwait(false);
+                await CleanupCreatedResourcesAsync(
+                    containerCreated ? containerName : null,
+                    volumeCreated ? volumeName : null,
+                    cleanup.Token).ConfigureAwait(false);
             }
-            if (volumeCreated)
+            catch (Exception cleanupException)
             {
-                _ = await RunDockerAsync(["volume", "rm", "-f", volumeName], null, cleanup.Token).ConfigureAwait(false);
+                throw new AggregateException(
+                    "Disposable SQL Server provisioning failed and its run-owned Docker resources could not be fully removed.",
+                    provisionException,
+                    cleanupException);
             }
+
             throw;
         }
     }
@@ -85,8 +92,85 @@ public sealed partial class DockerDisposableSqlServerProvisioner
     {
         ValidateName(containerName, nameof(containerName));
         ValidateName(volumeName, nameof(volumeName));
-        _ = await RunDockerAsync(["rm", "-f", containerName], null, cancellationToken).ConfigureAwait(false);
-        _ = await RunDockerAsync(["volume", "rm", "-f", volumeName], null, cancellationToken).ConfigureAwait(false);
+        await CleanupCreatedResourcesAsync(containerName, volumeName, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task CleanupCreatedResourcesAsync(
+        string? containerName,
+        string? volumeName,
+        CancellationToken cancellationToken)
+    {
+        var failures = new List<Exception>();
+        if (containerName is not null)
+        {
+            await TryRemoveResourceAsync(
+                failures,
+                ["rm", "-f", containerName],
+                "restore_container_cleanup_failed",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (volumeName is not null)
+        {
+            await TryRemoveResourceAsync(
+                failures,
+                ["volume", "rm", "-f", volumeName],
+                "restore_volume_cleanup_failed",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (failures.Count == 1)
+        {
+            throw failures[0];
+        }
+
+        if (failures.Count > 1)
+        {
+            throw new AggregateException(
+                "The run-owned disposable SQL Server container and volume could not be fully removed.",
+                failures);
+        }
+    }
+
+    private static async Task TryRemoveResourceAsync(
+        List<Exception> failures,
+        IReadOnlyList<string> arguments,
+        string code,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            DockerResult result = await RunDockerAsync(arguments, null, cancellationToken).ConfigureAwait(false);
+            AddCleanupFailure(failures, result, code);
+        }
+        catch (Exception exception)
+        {
+            failures.Add(new AggregateException(
+                "A run-owned disposable Docker restore resource cleanup command did not complete.",
+                new Exact25FullBackupException(code, "A run-owned disposable Docker restore resource could not be removed."),
+                exception));
+        }
+    }
+
+    internal static void AddCleanupFailure(
+        List<Exception> failures,
+        int exitCode,
+        string code)
+    {
+        AddCleanupFailure(failures, new DockerResult(exitCode, string.Empty, string.Empty), code);
+    }
+
+    private static void AddCleanupFailure(
+        List<Exception> failures,
+        DockerResult result,
+        string code)
+    {
+        if (result.ExitCode != 0)
+        {
+            failures.Add(new Exact25FullBackupException(
+                code,
+                "A run-owned disposable Docker restore resource could not be removed."));
+        }
     }
 
     private static async Task WaitUntilReadyAsync(string connectionString, CancellationToken cancellationToken)
