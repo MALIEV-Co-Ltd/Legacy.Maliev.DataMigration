@@ -17,12 +17,92 @@ public sealed record AppHostMigrationEvidenceV2Configuration(
     DateTimeOffset LeaseAcquiredAtUtc,
     DateTimeOffset LeaseExpiresAtUtc);
 
+public sealed record MigrationEvidenceProvenanceReceipt(
+    string SchemaVersion,
+    string SourceSnapshotId,
+    string BackupUri,
+    string BackupObjectGeneration,
+    string RestoreId,
+    Guid EvidenceId,
+    Guid LeaseId,
+    DateTimeOffset LeaseAcquiredAtUtc,
+    DateTimeOffset LeaseExpiresAtUtc,
+    Guid RunId,
+    string SourceCommitSha,
+    string SchemaPlanSha256,
+    string BackupManifestSha256,
+    string RunnerDigestSha256,
+    string TargetGeneration,
+    DateTimeOffset IssuedAtUtc,
+    string AttestationKeyId,
+    string? AttestationSignature);
+
+public static class MigrationEvidenceProvenanceAttestation
+{
+    private const string DomainSeparator = "Legacy.Maliev.DataMigration.EvidenceProvenance.v1";
+
+    public static bool TryCreatePayload(MigrationEvidenceProvenanceReceipt receipt, out byte[] payload)
+    {
+        ArgumentNullException.ThrowIfNull(receipt);
+        payload = [];
+        if (string.IsNullOrWhiteSpace(receipt.SchemaVersion) || string.IsNullOrWhiteSpace(receipt.SourceSnapshotId) ||
+            string.IsNullOrWhiteSpace(receipt.BackupUri) || string.IsNullOrWhiteSpace(receipt.BackupObjectGeneration) ||
+            string.IsNullOrWhiteSpace(receipt.RestoreId) || receipt.EvidenceId == Guid.Empty || receipt.LeaseId == Guid.Empty ||
+            receipt.RunId == Guid.Empty || string.IsNullOrWhiteSpace(receipt.SourceCommitSha) ||
+            string.IsNullOrWhiteSpace(receipt.SchemaPlanSha256) || string.IsNullOrWhiteSpace(receipt.BackupManifestSha256) ||
+            string.IsNullOrWhiteSpace(receipt.RunnerDigestSha256) || string.IsNullOrWhiteSpace(receipt.TargetGeneration) ||
+            string.IsNullOrWhiteSpace(receipt.AttestationKeyId))
+        {
+            return false;
+        }
+
+        using MemoryStream stream = new();
+        using (BinaryWriter writer = new(stream, new UTF8Encoding(false), leaveOpen: true))
+        {
+            Write(writer, DomainSeparator);
+            Write(writer, receipt.SchemaVersion);
+            Write(writer, receipt.SourceSnapshotId);
+            Write(writer, receipt.BackupUri);
+            Write(writer, receipt.BackupObjectGeneration);
+            Write(writer, receipt.RestoreId);
+            Write(writer, receipt.EvidenceId.ToString("D"));
+            Write(writer, receipt.LeaseId.ToString("D"));
+            Write(writer, Utc(receipt.LeaseAcquiredAtUtc));
+            Write(writer, Utc(receipt.LeaseExpiresAtUtc));
+            Write(writer, receipt.RunId.ToString("D"));
+            Write(writer, receipt.SourceCommitSha);
+            Write(writer, receipt.SchemaPlanSha256);
+            Write(writer, receipt.BackupManifestSha256);
+            Write(writer, receipt.RunnerDigestSha256);
+            Write(writer, receipt.TargetGeneration);
+            Write(writer, Utc(receipt.IssuedAtUtc));
+            Write(writer, receipt.AttestationKeyId);
+        }
+
+        payload = stream.ToArray();
+        return true;
+    }
+
+    private static void Write(BinaryWriter writer, string value)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(value);
+        writer.Write(bytes.Length);
+        writer.Write(bytes);
+    }
+
+    private static string Utc(DateTimeOffset value)
+    {
+        return value.ToUniversalTime().ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+    }
+}
+
 public sealed record AppHostMigrationEvidenceV2Request(
     MigrationExecutionResult ExecutionResult,
     BackupReceipt BackupReceipt,
     FreshSchemaPlan SchemaPlan,
     ExecutionAuthorizationReceipt Authorization,
-    AppHostMigrationEvidenceV2Configuration Configuration);
+    AppHostMigrationEvidenceV2Configuration Configuration,
+    MigrationEvidenceProvenanceReceipt Provenance);
 
 public sealed record AppHostMigrationEvidenceV2Document(
     string EvidenceJson,
@@ -46,6 +126,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
         IReceiptAttestationTrustStore backupTrust,
         IReceiptAttestationTrustStore authorizationTrust,
         IReceiptAttestationTrustStore executionTrust,
+        IReceiptAttestationTrustStore provenanceTrust,
         IMigrationEvidenceSigner evidenceSigner,
         TimeProvider timeProvider)
     {
@@ -53,10 +134,11 @@ public static partial class AppHostMigrationEvidenceV2Producer
         ArgumentNullException.ThrowIfNull(backupTrust);
         ArgumentNullException.ThrowIfNull(authorizationTrust);
         ArgumentNullException.ThrowIfNull(executionTrust);
+        ArgumentNullException.ThrowIfNull(provenanceTrust);
         ArgumentNullException.ThrowIfNull(evidenceSigner);
         ArgumentNullException.ThrowIfNull(timeProvider);
 
-        Validate(request, backupTrust, authorizationTrust, executionTrust, timeProvider.GetUtcNow());
+        Validate(request, backupTrust, authorizationTrust, executionTrust, provenanceTrust, timeProvider.GetUtcNow());
         string planSha256 = SchemaPlanCanonicalizer.ComputeSha256(request.SchemaPlan);
         JsonArray mappingDatabases = BuildMapping(request.SchemaPlan);
         JsonArray databaseEvidence = BuildDatabaseEvidence(request, planSha256);
@@ -141,6 +223,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
         IReceiptAttestationTrustStore backupTrust,
         IReceiptAttestationTrustStore authorizationTrust,
         IReceiptAttestationTrustStore executionTrust,
+        IReceiptAttestationTrustStore provenanceTrust,
         DateTimeOffset nowUtc)
     {
         MigrationExecutionReceipt execution = request.ExecutionResult.Receipt;
@@ -155,6 +238,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
         VerifyBackup(request.BackupReceipt, backupTrust);
         VerifyAuthorization(request.Authorization, authorizationTrust);
         VerifyExecution(execution, executionTrust);
+        VerifyProvenance(request.Provenance, provenanceTrust);
 
         string planSha256 = SchemaPlanCanonicalizer.ComputeSha256(request.SchemaPlan);
         if (!string.Equals(request.SchemaPlan.SchemaVersion, "2.0", StringComparison.Ordinal) ||
@@ -170,6 +254,26 @@ public static partial class AppHostMigrationEvidenceV2Producer
             !string.Equals(execution.TargetGeneration, request.Authorization.TargetGeneration, StringComparison.Ordinal))
         {
             throw Error("evidence_binding_invalid", "Execution, receipt, plan, and authorization bindings do not match.");
+        }
+
+        MigrationEvidenceProvenanceReceipt provenance = request.Provenance;
+        AppHostMigrationEvidenceV2Configuration configuration = request.Configuration;
+        if (!string.Equals(provenance.SchemaVersion, "1.0", StringComparison.Ordinal) ||
+            !string.Equals(provenance.SourceSnapshotId, configuration.SourceSnapshotId, StringComparison.Ordinal) ||
+            !string.Equals(provenance.BackupUri, configuration.BackupUri, StringComparison.Ordinal) ||
+            !string.Equals(provenance.BackupObjectGeneration, configuration.BackupObjectGeneration, StringComparison.Ordinal) ||
+            !string.Equals(provenance.RestoreId, configuration.RestoreId, StringComparison.Ordinal) ||
+            provenance.EvidenceId != configuration.EvidenceId || provenance.LeaseId != configuration.LeaseId ||
+            provenance.LeaseAcquiredAtUtc != configuration.LeaseAcquiredAtUtc ||
+            provenance.LeaseExpiresAtUtc != configuration.LeaseExpiresAtUtc ||
+            provenance.RunId != execution.RunId ||
+            !string.Equals(provenance.SourceCommitSha, execution.SourceCommitSha, StringComparison.Ordinal) ||
+            !FixedHashEquals(provenance.SchemaPlanSha256, planSha256) ||
+            !FixedHashEquals(provenance.BackupManifestSha256, request.BackupReceipt.ManifestSha256) ||
+            !FixedHashEquals(provenance.RunnerDigestSha256, execution.RunnerDigestSha256) ||
+            !string.Equals(provenance.TargetGeneration, execution.TargetGeneration, StringComparison.Ordinal))
+        {
+            throw Error("provenance_binding_invalid", "Signed evidence provenance does not match the migration artifacts and configuration.");
         }
 
         string[] expected = [.. DatabaseInventory.ActiveDatabases];
@@ -191,6 +295,14 @@ public static partial class AppHostMigrationEvidenceV2Producer
             request.Configuration.LeaseExpiresAtUtc <= nowUtc)
         {
             throw Error("evidence_window_invalid", "Evidence timing is outside the signed one-hour shadow authorization window.");
+        }
+
+
+        if (provenance.IssuedAtUtc < request.Authorization.IssuedAtUtc ||
+            provenance.IssuedAtUtc > execution.CompletedAtUtc ||
+            !BackupArtifactsMatchSignedProvenance(request.BackupReceipt, provenance.BackupUri))
+        {
+            throw Error("provenance_binding_invalid", "Signed evidence provenance is outside the execution window or backup receipt scope.");
         }
 
         if (!SafeIdentifier().IsMatch(request.Configuration.SourceSnapshotId) ||
@@ -428,6 +540,28 @@ public static partial class AppHostMigrationEvidenceV2Producer
         }
     }
 
+    private static void VerifyProvenance(MigrationEvidenceProvenanceReceipt receipt, IReceiptAttestationTrustStore trust)
+    {
+        if (!MigrationEvidenceProvenanceAttestation.TryCreatePayload(receipt, out byte[] payload) ||
+            !Verify(receipt.AttestationKeyId, receipt.AttestationSignature, payload, trust))
+        {
+            throw Error("provenance_receipt_invalid", "The signed migration evidence provenance receipt is invalid.");
+        }
+    }
+
+    private static bool BackupArtifactsMatchSignedProvenance(BackupReceipt receipt, string backupUri)
+    {
+        Match match = BackupUriParts().Match(backupUri);
+        if (!match.Success || receipt.Artifacts is null)
+        {
+            return false;
+        }
+
+        string prefix = match.Groups["prefix"].Value;
+        return receipt.Artifacts.All(artifact => artifact is not null && artifact.GcsGeneration > 0 &&
+            !string.IsNullOrWhiteSpace(artifact.GcsObject) && artifact.GcsObject.StartsWith(prefix, StringComparison.Ordinal));
+    }
+
     private static bool Verify(string? keyId, string? signatureBase64, byte[] payload, IReceiptAttestationTrustStore trust)
     {
         if (string.IsNullOrWhiteSpace(keyId) || string.IsNullOrWhiteSpace(signatureBase64) || !trust.ContainsKey(keyId))
@@ -517,6 +651,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
     [GeneratedRegex("^[0-9a-fA-F]{64}$", RegexOptions.CultureInvariant)] private static partial Regex Sha256Value();
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", RegexOptions.CultureInvariant)] private static partial Regex SafeIdentifier();
     [GeneratedRegex("^gs://[A-Za-z0-9._-]+(?:/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)*$", RegexOptions.CultureInvariant)] private static partial Regex BackupUri();
+    [GeneratedRegex("^gs://(?<bucket>[A-Za-z0-9._-]+)/(?<prefix>[A-Za-z0-9._~!$&'()*+,;=:@%/-]*/)$", RegexOptions.CultureInvariant)] private static partial Regex BackupUriParts();
 }
 
 public static class AppHostMigrationEvidenceV2Canonicalizer

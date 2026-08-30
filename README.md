@@ -194,8 +194,12 @@ fixture.
 ## Downstream evidence compatibility
 
 The `evidence` command converts the signed execution result, signed backup
-receipt, signed execution authorization, fresh plan, and protected evidence
-configuration into the exact AppHost schema-version-2 contract. It preserves
+receipt, signed execution authorization, fresh plan, and separately signed
+provenance receipt into the exact AppHost schema-version-2 contract. The
+provenance receipt binds the backup URI and object generation, restore/evidence/
+lease identities and lease times, run identity, plan, backup manifest, runner,
+and target generation through an independently trusted key; unsigned console
+configuration must match it exactly. It preserves
 the independently observed SQL Server and PostgreSQL schema fingerprints; it
 never fabricates an equal cross-engine schema hash. The signed result now retains
 observed foreign-key relationship counts and source/target sequence-next-value
@@ -208,10 +212,13 @@ must still be recorded independently and supplied to the AppHost verifier.
 
 The final document is signed with an externally supplied ECDSA P-256 key using
 the AppHost canonical JSON rules. Missing upstream signatures, relationship or
-sequence observations, inventory members, binding hashes, safe provenance, or
+sequence observations, inventory members, binding hashes, signed provenance, or
 one-hour evidence/lease timing fail closed. The console writes both outputs with
 create-new semantics and removes the evidence document if baseline creation
-fails. No connection string, private key, raw row, or filesystem path is emitted.
+fails. Evidence and baseline are first written into an owner-only staging
+directory and published together by one atomic directory rename; a failed stage
+leaves neither artifact available. No connection string, private key, raw row,
+or filesystem path is emitted.
 
 ## Remaining release blockers
 

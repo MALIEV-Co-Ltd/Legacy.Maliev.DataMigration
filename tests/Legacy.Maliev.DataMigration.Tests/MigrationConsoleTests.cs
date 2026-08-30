@@ -113,11 +113,11 @@ public sealed class MigrationConsoleTests : IDisposable
             evidence = new
             {
                 executionResultPath = "execution.json",
+                provenancePath = "provenance.json",
                 receiptPath = "receipt.json",
                 planPath = "plan.json",
                 authorizationPath = "authorization.json",
-                outputPath = "evidence.json",
-                approvedBaselineOutputPath = "baseline.json",
+                publicationDirectory = "publication",
                 sourceSnapshotId = "source-current",
                 backupUri = "gs://maliev.com/database/full/2026-08-30/",
                 backupObjectGeneration = "generation-20260830",
@@ -129,6 +129,7 @@ public sealed class MigrationConsoleTests : IDisposable
                 backupTrustedKeys = Array.Empty<object>(),
                 authorizationTrustedKeys = Array.Empty<object>(),
                 executionTrustedKeys = Array.Empty<object>(),
+                provenanceTrustedKeys = Array.Empty<object>(),
                 evidenceKeyId = "evidence-key",
             },
         }, JsonOptions));

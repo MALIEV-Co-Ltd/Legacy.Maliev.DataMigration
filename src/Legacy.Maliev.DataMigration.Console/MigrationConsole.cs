@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -103,6 +102,8 @@ public static class MigrationConsole
 
         MigrationExecutionResult result = await ReadJsonAsync<MigrationExecutionResult>(evidence.ExecutionResultPath, cancellationToken)
             .ConfigureAwait(false);
+        MigrationEvidenceProvenanceReceipt provenance = await ReadJsonAsync<MigrationEvidenceProvenanceReceipt>(evidence.ProvenancePath, cancellationToken)
+            .ConfigureAwait(false);
         BackupReceipt receipt = await ReadJsonAsync<BackupReceipt>(evidence.ReceiptPath, cancellationToken).ConfigureAwait(false);
         FreshSchemaPlan plan = await ReadJsonAsync<FreshSchemaPlan>(evidence.PlanPath, cancellationToken).ConfigureAwait(false);
         ExecutionAuthorizationReceipt authorization = await ReadJsonAsync<ExecutionAuthorizationReceipt>(evidence.AuthorizationPath, cancellationToken)
@@ -110,6 +111,7 @@ public static class MigrationConsole
         ReceiptAttestationTrustStore backupTrust = await ReadTrustStoreAsync(evidence.BackupTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(evidence.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(evidence.ExecutionTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore provenanceTrust = await ReadTrustStoreAsync(evidence.ProvenanceTrustedKeys, cancellationToken).ConfigureAwait(false);
         string privateKeyPem = await File.ReadAllTextAsync(keyPath, cancellationToken).ConfigureAwait(false);
         using var signer = new P256MigrationEvidenceSigner(evidence.EvidenceKeyId, privateKeyPem);
         var producerConfiguration = new AppHostMigrationEvidenceV2Configuration(
@@ -122,21 +124,24 @@ public static class MigrationConsole
             evidence.LeaseAcquiredAtUtc,
             evidence.LeaseExpiresAtUtc);
         AppHostMigrationEvidenceV2Document document = AppHostMigrationEvidenceV2Producer.Produce(
-            new(result, receipt, plan, authorization, producerConfiguration),
+            new(result, receipt, plan, authorization, producerConfiguration, provenance),
             backupTrust,
             authorizationTrust,
             executionTrust,
+            provenanceTrust,
             signer,
             TimeProvider.System);
-        await WriteNewTextAsync(evidence.OutputPath, document.EvidenceJson, cancellationToken).ConfigureAwait(false);
         try
         {
-            await WriteNewTextAsync(evidence.ApprovedBaselineOutputPath, document.ApprovedBaselineJson, cancellationToken).ConfigureAwait(false);
+            await MigrationEvidencePublication.PublishAsync(document, evidence.PublicationDirectory, cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (IOException)
         {
-            File.Delete(Path.GetFullPath(evidence.OutputPath));
-            throw;
+            throw new MigrationConsoleException("evidence_publication_failed", "Evidence publication failed before an atomic artifact set was available.");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            throw new MigrationConsoleException("evidence_publication_failed", "Evidence publication failed before an atomic artifact set was available.");
         }
     }
 
@@ -338,18 +343,6 @@ public static class MigrationConsole
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task WriteNewTextAsync(string path, string value, CancellationToken cancellationToken)
-    {
-        string fullPath = Path.GetFullPath(path);
-        _ = Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
-        await using FileStream stream = new(fullPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024,
-            FileOptions.Asynchronous | FileOptions.WriteThrough);
-        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 64 * 1024, leaveOpen: true);
-        await writer.WriteAsync(value.AsMemory(), cancellationToken).ConfigureAwait(false);
-        await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     private sealed record MigrationConsoleConfiguration(
         ReceiptCommandConfiguration? Receipt = null,
         PlanCommandConfiguration? Plan = null,
@@ -375,11 +368,11 @@ public static class MigrationConsole
 
     private sealed record EvidenceCommandConfiguration(
         string ExecutionResultPath,
+        string ProvenancePath,
         string ReceiptPath,
         string PlanPath,
         string AuthorizationPath,
-        string OutputPath,
-        string ApprovedBaselineOutputPath,
+        string PublicationDirectory,
         string SourceSnapshotId,
         string BackupUri,
         string BackupObjectGeneration,
@@ -391,6 +384,7 @@ public static class MigrationConsole
         IReadOnlyList<TrustedKeyReference> BackupTrustedKeys,
         IReadOnlyList<TrustedKeyReference> AuthorizationTrustedKeys,
         IReadOnlyList<TrustedKeyReference> ExecutionTrustedKeys,
+        IReadOnlyList<TrustedKeyReference> ProvenanceTrustedKeys,
         string EvidenceKeyId);
 
     private sealed record ExportLocalSnapshotCommandConfiguration(

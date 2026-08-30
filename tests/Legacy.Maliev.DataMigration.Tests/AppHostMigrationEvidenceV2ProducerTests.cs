@@ -12,6 +12,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
     private readonly ECDsa _backupKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _authorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _executionKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    private readonly ECDsa _provenanceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _evidenceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly DateTimeOffset _now = DateTimeOffset.UtcNow;
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"legacy-evidence-v2-{Guid.NewGuid():N}");
@@ -26,6 +27,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             fixture.BackupTrust,
             fixture.AuthorizationTrust,
             fixture.ExecutionTrust,
+            fixture.ProvenanceTrust,
             new P256MigrationEvidenceSigner("review-evidence", _evidenceKey.ExportECPrivateKeyPem()),
             new FixedTimeProvider(_now));
 
@@ -69,6 +71,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
                 fixture.BackupTrust,
                 fixture.AuthorizationTrust,
                 fixture.ExecutionTrust,
+                fixture.ProvenanceTrust,
                 new P256MigrationEvidenceSigner("review-evidence", _evidenceKey.ExportECPrivateKeyPem()),
                 new FixedTimeProvider(_now)));
 
@@ -86,6 +89,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
                 fixture.BackupTrust,
                 fixture.AuthorizationTrust,
                 fixture.ExecutionTrust,
+                fixture.ProvenanceTrust,
                 new P256MigrationEvidenceSigner("review-evidence", _evidenceKey.ExportECPrivateKeyPem()),
                 new FixedTimeProvider(_now)));
 
@@ -103,10 +107,83 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
                 fixture.BackupTrust,
                 fixture.AuthorizationTrust,
                 fixture.ExecutionTrust,
+                fixture.ProvenanceTrust,
                 new P256MigrationEvidenceSigner("review-evidence", _evidenceKey.ExportECPrivateKeyPem()),
                 new FixedTimeProvider(_now)));
 
         Assert.Equal("database_evidence_invalid", exception.Code);
+    }
+
+    [Fact]
+    public void Produce_UnsignedConfigurationDoesNotMatchSignedProvenanceFailsClosed()
+    {
+        EvidenceFixture fixture = CreateFixture();
+        AppHostMigrationEvidenceV2Request mismatched = fixture.Request with
+        {
+            Configuration = fixture.Request.Configuration with { RestoreId = "unsigned-override" },
+        };
+
+        MigrationEvidenceProductionException exception = Assert.Throws<MigrationEvidenceProductionException>(() =>
+            AppHostMigrationEvidenceV2Producer.Produce(
+                mismatched,
+                fixture.BackupTrust,
+                fixture.AuthorizationTrust,
+                fixture.ExecutionTrust,
+                fixture.ProvenanceTrust,
+                new P256MigrationEvidenceSigner("review-evidence", _evidenceKey.ExportECPrivateKeyPem()),
+                new FixedTimeProvider(_now)));
+
+        Assert.Equal("provenance_binding_invalid", exception.Code);
+    }
+
+    [Fact]
+    public void Produce_InvalidProvenanceSignatureCannotUseEvidenceSignerAsSigningOracle()
+    {
+        EvidenceFixture fixture = CreateFixture();
+        AppHostMigrationEvidenceV2Request tampered = fixture.Request with
+        {
+            Provenance = fixture.Request.Provenance with { BackupObjectGeneration = "unsigned-override" },
+            Configuration = fixture.Request.Configuration with { BackupObjectGeneration = "unsigned-override" },
+        };
+
+        MigrationEvidenceProductionException exception = Assert.Throws<MigrationEvidenceProductionException>(() =>
+            AppHostMigrationEvidenceV2Producer.Produce(
+                tampered,
+                fixture.BackupTrust,
+                fixture.AuthorizationTrust,
+                fixture.ExecutionTrust,
+                fixture.ProvenanceTrust,
+                new P256MigrationEvidenceSigner("review-evidence", _evidenceKey.ExportECPrivateKeyPem()),
+                new FixedTimeProvider(_now)));
+
+        Assert.Equal("provenance_receipt_invalid", exception.Code);
+    }
+
+    [Fact]
+    public void Produce_SignedBackupArtifactOutsideSignedProvenanceFailsClosed()
+    {
+        EvidenceFixture fixture = CreateFixture();
+        BackupArtifact?[] artifacts = fixture.Request.BackupReceipt.Artifacts!
+            .Select((artifact, index) => index == 0 ? artifact! with { GcsObject = "database/full/unrelated/backup.bak" } : artifact)
+            .ToArray();
+        BackupReceipt backup = SignBackupReceipt(fixture.Request.BackupReceipt with
+        {
+            Artifacts = artifacts,
+            AttestationSignature = null,
+        });
+        AppHostMigrationEvidenceV2Request mismatched = fixture.Request with { BackupReceipt = backup };
+
+        MigrationEvidenceProductionException exception = Assert.Throws<MigrationEvidenceProductionException>(() =>
+            AppHostMigrationEvidenceV2Producer.Produce(
+                mismatched,
+                fixture.BackupTrust,
+                fixture.AuthorizationTrust,
+                fixture.ExecutionTrust,
+                fixture.ProvenanceTrust,
+                new P256MigrationEvidenceSigner("review-evidence", _evidenceKey.ExportECPrivateKeyPem()),
+                new FixedTimeProvider(_now)));
+
+        Assert.Equal("provenance_binding_invalid", exception.Code);
     }
 
     [Fact]
@@ -115,26 +192,29 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         _ = Directory.CreateDirectory(_root);
         EvidenceFixture fixture = CreateFixture();
         string executionPath = await WriteJsonAsync("execution.json", fixture.Request.ExecutionResult);
+        string provenancePath = await WriteJsonAsync("provenance.json", fixture.Request.Provenance);
         string receiptPath = await WriteJsonAsync("receipt.json", fixture.Request.BackupReceipt);
         string planPath = await WriteJsonAsync("plan.json", fixture.Request.SchemaPlan);
         string authorizationPath = await WriteJsonAsync("authorization.json", fixture.Request.Authorization);
         string backupKeyPath = await WriteTextAsync("backup-public.txt", Convert.ToBase64String(_backupKey.ExportSubjectPublicKeyInfo()));
         string authorizationKeyPath = await WriteTextAsync("authorization-public.txt", Convert.ToBase64String(_authorizationKey.ExportSubjectPublicKeyInfo()));
         string executionKeyPath = await WriteTextAsync("execution-public.txt", Convert.ToBase64String(_executionKey.ExportSubjectPublicKeyInfo()));
+        string provenanceKeyPath = await WriteTextAsync("provenance-public.txt", Convert.ToBase64String(_provenanceKey.ExportSubjectPublicKeyInfo()));
         string signingKeyPath = await WriteTextAsync("evidence-private.pem", _evidenceKey.ExportECPrivateKeyPem());
-        string outputPath = Path.Combine(_root, "evidence.json");
-        string baselinePath = Path.Combine(_root, "baseline.json");
+        string publicationDirectory = Path.Combine(_root, "publication");
+        string outputPath = Path.Combine(publicationDirectory, "evidence.json");
+        string baselinePath = Path.Combine(publicationDirectory, "approved-baseline.json");
         AppHostMigrationEvidenceV2Configuration producer = fixture.Request.Configuration;
         string configPath = await WriteJsonAsync("config.json", new
         {
             evidence = new
             {
                 executionResultPath = executionPath,
+                provenancePath,
                 receiptPath,
                 planPath,
                 authorizationPath,
-                outputPath,
-                approvedBaselineOutputPath = baselinePath,
+                publicationDirectory,
                 sourceSnapshotId = producer.SourceSnapshotId,
                 backupUri = producer.BackupUri,
                 backupObjectGeneration = producer.BackupObjectGeneration,
@@ -146,6 +226,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
                 backupTrustedKeys = new[] { new { keyId = "backup-key", subjectPublicKeyInfoPath = backupKeyPath } },
                 authorizationTrustedKeys = new[] { new { keyId = "authorization-key", subjectPublicKeyInfoPath = authorizationKeyPath } },
                 executionTrustedKeys = new[] { new { keyId = "execution-key", subjectPublicKeyInfoPath = executionKeyPath } },
+                provenanceTrustedKeys = new[] { new { keyId = "provenance-key", subjectPublicKeyInfoPath = provenanceKeyPath } },
                 evidenceKeyId = "review-evidence",
             },
         });
@@ -204,6 +285,51 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             await process.WaitForExitAsync();
             Assert.True(process.ExitCode == 0, standardError + standardOutput);
         }
+
+        Directory.Delete(publicationDirectory, recursive: true);
+        await File.WriteAllTextAsync(publicationDirectory, "blocked publication destination");
+        using var rejectedOutput = new StringWriter();
+        using var rejectedError = new StringWriter();
+        int rejectedExitCode = await MigrationConsole.RunAsync(
+            ["evidence", "--config", configPath],
+            rejectedOutput,
+            rejectedError,
+            name => name == "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE" ? signingKeyPath : null,
+            CancellationToken.None);
+
+        Assert.Equal(65, rejectedExitCode);
+        Assert.Equal(string.Empty, rejectedOutput.ToString());
+        Assert.Equal("evidence_publication_failed" + Environment.NewLine, rejectedError.ToString());
+        Assert.False(File.Exists(outputPath));
+        Assert.False(File.Exists(baselinePath));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(_root, ".publication.*.tmp", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task EvidencePublication_SecondArtifactFailureLeavesNoPublishedOrStagedArtifacts()
+    {
+        _ = Directory.CreateDirectory(_root);
+        string publicationDirectory = Path.Combine(_root, "publication");
+        int writes = 0;
+
+        _ = await Assert.ThrowsAsync<IOException>(() => MigrationEvidencePublication.PublishAsync(
+            new AppHostMigrationEvidenceV2Document("evidence", "baseline"),
+            publicationDirectory,
+            async (path, content, cancellationToken) =>
+            {
+                writes++;
+                if (writes == 2)
+                {
+                    throw new IOException("simulated baseline failure");
+                }
+
+                await File.WriteAllTextAsync(path, content, cancellationToken);
+            },
+            CancellationToken.None));
+
+        Assert.Equal(2, writes);
+        Assert.False(Directory.Exists(publicationDirectory));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(_root, ".publication.*.tmp", SearchOption.TopDirectoryOnly));
     }
 
     private EvidenceFixture CreateFixture(
@@ -299,7 +425,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
                 Hash($"backup:{database}"),
                 Hash($"backup:{database}"))
             {
-                GcsObject = $"database/full/run/{database}.bak",
+                GcsObject = $"database/full/2026-08-30/{database}.bak",
                 GcsGeneration = index + 1,
                 GcsSha256 = Hash($"backup:{database}"),
             }).ToArray(),
@@ -341,11 +467,31 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             Guid.Parse("33333333-3333-4333-8333-333333333333"),
             _now.AddMinutes(-14),
             _now.AddMinutes(20));
+        MigrationEvidenceProvenanceReceipt provenance = SignProvenance(new(
+            "1.0",
+            configuration.SourceSnapshotId,
+            configuration.BackupUri,
+            configuration.BackupObjectGeneration,
+            configuration.RestoreId,
+            configuration.EvidenceId,
+            configuration.LeaseId,
+            configuration.LeaseAcquiredAtUtc,
+            configuration.LeaseExpiresAtUtc,
+            authorization.RunId,
+            sourceCommit,
+            planHash,
+            manifestHash,
+            runnerDigest,
+            authorization.TargetGeneration!,
+            _now.AddMinutes(-10),
+            "provenance-key",
+            null));
         return new(
-            new(result, backup, plan, authorization, configuration),
+            new(result, backup, plan, authorization, configuration, provenance),
             Trust("backup-key", _backupKey),
             Trust("authorization-key", _authorizationKey),
-            Trust("execution-key", _executionKey));
+            Trust("execution-key", _executionKey),
+            Trust("provenance-key", _provenanceKey));
     }
 
     private BackupReceipt SignBackupReceipt(BackupReceipt receipt)
@@ -389,6 +535,12 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         return path;
     }
 
+    private MigrationEvidenceProvenanceReceipt SignProvenance(MigrationEvidenceProvenanceReceipt receipt)
+    {
+        Assert.True(MigrationEvidenceProvenanceAttestation.TryCreatePayload(receipt, out byte[] payload));
+        return receipt with { AttestationSignature = Convert.ToBase64String(_provenanceKey.SignData(payload, HashAlgorithmName.SHA256)) };
+    }
+
     private async Task<string> WriteTextAsync(string name, string value)
     {
         string path = Path.Combine(_root, name);
@@ -401,6 +553,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         _backupKey.Dispose();
         _authorizationKey.Dispose();
         _executionKey.Dispose();
+        _provenanceKey.Dispose();
         _evidenceKey.Dispose();
         if (Directory.Exists(_root))
         {
@@ -412,7 +565,8 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         AppHostMigrationEvidenceV2Request Request,
         ReceiptAttestationTrustStore BackupTrust,
         ReceiptAttestationTrustStore AuthorizationTrust,
-        ReceiptAttestationTrustStore ExecutionTrust);
+        ReceiptAttestationTrustStore ExecutionTrust,
+        ReceiptAttestationTrustStore ProvenanceTrust);
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {
