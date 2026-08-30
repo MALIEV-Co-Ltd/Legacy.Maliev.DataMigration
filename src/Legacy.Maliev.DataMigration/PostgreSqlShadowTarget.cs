@@ -899,7 +899,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             {
                 const string sequenceSql = "SELECT pg_get_serial_sequence($1, $2);";
                 await using var sequence = new NpgsqlCommand(sequenceSql, connection, transaction);
-                _ = sequence.Parameters.AddWithValue($"{table.TargetSchema}.{table.TargetTable}");
+                _ = sequence.Parameters.AddWithValue(Qualified(table.TargetSchema, table.TargetTable));
                 _ = sequence.Parameters.AddWithValue(identity.Column);
                 string? sequenceName = (string?)await sequence.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
                 if (string.IsNullOrWhiteSpace(sequenceName))
@@ -980,7 +980,10 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     {
         const string sequenceSql = "SELECT pg_get_serial_sequence($1, $2);";
         await using var sequence = new NpgsqlCommand(sequenceSql, connection, transaction);
-        _ = sequence.Parameters.AddWithValue($"{table.TargetSchema}.{table.TargetTable}");
+        // pg_get_serial_sequence parses this argument as a relation name. Preserve the
+        // quoted identifiers used by ApplySchemaAsync so mixed-case source names are
+        // resolved exactly instead of being folded to lower case.
+        _ = sequence.Parameters.AddWithValue(Qualified(table.TargetSchema, table.TargetTable));
         _ = sequence.Parameters.AddWithValue(identity.Column);
         string? sequenceName = (string?)await sequence.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(sequenceName))
