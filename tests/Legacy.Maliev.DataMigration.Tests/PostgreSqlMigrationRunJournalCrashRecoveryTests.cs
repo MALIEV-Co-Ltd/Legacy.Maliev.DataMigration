@@ -115,7 +115,7 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
         Assert.Equal("shadow_inventory_invalid", staleCleanup.Code);
         Assert.Equal([successor], await restarted.GetPendingShadowsAsync(takeoverLease, CancellationToken.None));
 
-        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await using var connection = new NpgsqlConnection(fixture.ControlConnectionString);
         await connection.OpenAsync(CancellationToken.None);
         await using var command = new NpgsqlCommand(
             $"SELECT cleanup_attempts FROM \"{schema}\".migration_run_shadows WHERE run_id = $1 AND shadow_name = $2;",
@@ -130,7 +130,7 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
     private PostgreSqlMigrationRunJournal Journal(string schema, string owner, TimeProvider clock)
     {
         return new PostgreSqlMigrationRunJournal(new PostgreSqlMigrationRunJournalOptions(
-            fixture.ConnectionString,
+            fixture.ControlConnectionString,
             schema,
             owner,
             TimeSpan.FromMinutes(1),

@@ -15,6 +15,10 @@ public static class MigrationConsole
     private const string SigningKeyEnvironmentVariable = "LEGACY_MIGRATION_RECEIPT_SIGNING_KEY_FILE";
     private const string SqlServerConnectionEnvironmentVariable = "LEGACY_MIGRATION_SQLSERVER_CONNECTION";
     private const string PostgreSqlConnectionEnvironmentVariable = "LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION";
+    private const string PostgreSqlControlConnectionEnvironmentVariable = "LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION";
+    private const string CloudNativePgApiServerEnvironmentVariable = "LEGACY_MIGRATION_CNPG_API_SERVER";
+    private const string CloudNativePgTokenFileEnvironmentVariable = "LEGACY_MIGRATION_CNPG_TOKEN_FILE";
+    private const string CloudNativePgCaFileEnvironmentVariable = "LEGACY_MIGRATION_CNPG_CA_FILE";
     private const string EvidenceKeyEnvironmentVariable = "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE";
     private const string SnapshotKeyEnvironmentVariable = "LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE";
     private const string BackupSqlUserEnvironmentVariable = "LEGACY_MIGRATION_BACKUP_SQL_USERNAME";
@@ -137,6 +141,11 @@ public static class MigrationConsole
             return 70;
         }
         catch (MigrationExecutionException exception)
+        {
+            await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
+            return 70;
+        }
+        catch (PostgreSqlMigrationBoundaryException exception)
         {
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 70;
@@ -347,11 +356,25 @@ public static class MigrationConsole
             throw new MigrationConsoleException("shadow_configuration_missing", "Shadow execution configuration is required.");
         string? sourceConnection = getEnvironmentVariable(SqlServerConnectionEnvironmentVariable);
         string? targetConnection = getEnvironmentVariable(PostgreSqlConnectionEnvironmentVariable);
+        string? controlConnection = getEnvironmentVariable(PostgreSqlControlConnectionEnvironmentVariable);
+        string? cloudNativePgApiServer = getEnvironmentVariable(CloudNativePgApiServerEnvironmentVariable);
+        string? cloudNativePgTokenFile = getEnvironmentVariable(CloudNativePgTokenFileEnvironmentVariable);
+        string? cloudNativePgCaFile = getEnvironmentVariable(CloudNativePgCaFileEnvironmentVariable);
         string? evidenceKeyPath = getEnvironmentVariable(EvidenceKeyEnvironmentVariable);
-        if (string.IsNullOrWhiteSpace(sourceConnection) || string.IsNullOrWhiteSpace(targetConnection) || string.IsNullOrWhiteSpace(evidenceKeyPath))
+        if (string.IsNullOrWhiteSpace(sourceConnection) || string.IsNullOrWhiteSpace(targetConnection) ||
+            string.IsNullOrWhiteSpace(controlConnection) || string.IsNullOrWhiteSpace(evidenceKeyPath) ||
+            string.IsNullOrWhiteSpace(cloudNativePgApiServer) || string.IsNullOrWhiteSpace(cloudNativePgTokenFile) ||
+            string.IsNullOrWhiteSpace(cloudNativePgCaFile))
         {
             throw new MigrationConsoleException("shadow_runtime_reference_missing", "Shadow runtime references are required.");
         }
+
+        _ = await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateAsync(
+            controlConnection,
+            targetConnection,
+            execute.ExpectedControlRole,
+            execute.ExpectedShadowAdminRole,
+            cancellationToken).ConfigureAwait(false);
 
         BackupReceipt receipt = await ReadJsonAsync<BackupReceipt>(execute.ReceiptPath, cancellationToken).ConfigureAwait(false);
         FreshSchemaPlan plan = await ReadJsonAsync<FreshSchemaPlan>(execute.PlanPath, cancellationToken).ConfigureAwait(false);
@@ -362,8 +385,18 @@ public static class MigrationConsole
         string privateKeyPem = await File.ReadAllTextAsync(evidenceKeyPath, cancellationToken).ConfigureAwait(false);
         using var evidenceSigner = new P256MigrationEvidenceSigner(execute.EvidenceKeyId, privateKeyPem);
         await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(sourceConnection));
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(targetConnection));
-        var journal = new PostgreSqlMigrationRunJournal(new PostgreSqlMigrationRunJournalOptions(targetConnection));
+        using var provisioner = new CloudNativePgShadowDatabaseProvisioner(new(
+            new Uri(cloudNativePgApiServer, UriKind.Absolute),
+            execute.CloudNativePgNamespace,
+            execute.CloudNativePgCluster,
+            execute.ExpectedShadowAdminRole,
+            cloudNativePgTokenFile,
+            cloudNativePgCaFile,
+            TimeSpan.FromMinutes(5)));
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(targetConnection, provisioner));
+        var journal = new PostgreSqlMigrationRunJournal(new PostgreSqlMigrationRunJournalOptions(
+            controlConnection,
+            ExpectedControlRole: execute.ExpectedControlRole));
         var runner = new GuardedShadowMigrationRunner(
             new PreflightService(new DisabledExternalCommandExecutor(), receiptTrust),
             authorizationTrust,
@@ -753,7 +786,11 @@ public static class MigrationConsole
         string RunnerDigestSha256,
         IReadOnlyList<TrustedKeyReference> ReceiptTrustedKeys,
         IReadOnlyList<TrustedKeyReference> AuthorizationTrustedKeys,
-        string EvidenceKeyId);
+        string EvidenceKeyId,
+        string ExpectedControlRole,
+        string ExpectedShadowAdminRole,
+        string CloudNativePgNamespace = "maliev-legacy",
+        string CloudNativePgCluster = "legacy-postgres-main");
 
     private sealed record TrustedKeyReference(string KeyId, string SubjectPublicKeyInfoPath);
 

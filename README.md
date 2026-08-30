@@ -196,11 +196,50 @@ closed; a checked-in or hand-maintained schema plan is not accepted as fresh.
 `execute-shadow` reads the signed receipt, freshly generated plan, and separate
 signed execution authorization from protected file references. SQL Server and
 PostgreSQL connection strings plus the evidence-signing private-key path are
-accepted only through environment references. It uses the durable PostgreSQL
-journal and uniquely named, run-owned `legacy_shadow_*` databases; replay,
-fencing, lease expiry, crash cleanup, and wrong-target checks remain enforced by
-the guarded runner. The command writes a new signed execution receipt and has no
-canonical-target or deployment mode.
+accepted only through environment references. The target-administration
+connection is supplied through `LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION`.
+That connection is the unprivileged shadow runtime role; it must be `NOCREATEDB`.
+Database lifecycle is requested through the CloudNativePG `Database` API using
+`LEGACY_MIGRATION_CNPG_API_SERVER` and the projected service-account token path in
+`LEGACY_MIGRATION_CNPG_TOKEN_FILE`. `LEGACY_MIGRATION_CNPG_CA_FILE` must point to
+the projected Kubernetes service-account CA. The client requires HTTPS, validates
+the API server against that CA, and rereads the short-lived bound token for every
+request. The protected command configuration pins the
+`cloudNativePgNamespace` and `cloudNativePgCluster` values.
+The durable journal uses an independently supplied
+`LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION` whose database must be exactly
+`legacy_migration_control`. The protected command configuration names the
+expected control and shadow-administration roles. Startup verifies the observed
+database, role identities, and privileges: the control role has only local
+`CONNECT`/`CREATE`, while a distinct non-superuser shadow role has neither
+`CREATEDB` nor object-creation access in its administrative database.
+The preflight enumerates every database each role can connect to and recursively
+checks inherited roles. The control role may reach only `legacy_migration_control`;
+the shadow role may reach only its configured administrative database and
+role-owned names matching `legacy_shadow_*`. Canonical, unexpected, non-owned,
+and privileged inherited access fails closed. Newly created shadow databases
+immediately revoke `CONNECT` from `PUBLIC` before any data operation.
+
+PostgreSQL bootstrap must therefore revoke `PUBLIC` `CONNECT` from the configured
+administrative database, `template1`, the migration-control database, and every
+canonical database, then grant access explicitly to their dedicated roles. The
+shadow role receives `CONNECT` only on its administrative database and remains `NOCREATEDB`;
+the control role receives database-local `CONNECT` and `CREATE` only on
+`legacy_migration_control`. CloudNativePG first reconciles each exact run-owned
+`Database` resource with `allowConnections: false`; only after the runtime owner
+has revoked `PUBLIC` CONNECT and bound the ownership receipt does the resource
+move to `allowConnections: true`. The runtime re-observes the exact Kubernetes
+generation/status/spec and PostgreSQL owner/ACL before use. Direct SQL database
+creation by the migration credential is forbidden.
+
+The GitOps lane must supply namespace-scoped RBAC and a validating-admission
+policy that allow this service account to create/update/get only
+`postgresql.cnpg.io/v1 Database` resources for the pinned cluster, owner, labels,
+and `legacy_shadow_*` name contract. Those dormant manifests are deliberately not
+applied by this repository. This repository also does not apply PostgreSQL ACL
+changes automatically. Replay, fencing, lease expiry, crash cleanup,
+and wrong-target checks remain enforced by the guarded runner. The command writes
+a new signed execution receipt and has no canonical-target or deployment mode.
 
 `PreflightService.Validate` accepts an in-memory `BackupReceipt` and
 `MigrationPlan`. A valid receipt must:
