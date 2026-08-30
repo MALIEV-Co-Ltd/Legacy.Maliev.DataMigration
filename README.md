@@ -199,7 +199,10 @@ provenance receipt into the exact AppHost schema-version-2 contract. The
 provenance receipt binds the backup URI and object generation, restore/evidence/
 lease identities and lease times, run identity, plan, backup manifest, runner,
 and target generation through an independently trusted key; unsigned console
-configuration must match it exactly. It preserves
+configuration must match it exactly. Backup, authorization, execution,
+provenance, and final evidence signing roles must also expose five distinct
+canonical P-256 SPKI fingerprints, so different key identifiers cannot disguise
+reused key material. It preserves
 the independently observed SQL Server and PostgreSQL schema fingerprints; it
 never fabricates an equal cross-engine schema hash. The signed result now retains
 observed foreign-key relationship counts and source/target sequence-next-value

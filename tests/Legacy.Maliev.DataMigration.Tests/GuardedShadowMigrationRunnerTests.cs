@@ -661,6 +661,9 @@ public sealed class GuardedShadowMigrationRunnerTests
     {
         public string KeyId => keyId;
 
+        public string PublicKeyFingerprintSha256 { get; } = Convert.ToHexString(
+            SHA256.HashData(signingKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant();
+
         public byte[] Sign(ReadOnlySpan<byte> payload)
         {
             return signingKey.SignData(payload, HashAlgorithmName.SHA256);

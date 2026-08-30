@@ -138,7 +138,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
         ArgumentNullException.ThrowIfNull(evidenceSigner);
         ArgumentNullException.ThrowIfNull(timeProvider);
 
-        Validate(request, backupTrust, authorizationTrust, executionTrust, provenanceTrust, timeProvider.GetUtcNow());
+        Validate(request, backupTrust, authorizationTrust, executionTrust, provenanceTrust, evidenceSigner, timeProvider.GetUtcNow());
         string planSha256 = SchemaPlanCanonicalizer.ComputeSha256(request.SchemaPlan);
         JsonArray mappingDatabases = BuildMapping(request.SchemaPlan);
         JsonArray databaseEvidence = BuildDatabaseEvidence(request, planSha256);
@@ -224,6 +224,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
         IReceiptAttestationTrustStore authorizationTrust,
         IReceiptAttestationTrustStore executionTrust,
         IReceiptAttestationTrustStore provenanceTrust,
+        IMigrationEvidenceSigner evidenceSigner,
         DateTimeOffset nowUtc)
     {
         MigrationExecutionReceipt execution = request.ExecutionResult.Receipt;
@@ -239,6 +240,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
         VerifyAuthorization(request.Authorization, authorizationTrust);
         VerifyExecution(execution, executionTrust);
         VerifyProvenance(request.Provenance, provenanceTrust);
+        ValidateDistinctAttestationRoles(request, backupTrust, authorizationTrust, executionTrust, provenanceTrust, evidenceSigner);
 
         string planSha256 = SchemaPlanCanonicalizer.ComputeSha256(request.SchemaPlan);
         if (!string.Equals(request.SchemaPlan.SchemaVersion, "2.0", StringComparison.Ordinal) ||
@@ -546,6 +548,39 @@ public static partial class AppHostMigrationEvidenceV2Producer
             !Verify(receipt.AttestationKeyId, receipt.AttestationSignature, payload, trust))
         {
             throw Error("provenance_receipt_invalid", "The signed migration evidence provenance receipt is invalid.");
+        }
+    }
+
+    private static void ValidateDistinctAttestationRoles(
+        AppHostMigrationEvidenceV2Request request,
+        IReceiptAttestationTrustStore backupTrust,
+        IReceiptAttestationTrustStore authorizationTrust,
+        IReceiptAttestationTrustStore executionTrust,
+        IReceiptAttestationTrustStore provenanceTrust,
+        IMigrationEvidenceSigner evidenceSigner)
+    {
+        var roles = new (string? KeyId, IReceiptAttestationTrustStore Trust)[]
+        {
+            (request.BackupReceipt.AttestationKeyId, backupTrust),
+            (request.Authorization.AttestationKeyId, authorizationTrust),
+            (request.ExecutionResult.Receipt.AttestationKeyId, executionTrust),
+            (request.Provenance.AttestationKeyId, provenanceTrust),
+        };
+        List<string> fingerprints = [evidenceSigner.PublicKeyFingerprintSha256];
+        foreach ((string? keyId, IReceiptAttestationTrustStore trust) in roles)
+        {
+            if (keyId is null || !trust.TryGetPublicKeyFingerprintSha256(keyId, out string fingerprint))
+            {
+                throw Error("attestation_key_fingerprint_missing", "An attestation role does not expose its trusted public-key fingerprint.");
+            }
+
+            fingerprints.Add(fingerprint);
+        }
+
+        if (fingerprints.Any(fingerprint => !Sha256Value().IsMatch(fingerprint)) ||
+            fingerprints.Distinct(StringComparer.OrdinalIgnoreCase).Count() != fingerprints.Count)
+        {
+            throw Error("attestation_key_role_reuse", "Backup, authorization, execution, provenance, and evidence roles require distinct P-256 keys.");
         }
     }
 

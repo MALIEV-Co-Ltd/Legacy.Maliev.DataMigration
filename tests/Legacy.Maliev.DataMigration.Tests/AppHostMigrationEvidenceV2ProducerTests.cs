@@ -187,6 +187,27 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
     }
 
     [Fact]
+    public void Produce_DifferentKeyIdsWithSameProvenanceAndEvidenceKeyFailsBeforeSigning()
+    {
+        EvidenceFixture fixture = CreateFixture();
+        using var sameMaterialEvidenceSigner = new P256MigrationEvidenceSigner(
+            "different-evidence-key-id",
+            _provenanceKey.ExportECPrivateKeyPem());
+
+        MigrationEvidenceProductionException exception = Assert.Throws<MigrationEvidenceProductionException>(() =>
+            AppHostMigrationEvidenceV2Producer.Produce(
+                fixture.Request,
+                fixture.BackupTrust,
+                fixture.AuthorizationTrust,
+                fixture.ExecutionTrust,
+                fixture.ProvenanceTrust,
+                sameMaterialEvidenceSigner,
+                new FixedTimeProvider(_now)));
+
+        Assert.Equal("attestation_key_role_reuse", exception.Code);
+    }
+
+    [Fact]
     public async Task ConsoleEvidenceStage_WritesVerifierCompatibleEvidenceAndReviewBaseline()
     {
         _ = Directory.CreateDirectory(_root);
@@ -200,6 +221,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         string authorizationKeyPath = await WriteTextAsync("authorization-public.txt", Convert.ToBase64String(_authorizationKey.ExportSubjectPublicKeyInfo()));
         string executionKeyPath = await WriteTextAsync("execution-public.txt", Convert.ToBase64String(_executionKey.ExportSubjectPublicKeyInfo()));
         string provenanceKeyPath = await WriteTextAsync("provenance-public.txt", Convert.ToBase64String(_provenanceKey.ExportSubjectPublicKeyInfo()));
+        string provenancePrivateKeyPath = await WriteTextAsync("provenance-private.pem", _provenanceKey.ExportECPrivateKeyPem());
         string signingKeyPath = await WriteTextAsync("evidence-private.pem", _evidenceKey.ExportECPrivateKeyPem());
         string publicationDirectory = Path.Combine(_root, "publication");
         string outputPath = Path.Combine(publicationDirectory, "evidence.json");
@@ -287,6 +309,20 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         }
 
         Directory.Delete(publicationDirectory, recursive: true);
+        using var reusedKeyOutput = new StringWriter();
+        using var reusedKeyError = new StringWriter();
+        int reusedKeyExitCode = await MigrationConsole.RunAsync(
+            ["evidence", "--config", configPath],
+            reusedKeyOutput,
+            reusedKeyError,
+            name => name == "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE" ? provenancePrivateKeyPath : null,
+            CancellationToken.None);
+
+        Assert.Equal(65, reusedKeyExitCode);
+        Assert.Equal(string.Empty, reusedKeyOutput.ToString());
+        Assert.Equal("attestation_key_role_reuse" + Environment.NewLine, reusedKeyError.ToString());
+        Assert.False(Directory.Exists(publicationDirectory));
+
         await File.WriteAllTextAsync(publicationDirectory, "blocked publication destination");
         using var rejectedOutput = new StringWriter();
         using var rejectedError = new StringWriter();

@@ -297,6 +297,8 @@ public interface IMigrationEvidenceSigner
 {
     string KeyId { get; }
 
+    string PublicKeyFingerprintSha256 { get; }
+
     byte[] Sign(ReadOnlySpan<byte> payload);
 }
 

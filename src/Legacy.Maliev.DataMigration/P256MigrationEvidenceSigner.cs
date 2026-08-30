@@ -18,6 +18,9 @@ public sealed class P256MigrationEvidenceSigner : IMigrationEvidenceSigner, IDis
             {
                 throw new ArgumentException("The migration evidence key must be ECDSA P-256.", nameof(privateKeyPem));
             }
+
+            PublicKeyFingerprintSha256 = Convert.ToHexString(
+                SHA256.HashData(_key.ExportSubjectPublicKeyInfo())).ToLowerInvariant();
         }
         catch (CryptographicException exception)
         {
@@ -26,6 +29,8 @@ public sealed class P256MigrationEvidenceSigner : IMigrationEvidenceSigner, IDis
     }
 
     public string KeyId { get; }
+
+    public string PublicKeyFingerprintSha256 { get; }
 
     public byte[] Sign(ReadOnlySpan<byte> payload)
     {
