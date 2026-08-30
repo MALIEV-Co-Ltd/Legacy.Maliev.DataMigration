@@ -193,19 +193,40 @@ fixture.
 
 ## Downstream evidence compatibility
 
-`Legacy.Maliev.AppHost/scripts/verify-postgres-migration-evidence.ps1` currently
-requires `sourceSchemaSha256 == targetSchemaSha256`. That schema-v1 rule is not a
-valid semantic check for heterogeneous SQL Server-to-PostgreSQL conversion and
-must not be satisfied with a fabricated equal hash. This runner therefore does
-not emit that legacy aggregate. A separately reviewed AppHost schema-v2 evidence
-contract must compare each engine against its signed expected schema fingerprint
-while continuing to require exact row/data/null/FK/sequence parity.
+The `evidence` command converts the signed execution result, signed backup
+receipt, signed execution authorization, fresh plan, and separately signed
+provenance receipt into the exact AppHost schema-version-2 contract. The
+provenance receipt binds the backup URI and object generation, restore/evidence/
+lease identities and lease times, run identity, plan, backup manifest, runner,
+and target generation through an independently trusted key; unsigned console
+configuration must match it exactly. Backup, authorization, execution,
+provenance, and final evidence signing roles must also expose five distinct
+canonical P-256 SPKI fingerprints, so different key identifiers cannot disguise
+reused key material. It preserves
+the independently observed SQL Server and PostgreSQL schema fingerprints; it
+never fabricates an equal cross-engine schema hash. The signed result now retains
+observed foreign-key relationship counts and source/target sequence-next-value
+parity in addition to table rows, ordered content, null counts, aggregate hashes,
+and zero-orphan evidence. The schema-v2 document emits a single whole-table
+content batch backed by that signed table hash, the exact 25 migrated databases,
+the two excluded databases, deterministic nested mapping inventories, and a
+separate review baseline. The baseline is not self-approving: its byte SHA-256
+must still be recorded independently and supplied to the AppHost verifier.
+
+The final document is signed with an externally supplied ECDSA P-256 key using
+the AppHost canonical JSON rules. Missing upstream signatures, relationship or
+sequence observations, inventory members, binding hashes, signed provenance, or
+one-hour evidence/lease timing fail closed. The console writes both outputs with
+create-new semantics and removes the evidence document if baseline creation
+fails. Evidence and baseline are first written into an owner-only staging
+directory and published together by one atomic directory rename; a failed stage
+leaves neither artifact available. No connection string, private key, raw row,
+or filesystem path is emitted.
 
 ## Remaining release blockers
 
-This slice does not implement or approve a backup producer, an executable host,
-or daily production synchronization. Before a real shadow copy is allowed, the
-program still needs:
+This slice does not approve a production run or daily production
+synchronization. Before a real shadow copy is allowed, the program still needs:
 
 1. an independently reviewed producer that creates current verified full-backup
    receipts, observes hashes itself, protects its private signing key, and emits
@@ -216,8 +237,8 @@ program still needs:
    legacy source does not currently provide a proven complete daily delta);
 4. independently reviewed crash-restart coverage for the concrete SQL Server
    source adapter beyond the existing gated disposable SQL Server 2022 fixture;
-5. independent review and integration of the corrected AppHost schema-v2
-   aggregate described above;
+5. independent owner approval of the generated schema-v2 baseline hash and
+   one-time AppHost verification receipt;
 6. pre/post table, row, key, relationship, sequence, and business-invariant
    parity proofs;
 7. a pinned, reviewable GitOps job and workload identity design; and

@@ -376,6 +376,65 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         return results;
     }
 
+    public async Task<IReadOnlyDictionary<string, long>> InspectForeignKeyRelationshipsAsync(
+        string database,
+        TableCopyPlan table,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        SnapshotLease lease = GetSnapshot(database);
+        var results = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (ForeignKeyCopyPlan foreignKey in table.ForeignKeys.OrderBy(item => item.Name, StringComparer.Ordinal))
+        {
+            ForeignKeyMetadata metadata = await ReadForeignKeyMetadataAsync(
+                lease,
+                table,
+                foreignKey,
+                cancellationToken).ConfigureAwait(false);
+            string required = string.Join(" AND ", metadata.Columns.Select(
+                column => $"child.{QuoteIdentifier(column)} IS NOT NULL"));
+            string sql = $"SELECT COUNT_BIG(*) FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)} AS child WHERE {required};";
+            await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction);
+            results.Add(
+                foreignKey.Name,
+                Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                    System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        return new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(results);
+    }
+
+    public async Task<IReadOnlyDictionary<string, long>> InspectSequenceNextValuesAsync(
+        string database,
+        DatabaseSchemaPlan plan,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        SnapshotLease lease = GetSnapshot(database);
+        var results = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (TableCopyPlan table in plan.Tables)
+        {
+            foreach (IdentityCopyPlan identity in table.Identities.OrderBy(item => item.Column, StringComparer.Ordinal))
+            {
+                const string sql = "SELECT CONVERT(bigint, IDENT_CURRENT(@tableName)), CONVERT(bigint, IDENT_INCR(@tableName));";
+                await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction);
+                _ = command.Parameters.AddWithValue("@tableName", $"{table.SourceSchema}.{table.SourceTable}");
+                await using SqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.IsDBNull(0) || reader.IsDBNull(1))
+                {
+                    throw new MigrationExecutionException("source_sequence_evidence_missing", $"{database}.{table.SourceTable}.{identity.Column} sequence evidence is unavailable.");
+                }
+
+                long current = reader.GetInt64(0);
+                long increment = reader.GetInt64(1);
+                long next = identity.IsCalled ? checked(current + increment) : current;
+                results.Add($"{table.TargetSchema}.{table.TargetTable}.{identity.Column}", next);
+            }
+        }
+
+        return new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(results);
+    }
+
     public async Task CompleteDatabaseSnapshotAsync(string database, CancellationToken cancellationToken)
     {
         SnapshotLease lease = RemoveSnapshot(database);

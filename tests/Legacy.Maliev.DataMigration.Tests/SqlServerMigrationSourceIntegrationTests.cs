@@ -202,6 +202,10 @@ public sealed class SqlServerMigrationSourceIntegrationTests
         Assert.Equal(5L * 1024 * 1024, largeBinaryValue.CanonicalByteLength);
         IReadOnlyDictionary<string, long> orphans = await source.InspectForeignKeyOrphansAsync(database, table, CancellationToken.None);
         Assert.Equal(0, orphans["FK_Child_Parent"]);
+        IReadOnlyDictionary<string, long> relationships = await source.InspectForeignKeyRelationshipsAsync(database, table, CancellationToken.None);
+        Assert.Equal(1, relationships["FK_Child_Parent"]);
+        IReadOnlyDictionary<string, long> sequences = await source.InspectSequenceNextValuesAsync(database, generatedPlan, CancellationToken.None);
+        Assert.Equal(105, Assert.Single(sequences).Value);
 
         await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
         await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);

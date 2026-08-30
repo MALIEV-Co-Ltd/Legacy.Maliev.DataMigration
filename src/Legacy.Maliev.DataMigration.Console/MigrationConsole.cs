@@ -45,6 +45,10 @@ public static class MigrationConsole
                     await ExecuteShadowAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("execute_shadow_complete").ConfigureAwait(false);
                     return 0;
+                case "evidence":
+                    await ProduceEvidenceAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("evidence_complete").ConfigureAwait(false);
+                    return 0;
                 case "export-local-snapshot":
                     await ExportLocalSnapshotAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("export_local_snapshot_complete").ConfigureAwait(false);
@@ -73,6 +77,71 @@ public static class MigrationConsole
         {
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 70;
+        }
+        catch (MigrationEvidenceProductionException exception)
+        {
+            await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
+            return 65;
+        }
+    }
+
+    private static async Task ProduceEvidenceAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
+            .ConfigureAwait(false);
+        EvidenceCommandConfiguration evidence = configuration.Evidence ??
+            throw new MigrationConsoleException("evidence_configuration_missing", "Evidence configuration is required.");
+        string? keyPath = getEnvironmentVariable(EvidenceKeyEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(keyPath))
+        {
+            throw new MigrationConsoleException("evidence_runtime_reference_missing", "The protected evidence signing key is required.");
+        }
+
+        MigrationExecutionResult result = await ReadJsonAsync<MigrationExecutionResult>(evidence.ExecutionResultPath, cancellationToken)
+            .ConfigureAwait(false);
+        MigrationEvidenceProvenanceReceipt provenance = await ReadJsonAsync<MigrationEvidenceProvenanceReceipt>(evidence.ProvenancePath, cancellationToken)
+            .ConfigureAwait(false);
+        BackupReceipt receipt = await ReadJsonAsync<BackupReceipt>(evidence.ReceiptPath, cancellationToken).ConfigureAwait(false);
+        FreshSchemaPlan plan = await ReadJsonAsync<FreshSchemaPlan>(evidence.PlanPath, cancellationToken).ConfigureAwait(false);
+        ExecutionAuthorizationReceipt authorization = await ReadJsonAsync<ExecutionAuthorizationReceipt>(evidence.AuthorizationPath, cancellationToken)
+            .ConfigureAwait(false);
+        ReceiptAttestationTrustStore backupTrust = await ReadTrustStoreAsync(evidence.BackupTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(evidence.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(evidence.ExecutionTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore provenanceTrust = await ReadTrustStoreAsync(evidence.ProvenanceTrustedKeys, cancellationToken).ConfigureAwait(false);
+        string privateKeyPem = await File.ReadAllTextAsync(keyPath, cancellationToken).ConfigureAwait(false);
+        using var signer = new P256MigrationEvidenceSigner(evidence.EvidenceKeyId, privateKeyPem);
+        var producerConfiguration = new AppHostMigrationEvidenceV2Configuration(
+            evidence.SourceSnapshotId,
+            evidence.BackupUri,
+            evidence.BackupObjectGeneration,
+            evidence.RestoreId,
+            evidence.EvidenceId,
+            evidence.LeaseId,
+            evidence.LeaseAcquiredAtUtc,
+            evidence.LeaseExpiresAtUtc);
+        AppHostMigrationEvidenceV2Document document = AppHostMigrationEvidenceV2Producer.Produce(
+            new(result, receipt, plan, authorization, producerConfiguration, provenance),
+            backupTrust,
+            authorizationTrust,
+            executionTrust,
+            provenanceTrust,
+            signer,
+            TimeProvider.System);
+        try
+        {
+            await MigrationEvidencePublication.PublishAsync(document, evidence.PublicationDirectory, cancellationToken).ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+            throw new MigrationConsoleException("evidence_publication_failed", "Evidence publication failed before an atomic artifact set was available.");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            throw new MigrationConsoleException("evidence_publication_failed", "Evidence publication failed before an atomic artifact set was available.");
         }
     }
 
@@ -278,6 +347,7 @@ public static class MigrationConsole
         ReceiptCommandConfiguration? Receipt = null,
         PlanCommandConfiguration? Plan = null,
         ExecuteShadowCommandConfiguration? ExecuteShadow = null,
+        EvidenceCommandConfiguration? Evidence = null,
         ExportLocalSnapshotCommandConfiguration? ExportLocalSnapshot = null);
 
     private sealed record ReceiptCommandConfiguration(string BackupStatePath, string OutputPath, string KeyId);
@@ -295,6 +365,27 @@ public static class MigrationConsole
         string EvidenceKeyId);
 
     private sealed record TrustedKeyReference(string KeyId, string SubjectPublicKeyInfoPath);
+
+    private sealed record EvidenceCommandConfiguration(
+        string ExecutionResultPath,
+        string ProvenancePath,
+        string ReceiptPath,
+        string PlanPath,
+        string AuthorizationPath,
+        string PublicationDirectory,
+        string SourceSnapshotId,
+        string BackupUri,
+        string BackupObjectGeneration,
+        string RestoreId,
+        Guid EvidenceId,
+        Guid LeaseId,
+        DateTimeOffset LeaseAcquiredAtUtc,
+        DateTimeOffset LeaseExpiresAtUtc,
+        IReadOnlyList<TrustedKeyReference> BackupTrustedKeys,
+        IReadOnlyList<TrustedKeyReference> AuthorizationTrustedKeys,
+        IReadOnlyList<TrustedKeyReference> ExecutionTrustedKeys,
+        IReadOnlyList<TrustedKeyReference> ProvenanceTrustedKeys,
+        string EvidenceKeyId);
 
     private sealed record ExportLocalSnapshotCommandConfiguration(
         string ExecutionResultPath,
