@@ -29,7 +29,7 @@ public sealed class GuardedShadowMigrationRunnerTests
     private static readonly DateTimeOffset Now = new(2026, 8, 29, 14, 0, 0, TimeSpan.Zero);
     private static readonly ECDsa SigningKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private const string KeyId = "migration-authorizer-1";
-    private const string CurrentSourceCommit = "25418c95b5ac79400029ce274541f0e51728da3e";
+    private const string CurrentSourceCommit = CurrentQuotationSourceContract.SourceCommitSha;
     private static readonly string RunnerDigest = Hash("guarded-shadow-runner-v1");
 
     [Fact]
