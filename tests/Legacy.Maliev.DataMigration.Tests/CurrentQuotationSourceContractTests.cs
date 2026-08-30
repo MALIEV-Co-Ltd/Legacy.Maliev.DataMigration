@@ -190,6 +190,31 @@ public sealed class CurrentQuotationSourceContractTests
         }
     }
 
+    [Fact]
+    public void SignedAdoptionGate_RejectsUnsignedTamperedAndUntrustedContracts()
+    {
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        QuotationOutcomeAdoptionContract unsigned = CurrentQuotationSourceContract.CreateAdoptionContract(
+            TargetSchemaSha256, "review-key", SourceRows(), [], 43);
+        var observation = new QuotationAdoptionObservation(
+            unsigned.SourceCommitSha, unsigned.SourceContractSha256, TargetSchemaSha256, true, false,
+            ["SELECT"], false, false)
+        { VerifiedCanonical = unsigned.Data!.ExpectedCanonical };
+        var trust = new ReceiptAttestationTrustStore([new TrustedAttestationKey("review-key", key.ExportSubjectPublicKeyInfo())]);
+
+        Assert.Equal("quotation_adoption_attestation_invalid",
+            Assert.Throws<QuotationOutcomeAdoptionException>(() =>
+                QuotationOutcomeSignedAdoptionGate.VerifyAndValidate(unsigned, observation, trust)).Code);
+
+        QuotationOutcomeAdoptionContract signed = QuotationOutcomeAdoptionAttestation.Sign(unsigned, key);
+        QuotationOutcomeSignedAdoptionGate.VerifyAndValidate(signed, observation, trust);
+        _ = Assert.Throws<QuotationOutcomeAdoptionException>(() =>
+            QuotationOutcomeSignedAdoptionGate.VerifyAndValidate(signed with { CanonicalTargetTable = "tampered" }, observation, trust));
+        var untrusted = new ReceiptAttestationTrustStore([]);
+        _ = Assert.Throws<QuotationOutcomeAdoptionException>(() =>
+            QuotationOutcomeSignedAdoptionGate.VerifyAndValidate(signed, observation, untrusted));
+    }
+
     private static QuotationOutcomeSourceRow[] SourceRows()
     {
         return [
