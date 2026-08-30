@@ -42,22 +42,30 @@ spec:
         operations: ["CREATE", "UPDATE", "DELETE"]
         resources: ["databases"]
   matchConditions:
-    - name: dedicated-provisioner-only
-      expression: request.namespace == 'maliev-legacy' && request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner'
+    - name: shadow-resources-only
+      expression: "request.namespace == 'maliev-legacy' && ((object != null && (object.metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$') || object.spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$'))) || (oldObject != null && (oldObject.metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$') || oldObject.spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$'))))"
   validations:
-    - expression: (object == null ? oldObject : object).metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$')
+    - expression: "request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner'"
+      message: Only the dedicated migration identity may mutate legacy shadow resources.
+    - expression: "(object == null ? oldObject : object).metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$')"
       message: Only exact run-owned legacy shadow resources are permitted.
-    - expression: (object == null ? oldObject : object).spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$') && size((object == null ? oldObject : object).spec.name) <= 63
+    - expression: "(object == null ? oldObject : object).spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$') && size((object == null ? oldObject : object).spec.name) <= 63"
       message: Only exact PostgreSQL shadow database names are permitted.
-    - expression: (object == null ? oldObject : object).spec.cluster.name == 'legacy-postgres-main' && (object == null ? oldObject : object).spec.owner == 'legacy_migration_shadow'
+    - expression: "(object == null ? oldObject : object).spec.cluster.name == 'legacy-postgres-main' && (object == null ? oldObject : object).spec.owner == 'legacy_migration_shadow'"
       message: The cluster and owner are immutable reviewed values.
-    - expression: (object == null ? oldObject : object).metadata.labels['app.kubernetes.io/managed-by'] == 'legacy-maliev-data-migration' && (object == null ? oldObject : object).metadata.labels['maliev.com/database-purpose'] == 'legacy-shadow'
+    - expression: "(object == null ? oldObject : object).metadata.labels['app.kubernetes.io/managed-by'] == 'legacy-maliev-data-migration' && (object == null ? oldObject : object).metadata.labels['maliev.com/database-purpose'] == 'legacy-shadow'"
       message: Required ownership labels are missing.
-    - expression: (object == null ? oldObject : object).metadata.annotations['maliev.com/owner-run-id'].matches('^[0-9a-fA-F-]{36}$') && (object == null ? oldObject : object).metadata.annotations['maliev.com/owner-attempt'].matches('^[1-9][0-9]*$') && (object == null ? oldObject : object).metadata.annotations['maliev.com/fencing-token'].matches('^[0-9a-fA-F-]{36}$')
+    - expression: "(object == null ? oldObject : object).metadata.annotations['maliev.com/owner-run-id'].matches('^[0-9a-fA-F-]{36}$') && (object == null ? oldObject : object).metadata.annotations['maliev.com/owner-attempt'].matches('^[1-9][0-9]*$') && (object == null ? oldObject : object).metadata.annotations['maliev.com/fencing-token'].matches('^[0-9a-fA-F-]{36}$')"
       message: Required run, attempt, and fencing annotations are missing.
-    - expression: object == null || oldObject == null || (oldObject.metadata.uid == object.metadata.uid && oldObject.metadata.annotations['maliev.com/owner-run-id'] == object.metadata.annotations['maliev.com/owner-run-id'] && oldObject.metadata.annotations['maliev.com/owner-attempt'] == object.metadata.annotations['maliev.com/owner-attempt'] && oldObject.metadata.annotations['maliev.com/fencing-token'] == object.metadata.annotations['maliev.com/fencing-token'])
+    - expression: "object == null || oldObject == null || (oldObject.metadata.uid == object.metadata.uid && oldObject.metadata.annotations['maliev.com/owner-run-id'] == object.metadata.annotations['maliev.com/owner-run-id'] && oldObject.metadata.annotations['maliev.com/owner-attempt'] == object.metadata.annotations['maliev.com/owner-attempt'] && oldObject.metadata.annotations['maliev.com/fencing-token'] == object.metadata.annotations['maliev.com/fencing-token'])"
       message: Resource identity and ownership fencing annotations are immutable.
-    - expression: object == null || object.spec.allowConnections == false || (oldObject != null && oldObject.spec.allowConnections == false && object.spec.ensure == 'present')
+    - expression: "request.operation != 'CREATE' || object.spec.databaseReclaimPolicy == 'delete'"
+      message: Shadow creation requires delete reclaim policy.
+    - expression: "request.operation != 'UPDATE' || (object.spec.databaseReclaimPolicy == 'delete' && oldObject.spec.databaseReclaimPolicy == 'delete' && oldObject.spec.name == object.spec.name)"
+      message: Shadow PostgreSQL names are immutable during updates.
+    - expression: "request.operation != 'DELETE' || (oldObject.spec.databaseReclaimPolicy == 'delete' && oldObject.spec.allowConnections == false && oldObject.spec.ensure == 'absent')"
+      message: Shadow deletion requires the fenced disabled absent state and delete reclaim policy.
+    - expression: "object == null || object.spec.allowConnections == false || (oldObject != null && oldObject.spec.allowConnections == false && object.spec.ensure == 'present')"
       message: Connections may only be enabled from a fenced disabled resource.
 ---
 apiVersion: admissionregistration.k8s.io/v1
