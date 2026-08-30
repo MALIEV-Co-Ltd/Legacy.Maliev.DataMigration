@@ -68,23 +68,43 @@ public sealed class MigrationScriptContractTests
     }
 
     [Fact]
-    public void OrchestrationScript_UsesProtectedConfigAndExplicitShadowStages()
+    public void OperatorScripts_SeparatePreparationApprovalExecutionAndFinalEvidence()
     {
-        string script = File.ReadAllText(SourcePath("invoke-shadow-migration.ps1"));
+        string prepare = File.ReadAllText(SourcePath("prepare-shadow-migration.ps1"));
+        string execute = File.ReadAllText(SourcePath("execute-approved-shadow-migration.ps1"));
+        string finalize = File.ReadAllText(SourcePath("finalize-shadow-migration.ps1"));
+        Assert.False(File.Exists(SourcePath("invoke-shadow-migration.ps1")));
 
-        Assert.Contains("--config", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("'receipt'", script, StringComparison.Ordinal);
-        Assert.Contains("restore-verified-sqlserver-backups.ps1", script, StringComparison.Ordinal);
-        Assert.Contains("plan", script, StringComparison.Ordinal);
-        Assert.Contains("execute-shadow", script, StringComparison.Ordinal);
-        Assert.Contains("evidence", script, StringComparison.Ordinal);
-        Assert.Contains("export-local-snapshot", script, StringComparison.Ordinal);
-        Assert.Contains("cleanup-restore", script, StringComparison.Ordinal);
-        Assert.Contains("finally", script, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("AggregateException", script, StringComparison.Ordinal);
-        Assert.Contains("LEGACY_DEPLOY_ENABLED", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("kubectl", script, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("gcloud", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("backup-full", prepare, StringComparison.Ordinal);
+        Assert.Contains("restore-verified-sqlserver-backups.ps1", prepare, StringComparison.Ordinal);
+        Assert.Contains("plan", prepare, StringComparison.Ordinal);
+        Assert.DoesNotContain("authorize-shadow", prepare, StringComparison.Ordinal);
+        Assert.DoesNotContain("execute-shadow", prepare, StringComparison.Ordinal);
+
+        Assert.Contains("authorize-shadow", execute, StringComparison.Ordinal);
+        Assert.Contains("execute-shadow", execute, StringComparison.Ordinal);
+        Assert.DoesNotContain("plan", execute, StringComparison.Ordinal);
+        Assert.DoesNotContain("evidence", execute, StringComparison.Ordinal);
+
+        int snapshot = finalize.IndexOf("export-local-snapshot", StringComparison.Ordinal);
+        int cleanup = finalize.IndexOf("cleanup-restore", StringComparison.Ordinal);
+        int provenance = finalize.IndexOf("sign-provenance", StringComparison.Ordinal);
+        int evidence = finalize.IndexOf(" evidence ", StringComparison.Ordinal);
+        Assert.True(snapshot >= 0 && snapshot < cleanup);
+        Assert.True(cleanup < provenance);
+        Assert.True(provenance < evidence);
+        Assert.Contains("finally", finalize, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("AggregateException", finalize, StringComparison.Ordinal);
+        Assert.Contains("if ($null -ne $snapshotFailure)", finalize, StringComparison.Ordinal);
+        Assert.Contains("if ($null -ne $cleanupFailure)", finalize, StringComparison.Ordinal);
+        Assert.DoesNotContain("execute-shadow", finalize, StringComparison.Ordinal);
+
+        string all = string.Join('\n', prepare, execute, finalize);
+        Assert.Contains("--config", all, StringComparison.Ordinal);
+        Assert.Contains("LEGACY_DEPLOY_ENABLED", all, StringComparison.Ordinal);
+        Assert.DoesNotContain("kubectl", all, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("gcloud", all, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("invoke-shadow-migration.ps1", all, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string SourcePath(string file)
