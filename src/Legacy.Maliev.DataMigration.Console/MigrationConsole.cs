@@ -19,13 +19,15 @@ public static class MigrationConsole
     private const string CloudNativePgApiServerEnvironmentVariable = "LEGACY_MIGRATION_CNPG_API_SERVER";
     private const string CloudNativePgTokenFileEnvironmentVariable = "LEGACY_MIGRATION_CNPG_TOKEN_FILE";
     private const string CloudNativePgCaFileEnvironmentVariable = "LEGACY_MIGRATION_CNPG_CA_FILE";
-    private const string EvidenceKeyEnvironmentVariable = "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE";
+    private const string ExecutionSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_EXECUTION_SIGNING_KEY_FILE";
+    private const string FinalEvidenceSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_FINAL_EVIDENCE_SIGNING_KEY_FILE";
     private const string SnapshotKeyEnvironmentVariable = "LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE";
     private const string BackupSqlUserEnvironmentVariable = "LEGACY_MIGRATION_BACKUP_SQL_USERNAME";
     private const string BackupSqlPasswordEnvironmentVariable = "LEGACY_MIGRATION_BACKUP_SQL_PASSWORD";
     private const string RestoreSqlServerConnectionEnvironmentVariable = "LEGACY_SQLSERVER_ADMIN_CONNECTION";
     private const string ProvenanceSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_PROVENANCE_SIGNING_KEY_FILE";
     private const string DeployEnabledEnvironmentVariable = "LEGACY_DEPLOY_ENABLED";
+    private const string AuthorizationSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -110,6 +112,14 @@ public static class MigrationConsole
                     await CleanupRestoreAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("restore_cleanup_complete").ConfigureAwait(false);
                     return 0;
+                case "authorize-shadow":
+                    await AuthorizeShadowAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("authorize_shadow_complete").ConfigureAwait(false);
+                    return 0;
+                case "sign-provenance":
+                    await SignProvenanceAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("sign_provenance_complete").ConfigureAwait(false);
+                    return 0;
                 default:
                     await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
                     return 2;
@@ -154,6 +164,136 @@ public static class MigrationConsole
         {
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 65;
+        }
+        catch (OperatorAttestationException exception)
+        {
+            await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
+            return 65;
+        }
+    }
+
+    private static async Task AuthorizeShadowAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new OperatorAttestationException("authorization_deploy_gate_invalid", "Legacy deployment must remain disabled while authorization is minted.");
+        }
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "authorization_config_unprotected", cancellationToken).ConfigureAwait(false);
+        AuthorizeShadowCommandConfiguration authorize = configuration.AuthorizeShadow ??
+            throw new OperatorAttestationException("authorization_configuration_missing", "Reviewed shadow authorization configuration is required.");
+        string keyPath = getEnvironmentVariable(AuthorizationSigningKeyEnvironmentVariable) ??
+            throw new OperatorAttestationException("authorization_signing_key_missing", "The protected authorization signing key is required.");
+        BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
+            authorize.ReceiptPath, "authorization_backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
+        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
+            authorize.PlanPath, "authorization_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore backupTrust = await ReadTrustStoreAsync(authorize.ReceiptTrustedKeys, cancellationToken)
+            .ConfigureAwait(false);
+        using var signer = new P256MigrationEvidenceSigner(
+            authorize.KeyId,
+            await ReadProtectedTextAsync(keyPath, "authorization_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        ExecutionAuthorizationReceipt signed = ReviewedExecutionAuthorizationProducer.Produce(
+            new(
+                authorize.ExpectedSourceCommitSha,
+                authorize.ReviewedSchemaPlanSha256,
+                authorize.RunnerDigestSha256,
+                authorize.TargetGeneration,
+                authorize.IssuedAtUtc,
+                authorize.ExpiresAtUtc,
+                authorize.AllowShadowAuthorization,
+                authorize.MaximumReceiptAgeMinutes),
+            receipt,
+            plan,
+            backupTrust,
+            signer,
+            TimeProvider.System.GetUtcNow());
+        try
+        {
+            await WriteNewJsonAsync(authorize.OutputPath, signed, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new OperatorAttestationException("authorization_publication_failed", "Authorization publication requires a new protected output path.");
+        }
+    }
+
+    private static async Task SignProvenanceAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new OperatorAttestationException("provenance_deploy_gate_invalid", "Legacy deployment must remain disabled while provenance is minted.");
+        }
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "provenance_config_unprotected", cancellationToken).ConfigureAwait(false);
+        SignProvenanceCommandConfiguration sign = configuration.SignProvenance ??
+            throw new OperatorAttestationException("provenance_configuration_missing", "Reviewed migration provenance configuration is required.");
+        if (!sign.AllowProvenanceSigning)
+        {
+            throw new OperatorAttestationException("provenance_owner_review_required", "Explicit owner review is required before provenance can be signed.");
+        }
+        EvidenceCommandConfiguration evidence = configuration.Evidence ??
+            throw new OperatorAttestationException("provenance_evidence_configuration_missing", "Final evidence configuration is required for provenance binding.");
+        if (!string.Equals(Path.GetFullPath(sign.OutputPath), Path.GetFullPath(evidence.ProvenancePath), StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(evidence.VerifiedRestoreReceiptPath))
+        {
+            throw new OperatorAttestationException("provenance_output_binding_invalid", "Provenance output and final evidence references must match.");
+        }
+        string keyPath = getEnvironmentVariable(ProvenanceSigningKeyEnvironmentVariable) ??
+            throw new OperatorAttestationException("provenance_signing_key_missing", "The protected provenance signing key is required.");
+        MigrationExecutionResult result = await ReadProtectedJsonAsync<MigrationExecutionResult>(
+            evidence.ExecutionResultPath, "provenance_execution_unprotected", cancellationToken).ConfigureAwait(false);
+        BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
+            evidence.ReceiptPath, "provenance_backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
+        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
+            evidence.PlanPath, "provenance_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        ExecutionAuthorizationReceipt authorization = await ReadProtectedJsonAsync<ExecutionAuthorizationReceipt>(
+            evidence.AuthorizationPath, "provenance_authorization_unprotected", cancellationToken).ConfigureAwait(false);
+        VerifiedRestoreReceipt verifiedRestore = await ReadProtectedJsonAsync<VerifiedRestoreReceipt>(
+            evidence.VerifiedRestoreReceiptPath, "provenance_cleanup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore backupTrust = await ReadTrustStoreAsync(evidence.BackupTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(evidence.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(evidence.ExecutionTrustedKeys, cancellationToken).ConfigureAwait(false);
+        using var signer = new P256MigrationEvidenceSigner(
+            sign.KeyId,
+            await ReadProtectedTextAsync(keyPath, "provenance_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        MigrationEvidenceProvenanceReceipt provenance = ReviewedMigrationProvenanceProducer.Produce(
+            new(
+                new(
+                    evidence.SourceSnapshotId,
+                    evidence.BackupUri,
+                    evidence.BackupObjectGeneration,
+                    evidence.RestoreId,
+                    evidence.EvidenceId,
+                    evidence.LeaseId,
+                    evidence.LeaseAcquiredAtUtc,
+                    evidence.LeaseExpiresAtUtc),
+                sign.ReviewedSchemaPlanSha256,
+                sign.IssuedAtUtc,
+                sign.AllowProvenanceSigning),
+            result,
+            receipt,
+            plan,
+            authorization,
+            verifiedRestore,
+            backupTrust,
+            authorizationTrust,
+            executionTrust,
+            signer,
+            TimeProvider.System.GetUtcNow());
+        try
+        {
+            await WriteNewJsonAsync(sign.OutputPath, provenance, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new OperatorAttestationException("provenance_publication_failed", "Provenance publication requires a new protected output path.");
         }
     }
 
@@ -230,7 +370,7 @@ public static class MigrationConsole
             .ConfigureAwait(false);
         EvidenceCommandConfiguration evidence = configuration.Evidence ??
             throw new MigrationConsoleException("evidence_configuration_missing", "Evidence configuration is required.");
-        string? keyPath = getEnvironmentVariable(EvidenceKeyEnvironmentVariable);
+        string? keyPath = getEnvironmentVariable(FinalEvidenceSigningKeyEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(keyPath))
         {
             throw new MigrationConsoleException("evidence_runtime_reference_missing", "The protected evidence signing key is required.");
@@ -361,7 +501,7 @@ public static class MigrationConsole
         string? cloudNativePgApiServer = getEnvironmentVariable(CloudNativePgApiServerEnvironmentVariable);
         string? cloudNativePgTokenFile = getEnvironmentVariable(CloudNativePgTokenFileEnvironmentVariable);
         string? cloudNativePgCaFile = getEnvironmentVariable(CloudNativePgCaFileEnvironmentVariable);
-        string? evidenceKeyPath = getEnvironmentVariable(EvidenceKeyEnvironmentVariable);
+        string? evidenceKeyPath = getEnvironmentVariable(ExecutionSigningKeyEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(sourceConnection) || string.IsNullOrWhiteSpace(targetConnection) ||
             string.IsNullOrWhiteSpace(controlConnection) || string.IsNullOrWhiteSpace(evidenceKeyPath) ||
             string.IsNullOrWhiteSpace(cloudNativePgApiServer) || string.IsNullOrWhiteSpace(cloudNativePgTokenFile) ||
@@ -743,7 +883,9 @@ public static class MigrationConsole
         EvidenceCommandConfiguration? Evidence = null,
         ExportLocalSnapshotCommandConfiguration? ExportLocalSnapshot = null,
         FullBackupCommandConfiguration? FullBackup = null,
-        RestoreBackupsCommandConfiguration? RestoreBackups = null);
+        RestoreBackupsCommandConfiguration? RestoreBackups = null,
+        AuthorizeShadowCommandConfiguration? AuthorizeShadow = null,
+        SignProvenanceCommandConfiguration? SignProvenance = null);
 
     private sealed record FullBackupCommandConfiguration(
         string Namespace,
@@ -760,6 +902,28 @@ public static class MigrationConsole
         bool AllowSourceBackup);
 
     private sealed record PlanCommandConfiguration(string OutputPath, string SourceCommitSha);
+
+    private sealed record AuthorizeShadowCommandConfiguration(
+        string ReceiptPath,
+        string PlanPath,
+        string OutputPath,
+        string ExpectedSourceCommitSha,
+        string ReviewedSchemaPlanSha256,
+        string RunnerDigestSha256,
+        string TargetGeneration,
+        DateTimeOffset IssuedAtUtc,
+        DateTimeOffset ExpiresAtUtc,
+        string KeyId,
+        IReadOnlyList<TrustedKeyReference> ReceiptTrustedKeys,
+        double MaximumReceiptAgeMinutes,
+        bool AllowShadowAuthorization);
+
+    private sealed record SignProvenanceCommandConfiguration(
+        string OutputPath,
+        string ReviewedSchemaPlanSha256,
+        DateTimeOffset IssuedAtUtc,
+        string KeyId,
+        bool AllowProvenanceSigning);
 
     private sealed record RestoreBackupsCommandConfiguration(
         string ReceiptPath,

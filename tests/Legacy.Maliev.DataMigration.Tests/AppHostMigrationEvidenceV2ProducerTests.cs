@@ -273,7 +273,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             ["evidence", "--config", configPath],
             output,
             error,
-            name => name == "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE" ? signingKeyPath : null,
+            name => name == "LEGACY_MIGRATION_FINAL_EVIDENCE_SIGNING_KEY_FILE" ? signingKeyPath : null,
             CancellationToken.None);
 
         Assert.Equal(0, exitCode);
@@ -329,7 +329,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             ["evidence", "--config", configPath],
             reusedKeyOutput,
             reusedKeyError,
-            name => name == "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE" ? provenancePrivateKeyPath : null,
+            name => name == "LEGACY_MIGRATION_FINAL_EVIDENCE_SIGNING_KEY_FILE" ? provenancePrivateKeyPath : null,
             CancellationToken.None);
 
         Assert.Equal(65, reusedKeyExitCode);
@@ -344,7 +344,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             ["evidence", "--config", configPath],
             rejectedOutput,
             rejectedError,
-            name => name == "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE" ? signingKeyPath : null,
+            name => name == "LEGACY_MIGRATION_FINAL_EVIDENCE_SIGNING_KEY_FILE" ? signingKeyPath : null,
             CancellationToken.None);
 
         Assert.Equal(65, rejectedExitCode);

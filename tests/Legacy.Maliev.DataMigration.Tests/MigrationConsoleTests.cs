@@ -131,7 +131,7 @@ public sealed class MigrationConsoleTests : IDisposable
                 "LEGACY_MIGRATION_CNPG_API_SERVER" => "https://kubernetes.example",
                 "LEGACY_MIGRATION_CNPG_TOKEN_FILE" => "missing-token",
                 "LEGACY_MIGRATION_CNPG_CA_FILE" => "missing-ca",
-                "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE" => "missing-key.pem",
+                "LEGACY_MIGRATION_EXECUTION_SIGNING_KEY_FILE" => "missing-key.pem",
                 _ => null,
             },
             CancellationToken.None);

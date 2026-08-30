@@ -11,6 +11,8 @@ public sealed class ConsoleCommandContractTests
         "evidence",
         "export-local-snapshot",
         "backup-full",
+        "authorize-shadow",
+        "sign-provenance",
     ];
 
     [Theory]
@@ -31,6 +33,18 @@ public sealed class ConsoleCommandContractTests
 
         Assert.Equal("secret_cli_argument_forbidden", exception.Code);
         Assert.DoesNotContain("Server=secret", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("authorize-shadow")]
+    [InlineData("sign-provenance")]
+    public void Parse_SigningCommandsRejectInlinePrivateKeys(string command)
+    {
+        CommandLineException exception = Assert.Throws<CommandLineException>(() =>
+            ConsoleInvocation.Parse([command, "--private-key", "-----BEGIN PRIVATE KEY-----"]));
+
+        Assert.Equal("secret_cli_argument_forbidden", exception.Code);
+        Assert.DoesNotContain("PRIVATE KEY", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

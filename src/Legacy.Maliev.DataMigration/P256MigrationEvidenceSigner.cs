@@ -37,6 +37,11 @@ public sealed class P256MigrationEvidenceSigner : IMigrationEvidenceSigner, IDis
         return _key.SignData(payload, HashAlgorithmName.SHA256);
     }
 
+    public byte[] ExportSubjectPublicKeyInfo()
+    {
+        return _key.ExportSubjectPublicKeyInfo();
+    }
+
     public void Dispose()
     {
         _key.Dispose();
