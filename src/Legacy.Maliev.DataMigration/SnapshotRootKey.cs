@@ -9,6 +9,16 @@ public static class SnapshotRootKey
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         using FileStream stream = SecureSnapshotFileCreation.OpenValidatedRead(path);
+        return Load(stream);
+    }
+
+    public static byte[] Load(Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (!stream.CanRead || !stream.CanSeek)
+        {
+            throw new InvalidOperationException("The snapshot root key stream must be readable and seekable.");
+        }
         if (stream.Length is <= 0 or > 4096)
         {
             throw new InvalidOperationException("The snapshot root key file has an invalid size.");

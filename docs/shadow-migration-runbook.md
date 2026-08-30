@@ -37,6 +37,11 @@ and fails closed on role reuse.
 The protected JSON contains these sections. It uses camel-case property names
 and rejects unknown properties.
 
+- `signingRoles`: exactly one protected public-key reference for each of
+  `backup`, `authorization`, `execution`, `provenance`, and `finalEvidence`.
+  Authorization and execution resolve all five fingerprints and reject any
+  duplicate material before a shadow resource can be provisioned. The role key
+  IDs must match the corresponding command key IDs.
 - `fullBackup`: exact namespace, pod name, pod UID, container, approved UTC run
   time, unique run ID, matching `gs://.../database/full/YYYY-MM-DD/<runId>/`
   prefix, new local work/publication directories, backup key ID, transport limit

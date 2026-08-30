@@ -185,6 +185,13 @@ public static class MigrationConsole
             configPath, "authorization_config_unprotected", cancellationToken).ConfigureAwait(false);
         AuthorizeShadowCommandConfiguration authorize = configuration.AuthorizeShadow ??
             throw new OperatorAttestationException("authorization_configuration_missing", "Reviewed shadow authorization configuration is required.");
+        if (!authorize.AllowShadowAuthorization)
+        {
+            throw new OperatorAttestationException("authorization_owner_review_required", "Explicit owner review is required before shadow authorization can be signed.");
+        }
+        SigningRoleTrustBundle signingRoles = await ReadSigningRolesAsync(
+            configuration.SigningRoles, cancellationToken).ConfigureAwait(false);
+        BindConfiguredSigningRoles(configuration, signingRoles);
         string keyPath = getEnvironmentVariable(AuthorizationSigningKeyEnvironmentVariable) ??
             throw new OperatorAttestationException("authorization_signing_key_missing", "The protected authorization signing key is required.");
         BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
@@ -193,9 +200,15 @@ public static class MigrationConsole
             authorize.PlanPath, "authorization_plan_unprotected", cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore backupTrust = await ReadTrustStoreAsync(authorize.ReceiptTrustedKeys, cancellationToken)
             .ConfigureAwait(false);
+        EnsureTrustMatchesRole(backupTrust, signingRoles.Backup, "authorization_backup_trust_mismatch");
         using var signer = new P256MigrationEvidenceSigner(
             authorize.KeyId,
             await ReadProtectedTextAsync(keyPath, "authorization_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        EnsureSignerMatchesRole(
+            signer,
+            signingRoles.Authorization,
+            [signingRoles.Backup, signingRoles.Execution, signingRoles.Provenance, signingRoles.FinalEvidence],
+            "authorization_signing_key_untrusted", "authorization_key_role_reuse");
         ExecutionAuthorizationReceipt signed = ReviewedExecutionAuthorizationProducer.Produce(
             new(
                 authorize.ExpectedSourceCommitSha,
@@ -366,8 +379,8 @@ public static class MigrationConsole
         Func<string, string?> getEnvironmentVariable,
         CancellationToken cancellationToken)
     {
-        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
-            .ConfigureAwait(false);
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "evidence_config_unprotected", cancellationToken).ConfigureAwait(false);
         EvidenceCommandConfiguration evidence = configuration.Evidence ??
             throw new MigrationConsoleException("evidence_configuration_missing", "Evidence configuration is required.");
         string? keyPath = getEnvironmentVariable(FinalEvidenceSigningKeyEnvironmentVariable);
@@ -376,25 +389,28 @@ public static class MigrationConsole
             throw new MigrationConsoleException("evidence_runtime_reference_missing", "The protected evidence signing key is required.");
         }
 
-        MigrationExecutionResult result = await ReadJsonAsync<MigrationExecutionResult>(evidence.ExecutionResultPath, cancellationToken)
-            .ConfigureAwait(false);
-        MigrationEvidenceProvenanceReceipt provenance = await ReadJsonAsync<MigrationEvidenceProvenanceReceipt>(evidence.ProvenancePath, cancellationToken)
-            .ConfigureAwait(false);
+        MigrationExecutionResult result = await ReadProtectedJsonAsync<MigrationExecutionResult>(
+            evidence.ExecutionResultPath, "evidence_execution_unprotected", cancellationToken).ConfigureAwait(false);
+        MigrationEvidenceProvenanceReceipt provenance = await ReadProtectedJsonAsync<MigrationEvidenceProvenanceReceipt>(
+            evidence.ProvenancePath, "evidence_provenance_unprotected", cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(evidence.VerifiedRestoreReceiptPath))
         {
             throw new MigrationConsoleException("verified_restore_receipt_missing", "Completed verified restore evidence is required.");
         }
-        VerifiedRestoreReceipt verifiedRestore = await ReadJsonAsync<VerifiedRestoreReceipt>(
-            evidence.VerifiedRestoreReceiptPath, cancellationToken).ConfigureAwait(false);
-        BackupReceipt receipt = await ReadJsonAsync<BackupReceipt>(evidence.ReceiptPath, cancellationToken).ConfigureAwait(false);
-        FreshSchemaPlan plan = await ReadJsonAsync<FreshSchemaPlan>(evidence.PlanPath, cancellationToken).ConfigureAwait(false);
-        ExecutionAuthorizationReceipt authorization = await ReadJsonAsync<ExecutionAuthorizationReceipt>(evidence.AuthorizationPath, cancellationToken)
-            .ConfigureAwait(false);
+        VerifiedRestoreReceipt verifiedRestore = await ReadProtectedJsonAsync<VerifiedRestoreReceipt>(
+            evidence.VerifiedRestoreReceiptPath, "evidence_cleanup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
+        BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
+            evidence.ReceiptPath, "evidence_backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
+        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
+            evidence.PlanPath, "evidence_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        ExecutionAuthorizationReceipt authorization = await ReadProtectedJsonAsync<ExecutionAuthorizationReceipt>(
+            evidence.AuthorizationPath, "evidence_authorization_unprotected", cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore backupTrust = await ReadTrustStoreAsync(evidence.BackupTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(evidence.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(evidence.ExecutionTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore provenanceTrust = await ReadTrustStoreAsync(evidence.ProvenanceTrustedKeys, cancellationToken).ConfigureAwait(false);
-        string privateKeyPem = await File.ReadAllTextAsync(keyPath, cancellationToken).ConfigureAwait(false);
+        string privateKeyPem = await ReadProtectedTextAsync(
+            keyPath, "evidence_signing_key_unprotected", cancellationToken).ConfigureAwait(false);
         using var signer = new P256MigrationEvidenceSigner(evidence.EvidenceKeyId, privateKeyPem);
         var producerConfiguration = new AppHostMigrationEvidenceV2Configuration(
             evidence.SourceSnapshotId,
@@ -435,8 +451,8 @@ public static class MigrationConsole
         Func<string, string?> getEnvironmentVariable,
         CancellationToken cancellationToken)
     {
-        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
-            .ConfigureAwait(false);
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "snapshot_config_unprotected", cancellationToken).ConfigureAwait(false);
         ExportLocalSnapshotCommandConfiguration export = configuration.ExportLocalSnapshot ??
             throw new MigrationConsoleException("snapshot_configuration_missing", "Snapshot export configuration is required.");
         string? targetConnection = getEnvironmentVariable(PostgreSqlConnectionEnvironmentVariable);
@@ -446,8 +462,8 @@ public static class MigrationConsole
             throw new MigrationConsoleException("snapshot_runtime_reference_missing", "Snapshot runtime references are required.");
         }
 
-        MigrationExecutionResult result = await ReadJsonAsync<MigrationExecutionResult>(export.ExecutionResultPath, cancellationToken)
-            .ConfigureAwait(false);
+        MigrationExecutionResult result = await ReadProtectedJsonAsync<MigrationExecutionResult>(
+            export.ExecutionResultPath, "snapshot_execution_unprotected", cancellationToken).ConfigureAwait(false);
         if (result.Status is not (MigrationExecutionStatus.Completed or MigrationExecutionStatus.AlreadyCompleted) ||
             result.Receipt.Databases.Count != DatabaseInventory.ActiveDatabases.Count)
         {
@@ -457,7 +473,8 @@ public static class MigrationConsole
         byte[] key;
         try
         {
-            key = SnapshotRootKey.Load(keyPath);
+            await using FileStream keyStream = OwnerProtectedFilePolicy.OpenRead(keyPath, "snapshot_key_unprotected");
+            key = SnapshotRootKey.Load(keyStream);
         }
         catch (Exception exception) when (exception is InvalidOperationException or UnauthorizedAccessException or IOException)
         {
@@ -491,8 +508,12 @@ public static class MigrationConsole
         Func<string, string?> getEnvironmentVariable,
         CancellationToken cancellationToken)
     {
-        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
-            .ConfigureAwait(false);
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new MigrationConsoleException("shadow_deploy_gate_invalid", "Legacy deployment must remain disabled during shadow execution.");
+        }
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "shadow_config_unprotected", cancellationToken).ConfigureAwait(false);
         ExecuteShadowCommandConfiguration execute = configuration.ExecuteShadow ??
             throw new MigrationConsoleException("shadow_configuration_missing", "Shadow execution configuration is required.");
         string? sourceConnection = getEnvironmentVariable(SqlServerConnectionEnvironmentVariable);
@@ -517,14 +538,33 @@ public static class MigrationConsole
             execute.ExpectedShadowAdminRole,
             cancellationToken).ConfigureAwait(false);
 
-        BackupReceipt receipt = await ReadJsonAsync<BackupReceipt>(execute.ReceiptPath, cancellationToken).ConfigureAwait(false);
-        FreshSchemaPlan plan = await ReadJsonAsync<FreshSchemaPlan>(execute.PlanPath, cancellationToken).ConfigureAwait(false);
-        ExecutionAuthorizationReceipt authorization = await ReadJsonAsync<ExecutionAuthorizationReceipt>(execute.AuthorizationPath, cancellationToken)
-            .ConfigureAwait(false);
+        SigningRoleTrustBundle signingRoles = await ReadSigningRolesAsync(
+            configuration.SigningRoles, cancellationToken).ConfigureAwait(false);
+        BindConfiguredSigningRoles(configuration, signingRoles);
+        BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
+            execute.ReceiptPath, "shadow_backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
+        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
+            execute.PlanPath, "shadow_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        ExecutionAuthorizationReceipt authorization = await ReadProtectedJsonAsync<ExecutionAuthorizationReceipt>(
+            execute.AuthorizationPath, "shadow_authorization_unprotected", cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore receiptTrust = await ReadTrustStoreAsync(execute.ReceiptTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(execute.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
-        string privateKeyPem = await File.ReadAllTextAsync(evidenceKeyPath, cancellationToken).ConfigureAwait(false);
+        EnsureTrustMatchesRole(receiptTrust, signingRoles.Backup, "shadow_backup_trust_mismatch");
+        EnsureTrustMatchesRole(authorizationTrust, signingRoles.Authorization, "shadow_authorization_trust_mismatch");
+        string privateKeyPem = await ReadProtectedTextAsync(
+            evidenceKeyPath, "shadow_signing_key_unprotected", cancellationToken).ConfigureAwait(false);
         using var evidenceSigner = new P256MigrationEvidenceSigner(execute.EvidenceKeyId, privateKeyPem);
+        EnsureSignerMatchesRole(
+            evidenceSigner,
+            signingRoles.Execution,
+            [signingRoles.Backup, signingRoles.Authorization, signingRoles.Provenance, signingRoles.FinalEvidence],
+            "shadow_signing_key_untrusted",
+            "signing_role_key_reuse");
+        if (!string.Equals(receipt.AttestationKeyId, signingRoles.Backup.KeyId, StringComparison.Ordinal) ||
+            !string.Equals(authorization.AttestationKeyId, signingRoles.Authorization.KeyId, StringComparison.Ordinal))
+        {
+            throw new OperatorAttestationException("signing_role_binding_invalid", "Signed input artifacts do not match the reviewed signing-role configuration.");
+        }
         await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(sourceConnection));
         using var provisioner = new CloudNativePgShadowDatabaseProvisioner(new(
             new Uri(cloudNativePgApiServer, UriKind.Absolute),
@@ -567,13 +607,95 @@ public static class MigrationConsole
         return new(keys);
     }
 
+    private static async Task<SigningRoleTrustBundle> ReadSigningRolesAsync(
+        SigningRolesCommandConfiguration? configuration,
+        CancellationToken cancellationToken)
+    {
+        if (configuration is null)
+        {
+            throw new OperatorAttestationException("signing_role_configuration_missing", "All five signing roles must be configured before authorization or execution.");
+        }
+
+        SigningRoleTrust backup = await ReadSigningRoleAsync(configuration.Backup, cancellationToken).ConfigureAwait(false);
+        SigningRoleTrust authorization = await ReadSigningRoleAsync(configuration.Authorization, cancellationToken).ConfigureAwait(false);
+        SigningRoleTrust execution = await ReadSigningRoleAsync(configuration.Execution, cancellationToken).ConfigureAwait(false);
+        SigningRoleTrust provenance = await ReadSigningRoleAsync(configuration.Provenance, cancellationToken).ConfigureAwait(false);
+        SigningRoleTrust finalEvidence = await ReadSigningRoleAsync(configuration.FinalEvidence, cancellationToken).ConfigureAwait(false);
+        SigningRoleTrust[] roles = [backup, authorization, execution, provenance, finalEvidence];
+        return roles.Select(role => role.Fingerprint).Distinct(StringComparer.OrdinalIgnoreCase).Count() != roles.Length
+            ? throw new OperatorAttestationException("signing_role_key_reuse", "Backup, authorization, execution, provenance, and final-evidence keys must be pairwise distinct.")
+            : new(backup, authorization, execution, provenance, finalEvidence);
+    }
+
+    private static async Task<SigningRoleTrust> ReadSigningRoleAsync(
+        TrustedKeyReference reference,
+        CancellationToken cancellationToken)
+    {
+        ReceiptAttestationTrustStore trust = await ReadTrustStoreAsync([reference], cancellationToken).ConfigureAwait(false);
+        return !trust.TryGetPublicKeyFingerprintSha256(reference.KeyId, out string fingerprint)
+            ? throw new OperatorAttestationException("signing_role_trust_invalid", "A configured signing-role public key is invalid.")
+            : new(reference.KeyId, fingerprint);
+    }
+
+    private static void BindConfiguredSigningRoles(
+        MigrationConsoleConfiguration configuration,
+        SigningRoleTrustBundle roles)
+    {
+        AuthorizeShadowCommandConfiguration authorize = configuration.AuthorizeShadow ??
+            throw new OperatorAttestationException("authorization_configuration_missing", "Reviewed shadow authorization configuration is required.");
+        ExecuteShadowCommandConfiguration execute = configuration.ExecuteShadow ??
+            throw new OperatorAttestationException("signing_role_binding_missing", "Shadow execution key binding is required.");
+        SignProvenanceCommandConfiguration provenance = configuration.SignProvenance ??
+            throw new OperatorAttestationException("signing_role_binding_missing", "Provenance key binding is required.");
+        EvidenceCommandConfiguration evidence = configuration.Evidence ??
+            throw new OperatorAttestationException("signing_role_binding_missing", "Final-evidence key binding is required.");
+        if (!string.Equals(authorize.KeyId, roles.Authorization.KeyId, StringComparison.Ordinal) ||
+            !string.Equals(execute.EvidenceKeyId, roles.Execution.KeyId, StringComparison.Ordinal) ||
+            !string.Equals(provenance.KeyId, roles.Provenance.KeyId, StringComparison.Ordinal) ||
+            !string.Equals(evidence.EvidenceKeyId, roles.FinalEvidence.KeyId, StringComparison.Ordinal))
+        {
+            throw new OperatorAttestationException("signing_role_binding_invalid", "A command signing key identity does not match the reviewed five-role configuration.");
+        }
+    }
+
+    private static void EnsureSignerMatchesRole(
+        P256MigrationEvidenceSigner signer,
+        SigningRoleTrust expected,
+        IReadOnlyList<SigningRoleTrust> forbidden,
+        string mismatchCode,
+        string reuseCode)
+    {
+        if (forbidden.Any(role => string.Equals(
+            signer.PublicKeyFingerprintSha256, role.Fingerprint, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new OperatorAttestationException(reuseCode, "A signing private key reuses another configured role.");
+        }
+        if (!string.Equals(signer.KeyId, expected.KeyId, StringComparison.Ordinal) ||
+            !string.Equals(signer.PublicKeyFingerprintSha256, expected.Fingerprint, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new OperatorAttestationException(mismatchCode, "The signing private key does not match its configured trusted public key.");
+        }
+    }
+
+    private static void EnsureTrustMatchesRole(
+        ReceiptAttestationTrustStore trust,
+        SigningRoleTrust expected,
+        string mismatchCode)
+    {
+        if (!trust.TryGetPublicKeyFingerprintSha256(expected.KeyId, out string fingerprint) ||
+            !string.Equals(fingerprint, expected.Fingerprint, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new OperatorAttestationException(mismatchCode, "A command trust reference does not match the reviewed signing-role public key.");
+        }
+    }
+
     private static async Task ProducePlanAsync(
         string configPath,
         Func<string, string?> getEnvironmentVariable,
         CancellationToken cancellationToken)
     {
-        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
-            .ConfigureAwait(false);
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "plan_config_unprotected", cancellationToken).ConfigureAwait(false);
         PlanCommandConfiguration plan = configuration.Plan ??
             throw new MigrationConsoleException("plan_configuration_missing", "Plan configuration is required.");
         string sourceConnection = getEnvironmentVariable(SqlServerConnectionEnvironmentVariable) ??
@@ -585,29 +707,6 @@ public static class MigrationConsole
             DateTimeOffset.UtcNow,
             cancellationToken).ConfigureAwait(false);
         await WriteNewJsonAsync(plan.OutputPath, schemaPlan, cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async Task<T> ReadJsonAsync<T>(string path, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, cancellationToken).ConfigureAwait(false) ??
-                throw new MigrationConsoleException("configuration_invalid", "A referenced JSON document is empty.");
-        }
-        catch (JsonException)
-        {
-            throw new MigrationConsoleException("configuration_invalid", "A referenced JSON document is invalid.");
-        }
-        catch (IOException)
-        {
-            throw new MigrationConsoleException("configuration_unavailable", "A referenced JSON document is unavailable.");
-        }
-        catch (UnauthorizedAccessException)
-        {
-            throw new MigrationConsoleException("configuration_unavailable", "A referenced JSON document is unavailable.");
-        }
     }
 
     private static async Task RestoreBackupsAsync(
@@ -740,8 +839,8 @@ public static class MigrationConsole
         {
             throw new MigrationConsoleException("restore_receipt_configuration_missing", "Verified restore receipt publication is required.");
         }
-        VerifiedRestoreReceipt pending = await ReadJsonAsync<VerifiedRestoreReceipt>(
-            restore.VerifiedRestoreReceiptPath, cancellationToken).ConfigureAwait(false);
+        VerifiedRestoreReceipt pending = await ReadProtectedJsonAsync<VerifiedRestoreReceipt>(
+            restore.VerifiedRestoreReceiptPath, "restore_pending_receipt_unprotected", cancellationToken).ConfigureAwait(false);
         if (restore.ProvenanceTrustedKeys is null)
         {
             throw new MigrationConsoleException("restore_provenance_trust_missing", "Restore provenance trust is required.");
@@ -885,7 +984,24 @@ public static class MigrationConsole
         FullBackupCommandConfiguration? FullBackup = null,
         RestoreBackupsCommandConfiguration? RestoreBackups = null,
         AuthorizeShadowCommandConfiguration? AuthorizeShadow = null,
-        SignProvenanceCommandConfiguration? SignProvenance = null);
+        SignProvenanceCommandConfiguration? SignProvenance = null,
+        SigningRolesCommandConfiguration? SigningRoles = null);
+
+    private sealed record SigningRolesCommandConfiguration(
+        TrustedKeyReference Backup,
+        TrustedKeyReference Authorization,
+        TrustedKeyReference Execution,
+        TrustedKeyReference Provenance,
+        TrustedKeyReference FinalEvidence);
+
+    private sealed record SigningRoleTrust(string KeyId, string Fingerprint);
+
+    private sealed record SigningRoleTrustBundle(
+        SigningRoleTrust Backup,
+        SigningRoleTrust Authorization,
+        SigningRoleTrust Execution,
+        SigningRoleTrust Provenance,
+        SigningRoleTrust FinalEvidence);
 
     private sealed record FullBackupCommandConfiguration(
         string Namespace,

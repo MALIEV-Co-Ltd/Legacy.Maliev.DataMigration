@@ -14,6 +14,7 @@ public sealed class OperatorSigningConsoleTests : IDisposable
     private readonly ECDsa _authorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _executionKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _provenanceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    private readonly ECDsa _finalEvidenceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
     public OperatorSigningConsoleTests()
     {
@@ -119,6 +120,18 @@ public sealed class OperatorSigningConsoleTests : IDisposable
     }
 
     [Fact]
+    public async Task AuthorizeShadow_ConfiguredExecutionAndFinalEvidenceKeyReuseFailsBeforePublication()
+    {
+        SigningFixture fixture = await CreateAuthorizationFixtureAsync(
+            allow: true, reuseExecutionKeyForFinalEvidence: true);
+        (int exitCode, string code) = await RunAuthorizationAsync(fixture);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal("signing_role_key_reuse", code);
+        Assert.False(File.Exists(fixture.OutputPath));
+    }
+
+    [Fact]
     public async Task SignProvenance_WithoutExplicitFinalizationApprovalStopsBeforeReadingArtifactsOrKey()
     {
         string configPath = Path.Combine(_root, "provenance-config.json");
@@ -203,7 +216,8 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         bool unsignedBackup = false,
         DateTimeOffset? issuedAtUtc = null,
         DateTimeOffset? expiresAtUtc = null,
-        bool reuseBackupKey = false)
+        bool reuseBackupKey = false,
+        bool reuseExecutionKeyForFinalEvidence = false)
     {
         FreshSchemaPlan plan = CreatePlan();
         string planSha256 = SchemaPlanCanonicalizer.ComputeSha256(plan);
@@ -212,14 +226,31 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         string receiptPath = Path.Combine(_root, $"receipt-{Guid.NewGuid():N}.json");
         string trustPath = Path.Combine(_root, $"backup-{Guid.NewGuid():N}.spki");
         string keyPath = Path.Combine(_root, $"authorization-{Guid.NewGuid():N}.pem");
+        string authorizationTrustPath = Path.Combine(_root, $"authorization-{Guid.NewGuid():N}.spki");
+        string executionTrustPath = Path.Combine(_root, $"execution-{Guid.NewGuid():N}.spki");
+        string provenanceTrustPath = Path.Combine(_root, $"provenance-{Guid.NewGuid():N}.spki");
+        string finalEvidenceTrustPath = Path.Combine(_root, $"final-evidence-{Guid.NewGuid():N}.spki");
         string outputPath = Path.Combine(_root, $"authorization-{Guid.NewGuid():N}.json");
         string configPath = Path.Combine(_root, $"config-{Guid.NewGuid():N}.json");
         await WriteProtectedJsonAsync(planPath, plan);
         await WriteProtectedJsonAsync(receiptPath, backup);
         await WriteProtectedTextAsync(trustPath, Convert.ToBase64String(_backupKey.ExportSubjectPublicKeyInfo()));
         await WriteProtectedTextAsync(keyPath, reuseBackupKey ? _backupKey.ExportECPrivateKeyPem() : _authorizationKey.ExportECPrivateKeyPem());
+        await WriteProtectedTextAsync(authorizationTrustPath, Convert.ToBase64String(_authorizationKey.ExportSubjectPublicKeyInfo()));
+        await WriteProtectedTextAsync(executionTrustPath, Convert.ToBase64String(_executionKey.ExportSubjectPublicKeyInfo()));
+        await WriteProtectedTextAsync(provenanceTrustPath, Convert.ToBase64String(_provenanceKey.ExportSubjectPublicKeyInfo()));
+        await WriteProtectedTextAsync(finalEvidenceTrustPath, Convert.ToBase64String(
+            (reuseExecutionKeyForFinalEvidence ? _executionKey : _finalEvidenceKey).ExportSubjectPublicKeyInfo()));
         await WriteProtectedJsonAsync(configPath, new
         {
+            signingRoles = new
+            {
+                backup = new { keyId = "backup-key", subjectPublicKeyInfoPath = trustPath },
+                authorization = new { keyId = "authorization-key", subjectPublicKeyInfoPath = authorizationTrustPath },
+                execution = new { keyId = "execution-key", subjectPublicKeyInfoPath = executionTrustPath },
+                provenance = new { keyId = "provenance-key", subjectPublicKeyInfoPath = provenanceTrustPath },
+                finalEvidence = new { keyId = "final-evidence-key", subjectPublicKeyInfoPath = finalEvidenceTrustPath },
+            },
             authorizeShadow = new
             {
                 receiptPath,
@@ -236,6 +267,9 @@ public sealed class OperatorSigningConsoleTests : IDisposable
                 maximumReceiptAgeMinutes = 180d,
                 allowShadowAuthorization = allow,
             },
+            executeShadow = new { evidenceKeyId = "execution-key" },
+            signProvenance = new { keyId = "provenance-key" },
+            evidence = new { evidenceKeyId = "final-evidence-key" },
         });
         return new(configPath, outputPath, keyPath, planSha256, backup.ManifestSha256!);
     }
@@ -439,6 +473,7 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         _authorizationKey.Dispose();
         _executionKey.Dispose();
         _provenanceKey.Dispose();
+        _finalEvidenceKey.Dispose();
         if (Directory.Exists(_root))
         {
             Directory.Delete(_root, recursive: true);

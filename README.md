@@ -111,8 +111,15 @@ The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan
 `sign-provenance`, and `evidence`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
-cannot leak through process listings or logs. The receipt producer independently
-re-reads all 25 local backup files and binds their approved GCS object names,
+cannot leak through process listings or logs. The host requires owner-only,
+no-link files for every configuration, trust, signing-key,
+and signed-artifact read. Authorization and execution also resolve the reviewed
+backup, authorization, execution, provenance, and final-evidence public keys and
+reject any duplicate fingerprint before shadow provisioning can begin. The
+`execute-shadow` command independently requires `LEGACY_DEPLOY_ENABLED=false`;
+the wrapper is not the security boundary.
+The receipt producer independently re-reads all 25 local backup files and binds
+their approved GCS object names,
 immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
 Signing keys are externally supplied and are never stored in this repository.
 

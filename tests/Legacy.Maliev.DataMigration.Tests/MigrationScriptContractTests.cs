@@ -3,6 +3,28 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class MigrationScriptContractTests
 {
     [Fact]
+    public void ConsoleStages_UseOwnerProtectedPolicyForAllOperatorInputs()
+    {
+        string source = File.ReadAllText(Path.Combine(RepositoryRoot(),
+            "src", "Legacy.Maliev.DataMigration.Console", "MigrationConsole.cs"));
+
+        Assert.DoesNotContain("ReadJsonAsync<", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("File.ReadAllTextAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ReadProtectedJsonAsync<MigrationConsoleConfiguration>", source, StringComparison.Ordinal);
+        Assert.Contains("ReadProtectedTextAsync", source, StringComparison.Ordinal);
+
+        int executeStart = source.IndexOf("private static async Task ExecuteShadowAsync", StringComparison.Ordinal);
+        int trustStart = source.IndexOf("private static async Task<ReceiptAttestationTrustStore>", executeStart, StringComparison.Ordinal);
+        string execute = source[executeStart..trustStart];
+        Assert.True(execute.IndexOf("shadow_deploy_gate_invalid", StringComparison.Ordinal) <
+            execute.IndexOf("ReadProtectedJsonAsync<MigrationConsoleConfiguration>", StringComparison.Ordinal));
+        Assert.True(execute.IndexOf("ReadSigningRolesAsync", StringComparison.Ordinal) <
+            execute.IndexOf("CloudNativePgShadowDatabaseProvisioner", StringComparison.Ordinal));
+        Assert.True(execute.IndexOf("EnsureSignerMatchesRole", StringComparison.Ordinal) <
+            execute.IndexOf("CloudNativePgShadowDatabaseProvisioner", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void RestoreScript_VerifiesAndRestoresExactInventoryReadOnly()
     {
         string script = File.ReadAllText(SourcePath("restore-verified-sqlserver-backups.ps1"));
@@ -122,5 +144,10 @@ public sealed class MigrationScriptContractTests
     {
         return Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "../../../../../src/Legacy.Maliev.DataMigration.Console", file));
+    }
+
+    private static string RepositoryRoot()
+    {
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
     }
 }
