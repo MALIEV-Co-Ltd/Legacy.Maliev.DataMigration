@@ -11,18 +11,18 @@ public sealed class PostgreSqlShadowTargetCrashRecoveryTests(PostgreSqlAdapterFi
         string schema = $"journal_{Guid.NewGuid():N}";
         var clock = new MutableTimeProvider(Now);
         var crashed = new PostgreSqlMigrationRunJournal(new PostgreSqlMigrationRunJournalOptions(
-            fixture.ConnectionString,
+            fixture.ControlConnectionString,
             schema,
             "crashed-worker",
             TimeSpan.FromMinutes(1),
             clock));
         var restarted = new PostgreSqlMigrationRunJournal(new PostgreSqlMigrationRunJournalOptions(
-            fixture.ConnectionString,
+            fixture.ControlConnectionString,
             schema,
             "restart-worker",
             TimeSpan.FromMinutes(1),
             clock));
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         var identity = new MigrationRunIdentity(
             Guid.NewGuid(),
             new string('a', 40),
@@ -91,7 +91,7 @@ public sealed class PostgreSqlShadowTargetCrashRecoveryTests(PostgreSqlAdapterFi
     [Fact]
     public async Task DeleteRunOwnedShadowAsync_ExactMissingRegisteredShadow_IsIdempotent()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         string runId = Guid.NewGuid().ToString("D");
         var plannedButNeverCreated = new ShadowDatabase(
             $"legacy_shadow_order_{Guid.NewGuid():N}",
@@ -105,7 +105,7 @@ public sealed class PostgreSqlShadowTargetCrashRecoveryTests(PostgreSqlAdapterFi
     [Fact]
     public async Task StaleAttempt_CannotDeleteSuccessorWithSameDatabaseName()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         string runId = Guid.NewGuid().ToString("D");
         string name = $"legacy_shadow_order_{Guid.NewGuid():N}";
         var first = new ShadowDatabase(name, runId, "Order")

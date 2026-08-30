@@ -81,6 +81,8 @@ public sealed class MigrationConsoleTests : IDisposable
                 receiptTrustedKeys = Array.Empty<object>(),
                 authorizationTrustedKeys = Array.Empty<object>(),
                 evidenceKeyId = "evidence-key",
+                expectedControlRole = "legacy_migration_control",
+                expectedShadowAdminRole = "legacy_migration_shadow_admin",
             },
         }, JsonOptions));
         using var output = new StringWriter();
@@ -91,6 +93,51 @@ public sealed class MigrationConsoleTests : IDisposable
 
         Assert.Equal(65, exitCode);
         Assert.Equal("shadow_runtime_reference_missing" + Environment.NewLine, error.ToString());
+        Assert.Equal(string.Empty, output.ToString());
+    }
+
+    [Fact]
+    public async Task RunAsync_ExecuteShadow_SamePostgreSqlRoleBoundaryFailsBeforeReadingArtifacts()
+    {
+        _ = Directory.CreateDirectory(_root);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            executeShadow = new
+            {
+                receiptPath = "missing-receipt.json",
+                planPath = "missing-plan.json",
+                authorizationPath = "missing-authorization.json",
+                outputPath = "execution.json",
+                runnerDigestSha256 = new string('a', 64),
+                receiptTrustedKeys = Array.Empty<object>(),
+                authorizationTrustedKeys = Array.Empty<object>(),
+                evidenceKeyId = "evidence-key",
+                expectedControlRole = "same_role",
+                expectedShadowAdminRole = "same_role",
+            },
+        }, JsonOptions));
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        const string placeholder = "Host=127.0.0.1;Port=1;Database=postgres;Username=unused;Password=unused;Timeout=1";
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["execute-shadow", "--config", configPath], output, error,
+            name => name switch
+            {
+                "LEGACY_MIGRATION_SQLSERVER_CONNECTION" => "Server=127.0.0.1,1;User Id=unused;Password=unused;TrustServerCertificate=True",
+                "LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION" => placeholder,
+                "LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION" => placeholder,
+                "LEGACY_MIGRATION_CNPG_API_SERVER" => "https://kubernetes.example",
+                "LEGACY_MIGRATION_CNPG_TOKEN_FILE" => "missing-token",
+                "LEGACY_MIGRATION_CNPG_CA_FILE" => "missing-ca",
+                "LEGACY_MIGRATION_EVIDENCE_SIGNING_KEY_FILE" => "missing-key.pem",
+                _ => null,
+            },
+            CancellationToken.None);
+
+        Assert.Equal(70, exitCode);
+        Assert.Equal("migration_postgres_role_boundary_invalid" + Environment.NewLine, error.ToString());
         Assert.Equal(string.Empty, output.ToString());
     }
 

@@ -15,16 +15,107 @@ public sealed class PostgreSqlAdapterFixture : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:18-alpine").Build();
 
+    private readonly string _controlPassword = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+    private readonly string _shadowAdminPassword = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+
     public string ConnectionString => _container.GetConnectionString();
 
-    public Task InitializeAsync()
+    public string AdministratorUsername => new NpgsqlConnectionStringBuilder(ConnectionString).Username!;
+
+    public string AdministratorPassword => new NpgsqlConnectionStringBuilder(ConnectionString).Password!;
+
+    public string ControlRole { get; } = "legacy_migration_control_test";
+
+    public string ShadowAdminRole { get; } = "legacy_migration_shadow_test";
+
+    public string CanonicalDatabase { get; } = "legacy_canonical_test";
+
+    public string ControlConnectionString => new NpgsqlConnectionStringBuilder(ConnectionString)
     {
-        return _container.StartAsync();
+        Database = PostgreSqlMigrationRuntimeBoundaryValidator.ControlDatabase,
+        Username = ControlRole,
+        Password = _controlPassword,
+    }.ConnectionString;
+
+    public string ShadowAdminConnectionString => new NpgsqlConnectionStringBuilder(ConnectionString)
+    {
+        Database = "postgres",
+        Username = ShadowAdminRole,
+        Password = _shadowAdminPassword,
+    }.ConnectionString;
+
+    public PostgreSqlShadowTarget CreateShadowTarget()
+    {
+        return new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(
+            ShadowAdminConnectionString,
+            new TestcontainerShadowDatabaseProvisioner(ConnectionString)));
+    }
+
+    public async Task InitializeAsync()
+    {
+        await _container.StartAsync();
+        await using var connection = new NpgsqlConnection(ConnectionString);
+        await connection.OpenAsync();
+        await ExecuteAsync(connection, $"CREATE ROLE {ControlRole} LOGIN PASSWORD '{_controlPassword}';");
+        await ExecuteAsync(connection, $"CREATE ROLE {ShadowAdminRole} LOGIN NOCREATEDB PASSWORD '{_shadowAdminPassword}';");
+        await ExecuteAsync(connection,
+            $"CREATE DATABASE {PostgreSqlMigrationRuntimeBoundaryValidator.ControlDatabase} OWNER {ControlRole};");
+        await ExecuteAsync(connection, $"CREATE DATABASE {CanonicalDatabase};");
+        await ExecuteAsync(connection, "REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;");
+        await ExecuteAsync(connection, "REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;");
+        await ExecuteAsync(connection,
+            $"REVOKE CONNECT ON DATABASE {PostgreSqlMigrationRuntimeBoundaryValidator.ControlDatabase} FROM PUBLIC;");
+        await ExecuteAsync(connection, $"REVOKE CONNECT ON DATABASE {CanonicalDatabase} FROM PUBLIC;");
+        await ExecuteAsync(connection,
+            $"GRANT CONNECT, CREATE ON DATABASE {PostgreSqlMigrationRuntimeBoundaryValidator.ControlDatabase} TO {ControlRole};");
+        await ExecuteAsync(connection, $"GRANT CONNECT ON DATABASE postgres TO {ShadowAdminRole};");
     }
 
     public Task DisposeAsync()
     {
         return _container.DisposeAsync().AsTask();
+    }
+
+    private static async Task ExecuteAsync(NpgsqlConnection connection, string sql)
+    {
+        await using var command = new NpgsqlCommand(sql, connection);
+        _ = await command.ExecuteNonQueryAsync();
+    }
+}
+
+internal sealed class TestcontainerShadowDatabaseProvisioner(string administratorConnectionString)
+    : IPostgreSqlShadowDatabaseProvisioner
+{
+    public async Task ProvisionWithConnectionsDisabledAsync(
+        ShadowDatabase shadow,
+        string ownerRole,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteAsync(
+            $"CREATE DATABASE {PostgreSqlShadowTarget.QuoteIdentifier(shadow.Name)} OWNER {PostgreSqlShadowTarget.QuoteIdentifier(ownerRole)} ALLOW_CONNECTIONS false TEMPLATE template0;",
+            cancellationToken);
+    }
+
+    public Task EnableConnectionsAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
+    {
+        return ExecuteAsync(
+            $"ALTER DATABASE {PostgreSqlShadowTarget.QuoteIdentifier(shadow.Name)} ALLOW_CONNECTIONS true;",
+            cancellationToken);
+    }
+
+    public Task DeleteAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
+    {
+        return ExecuteAsync(
+            $"DROP DATABASE IF EXISTS {PostgreSqlShadowTarget.QuoteIdentifier(shadow.Name)} WITH (FORCE);",
+            cancellationToken);
+    }
+
+    private async Task ExecuteAsync(string sql, CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(administratorConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
 
@@ -34,7 +125,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [Fact]
     public async Task Exact25DeterministicShadowNames_CreateAndDeleteWithoutPostgresTruncation()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         Guid runId = Guid.NewGuid();
         var created = new List<ShadowDatabase>();
         try
@@ -61,7 +152,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [Fact]
     public async Task FinalizeSchema_CyclicForeignKeys_AreAddedOnlyAfterAllDataAndIdentityReseeds()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
             "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
         try
@@ -92,7 +183,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [Fact]
     public async Task CopyAndReconcile_LargeTextValue_StreamsWithoutFourMiBRejection()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
             "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
         try
@@ -179,7 +270,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [Fact]
     public async Task CopyBatch_LaterStreamingColumnFailure_RollsBackWithoutRowsOrLargeObjects()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
             "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
         try
@@ -219,7 +310,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [Fact]
     public async Task CopyBatch_QueryCancellation_RollsBackWithoutRowsOrLargeObjects()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
             "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
         try
@@ -263,7 +354,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [Fact]
     public async Task CopyBatch_SuccessThenTransactionRollback_PersistsNoRowsOrLargeObjects()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
             "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
         try
@@ -293,7 +384,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [Fact]
     public async Task CopyBatch_UnsafeSignedTextMaximum_FailsBeforeOpeningProducer()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
             "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
         try
@@ -341,7 +432,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [InlineData(false)]
     public async Task ApplySchema_NullableSqlServerUniqueObject_UsesNullsNotDistinctSemantics(bool constraint)
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         string runId = Guid.NewGuid().ToString("D");
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
             "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", runId, CancellationToken.None);
@@ -377,13 +468,13 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     public void Constructor_EmptyConnectionString_FailsClosed()
     {
         _ = Assert.Throws<ArgumentException>(() =>
-            new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(string.Empty)));
+            new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(string.Empty, null!)));
     }
 
     [Fact]
     public async Task WholeDatabaseTransaction_CopiesAndReconcilesBeforeCommit()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         string runId = Guid.NewGuid().ToString("D");
         string shadowName = $"legacy_shadow_order_{Guid.NewGuid():N}";
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
@@ -432,7 +523,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [Fact]
     public async Task DeleteRunOwnedShadowAsync_RejectsForgedOwnership()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         string runId = Guid.NewGuid().ToString("D");
         string shadowName = $"legacy_shadow_order_{Guid.NewGuid():N}";
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
@@ -449,7 +540,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [Fact]
     public async Task CommitAsync_BeforeEveryTableInspection_FailsClosedAndRollsBack()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         string runId = Guid.NewGuid().ToString("D");
         string shadowName = $"legacy_shadow_order_{Guid.NewGuid():N}";
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
@@ -483,7 +574,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
     [Fact]
     public async Task WholeDatabaseTransaction_CreatesAndReconcilesEverySignedSchemaObject()
     {
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         string runId = Guid.NewGuid().ToString("D");
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
             "Order",
@@ -685,17 +776,66 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
 public sealed class PostgreSqlMigrationRunJournalIntegrationTests(PostgreSqlAdapterFixture fixture)
 {
     [Fact]
+    public void Constructor_NonControlDatabase_FailsClosed()
+    {
+        _ = Assert.Throws<ArgumentException>(() => new PostgreSqlMigrationRunJournal(
+            new PostgreSqlMigrationRunJournalOptions(fixture.ConnectionString)));
+    }
+
+    [Fact]
+    public async Task CreateShadow_RevokesPublicWhileConnectionsRemainDisabled()
+    {
+        var provisioner = new BoundaryObservingProvisioner(fixture.ConnectionString, failEnable: false);
+        var target = new PostgreSqlShadowTarget(new(
+            fixture.ShadowAdminConnectionString,
+            provisioner,
+            fixture.ShadowAdminRole));
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
+        try
+        {
+            Assert.True(provisioner.ObservedDisabledBeforeEnable);
+            Assert.True(provisioner.ObservedPublicRevokedBeforeEnable);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task CreateShadow_EnableFailure_RemovesDisabledPartialDatabase()
+    {
+        var provisioner = new BoundaryObservingProvisioner(fixture.ConnectionString, failEnable: true);
+        var target = new PostgreSqlShadowTarget(new(
+            fixture.ShadowAdminConnectionString,
+            provisioner,
+            fixture.ShadowAdminRole));
+        string shadowName = $"legacy_shadow_order_{Guid.NewGuid():N}";
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => target.CreateUniqueEmptyShadowAsync(
+            "Order", shadowName, Guid.NewGuid().ToString("D"), CancellationToken.None));
+
+        Assert.True(provisioner.DeleteCalled);
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync(CancellationToken.None);
+        await using var command = new NpgsqlCommand("SELECT NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1);", connection);
+        _ = command.Parameters.AddWithValue(shadowName);
+        Assert.True((bool)(await command.ExecuteScalarAsync(CancellationToken.None))!);
+    }
+
+    [Fact]
     public void Constructor_UnsafeSchema_FailsClosed()
     {
         _ = Assert.Throws<ArgumentException>(() => new PostgreSqlMigrationRunJournal(
-            new PostgreSqlMigrationRunJournalOptions(fixture.ConnectionString, "public; DROP SCHEMA public")));
+            new PostgreSqlMigrationRunJournalOptions(fixture.ControlConnectionString, "public; DROP SCHEMA public")));
     }
 
     [Fact]
     public async Task TryBeginAsync_ConcurrentSameRun_GrantsOneLeaseAndReportsInProgress()
     {
         var journal = new PostgreSqlMigrationRunJournal(
-            new PostgreSqlMigrationRunJournalOptions(fixture.ConnectionString, $"journal_{Guid.NewGuid():N}"));
+            new PostgreSqlMigrationRunJournalOptions(fixture.ControlConnectionString, $"journal_{Guid.NewGuid():N}"));
         MigrationRunIdentity identity = Identity(Guid.NewGuid());
 
         MigrationRunStartResult[] results = await Task.WhenAll(
@@ -711,7 +851,7 @@ public sealed class PostgreSqlMigrationRunJournalIntegrationTests(PostgreSqlAdap
     {
         string schema = $"journal_{Guid.NewGuid():N}";
         var first = new PostgreSqlMigrationRunJournal(
-            new PostgreSqlMigrationRunJournalOptions(fixture.ConnectionString, schema));
+            new PostgreSqlMigrationRunJournalOptions(fixture.ControlConnectionString, schema));
         MigrationRunIdentity identity = Identity(Guid.NewGuid());
         Assert.Equal(
             MigrationRunStartStatus.Acquired,
@@ -731,7 +871,7 @@ public sealed class PostgreSqlMigrationRunJournalIntegrationTests(PostgreSqlAdap
         await first.RecordCompletedAsync(receipt, CancellationToken.None);
 
         var restarted = new PostgreSqlMigrationRunJournal(
-            new PostgreSqlMigrationRunJournalOptions(fixture.ConnectionString, schema));
+            new PostgreSqlMigrationRunJournalOptions(fixture.ControlConnectionString, schema));
         MigrationRunStartResult replay = await restarted.TryBeginAsync(identity, CancellationToken.None);
         MigrationRunStartResult conflict = await restarted.TryBeginAsync(
             identity with { TargetGeneration = "different" },
@@ -750,7 +890,7 @@ public sealed class PostgreSqlMigrationRunJournalIntegrationTests(PostgreSqlAdap
     {
         string schema = $"journal_{Guid.NewGuid():N}";
         var journal = new PostgreSqlMigrationRunJournal(
-            new PostgreSqlMigrationRunJournalOptions(fixture.ConnectionString, schema));
+            new PostgreSqlMigrationRunJournalOptions(fixture.ControlConnectionString, schema));
         MigrationRunIdentity identity = Identity(Guid.NewGuid());
         Assert.Equal(
             MigrationRunStartStatus.Acquired,
@@ -771,7 +911,7 @@ public sealed class PostgreSqlMigrationRunJournalIntegrationTests(PostgreSqlAdap
 
         await journal.RecordFailedAsync(failure, CancellationToken.None);
         MigrationRunStartResult retry = await journal.TryBeginAsync(identity, CancellationToken.None);
-        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await using var connection = new NpgsqlConnection(fixture.ControlConnectionString);
         await connection.OpenAsync(CancellationToken.None);
         await using var command = new NpgsqlCommand(
             $"SELECT jsonb_array_length(failure_receipts) FROM \"{schema}\".migration_runs WHERE run_id = $1;",
@@ -797,6 +937,53 @@ public sealed class PostgreSqlMigrationRunJournalIntegrationTests(PostgreSqlAdap
     }
 }
 
+internal sealed class BoundaryObservingProvisioner(string administratorConnectionString, bool failEnable)
+    : IPostgreSqlShadowDatabaseProvisioner
+{
+    private readonly TestcontainerShadowDatabaseProvisioner _inner = new(administratorConnectionString);
+
+    public bool ObservedDisabledBeforeEnable { get; private set; }
+
+    public bool ObservedPublicRevokedBeforeEnable { get; private set; }
+
+    public bool DeleteCalled { get; private set; }
+
+    public Task ProvisionWithConnectionsDisabledAsync(ShadowDatabase shadow, string ownerRole, CancellationToken cancellationToken)
+    {
+        return _inner.ProvisionWithConnectionsDisabledAsync(shadow, ownerRole, cancellationToken);
+    }
+
+    public async Task EnableConnectionsAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(administratorConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT NOT datallowconn,
+                   NOT EXISTS (
+                       SELECT 1 FROM aclexplode(COALESCE(datacl, acldefault('d', datdba))) acl
+                       WHERE acl.grantee = 0 AND acl.privilege_type = 'CONNECT')
+            FROM pg_database WHERE datname = $1;
+            """, connection);
+        _ = command.Parameters.AddWithValue(shadow.Name);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        ObservedDisabledBeforeEnable = reader.GetBoolean(0);
+        ObservedPublicRevokedBeforeEnable = reader.GetBoolean(1);
+        if (failEnable)
+        {
+            throw new InvalidOperationException("Injected enable failure.");
+        }
+
+        await _inner.EnableConnectionsAsync(shadow, cancellationToken);
+    }
+
+    public async Task DeleteAsync(ShadowDatabase shadow, CancellationToken cancellationToken)
+    {
+        DeleteCalled = true;
+        await _inner.DeleteAsync(shadow, cancellationToken);
+    }
+}
+
 public sealed class ShadowMigrationRuntimeTests
 {
     [Fact]
@@ -806,9 +993,11 @@ public sealed class ShadowMigrationRuntimeTests
             new SqlServerMigrationSourceOptions(
                 "Server=sql.example;Database=master;Integrated Security=True;Encrypt=True"),
             new PostgreSqlShadowTargetOptions(
-                "Host=postgres.example;Database=postgres;Username=reviewer;Password=not-used"),
+                "Host=postgres.example;Database=postgres;Username=reviewer",
+                new TestcontainerShadowDatabaseProvisioner(
+                    "Host=postgres.example;Database=postgres;Username=provisioner")),
             new PostgreSqlMigrationRunJournalOptions(
-                "Host=postgres.example;Database=journal;Username=reviewer;Password=not-used")));
+                "Host=postgres.example;Database=legacy_migration_control;Username=control")));
 
         _ = Assert.IsType<SqlServerMigrationSource>(runtime.Source);
         _ = Assert.IsType<PostgreSqlShadowTarget>(runtime.ShadowTarget);

@@ -10,7 +10,8 @@ public sealed record PostgreSqlMigrationRunJournalOptions(
     string Schema = "legacy_migration_control",
     string? LeaseOwner = null,
     TimeSpan? LeaseDuration = null,
-    TimeProvider? TimeProvider = null);
+    TimeProvider? TimeProvider = null,
+    string? ExpectedControlRole = null);
 
 public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
 {
@@ -23,6 +24,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
     private readonly string _leaseOwner;
     private readonly TimeSpan _leaseDuration;
     private readonly TimeProvider _timeProvider;
+    private readonly string _expectedControlRole;
     private readonly ConcurrentDictionary<Guid, MigrationRunLease> _leases = new();
 
     public PostgreSqlMigrationRunJournal(PostgreSqlMigrationRunJournalOptions options)
@@ -31,6 +33,12 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         if (string.IsNullOrWhiteSpace(options.ConnectionString) || !SchemaName().IsMatch(options.Schema))
         {
             throw new ArgumentException("A connection string and safe journal schema are required.", nameof(options));
+        }
+
+        var connection = new NpgsqlConnectionStringBuilder(options.ConnectionString);
+        if (!string.Equals(connection.Database, PostgreSqlMigrationRuntimeBoundaryValidator.ControlDatabase, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("The journal connection must target the dedicated migration-control database.", nameof(options));
         }
 
         string owner = options.LeaseOwner ?? $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
@@ -48,6 +56,8 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         _leaseOwner = owner;
         _leaseDuration = duration;
         _timeProvider = options.TimeProvider ?? TimeProvider.System;
+        _expectedControlRole = options.ExpectedControlRole ?? connection.Username ??
+            throw new ArgumentException("The expected migration-control role is required.", nameof(options));
     }
 
     public async Task<MigrationRunStartResult> TryBeginAsync(MigrationRunIdentity identity, CancellationToken cancellationToken)
@@ -56,8 +66,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         DateTimeOffset now = _timeProvider.GetUtcNow();
         DateTimeOffset expires = now.Add(_leaseDuration);
         Guid fencingToken = Guid.NewGuid();
-        await using var connection = new NpgsqlConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
         await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
             System.Data.IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
@@ -137,8 +146,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         ArgumentNullException.ThrowIfNull(lease);
         DateTimeOffset now = _timeProvider.GetUtcNow();
         DateTimeOffset expires = now.Add(_leaseDuration);
-        await using var connection = new NpgsqlConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
         await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
         await using var command = new NpgsqlCommand($"""
             UPDATE {_table}
@@ -172,8 +180,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
             throw new MigrationExecutionException("shadow_ownership_invalid", "The shadow inventory does not belong to this migration run.");
         }
 
-        await using var connection = new NpgsqlConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
         await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await AssertLiveOwnedLeaseAsync(connection, transaction, lease, cancellationToken).ConfigureAwait(false);
@@ -207,8 +214,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
     public async Task<IReadOnlyList<ShadowDatabase>> GetPendingShadowsAsync(MigrationRunLease lease, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
-        await using var connection = new NpgsqlConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
         await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await AssertLiveOwnedLeaseAsync(connection, transaction, lease, cancellationToken).ConfigureAwait(false);
@@ -222,8 +228,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
     {
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(outcome);
-        await using var connection = new NpgsqlConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
         await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await AssertLiveOwnedLeaseAsync(connection, transaction, lease, cancellationToken).ConfigureAwait(false);
@@ -283,8 +288,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         }
 
         DateTimeOffset now = _timeProvider.GetUtcNow();
-        await using var connection = new NpgsqlConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
         await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = new NpgsqlCommand($"""
@@ -325,6 +329,23 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         finally
         {
             _ = SchemaGate.Release();
+        }
+    }
+
+    private async Task<NpgsqlConnection> OpenValidatedConnectionAsync(CancellationToken cancellationToken)
+    {
+        var connection = new NpgsqlConnection(_connectionString);
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalControlConnectionAsync(
+                connection, _expectedControlRole, cancellationToken).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
         }
     }
 
