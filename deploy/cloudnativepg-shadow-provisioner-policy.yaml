@@ -47,7 +47,7 @@ spec:
         resources: ["databases"]
   matchConditions:
     - name: migration-identity-or-shadow-object
-      expression: "request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner' || (object != null && object.metadata.name.startsWith('legacy-shadow-')) || (oldObject != null && oldObject.metadata.name.startsWith('legacy-shadow-'))"
+      expression: "request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner' || (object != null && (object.metadata.name.startsWith('legacy-shadow-') || object.spec.name.startsWith('legacy_shadow_'))) || (oldObject != null && (oldObject.metadata.name.startsWith('legacy-shadow-') || oldObject.spec.name.startsWith('legacy_shadow_')))"
   validations:
     - expression: "request.namespace == 'maliev-legacy'"
       message: Migration Database mutations are restricted to the maliev-legacy namespace.

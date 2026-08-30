@@ -133,7 +133,8 @@ identity also mutates live state. Every such action needs explicit authorization
 
 The dormant admission policy selects requests made by the dedicated migration
 service account or requests whose current/old object uses the `legacy-shadow-*`
-resource prefix. It then requires both the exact service account and exact shadow
+resource prefix or the `legacy_shadow_*` database-name prefix. It then requires
+both the exact service account and exact shadow
 resource/database names. Consequently migration-to-canonical and other-to-shadow
 mutations are denied, while unrelated controller operations on canonical resources
 are outside this policy rather than disrupted by it.

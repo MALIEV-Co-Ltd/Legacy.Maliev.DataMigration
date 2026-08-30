@@ -257,7 +257,8 @@ creation by the migration credential is forbidden.
 
 The GitOps lane must supply namespace-scoped RBAC and a validating-admission
 policy that selects every mutation made by the dedicated migration service account
-and every current or old `legacy-shadow-*` object. Validation allows only the exact
+and every current or old object whose metadata uses `legacy-shadow-*` or whose
+database name uses `legacy_shadow_*`. Validation allows only the exact
 service-account plus run-owned shadow-name combination. Migration attempts against
 canonical or malformed resources and non-migration attempts against shadow resources
 are denied, while unrelated identities acting on canonical Database resources are
