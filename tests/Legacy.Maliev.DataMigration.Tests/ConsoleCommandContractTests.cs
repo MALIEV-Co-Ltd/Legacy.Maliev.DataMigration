@@ -6,11 +6,11 @@ public sealed class ConsoleCommandContractTests
 {
     public static TheoryData<string> SupportedCommands =>
     [
-        "receipt",
         "plan",
         "execute-shadow",
         "evidence",
         "export-local-snapshot",
+        "backup-full",
     ];
 
     [Theory]
@@ -27,7 +27,7 @@ public sealed class ConsoleCommandContractTests
     public void Parse_RejectsSecretBearingArguments()
     {
         CommandLineException exception = Assert.Throws<CommandLineException>(() =>
-            ConsoleInvocation.Parse(["receipt", "--connection-string", "Server=secret"]));
+            ConsoleInvocation.Parse(["plan", "--connection-string", "Server=secret"]));
 
         Assert.Equal("secret_cli_argument_forbidden", exception.Code);
         Assert.DoesNotContain("Server=secret", exception.Message, StringComparison.Ordinal);
@@ -37,7 +37,7 @@ public sealed class ConsoleCommandContractTests
     public void Parse_RejectsUnknownOptionsWithoutEchoingTheirValues()
     {
         CommandLineException exception = Assert.Throws<CommandLineException>(() =>
-            ConsoleInvocation.Parse(["receipt", "--unknown", "sensitive-value"]));
+            ConsoleInvocation.Parse(["plan", "--unknown", "sensitive-value"]));
 
         Assert.Equal("unknown_cli_argument", exception.Code);
         Assert.DoesNotContain("sensitive-value", exception.Message, StringComparison.Ordinal);

@@ -98,8 +98,8 @@ No executable migration logic was copied from those files.
 
 ## Receipt and execution contracts
 
-The .NET 10 executable host exposes only `receipt`, `plan`, `execute-shadow`,
-`evidence`, and `export-local-snapshot`. Command lines may carry a protected
+The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan`,
+`execute-shadow`, `evidence`, and `export-local-snapshot`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
 cannot leak through process listings or logs. The receipt producer independently
@@ -107,11 +107,81 @@ re-reads all 25 local backup files and binds their approved GCS object names,
 immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
 Signing keys are externally supplied and are never stored in this repository.
 
-`scripts/restore-verified-sqlserver-backups.ps1` restores only the exact signed
-inventory into a disposable SQL Server 2022 instance. It runs `RESTORE
+`Exact25FullBackupProducer` is the fail-closed producer used by the daily backup
+adapter. It requires the exact 27-database source disposition inventory to be
+`ONLINE`, but creates full backups only for the 25 approved migrate databases;
+the retired `MachineLearning` and `MachineLearningData` databases are observed
+but never copied. The producer binds the expected Kubernetes namespace, pod,
+pod UID, container, approved UTC run date, and run identifier. SQL Server itself
+reports the inventory observation time and the completion time of every full
+backup. The signed receipt uses the latest observed backup completion time; it
+does **not** claim that the sequential database backups share one immutable
+source cutoff. A bounded source write freeze or reviewed complete CDC mechanism
+remains a mandatory release gate before final synchronization. The adapter
+creates a unique owner-only remote run directory and uniquely named full backups
+with `COPY_ONLY` and `CHECKSUM`, performs `RESTORE VERIFYONLY`, compares the
+remote SHA-256 to the owner-only retained local copy, then uploads with
+create-only semantics. The exact immutable GCS generation, size, URI, and
+SHA-256 metadata are read back before the canonical receipt is signed.
+Ambiguous backup or upload operations are never retried; only an allowlist of
+explicit copy transport failures has a bounded three-attempt maximum. Recovery
+backups are retained on every failure.
+
+Backup receipt schema `1.1` signs the authoritative SQL Server inventory
+observation time and every artifact completion time in addition to the existing
+inventory, local hash, immutable GCS generation, size, and hash evidence.
+
+SQL credentials cross the `kubectl exec` child-process boundary only through
+standard input. The invocation diagnostic redacts standard input, and neither
+credentials nor SQL text appear in process arguments. The signed receipt is
+written into an owner-only staging directory and becomes visible through one
+new-directory atomic rename; an existing destination is never overwritten.
+`KubernetesSqlServerFullBackupProcess` uses structured process arguments and
+standard input, validates the observed pod JSON and full database inventory,
+and copies through a unique temporary file before an atomic local rename.
+`GoogleCloudImmutableBackupObjectStorage` uses Application Default Credentials,
+so GKE Workload Identity or an authorized local ADC identity supplies access
+without a key file. It sets `ifGenerationMatch=0`, records the local SHA-256 as
+object metadata, and reads that exact generation back. Both adapters remain
+injectable for deterministic no-network contract tests. Differential backups
+and backup artifacts for either retired ML database are rejected.
+
+`backup-full --config <protected-json-path>` is the guarded executable
+composition path. The protected JSON must set `fullBackup.allowSourceBackup`
+to `true`; `LEGACY_DEPLOY_ENABLED` must remain exactly `false`. SQL username and
+password are read only from `LEGACY_MIGRATION_BACKUP_SQL_USERNAME` and
+`LEGACY_MIGRATION_BACKUP_SQL_PASSWORD`, while the P-256 private-key path is read
+only from `LEGACY_MIGRATION_RECEIPT_SIGNING_KEY_FILE`. No secret value is
+accepted on the command line or written to standard output, standard error, or
+the receipt. The default runtime composes the structured Kubernetes/sqlcmd
+adapter, the Application Default Credentials GCS adapter, and atomic receipt
+publisher. Contract tests replace that runtime before any process or network
+operation, so repository validation never performs a live backup.
+
+`restore-backups` re-verifies the producer signature and exact 25-item inventory,
+derives every local recovery path from the signed filenames, securely reopens and
+re-hashes each owner-only artifact, and retains the verified file handle while a pinned
+helper image streams those exact bytes into a create-only object in a run-owned Docker
+named volume. The helper verifies both byte length and SHA-256, changes ownership to the
+SQL Server runtime UID, and exits before restore. The disposable SQL Server's exact
+container name and image ID are verified and it must mount that separate volume read-only;
+the original host recovery path is never mounted into SQL Server. The target runs scalable
+`RESTORE VERIFYONLY ... WITH CHECKSUM` without the 2 GiB `SINGLE_BLOB` ceiling. Restore
+and catalog commands disable the client-side 30-second command timeout and remain bounded
+by the caller cancellation token. No unsigned intermediate restore manifest exists.
+The guarded command itself provisions the create-only named volume and disposable SQL
+Server 2022 container from a digest-pinned image. It rejects pre-existing run names,
+publishes only to an explicit loopback port, binds a protected run label, and passes the
+SA password through the child environment rather than command-line arguments. Partial
+provisioning and partial database restores are cleaned up fail-closed.
+The standalone receipt-signing command has been removed; callers cannot sign
+hand-authored state. `scripts/restore-verified-sqlserver-backups.ps1` delegates only
+to that guarded .NET command, which restores the exact signed inventory into a
+disposable SQL Server 2022 instance. It runs `RESTORE
 VERIFYONLY`, discovers every logical file with `RESTORE FILELISTONLY`, supplies
 an explicit `WITH MOVE`, refuses existing targets, and makes every restored
-source database read-only. `scripts/invoke-shadow-migration.ps1` then runs the
+source database snapshot-isolation capable, verifies that state, and then makes
+it read-only. `scripts/invoke-shadow-migration.ps1` then runs the
 five gates in order and refuses to start unless `LEGACY_DEPLOY_ENABLED=false`.
 Neither script contains deployment, GKE, GCS mutation, or Secret Manager logic.
 
@@ -135,7 +205,9 @@ canonical-target or deployment mode.
 `PreflightService.Validate` accepts an in-memory `BackupReceipt` and
 `MigrationPlan`. A valid receipt must:
 
-- use receipt schema version `1.0`;
+- use receipt schema version `1.1`, including the observed source time and each
+  artifact's completion time plus exact immutable GCS object, generation, size,
+  and SHA-256 evidence;
 - be no older than the caller-supplied positive maximum age and not be future-dated;
 - match the immutable database-disposition inventory SHA-256;
 - contain exactly one full `.bak` artifact for each of the 25 active databases;
@@ -233,9 +305,9 @@ or filesystem path is emitted.
 This slice does not approve a production run or daily production
 synchronization. Before a real shadow copy is allowed, the program still needs:
 
-1. an independently reviewed producer that creates current verified full-backup
-   receipts, observes hashes itself, protects its private signing key, and emits
-   the exact 25-database disposition;
+1. owner-reviewed runtime configuration that binds the daily adapter to the
+   concrete Kubernetes/sqlcmd and Workload Identity GCS adapters plus protected
+   external signing-key injection;
 2. a freshly generated and independently reviewed 25-database schema plan bound
    to the current source commit;
 3. a bounded source write freeze or a reviewed change-capture mechanism (the

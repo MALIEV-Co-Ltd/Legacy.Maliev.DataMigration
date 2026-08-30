@@ -4,11 +4,13 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
 {
     private static readonly HashSet<string> Commands =
     [
-        "receipt",
         "plan",
         "execute-shadow",
         "evidence",
         "export-local-snapshot",
+        "backup-full",
+        "restore-backups",
+        "cleanup-restore",
     ];
 
     private static readonly string[] SecretOptionFragments =

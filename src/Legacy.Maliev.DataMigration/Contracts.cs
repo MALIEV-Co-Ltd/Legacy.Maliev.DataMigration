@@ -25,6 +25,8 @@ public sealed record BackupArtifact(
     public long? GcsGeneration { get; init; }
 
     public string? GcsSha256 { get; init; }
+
+    public DateTimeOffset? CompletedAtUtc { get; init; }
 }
 
 public sealed record BackupReceipt(
@@ -34,7 +36,10 @@ public sealed record BackupReceipt(
     string? ManifestSha256,
     IReadOnlyList<BackupArtifact?>? Artifacts,
     string? AttestationKeyId,
-    string? AttestationSignature);
+    string? AttestationSignature)
+{
+    public DateTimeOffset? SourceObservedAtUtc { get; init; }
+}
 
 public sealed record MigrationPlan(
     string? Mode,

@@ -9,7 +9,7 @@ public sealed partial class PreflightService
     private readonly IExternalCommandExecutor _externalCommandExecutor;
     private readonly IReceiptAttestationTrustStore _attestationTrustStore;
 
-    public const string ReceiptSchemaVersion = "1.0";
+    public const string ReceiptSchemaVersion = "1.1";
     public const string TargetSchemaVersion = "1.0";
 
     public PreflightService(
@@ -39,7 +39,7 @@ public sealed partial class PreflightService
         return new PreflightResult(errors);
     }
 
-    private static void ValidateReceipt(
+    internal static void ValidateReceipt(
         BackupReceipt receipt,
         DateTimeOffset nowUtc,
         TimeSpan maximumReceiptAge,
@@ -58,6 +58,12 @@ public sealed partial class PreflightService
         if (receipt.CapturedAtUtc > nowUtc || nowUtc - receipt.CapturedAtUtc > maximumReceiptAge)
         {
             errors.Add(new("receipt_stale", "The backup receipt is stale or dated in the future."));
+        }
+
+        if (receipt.SourceObservedAtUtc is null || receipt.SourceObservedAtUtc.Value.Offset != TimeSpan.Zero ||
+            receipt.SourceObservedAtUtc.Value > receipt.CapturedAtUtc)
+        {
+            errors.Add(new("receipt_capture_provenance_invalid", "The backup receipt source observation is missing or invalid."));
         }
 
         if (!FixedTimeEquals(receipt.DatabaseInventorySha256, DatabaseInventory.InventorySha256))
@@ -104,6 +110,15 @@ public sealed partial class PreflightService
                 errors.Add(new("backup_artifact_invalid", $"{artifact.Database} backup evidence is malformed."));
             }
 
+            if (artifact.CompletedAtUtc is null || artifact.CompletedAtUtc.Value.Offset != TimeSpan.Zero ||
+                receipt.SourceObservedAtUtc is null || artifact.CompletedAtUtc.Value < receipt.SourceObservedAtUtc.Value ||
+                artifact.CompletedAtUtc.Value > receipt.CapturedAtUtc || string.IsNullOrWhiteSpace(artifact.GcsObject) ||
+                artifact.GcsGeneration is null or <= 0 || artifact.GcsSha256 is null || !Sha256().IsMatch(artifact.GcsSha256) ||
+                !FixedTimeEquals(artifact.GcsSha256, artifact.Sha256))
+            {
+                errors.Add(new("backup_artifact_provenance_invalid", $"{artifact.Database} immutable capture provenance is incomplete."));
+            }
+
             if (hashesAreValid && !FixedTimeEquals(artifact.ObservedSha256, artifact.Sha256))
             {
                 errors.Add(new("backup_hash_mismatch", $"{artifact.Database} observed SHA-256 does not match its receipt."));
@@ -117,6 +132,13 @@ public sealed partial class PreflightService
         else if (!FixedTimeEquals(receipt.ManifestSha256, computedManifestHash))
         {
             errors.Add(new("manifest_hash_mismatch", "The backup artifact manifest SHA-256 does not match its contents."));
+        }
+
+        DateTimeOffset? latestCompletion = artifacts.Where(item => item?.CompletedAtUtc is not null)
+            .Max(item => item!.CompletedAtUtc);
+        if (latestCompletion is null || latestCompletion.Value != receipt.CapturedAtUtc)
+        {
+            errors.Add(new("receipt_capture_provenance_invalid", "The receipt capture time must equal the latest artifact completion."));
         }
     }
 
@@ -253,6 +275,6 @@ public sealed partial class PreflightService
     [GeneratedRegex("^[0-9a-fA-F]{64}$", RegexOptions.CultureInvariant)]
     private static partial Regex Sha256();
 
-    [GeneratedRegex("^Full_[A-Za-z][A-Za-z0-9]*_\\d{4}-\\d{2}-\\d{2}_\\d{6}\\.bak$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^Full_[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.bak$", RegexOptions.CultureInvariant)]
     private static partial Regex FullBackupFileName();
 }

@@ -6,6 +6,26 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class GuardedShadowMigrationRunnerTests
 {
+    [Fact]
+    public void CreateShadowName_AllExact25NamesAreDeterministicCollisionSafeAndWithinPostgresLimit()
+    {
+        Guid runId = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
+        string[] names = DatabaseInventory.ActiveDatabases
+            .Select(database => GuardedShadowMigrationRunner.CreateShadowName(database, runId))
+            .ToArray();
+
+        Assert.Equal(25, names.Length);
+        Assert.Equal(25, names.Distinct(StringComparer.Ordinal).Count());
+        Assert.All(names, name =>
+        {
+            Assert.True(Encoding.UTF8.GetByteCount(name) <= 63, name);
+            Assert.Matches("^[a-z][a-z0-9_]+$", name);
+        });
+        Assert.Equal(
+            GuardedShadowMigrationRunner.CreateShadowName("DataProtectionKeysEmployee", runId),
+            GuardedShadowMigrationRunner.CreateShadowName("DataProtectionKeysEmployee", runId));
+    }
+
     private static readonly DateTimeOffset Now = new(2026, 8, 29, 14, 0, 0, TimeSpan.Zero);
     private static readonly ECDsa SigningKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private const string KeyId = "migration-authorizer-1";
@@ -600,17 +620,26 @@ public sealed class GuardedShadowMigrationRunnerTests
                 $"Full_{database}_2026-08-29_120000.bak",
                 1024,
                 hash,
-                hash);
+                hash)
+            {
+                CompletedAtUtc = Now.AddHours(-1),
+                GcsObject = $"database/full/2026-08-30/run-1/Full_{database}.bak",
+                GcsGeneration = 1,
+                GcsSha256 = hash,
+            };
         })];
         string manifestHash = ComputeManifestSha256(artifacts);
         BackupReceipt receipt = new(
-            "1.0",
+            "1.1",
             Now.AddHours(-1),
             DatabaseInventory.InventorySha256,
             manifestHash,
             artifacts,
             KeyId,
-            null);
+            null)
+        {
+            SourceObservedAtUtc = Now.AddHours(-2),
+        };
         Assert.True(ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload));
         return receipt with
         {

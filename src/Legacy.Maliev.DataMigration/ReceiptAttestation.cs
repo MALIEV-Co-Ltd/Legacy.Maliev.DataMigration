@@ -121,17 +121,37 @@ public static class ReceiptAttestation
         ArgumentNullException.ThrowIfNull(receipt);
         payload = [];
 
-        if (receipt.SchemaVersion is null ||
+        if (!string.Equals(receipt.SchemaVersion, PreflightService.ReceiptSchemaVersion, StringComparison.Ordinal) ||
             receipt.DatabaseInventorySha256 is null ||
             receipt.ManifestSha256 is null ||
             receipt.AttestationKeyId is null ||
-            receipt.Artifacts is null ||
+            receipt.CapturedAtUtc.Offset != TimeSpan.Zero ||
+            receipt.SourceObservedAtUtc is null ||
+            receipt.SourceObservedAtUtc.Value.Offset != TimeSpan.Zero ||
+            receipt.Artifacts is null || receipt.Artifacts.Count == 0 ||
             receipt.Artifacts.Any(artifact => artifact is null ||
                 artifact.Database is null ||
                 artifact.BackupType is null ||
                 artifact.FileName is null ||
                 artifact.Sha256 is null ||
-                artifact.ObservedSha256 is null))
+                artifact.ObservedSha256 is null ||
+                string.IsNullOrWhiteSpace(artifact.GcsObject) ||
+                artifact.GcsGeneration is null or <= 0 ||
+                artifact.GcsSha256 is null ||
+                !IsSha256(artifact.GcsSha256) ||
+                !CryptographicOperations.FixedTimeEquals(
+                    Encoding.ASCII.GetBytes(artifact.GcsSha256.ToLowerInvariant()),
+                    Encoding.ASCII.GetBytes(artifact.Sha256.ToLowerInvariant())) ||
+                artifact.CompletedAtUtc is null ||
+                artifact.CompletedAtUtc.Value.Offset != TimeSpan.Zero ||
+                artifact.CompletedAtUtc.Value < receipt.SourceObservedAtUtc.Value ||
+                artifact.CompletedAtUtc.Value > receipt.CapturedAtUtc))
+        {
+            return false;
+        }
+
+        DateTimeOffset latestCompletionUtc = receipt.Artifacts.Max(artifact => artifact!.CompletedAtUtc!.Value);
+        if (receipt.CapturedAtUtc != latestCompletionUtc)
         {
             return false;
         }
@@ -140,8 +160,9 @@ public static class ReceiptAttestation
         using (BinaryWriter writer = new(stream, new UTF8Encoding(false), leaveOpen: true))
         {
             WriteString(writer, DomainSeparator);
-            WriteString(writer, receipt.SchemaVersion);
+            WriteString(writer, receipt.SchemaVersion!);
             WriteString(writer, receipt.CapturedAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+            WriteString(writer, receipt.SourceObservedAtUtc.Value.ToString("O", CultureInfo.InvariantCulture));
             WriteString(writer, receipt.DatabaseInventorySha256);
             WriteString(writer, receipt.ManifestSha256);
             WriteString(writer, receipt.AttestationKeyId);
@@ -162,11 +183,17 @@ public static class ReceiptAttestation
                 WriteString(writer, artifact.GcsObject ?? string.Empty);
                 writer.Write(artifact.GcsGeneration ?? 0);
                 WriteString(writer, artifact.GcsSha256 ?? string.Empty);
+                WriteString(writer, artifact.CompletedAtUtc!.Value.ToString("O", CultureInfo.InvariantCulture));
             }
         }
 
         payload = stream.ToArray();
         return true;
+    }
+
+    private static bool IsSha256(string value)
+    {
+        return value.Length == 64 && value.All(char.IsAsciiHexDigit);
     }
 
     private static void WriteString(BinaryWriter writer, string value)

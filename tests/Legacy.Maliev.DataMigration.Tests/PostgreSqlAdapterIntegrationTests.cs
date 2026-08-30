@@ -32,6 +32,33 @@ public sealed class PostgreSqlAdapterFixture : IAsyncLifetime
 public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixture fixture)
 {
     [Fact]
+    public async Task Exact25DeterministicShadowNames_CreateAndDeleteWithoutPostgresTruncation()
+    {
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        Guid runId = Guid.NewGuid();
+        var created = new List<ShadowDatabase>();
+        try
+        {
+            foreach (string database in DatabaseInventory.ActiveDatabases)
+            {
+                string shadowName = GuardedShadowMigrationRunner.CreateShadowName(database, runId);
+                ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+                    database, shadowName, runId.ToString("D"), CancellationToken.None);
+                created.Add(shadow);
+                Assert.Equal(shadowName, shadow.Name);
+                Assert.True(Encoding.UTF8.GetByteCount(shadow.Name) <= 63);
+            }
+        }
+        finally
+        {
+            foreach (ShadowDatabase shadow in created)
+            {
+                await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+            }
+        }
+    }
+
+    [Fact]
     public async Task FinalizeSchema_CyclicForeignKeys_AreAddedOnlyAfterAllDataAndIdentityReseeds()
     {
         var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));

@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Legacy.Maliev.DataMigration;
@@ -900,8 +902,8 @@ public sealed partial class GuardedShadowMigrationRunner
     {
         string canonical = string.Join('\n', tables.OrderBy(item => item.Table, StringComparer.Ordinal)
             .Select(item => $"{item.Table}|{item.RowCount}|{item.ContentSha256}|{item.AggregateSha256}"));
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+        return Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
     private async Task<long> CopySourceTableAsync(
@@ -1055,9 +1057,16 @@ public sealed partial class GuardedShadowMigrationRunner
             : (receipt with { AttestationSignature = Convert.ToBase64String(signature) });
     }
 
-    private static string CreateShadowName(string database, Guid runId)
+    internal static string CreateShadowName(string database, Guid runId)
     {
-        return $"legacy_shadow_{database.ToLowerInvariant()}_{runId:N}";
+        string normalized = database.ToLowerInvariant();
+        string slug = normalized[..Math.Min(7, normalized.Length)];
+        string databaseHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)))
+            .ToLowerInvariant()[..8];
+        string shadowName = $"legacy_shadow_{slug}_{databaseHash}_{runId:N}";
+        return Encoding.UTF8.GetByteCount(shadowName) > 63
+            ? throw new MigrationExecutionException("shadow_name_invalid", "The deterministic shadow identifier exceeds PostgreSQL limits.")
+            : shadowName;
     }
 
     [GeneratedRegex("^[0-9a-f]{40}$", RegexOptions.CultureInvariant)]

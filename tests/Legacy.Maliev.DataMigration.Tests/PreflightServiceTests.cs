@@ -322,6 +322,22 @@ public sealed class PreflightServiceTests
         Assert.Contains(result.Errors, error => error.Code == "target_schema_coverage_mismatch");
     }
 
+    [Fact]
+    public void Validate_MissingV11ImmutableCaptureFieldsFailsClosed()
+    {
+        BackupReceipt valid = CreateReceipt();
+        BackupArtifact?[] artifacts = valid.Artifacts!.Select((artifact, index) => index == 0
+            ? artifact! with { GcsObject = null, GcsGeneration = null, GcsSha256 = null, CompletedAtUtc = null }
+            : artifact).ToArray();
+        BackupReceipt malformed = valid with { SourceObservedAtUtc = null, Artifacts = artifacts };
+
+        PreflightResult result = CreateService().Validate(malformed, CreatePlan(), Now, TimeSpan.FromHours(24));
+
+        Assert.Contains(result.Errors, error => error.Code == "receipt_capture_provenance_invalid");
+        Assert.Contains(result.Errors, error => error.Code == "backup_artifact_provenance_invalid");
+        Assert.Contains(result.Errors, error => error.Code == "attestation_payload_invalid");
+    }
+
     private static PreflightService CreateService()
     {
         return CreateService(new RecordingExternalCommandExecutor());
@@ -341,13 +357,16 @@ public sealed class PreflightServiceTests
         mutate?.Invoke(artifacts);
 
         BackupReceipt unsignedReceipt = new(
-            SchemaVersion: "1.0",
+            SchemaVersion: "1.1",
             CapturedAtUtc: Now.AddHours(-1),
             DatabaseInventorySha256: DatabaseInventory.InventorySha256,
             ManifestSha256: ComputeManifestSha256(artifacts),
             Artifacts: artifacts,
             AttestationKeyId: ProducerKeyId,
-            AttestationSignature: null);
+            AttestationSignature: null)
+        {
+            SourceObservedAtUtc = Now.AddHours(-2),
+        };
         Assert.True(ReceiptAttestation.TryCreatePayload(unsignedReceipt, out byte[] payload));
         string signature = Convert.ToBase64String(
             ProducerSigningKey.SignData(payload, HashAlgorithmName.SHA256));
@@ -363,7 +382,13 @@ public sealed class PreflightServiceTests
             $"Full_{database}_2026-08-29_120000.bak",
             1024,
             digest,
-            digest);
+            digest)
+        {
+            CompletedAtUtc = Now.AddHours(-1),
+            GcsObject = $"database/full/2026-08-30/run-1/Full_{database}.bak",
+            GcsGeneration = 1,
+            GcsSha256 = digest,
+        };
     }
 
     private static MigrationPlan CreatePlan()

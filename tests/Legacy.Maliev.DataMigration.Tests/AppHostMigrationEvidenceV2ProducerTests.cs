@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text.Json;
 using Legacy.Maliev.DataMigration.Console;
 
@@ -37,6 +39,16 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         Assert.Equal(25, root.GetProperty("databases").GetArrayLength());
         Assert.Equal(27, root.GetProperty("inventory").GetArrayLength());
         Assert.Empty(root.GetProperty("archives").EnumerateArray());
+        JsonElement source = root.GetProperty("source");
+        Assert.Equal(fixture.Request.BackupReceipt.SourceObservedAtUtc, source.GetProperty("observedAtUtc").GetDateTimeOffset());
+        Assert.Equal(25, source.GetProperty("artifacts").GetArrayLength());
+        Assert.All(source.GetProperty("artifacts").EnumerateArray(), artifact =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(artifact.GetProperty("object").GetString()));
+            Assert.True(artifact.GetProperty("generation").GetInt64() > 0);
+            Assert.Equal(64, artifact.GetProperty("sha256").GetString()!.Length);
+            Assert.True(artifact.GetProperty("completedAtUtc").GetDateTimeOffset() >= fixture.Request.BackupReceipt.SourceObservedAtUtc);
+        });
         Assert.All(root.GetProperty("databases").EnumerateArray(), database =>
         {
             Assert.NotEqual(
@@ -214,6 +226,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         EvidenceFixture fixture = CreateFixture();
         string executionPath = await WriteJsonAsync("execution.json", fixture.Request.ExecutionResult);
         string provenancePath = await WriteJsonAsync("provenance.json", fixture.Request.Provenance);
+        string verifiedRestoreReceiptPath = await WriteJsonAsync("verified-restore.json", fixture.Request.VerifiedRestoreReceipt);
         string receiptPath = await WriteJsonAsync("receipt.json", fixture.Request.BackupReceipt);
         string planPath = await WriteJsonAsync("plan.json", fixture.Request.SchemaPlan);
         string authorizationPath = await WriteJsonAsync("authorization.json", fixture.Request.Authorization);
@@ -233,6 +246,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             {
                 executionResultPath = executionPath,
                 provenancePath,
+                verifiedRestoreReceiptPath,
                 receiptPath,
                 planPath,
                 authorizationPath,
@@ -449,7 +463,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         var plan = new FreshSchemaPlan("2.0", _now.AddMinutes(-20), sourceCommit, databasePlans);
         string planHash = SchemaPlanCanonicalizer.ComputeSha256(plan);
         BackupReceipt backup = SignBackupReceipt(new(
-            "1.0",
+            "1.1",
             _now.AddMinutes(-25),
             DatabaseInventory.InventorySha256,
             manifestHash,
@@ -464,9 +478,13 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
                 GcsObject = $"database/full/2026-08-30/{database}.bak",
                 GcsGeneration = index + 1,
                 GcsSha256 = Hash($"backup:{database}"),
+                CompletedAtUtc = _now.AddMinutes(-25),
             }).ToArray(),
             "backup-key",
-            null));
+            null)
+        {
+            SourceObservedAtUtc = _now.AddMinutes(-26),
+        });
         ExecutionAuthorizationReceipt authorization = SignAuthorization(new(
             "2.0",
             Guid.Parse("11111111-1111-4111-8111-111111111111"),
@@ -522,8 +540,38 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             _now.AddMinutes(-10),
             "provenance-key",
             null));
+        const string digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        VerifiedRestoreReceipt verifiedRestore = VerifiedRestoreReceiptAttestation.Sign(new(
+            "1.0",
+            _now.AddMinutes(-11),
+            DatabaseInventory.InventorySha256,
+            manifestHash,
+            new(
+                "mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04@sha256:" + digest,
+                "sha256:" + digest,
+                "sha256:" + new string('b', 64),
+                "legacy-sql-run-1",
+                "run-1",
+                "legacy-volume-run-1",
+                "legacy-volume-run-1",
+                "legacy-volume-binding",
+                new string('d', 64),
+                "/var/opt/mssql/backup",
+                true,
+                "alpine:3.20@sha256:" + new string('c', 64),
+                "16"),
+            [.. DatabaseInventory.ActiveDatabases.Select(database =>
+                new VerifiedRestoreArtifactEvidence(database, 42, digest, 42, digest, true, true, true))],
+            RestoreCleanupDisposition.Removed,
+            _now.AddMinutes(-6),
+            "provenance-key",
+            null), _provenanceKey);
+        var request = new AppHostMigrationEvidenceV2Request(result, backup, plan, authorization, configuration, provenance)
+        {
+            VerifiedRestoreReceipt = verifiedRestore,
+        };
         return new(
-            new(result, backup, plan, authorization, configuration, provenance),
+            request,
             Trust("backup-key", _backupKey),
             Trust("authorization-key", _authorizationKey),
             Trust("execution-key", _executionKey),
@@ -568,6 +616,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
     {
         string path = Path.Combine(_root, name);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(value, JsonOptions));
+        ProtectFile(path);
         return path;
     }
 
@@ -581,7 +630,25 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
     {
         string path = Path.Combine(_root, name);
         await File.WriteAllTextAsync(path, value);
+        ProtectFile(path);
         return path;
+    }
+
+    private static void ProtectFile(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            return;
+        }
+
+        SecurityIdentifier owner = WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("The test identity has no Windows SID.");
+        var security = new FileSecurity();
+        security.SetOwner(owner);
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(owner, FileSystemRights.FullControl, AccessControlType.Allow));
+        new FileInfo(path).SetAccessControl(security);
     }
 
     public void Dispose()

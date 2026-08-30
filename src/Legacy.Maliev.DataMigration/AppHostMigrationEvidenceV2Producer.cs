@@ -102,7 +102,10 @@ public sealed record AppHostMigrationEvidenceV2Request(
     FreshSchemaPlan SchemaPlan,
     ExecutionAuthorizationReceipt Authorization,
     AppHostMigrationEvidenceV2Configuration Configuration,
-    MigrationEvidenceProvenanceReceipt Provenance);
+    MigrationEvidenceProvenanceReceipt Provenance)
+{
+    public VerifiedRestoreReceipt? VerifiedRestoreReceipt { get; init; }
+}
 
 public sealed record AppHostMigrationEvidenceV2Document(
     string EvidenceJson,
@@ -150,6 +153,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
                 ["system"] = "sqlserver",
                 ["snapshotId"] = request.Configuration.SourceSnapshotId,
                 ["capturedAtUtc"] = Utc(request.BackupReceipt.CapturedAtUtc),
+                ["observedAtUtc"] = Utc(request.BackupReceipt.SourceObservedAtUtc!.Value),
                 ["backup"] = new JsonObject
                 {
                     ["uri"] = request.Configuration.BackupUri,
@@ -158,6 +162,15 @@ public static partial class AppHostMigrationEvidenceV2Producer
                     ["objectGeneration"] = request.Configuration.BackupObjectGeneration,
                     ["immutable"] = true,
                 },
+                ["artifacts"] = new JsonArray(request.BackupReceipt.Artifacts!
+                    .Select(artifact => (JsonNode)new JsonObject
+                    {
+                        ["database"] = artifact!.Database,
+                        ["completedAtUtc"] = Utc(artifact.CompletedAtUtc!.Value),
+                        ["object"] = artifact.GcsObject,
+                        ["generation"] = artifact.GcsGeneration,
+                        ["sha256"] = artifact.GcsSha256,
+                    }).ToArray()),
             },
             ["mapping"] = new JsonObject
             {
@@ -190,6 +203,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
                 ["restoreId"] = request.Configuration.RestoreId,
                 ["state"] = "completed",
             },
+            ["verifiedRestore"] = BuildVerifiedRestoreEvidence(request.VerifiedRestoreReceipt!),
             ["inventory"] = BuildInventory(),
             ["archives"] = new JsonArray(),
             ["databases"] = databaseEvidence,
@@ -240,6 +254,14 @@ public static partial class AppHostMigrationEvidenceV2Producer
         VerifyAuthorization(request.Authorization, authorizationTrust);
         VerifyExecution(execution, executionTrust);
         VerifyProvenance(request.Provenance, provenanceTrust);
+        if (request.VerifiedRestoreReceipt is null ||
+            request.VerifiedRestoreReceipt.CleanupDisposition != RestoreCleanupDisposition.Removed ||
+            !VerifiedRestoreReceiptAttestation.Verify(request.VerifiedRestoreReceipt, provenanceTrust) ||
+            !FixedHashEquals(request.VerifiedRestoreReceipt.BackupManifestSha256, request.BackupReceipt.ManifestSha256) ||
+            !ExactNames(request.VerifiedRestoreReceipt.Artifacts.Select(item => item.Database), DatabaseInventory.ActiveDatabases))
+        {
+            throw Error("verified_restore_receipt_invalid", "Signed evidence requires the completed exact-25 verified restore receipt.");
+        }
         ValidateDistinctAttestationRoles(request, backupTrust, authorizationTrust, executionTrust, provenanceTrust, evidenceSigner);
 
         string planSha256 = SchemaPlanCanonicalizer.ComputeSha256(request.SchemaPlan);
@@ -514,9 +536,53 @@ public static partial class AppHostMigrationEvidenceV2Producer
         }).ToArray()];
     }
 
+    private static JsonObject BuildVerifiedRestoreEvidence(VerifiedRestoreReceipt receipt)
+    {
+        return new()
+        {
+            ["schemaVersion"] = receipt.SchemaVersion,
+            ["restoredAtUtc"] = Utc(receipt.RestoredAtUtc),
+            ["cleanedAtUtc"] = Utc(receipt.CleanedAtUtc!.Value),
+            ["cleanupDisposition"] = "removed",
+            ["backupManifestSha256"] = receipt.BackupManifestSha256,
+            ["databaseInventorySha256"] = receipt.DatabaseInventorySha256,
+            ["resources"] = new JsonObject
+            {
+                ["sqlServerImage"] = receipt.Resources.SqlServerImage,
+                ["sqlServerImageId"] = receipt.Resources.SqlServerImageId,
+                ["containerId"] = receipt.Resources.ContainerId,
+                ["containerName"] = receipt.Resources.ContainerName,
+                ["runBinding"] = receipt.Resources.RunBinding,
+                ["volumeId"] = receipt.Resources.VolumeId,
+                ["volumeName"] = receipt.Resources.VolumeName,
+                ["volumeBinding"] = receipt.Resources.VolumeBinding,
+                ["volumeFingerprint"] = receipt.Resources.VolumeFingerprint,
+                ["mountPath"] = receipt.Resources.MountPath,
+                ["mountReadOnly"] = receipt.Resources.MountReadOnly,
+                ["stagingImage"] = receipt.Resources.StagingImage,
+                ["sqlServerProductMajorVersion"] = receipt.Resources.SqlServerProductMajorVersion,
+            },
+            ["artifacts"] = new JsonArray(receipt.Artifacts.OrderBy(item => item.Database, StringComparer.Ordinal)
+                .Select(item => (JsonNode)new JsonObject
+                {
+                    ["database"] = item.Database,
+                    ["retainedByteLength"] = item.RetainedByteLength,
+                    ["retainedSha256"] = item.RetainedSha256,
+                    ["stagedByteLength"] = item.StagedByteLength,
+                    ["stagedSha256"] = item.StagedSha256,
+                    ["verifyOnlyWithChecksum"] = item.VerifyOnlyWithChecksum,
+                    ["snapshotIsolationEnabled"] = item.SnapshotIsolationEnabled,
+                    ["readOnly"] = item.ReadOnly,
+                }).ToArray()),
+            ["attestationKeyId"] = receipt.AttestationKeyId,
+            ["attestationSignature"] = receipt.AttestationSignature,
+        };
+    }
+
     private static void VerifyBackup(BackupReceipt receipt, IReceiptAttestationTrustStore trust)
     {
-        if (!ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload) ||
+        if (!string.Equals(receipt.SchemaVersion, PreflightService.ReceiptSchemaVersion, StringComparison.Ordinal) ||
+            !ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload) ||
             !Verify(receipt.AttestationKeyId, receipt.AttestationSignature, payload, trust) ||
             !FixedHashEquals(receipt.DatabaseInventorySha256, DatabaseInventory.InventorySha256) ||
             receipt.Artifacts is null || !ExactNames(receipt.Artifacts.Where(item => item is not null).Select(item => item!.Database!), DatabaseInventory.ActiveDatabases))
