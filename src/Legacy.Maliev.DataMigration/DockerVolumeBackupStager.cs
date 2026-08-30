@@ -28,9 +28,7 @@ public sealed partial class DockerVolumeBackupStager(
         ? volumeName!
         : throw new ArgumentException("The staging volume name is invalid.", nameof(volumeName));
     private readonly string _sqlServerMountPath = ValidateMountPath(sqlServerMountPath);
-    private readonly string _stagingImage = PinnedImage().IsMatch(stagingImage ?? string.Empty)
-        ? stagingImage!
-        : throw new ArgumentException("The staging helper image must be pinned by sha256 digest.", nameof(stagingImage));
+    private readonly string _stagingImage = RestoreImagePolicy.ValidateStagingHelper(stagingImage);
     private readonly string _sqlServerContainerName = SafeName().IsMatch(sqlServerContainerName ?? string.Empty)
         ? sqlServerContainerName!
         : throw new ArgumentException("The disposable SQL Server container name is invalid.", nameof(sqlServerContainerName));
@@ -203,9 +201,6 @@ public sealed partial class DockerVolumeBackupStager(
 
     [GeneratedRegex("^Full_[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.bak$", RegexOptions.CultureInvariant)]
     private static partial Regex SafeFileName();
-
-    [GeneratedRegex("^[a-z0-9./:_-]+@sha256:[0-9a-f]{64}$", RegexOptions.CultureInvariant)]
-    private static partial Regex PinnedImage();
 
     [GeneratedRegex("^sha256:[0-9a-f]{64}$", RegexOptions.CultureInvariant)]
     private static partial Regex ImageId();

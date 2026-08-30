@@ -64,6 +64,9 @@ public sealed class SqlServerMigrationSourceIntegrationTests
 
             string pinnedImage = await DockerInspectAsync(image, "{{index .RepoDigests 0}}");
             string targetImageId = await DockerInspectAsync(image, "{{.Id}}");
+            const string stagingImage = "alpine:3.20";
+            _ = await RunDockerAsync(["pull", stagingImage]);
+            string pinnedStagingImage = await DockerInspectAsync(stagingImage, "{{index .RepoDigests 0}}");
             int port = GetFreeTcpPort();
             string targetConnection = new SqlConnectionStringBuilder
             {
@@ -74,9 +77,9 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                 TrustServerCertificate = true,
                 InitialCatalog = "master",
             }.ConnectionString;
-            await DockerDisposableSqlServerProvisioner.ProvisionAsync(
+            _ = await DockerDisposableSqlServerProvisioner.ProvisionAsync(
                 targetConnection, volume, targetContainerName, "/var/opt/mssql/backup",
-                pinnedImage, "run-1", CancellationToken.None);
+                pinnedImage, targetImageId, pinnedStagingImage, "run-1", CancellationToken.None);
             var sourceArtifact = new VerifiedBackupRestoreArtifact(
                 "Country",
                 localBackup,
@@ -87,7 +90,7 @@ public sealed class SqlServerMigrationSourceIntegrationTests
             await using (sourceArtifact.RetainedHandle)
             {
                 var stager = new DockerVolumeBackupStager(
-                    volume, "/var/opt/mssql/backup", pinnedImage, targetContainerName, targetImageId);
+                    volume, "/var/opt/mssql/backup", pinnedStagingImage, targetContainerName, targetImageId);
                 staged = await stager.StageAsync(sourceArtifact, CancellationToken.None);
             }
 

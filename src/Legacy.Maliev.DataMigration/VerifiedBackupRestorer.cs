@@ -16,6 +16,13 @@ public interface IVerifiedBackupRestoreTarget
     Task RestoreAsync(VerifiedBackupRestoreArtifact artifact, CancellationToken cancellationToken);
 }
 
+public interface IVerifiedBackupEvidenceRestoreTarget : IVerifiedBackupRestoreTarget
+{
+    Task<VerifiedRestoreArtifactEvidence> RestoreWithEvidenceAsync(
+        VerifiedBackupRestoreArtifact artifact,
+        CancellationToken cancellationToken);
+}
+
 public static class VerifiedBackupRestorer
 {
     public static async Task RestoreAsync(
@@ -62,6 +69,63 @@ public static class VerifiedBackupRestorer
         }
     }
 
+    public static async Task<IReadOnlyList<VerifiedRestoreArtifactEvidence>> RestoreWithEvidenceAsync(
+        BackupReceipt receipt,
+        IReceiptAttestationTrustStore trust,
+        string recoveryDirectory,
+        IVerifiedBackupEvidenceRestoreTarget target,
+        DateTimeOffset nowUtc,
+        TimeSpan maximumReceiptAge,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        var evidence = new List<VerifiedRestoreArtifactEvidence>(DatabaseInventory.ActiveDatabases.Count);
+        await RestoreCoreAsync(receipt, trust, recoveryDirectory, nowUtc, maximumReceiptAge,
+            async artifact => evidence.Add(await target.RestoreWithEvidenceAsync(artifact, cancellationToken).ConfigureAwait(false)),
+            cancellationToken)
+            .ConfigureAwait(false);
+        return evidence;
+    }
+
+    private static async Task RestoreCoreAsync(
+        BackupReceipt receipt,
+        IReceiptAttestationTrustStore trust,
+        string recoveryDirectory,
+        DateTimeOffset nowUtc,
+        TimeSpan maximumReceiptAge,
+        Func<VerifiedBackupRestoreArtifact, Task> restore,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(receipt);
+        ArgumentNullException.ThrowIfNull(trust);
+        ValidateReceipt(receipt, trust, nowUtc, maximumReceiptAge);
+        string root = Path.GetFullPath(recoveryDirectory);
+        SecureLocalFile.EnsureOwnerOnlyDirectory(root);
+        foreach (BackupArtifact artifact in receipt.Artifacts!.Select(item => item!))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!string.Equals(artifact.FileName, Path.GetFileName(artifact.FileName), StringComparison.Ordinal))
+            {
+                throw new Exact25FullBackupException("restore_artifact_path_invalid", "A signed backup filename is unsafe.");
+            }
+            string localPath = Path.Combine(root, artifact.FileName!);
+            SecureLocalFile.EnsurePathWithin(root, localPath);
+            await using FileStream retained = SecureLocalFile.OpenReadShared(localPath);
+            if (retained.Length != artifact.ByteLength)
+            {
+                throw new Exact25FullBackupException("restore_artifact_invalid", "A retained backup does not match its signed receipt.");
+            }
+            string sha256 = await SecureLocalFile.ComputeSha256Async(retained, cancellationToken).ConfigureAwait(false);
+            if (!CryptographicOperations.FixedTimeEquals(
+                Encoding.ASCII.GetBytes(sha256), Encoding.ASCII.GetBytes(artifact.Sha256!.ToLowerInvariant())))
+            {
+                throw new Exact25FullBackupException("restore_artifact_invalid", "A retained backup does not match its signed receipt.");
+            }
+            retained.Position = 0;
+            await restore(new(artifact.Database!, localPath, retained.Length, sha256, retained)).ConfigureAwait(false);
+        }
+    }
+
     public static void ValidateReceipt(
         BackupReceipt receipt,
         IReceiptAttestationTrustStore trust,
@@ -105,7 +169,7 @@ public sealed class SqlServerBackupRestoreTarget(
     string adminConnectionString,
     string dataDirectory,
     ISqlServerBackupStager stager)
-    : IVerifiedBackupRestoreTarget
+    : IVerifiedBackupEvidenceRestoreTarget
 {
     private readonly string _adminConnectionString = string.IsNullOrWhiteSpace(adminConnectionString)
         ? throw new ArgumentException("The disposable SQL Server admin connection is required.", nameof(adminConnectionString))
@@ -116,6 +180,13 @@ public sealed class SqlServerBackupRestoreTarget(
     private readonly ISqlServerBackupStager _stager = stager ?? throw new ArgumentNullException(nameof(stager));
 
     public async Task RestoreAsync(VerifiedBackupRestoreArtifact artifact, CancellationToken cancellationToken)
+    {
+        _ = await RestoreWithEvidenceAsync(artifact, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<VerifiedRestoreArtifactEvidence> RestoreWithEvidenceAsync(
+        VerifiedBackupRestoreArtifact artifact,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         if (!DatabaseInventory.ActiveDatabases.Contains(artifact.Database, StringComparer.Ordinal))
@@ -190,6 +261,23 @@ public sealed class SqlServerBackupRestoreTarget(
             }
             await ExecuteAsync(connection, $"ALTER DATABASE {database} SET READ_ONLY WITH ROLLBACK IMMEDIATE;", cancellationToken)
                 .ConfigureAwait(false);
+            await using var readOnly = new SqlCommand(
+                "SELECT is_read_only FROM sys.databases WHERE name = @database;", connection)
+            { CommandTimeout = 0 };
+            _ = readOnly.Parameters.AddWithValue("@database", artifact.Database);
+            object? observedReadOnly = await readOnly.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            return observedReadOnly is null || observedReadOnly is DBNull ||
+                !Convert.ToBoolean(observedReadOnly, System.Globalization.CultureInfo.InvariantCulture)
+                ? throw new Exact25FullBackupException("restore_read_only_unavailable", "The restored source database is not read-only.")
+                : new(
+                artifact.Database,
+                artifact.ByteLength,
+                artifact.Sha256,
+                staged.ByteLength,
+                staged.Sha256,
+                VerifyOnlyWithChecksum: true,
+                SnapshotIsolationEnabled: true,
+                ReadOnly: true);
         }
         catch
         {

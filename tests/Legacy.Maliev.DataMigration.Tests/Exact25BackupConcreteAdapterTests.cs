@@ -7,6 +7,52 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"exact25-adapters-{Guid.NewGuid():N}");
 
+    [Theory]
+    [InlineData("abc123", "run-1", "abc123", "run-1", true)]
+    [InlineData("abc123", "run-1", "replacement", "run-1", false)]
+    [InlineData("abc123", "run-1", "abc123", "other-run", false)]
+    public void DockerCleanup_RequiresImmutableIdAndRunLabel(
+        string expectedId,
+        string expectedRun,
+        string observedId,
+        string observedRun,
+        bool expected)
+    {
+        Assert.Equal(expected, DockerDisposableSqlServerProvisioner.IsOwnedResourceEvidence(
+            expectedId, expectedRun, observedId, observedRun));
+    }
+
+    [Theory]
+    [InlineData("", "run-1", "daemon-id", "run-1", "daemon-id")]
+    [InlineData("", "run-1", "daemon-id", "other-run", null)]
+    [InlineData("abc123", "run-1", "abc123", "run-1", "abc123")]
+    [InlineData("abc123", "run-1", "replacement", "run-1", null)]
+    public void DockerCleanup_ReconcilesAmbiguousCreateOnlyByRunLabelAndUsesObservedImmutableId(
+        string expectedId,
+        string expectedRun,
+        string observedId,
+        string observedRun,
+        string? removalId)
+    {
+        Assert.Equal(removalId, DockerDisposableSqlServerProvisioner.SelectOwnedResourceId(
+            expectedId, expectedRun, observedId, observedRun));
+    }
+
+    [Theory]
+    [InlineData(1, 0, "", true)]
+    [InlineData(1, 0, "resource-still-present", false)]
+    [InlineData(1, 1, "", false)]
+    [InlineData(0, 0, "", false)]
+    public void DockerCleanup_TreatsResourceAsAbsentOnlyAfterIndependentSuccessfulEmptyListing(
+        int inspectExitCode,
+        int listExitCode,
+        string listing,
+        bool absent)
+    {
+        Assert.Equal(absent, DockerDisposableSqlServerProvisioner.IsConfirmedAbsent(
+            inspectExitCode, listExitCode, listing));
+    }
+
     [Fact]
     public void DockerCleanup_RecordsNonZeroExitAndPreservesMachineReadableCode()
     {
@@ -32,6 +78,19 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
             code: "restore_volume_cleanup_failed");
 
         Assert.Empty(failures);
+    }
+
+    [Theory]
+    [InlineData(0, false, true)]
+    [InlineData(0, true, false)]
+    [InlineData(1, false, false)]
+    public void DockerCleanup_RequiresSuccessfulCommandAndConfirmedPostRemovalAbsence(
+        int removalExitCode,
+        bool resourceStillExists,
+        bool confirmed)
+    {
+        Assert.Equal(confirmed, DockerDisposableSqlServerProvisioner.IsRemovalConfirmed(
+            removalExitCode, resourceStillExists));
     }
 
     [Fact]

@@ -19,6 +19,7 @@ public static class MigrationConsole
     private const string BackupSqlUserEnvironmentVariable = "LEGACY_MIGRATION_BACKUP_SQL_USERNAME";
     private const string BackupSqlPasswordEnvironmentVariable = "LEGACY_MIGRATION_BACKUP_SQL_PASSWORD";
     private const string RestoreSqlServerConnectionEnvironmentVariable = "LEGACY_SQLSERVER_ADMIN_CONNECTION";
+    private const string ProvenanceSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_PROVENANCE_SIGNING_KEY_FILE";
     private const string DeployEnabledEnvironmentVariable = "LEGACY_DEPLOY_ENABLED";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -99,6 +100,10 @@ public static class MigrationConsole
                     await RestoreBackupsAsync(
                         invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("backup_restore_complete").ConfigureAwait(false);
+                    return 0;
+                case "cleanup-restore":
+                    await CleanupRestoreAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("restore_cleanup_complete").ConfigureAwait(false);
                     return 0;
                 default:
                     await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
@@ -225,6 +230,12 @@ public static class MigrationConsole
             .ConfigureAwait(false);
         MigrationEvidenceProvenanceReceipt provenance = await ReadJsonAsync<MigrationEvidenceProvenanceReceipt>(evidence.ProvenancePath, cancellationToken)
             .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(evidence.VerifiedRestoreReceiptPath))
+        {
+            throw new MigrationConsoleException("verified_restore_receipt_missing", "Completed verified restore evidence is required.");
+        }
+        VerifiedRestoreReceipt verifiedRestore = await ReadJsonAsync<VerifiedRestoreReceipt>(
+            evidence.VerifiedRestoreReceiptPath, cancellationToken).ConfigureAwait(false);
         BackupReceipt receipt = await ReadJsonAsync<BackupReceipt>(evidence.ReceiptPath, cancellationToken).ConfigureAwait(false);
         FreshSchemaPlan plan = await ReadJsonAsync<FreshSchemaPlan>(evidence.PlanPath, cancellationToken).ConfigureAwait(false);
         ExecutionAuthorizationReceipt authorization = await ReadJsonAsync<ExecutionAuthorizationReceipt>(evidence.AuthorizationPath, cancellationToken)
@@ -245,7 +256,10 @@ public static class MigrationConsole
             evidence.LeaseAcquiredAtUtc,
             evidence.LeaseExpiresAtUtc);
         AppHostMigrationEvidenceV2Document document = AppHostMigrationEvidenceV2Producer.Produce(
-            new(result, receipt, plan, authorization, producerConfiguration, provenance),
+            new AppHostMigrationEvidenceV2Request(result, receipt, plan, authorization, producerConfiguration, provenance)
+            {
+                VerifiedRestoreReceipt = verifiedRestore,
+            },
             backupTrust,
             authorizationTrust,
             executionTrust,
@@ -432,23 +446,46 @@ public static class MigrationConsole
             throw new MigrationConsoleException("restore_configuration_missing", "Restore configuration is required.");
         string connectionString = getEnvironmentVariable(RestoreSqlServerConnectionEnvironmentVariable) ??
             throw new MigrationConsoleException("restore_connection_missing", "The disposable SQL Server admin connection is required.");
+        string provenanceKeyPath = getEnvironmentVariable(ProvenanceSigningKeyEnvironmentVariable) ??
+            throw new MigrationConsoleException("restore_signing_key_missing", "The protected restore provenance signing key is required.");
+        if (string.IsNullOrWhiteSpace(restore.VerifiedRestoreReceiptPath) ||
+            string.IsNullOrWhiteSpace(restore.FinalVerifiedRestoreReceiptPath) ||
+            string.IsNullOrWhiteSpace(restore.ProvenanceKeyId))
+        {
+            throw new MigrationConsoleException("restore_receipt_configuration_missing", "Verified restore receipt publication is required.");
+        }
+        using ECDsa provenanceKey = ECDsa.Create();
+        provenanceKey.ImportFromPem(await ReadProtectedTextAsync(
+            provenanceKeyPath, "restore_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        if (restore.ProvenanceTrustedKeys is null)
+        {
+            throw new MigrationConsoleException("restore_provenance_trust_missing", "Restore provenance trust is required.");
+        }
+        ReceiptAttestationTrustStore provenanceTrust = await ReadTrustStoreAsync(
+            restore.ProvenanceTrustedKeys, cancellationToken).ConfigureAwait(false);
+        if (!VerifiedRestoreReceiptAttestation.SigningKeyMatchesTrust(restore.ProvenanceKeyId, provenanceKey, provenanceTrust))
+        {
+            throw new MigrationConsoleException("restore_signing_key_untrusted", "The restore provenance signing key does not match its trusted key identity.");
+        }
         BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
             restore.ReceiptPath, "backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore trust = await ReadTrustStoreAsync(restore.ReceiptTrustedKeys, cancellationToken).ConfigureAwait(false);
         DateTimeOffset nowUtc = TimeProvider.System.GetUtcNow();
         TimeSpan maximumReceiptAge = TimeSpan.FromMinutes(restore.MaximumReceiptAgeMinutes);
         VerifiedBackupRestorer.ValidateReceipt(receipt, trust, nowUtc, maximumReceiptAge);
-        await DockerDisposableSqlServerProvisioner.ProvisionAsync(
+        DockerRestoreResources resources = await DockerDisposableSqlServerProvisioner.ProvisionAsync(
             connectionString,
             restore.StagingVolumeName,
             restore.SqlServerContainerName,
             restore.SqlServerVisibleRecoveryDirectory,
             restore.SqlServerImage,
+            restore.SqlServerImageId,
+            restore.StagingImage,
             restore.RunBinding,
             cancellationToken).ConfigureAwait(false);
         try
         {
-            await VerifiedBackupRestorer.RestoreAsync(
+            IReadOnlyList<VerifiedRestoreArtifactEvidence> restored = await VerifiedBackupRestorer.RestoreWithEvidenceAsync(
                 receipt,
                 trust,
                 restore.RecoveryDirectory,
@@ -464,14 +501,37 @@ public static class MigrationConsole
                 nowUtc,
                 maximumReceiptAge,
                 cancellationToken).ConfigureAwait(false);
+            DateTimeOffset restoredAtUtc = TimeProvider.System.GetUtcNow().ToUniversalTime();
+            var resourceEvidence = new VerifiedRestoreResourceEvidence(
+                resources.SqlServerImage,
+                resources.SqlServerImageId,
+                resources.ContainerId,
+                resources.ContainerName,
+                resources.RunBinding,
+                resources.VolumeName,
+                resources.VolumeId,
+                resources.MountPath,
+                resources.MountReadOnly,
+                resources.StagingImage);
+            VerifiedRestoreReceipt pending = VerifiedRestoreReceiptAttestation.Sign(new(
+                "1.0",
+                restoredAtUtc,
+                DatabaseInventory.InventorySha256,
+                receipt.ManifestSha256!,
+                resourceEvidence,
+                restored,
+                RestoreCleanupDisposition.Pending,
+                null,
+                restore.ProvenanceKeyId,
+                null), provenanceKey);
+            await WriteNewJsonAsync(restore.VerifiedRestoreReceiptPath, pending, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception restoreException)
         {
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             try
             {
-                await DockerDisposableSqlServerProvisioner.CleanupAsync(
-                    restore.SqlServerContainerName, restore.StagingVolumeName, cleanup.Token).ConfigureAwait(false);
+                await DockerDisposableSqlServerProvisioner.CleanupAsync(resources, cleanup.Token).ConfigureAwait(false);
             }
             catch (Exception cleanupException)
             {
@@ -483,6 +543,70 @@ public static class MigrationConsole
 
             throw;
         }
+    }
+
+    private static async Task CleanupRestoreAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "backup_config_unprotected", cancellationToken).ConfigureAwait(false);
+        RestoreBackupsCommandConfiguration restore = configuration.RestoreBackups ??
+            throw new MigrationConsoleException("restore_configuration_missing", "Restore configuration is required.");
+        string provenanceKeyPath = getEnvironmentVariable(ProvenanceSigningKeyEnvironmentVariable) ??
+            throw new MigrationConsoleException("restore_signing_key_missing", "The protected restore provenance signing key is required.");
+        if (string.IsNullOrWhiteSpace(restore.VerifiedRestoreReceiptPath) ||
+            string.IsNullOrWhiteSpace(restore.FinalVerifiedRestoreReceiptPath) ||
+            string.IsNullOrWhiteSpace(restore.ProvenanceKeyId))
+        {
+            throw new MigrationConsoleException("restore_receipt_configuration_missing", "Verified restore receipt publication is required.");
+        }
+        VerifiedRestoreReceipt pending = await ReadJsonAsync<VerifiedRestoreReceipt>(
+            restore.VerifiedRestoreReceiptPath, cancellationToken).ConfigureAwait(false);
+        if (restore.ProvenanceTrustedKeys is null)
+        {
+            throw new MigrationConsoleException("restore_provenance_trust_missing", "Restore provenance trust is required.");
+        }
+        ReceiptAttestationTrustStore trust = await ReadTrustStoreAsync(restore.ProvenanceTrustedKeys, cancellationToken).ConfigureAwait(false);
+        using ECDsa provenanceKey = ECDsa.Create();
+        provenanceKey.ImportFromPem(await ReadProtectedTextAsync(
+            provenanceKeyPath, "restore_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        if (!VerifiedRestoreReceiptAttestation.SigningKeyMatchesTrust(restore.ProvenanceKeyId, provenanceKey, trust))
+        {
+            throw new MigrationConsoleException("restore_signing_key_untrusted", "The restore provenance signing key does not match its trusted key identity.");
+        }
+        if (pending.CleanupDisposition != RestoreCleanupDisposition.Pending ||
+            !VerifiedRestoreReceiptAttestation.Verify(pending, trust) ||
+            !string.Equals(pending.AttestationKeyId, restore.ProvenanceKeyId, StringComparison.Ordinal) ||
+            !string.Equals(pending.Resources.ContainerName, restore.SqlServerContainerName, StringComparison.Ordinal) ||
+            !string.Equals(pending.Resources.VolumeName, restore.StagingVolumeName, StringComparison.Ordinal) ||
+            !string.Equals(pending.Resources.RunBinding, restore.RunBinding, StringComparison.Ordinal))
+        {
+            throw new MigrationConsoleException("verified_restore_receipt_invalid", "The pending verified restore receipt is invalid or belongs to another run.");
+        }
+        var resources = new DockerRestoreResources(
+            pending.Resources.ContainerId,
+            pending.Resources.ContainerName,
+            pending.Resources.VolumeId,
+            pending.Resources.VolumeName,
+            pending.Resources.RunBinding,
+            pending.Resources.SqlServerImage,
+            pending.Resources.SqlServerImageId,
+            pending.Resources.StagingImage,
+            pending.Resources.MountPath,
+            pending.Resources.MountReadOnly);
+        using var cleanupTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cleanupTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+        await DockerDisposableSqlServerProvisioner.CleanupAsync(resources, cleanupTimeout.Token).ConfigureAwait(false);
+
+        VerifiedRestoreReceipt completed = VerifiedRestoreReceiptAttestation.Sign(pending with
+        {
+            CleanupDisposition = RestoreCleanupDisposition.Removed,
+            CleanedAtUtc = TimeProvider.System.GetUtcNow().ToUniversalTime(),
+            AttestationSignature = null,
+        }, provenanceKey);
+        await WriteNewJsonAsync(restore.FinalVerifiedRestoreReceiptPath, completed, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<T> ReadProtectedJsonAsync<T>(
@@ -558,7 +682,11 @@ public static class MigrationConsole
         string SqlServerImage,
         string RunBinding,
         double MaximumReceiptAgeMinutes,
-        IReadOnlyList<TrustedKeyReference> ReceiptTrustedKeys);
+        IReadOnlyList<TrustedKeyReference> ReceiptTrustedKeys,
+        string? VerifiedRestoreReceiptPath = null,
+        string? FinalVerifiedRestoreReceiptPath = null,
+        string? ProvenanceKeyId = null,
+        IReadOnlyList<TrustedKeyReference>? ProvenanceTrustedKeys = null);
 
     private sealed record ExecuteShadowCommandConfiguration(
         string ReceiptPath,
@@ -591,7 +719,8 @@ public static class MigrationConsole
         IReadOnlyList<TrustedKeyReference> AuthorizationTrustedKeys,
         IReadOnlyList<TrustedKeyReference> ExecutionTrustedKeys,
         IReadOnlyList<TrustedKeyReference> ProvenanceTrustedKeys,
-        string EvidenceKeyId);
+        string EvidenceKeyId,
+        string? VerifiedRestoreReceiptPath = null);
 
     private sealed record ExportLocalSnapshotCommandConfiguration(
         string ExecutionResultPath,

@@ -45,6 +45,19 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("restore_volume_cleanup_failed", provisioning, StringComparison.Ordinal);
         Assert.Contains("restoreException", console, StringComparison.Ordinal);
         Assert.Contains("cleanupException", console, StringComparison.Ordinal);
+        int restoreStart = console.IndexOf("private static async Task RestoreBackupsAsync", StringComparison.Ordinal);
+        int cleanupStart = console.IndexOf("private static async Task CleanupRestoreAsync", StringComparison.Ordinal);
+        string restoreSection = console[restoreStart..cleanupStart];
+        string cleanupSection = console[cleanupStart..];
+        Assert.Contains("ReadTrustStoreAsync(restore.ReceiptTrustedKeys", restoreSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadTrustStoreAsync(restore.ProvenanceTrustedKeys", restoreSection, StringComparison.Ordinal);
+        Assert.Contains("ReadTrustStoreAsync(restore.ProvenanceTrustedKeys", cleanupSection, StringComparison.Ordinal);
+        Assert.Contains("SigningKeyMatchesTrust", restoreSection, StringComparison.Ordinal);
+        Assert.Contains("SigningKeyMatchesTrust", cleanupSection, StringComparison.Ordinal);
+        Assert.True(restoreSection.IndexOf("SigningKeyMatchesTrust", StringComparison.Ordinal) <
+            restoreSection.IndexOf("ProvisionAsync", StringComparison.Ordinal));
+        Assert.True(cleanupSection.IndexOf("SigningKeyMatchesTrust", StringComparison.Ordinal) <
+            cleanupSection.IndexOf("CleanupAsync", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -59,6 +72,9 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("execute-shadow", script, StringComparison.Ordinal);
         Assert.Contains("evidence", script, StringComparison.Ordinal);
         Assert.Contains("export-local-snapshot", script, StringComparison.Ordinal);
+        Assert.Contains("cleanup-restore", script, StringComparison.Ordinal);
+        Assert.Contains("finally", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("AggregateException", script, StringComparison.Ordinal);
         Assert.Contains("LEGACY_DEPLOY_ENABLED", script, StringComparison.Ordinal);
         Assert.DoesNotContain("kubectl", script, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("gcloud", script, StringComparison.OrdinalIgnoreCase);

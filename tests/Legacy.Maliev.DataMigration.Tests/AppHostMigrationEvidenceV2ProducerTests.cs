@@ -226,6 +226,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         EvidenceFixture fixture = CreateFixture();
         string executionPath = await WriteJsonAsync("execution.json", fixture.Request.ExecutionResult);
         string provenancePath = await WriteJsonAsync("provenance.json", fixture.Request.Provenance);
+        string verifiedRestoreReceiptPath = await WriteJsonAsync("verified-restore.json", fixture.Request.VerifiedRestoreReceipt);
         string receiptPath = await WriteJsonAsync("receipt.json", fixture.Request.BackupReceipt);
         string planPath = await WriteJsonAsync("plan.json", fixture.Request.SchemaPlan);
         string authorizationPath = await WriteJsonAsync("authorization.json", fixture.Request.Authorization);
@@ -245,6 +246,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             {
                 executionResultPath = executionPath,
                 provenancePath,
+                verifiedRestoreReceiptPath,
                 receiptPath,
                 planPath,
                 authorizationPath,
@@ -538,8 +540,35 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             _now.AddMinutes(-10),
             "provenance-key",
             null));
+        const string digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        VerifiedRestoreReceipt verifiedRestore = VerifiedRestoreReceiptAttestation.Sign(new(
+            "1.0",
+            _now.AddMinutes(-11),
+            DatabaseInventory.InventorySha256,
+            manifestHash,
+            new(
+                "mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04@sha256:" + digest,
+                "sha256:" + digest,
+                "sha256:" + new string('b', 64),
+                "legacy-sql-run-1",
+                "run-1",
+                "legacy-volume-run-1",
+                "legacy-volume-run-1",
+                "/var/opt/mssql/backup",
+                true,
+                "alpine:3.20@sha256:" + new string('c', 64)),
+            [.. DatabaseInventory.ActiveDatabases.Select(database =>
+                new VerifiedRestoreArtifactEvidence(database, 42, digest, 42, digest, true, true, true))],
+            RestoreCleanupDisposition.Removed,
+            _now.AddMinutes(-6),
+            "provenance-key",
+            null), _provenanceKey);
+        var request = new AppHostMigrationEvidenceV2Request(result, backup, plan, authorization, configuration, provenance)
+        {
+            VerifiedRestoreReceipt = verifiedRestore,
+        };
         return new(
-            new(result, backup, plan, authorization, configuration, provenance),
+            request,
             Trust("backup-key", _backupKey),
             Trust("authorization-key", _authorizationKey),
             Trust("execution-key", _executionKey),
