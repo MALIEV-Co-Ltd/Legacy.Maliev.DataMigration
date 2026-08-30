@@ -19,7 +19,10 @@ public sealed class BackupReceiptProducerTests : IDisposable
             byte[] content = Encoding.UTF8.GetBytes($"verified-backup:{database}");
             await File.WriteAllBytesAsync(path, content);
             string sha256 = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
-            states.Add(new(database, path, $"database/full/run/{database}.bak", 1000 + states.Count, content.Length, sha256));
+            states.Add(new(database, path, $"database/full/run/{database}.bak", 1000 + states.Count, content.Length, sha256)
+            {
+                CompletedAtUtc = DateTimeOffset.Parse("2026-08-30T00:01:00Z", CultureInfo.InvariantCulture),
+            });
         }
 
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -47,13 +50,15 @@ public sealed class BackupReceiptProducerTests : IDisposable
     {
         _ = Directory.CreateDirectory(_root);
         var states = DatabaseInventory.ActiveDatabases.Skip(1)
-            .Select(database => new VerifiedBackupStateArtifact(database, Path.Combine(_root, database), database, 1, 1, new string('a', 64)))
-            .Append(new("Unexpected", Path.Combine(_root, "unexpected"), "unexpected", 1, 1, new string('a', 64)))
+            .Select(database => new VerifiedBackupStateArtifact(database, Path.Combine(_root, database), database, 1, 1, new string('a', 64))
+            { CompletedAtUtc = DateTimeOffset.UtcNow })
+            .Append(new("Unexpected", Path.Combine(_root, "unexpected"), "unexpected", 1, 1, new string('a', 64))
+            { CompletedAtUtc = DateTimeOffset.UtcNow })
             .ToArray();
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
         BackupReceiptProductionException exception = await Assert.ThrowsAsync<BackupReceiptProductionException>(() =>
-            BackupReceiptProducer.ProduceAsync(states, "key", key, DateTimeOffset.UtcNow, CancellationToken.None));
+            BackupReceiptProducer.ProduceAsync(states, "key", key, DateTimeOffset.UtcNow.AddMinutes(-1), CancellationToken.None));
 
         Assert.Equal("backup_state_database_coverage_invalid", exception.Code);
     }
@@ -67,12 +72,13 @@ public sealed class BackupReceiptProducerTests : IDisposable
         {
             string path = Path.Combine(_root, $"Full_{database}_2026-08-30_000000.bak");
             await File.WriteAllTextAsync(path, database);
-            states.Add(new(database, path, database, 1, new FileInfo(path).Length, new string('0', 64)));
+            states.Add(new(database, path, database, 1, new FileInfo(path).Length, new string('0', 64))
+            { CompletedAtUtc = DateTimeOffset.UtcNow });
         }
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
         BackupReceiptProductionException exception = await Assert.ThrowsAsync<BackupReceiptProductionException>(() =>
-            BackupReceiptProducer.ProduceAsync(states, "key", key, DateTimeOffset.UtcNow, CancellationToken.None));
+            BackupReceiptProducer.ProduceAsync(states, "key", key, DateTimeOffset.UtcNow.AddMinutes(-1), CancellationToken.None));
 
         Assert.Equal("backup_state_local_hash_mismatch", exception.Code);
     }

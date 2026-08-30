@@ -112,7 +112,12 @@ adapter. It requires the exact 27-database source disposition inventory to be
 `ONLINE`, but creates full backups only for the 25 approved migrate databases;
 the retired `MachineLearning` and `MachineLearningData` databases are observed
 but never copied. The producer binds the expected Kubernetes namespace, pod,
-pod UID, container, immutable UTC cutoff, cutoff date, and run identifier. It
+pod UID, container, approved UTC run date, and run identifier. SQL Server itself
+reports the inventory observation time and the completion time of every full
+backup. The signed receipt uses the latest observed backup completion time; it
+does **not** claim that the sequential database backups share one immutable
+source cutoff. A bounded source write freeze or reviewed complete CDC mechanism
+remains a mandatory release gate before final synchronization. The adapter
 creates a unique owner-only remote run directory and uniquely named full backups
 with `COPY_ONLY` and `CHECKSUM`, performs `RESTORE VERIFYONLY`, compares the
 remote SHA-256 to the owner-only retained local copy, then uploads with
@@ -121,6 +126,10 @@ SHA-256 metadata are read back before the canonical receipt is signed.
 Ambiguous backup or upload operations are never retried; only an allowlist of
 explicit copy transport failures has a bounded three-attempt maximum. Recovery
 backups are retained on every failure.
+
+Backup receipt schema `1.1` signs the authoritative SQL Server inventory
+observation time and every artifact completion time in addition to the existing
+inventory, local hash, immutable GCS generation, size, and hash evidence.
 
 SQL credentials cross the `kubectl exec` child-process boundary only through
 standard input. The invocation diagnostic redacts standard input, and neither

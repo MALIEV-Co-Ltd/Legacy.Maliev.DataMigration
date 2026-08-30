@@ -9,7 +9,7 @@ public sealed partial class PreflightService
     private readonly IExternalCommandExecutor _externalCommandExecutor;
     private readonly IReceiptAttestationTrustStore _attestationTrustStore;
 
-    public const string ReceiptSchemaVersion = "1.0";
+    public const string ReceiptSchemaVersion = "1.1";
     public const string TargetSchemaVersion = "1.0";
 
     public PreflightService(

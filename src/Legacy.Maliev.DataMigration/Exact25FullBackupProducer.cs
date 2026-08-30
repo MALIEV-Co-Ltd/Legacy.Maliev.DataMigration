@@ -12,7 +12,7 @@ public sealed record Exact25FullBackupRequest(
     string GcsPrefix,
     string LocalWorkingDirectory,
     string RunId,
-    DateTimeOffset ImmutableCutoffUtc,
+    DateTimeOffset ApprovedRunUtc,
     int MaximumTransportAttempts);
 
 public sealed class SecureSqlBackupCredential
@@ -52,11 +52,15 @@ public sealed record Exact25BackupSourceObservation(
     string PodUid,
     string ContainerName,
     bool Ready,
-    DateTimeOffset CutoffUtc,
-    bool CutoffIsImmutable,
+    DateTimeOffset ObservedAtUtc,
     IReadOnlyList<SqlServerDatabaseState> UserDatabases);
 
-public sealed record RemoteFullBackupArtifact(string Database, string RemoteRelativePath, long ByteLength, string Sha256);
+public sealed record RemoteFullBackupArtifact(
+    string Database,
+    string RemoteRelativePath,
+    long ByteLength,
+    string Sha256,
+    DateTimeOffset CompletedAtUtc);
 
 public sealed record ImmutableBackupObject(
     string Uri,
@@ -157,6 +161,7 @@ public static partial class Exact25FullBackupProducer
         OwnerProtectedDirectory.CreateNew(workingDirectory);
         await process.PrepareRunAsync(source, request.RunId, cancellationToken).ConfigureAwait(false);
         var states = new List<VerifiedBackupStateArtifact>(DatabaseInventory.ActiveDatabases.Count);
+        DateTimeOffset latestCompletionUtc = source.ObservedAtUtc;
         foreach (string database in DatabaseInventory.ActiveDatabases)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -170,6 +175,11 @@ public static partial class Exact25FullBackupProducer
             {
                 throw new Exact25FullBackupException("remote_backup_artifact_invalid", "SQL Server returned an invalid full-backup artifact.");
             }
+            if (remote.CompletedAtUtc.Offset != TimeSpan.Zero || remote.CompletedAtUtc < latestCompletionUtc)
+            {
+                throw new Exact25FullBackupException("backup_capture_time_invalid", "SQL Server returned invalid or non-monotonic backup completion evidence.");
+            }
+            latestCompletionUtc = remote.CompletedAtUtc;
 
             await process.VerifyRestoreAsync(source, remote, credential, cancellationToken).ConfigureAwait(false);
             await CopyWithBoundedTransportRetryAsync(
@@ -179,18 +189,26 @@ public static partial class Exact25FullBackupProducer
 
             string localPath = Path.Combine(workingDirectory, fileName);
             var local = new FileInfo(localPath);
-            if (!local.Exists || local.Length != remote.ByteLength)
+            if (!IsRegularNonLink(local) || local.Length != remote.ByteLength)
             {
                 throw new Exact25FullBackupException("local_backup_size_invalid", "The copied recovery backup does not match SQL Server metadata.");
             }
 
             string sha256 = await ComputeSha256Async(localPath, cancellationToken).ConfigureAwait(false);
+            if (!IsRegularNonLink(local))
+            {
+                throw new Exact25FullBackupException("local_backup_type_invalid", "The recovery backup is not a regular non-link file.");
+            }
             if (!FixedHashEquals(sha256, remote.Sha256))
             {
                 throw new Exact25FullBackupException("local_backup_hash_invalid", "The copied recovery backup does not match the verified SQL Server artifact.");
             }
 
             string objectUri = request.GcsPrefix + fileName;
+            if (!IsRegularNonLink(local))
+            {
+                throw new Exact25FullBackupException("local_backup_type_invalid", "The recovery backup changed before immutable upload.");
+            }
             ImmutableBackupObject cloud = await storage
                 .UploadNewAndReadBackAsync(localPath, objectUri, sha256, cancellationToken).ConfigureAwait(false);
             if (!cloud.Immutable || cloud.Generation <= 0 || cloud.ByteLength != local.Length ||
@@ -200,14 +218,17 @@ public static partial class Exact25FullBackupProducer
                 throw new Exact25FullBackupException("cloud_backup_parity_invalid", "The immutable cloud object does not match the retained recovery backup.");
             }
 
-            states.Add(new(database, localPath, ObjectName(objectUri), cloud.Generation, cloud.ByteLength, sha256));
+            states.Add(new(database, localPath, ObjectName(objectUri), cloud.Generation, cloud.ByteLength, sha256)
+            {
+                CompletedAtUtc = remote.CompletedAtUtc,
+            });
         }
 
         BackupReceipt receipt = await BackupReceiptProducer.ProduceAsync(
             states,
             receiptKeyId,
             receiptSigningKey,
-            request.ImmutableCutoffUtc,
+            source.ObservedAtUtc,
             cancellationToken).ConfigureAwait(false);
         await publisher.PublishNewAsync(receipt, cancellationToken).ConfigureAwait(false);
         return receipt;
@@ -217,13 +238,13 @@ public static partial class Exact25FullBackupProducer
     {
         ArgumentNullException.ThrowIfNull(request);
         Match prefix = FullBackupPrefix().Match(request.GcsPrefix ?? string.Empty);
-        string expectedDate = request.ImmutableCutoffUtc.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        string expectedDate = request.ApprovedRunUtc.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         if (!KubernetesName().IsMatch(request.Namespace) || !KubernetesName().IsMatch(request.ExpectedPodName) ||
             !SafeIdentifier().IsMatch(request.ExpectedPodUid) || !KubernetesName().IsMatch(request.ContainerName) ||
             !SafeIdentifier().IsMatch(request.RunId) || !prefix.Success ||
             !string.Equals(prefix.Groups["date"].Value, expectedDate, StringComparison.Ordinal) ||
             !string.Equals(prefix.Groups["run"].Value, request.RunId, StringComparison.Ordinal) ||
-            request.ImmutableCutoffUtc == default || request.ImmutableCutoffUtc.Offset != TimeSpan.Zero ||
+            request.ApprovedRunUtc == default || request.ApprovedRunUtc.Offset != TimeSpan.Zero ||
             request.MaximumTransportAttempts is < 1 or > 3)
         {
             throw new Exact25FullBackupException("backup_request_invalid", "The full-backup request is not safe or policy compliant.");
@@ -236,9 +257,9 @@ public static partial class Exact25FullBackupProducer
             !string.Equals(source.PodName, request.ExpectedPodName, StringComparison.Ordinal) ||
             !string.Equals(source.PodUid, request.ExpectedPodUid, StringComparison.Ordinal) ||
             !string.Equals(source.ContainerName, request.ContainerName, StringComparison.Ordinal) ||
-            !source.Ready || !source.CutoffIsImmutable || source.CutoffUtc != request.ImmutableCutoffUtc)
+            !source.Ready || source.ObservedAtUtc.Offset != TimeSpan.Zero || source.ObservedAtUtc < request.ApprovedRunUtc)
         {
-            throw new Exact25FullBackupException("source_identity_invalid", "The observed SQL Server source or immutable cutoff does not match the approved request.");
+            throw new Exact25FullBackupException("source_identity_invalid", "The observed SQL Server source identity or authoritative observation time is invalid.");
         }
 
         string[] observed = [.. source.UserDatabases.Select(database => database.Name)];
@@ -284,6 +305,12 @@ public static partial class Exact25FullBackupProducer
             CryptographicOperations.FixedTimeEquals(
                 Encoding.ASCII.GetBytes(left.ToLowerInvariant()),
                 Encoding.ASCII.GetBytes(right.ToLowerInvariant()));
+    }
+
+    private static bool IsRegularNonLink(FileInfo file)
+    {
+        file.Refresh();
+        return file.Exists && file.LinkTarget is null && (file.Attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0;
     }
 
     private static string ObjectName(string uri)

@@ -8,7 +8,25 @@ namespace Legacy.Maliev.DataMigration;
 public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullBackupProcess
 {
     private const string InventorySql =
-        "SET NOCOUNT ON; SELECT name, state_desc FROM sys.databases WHERE database_id > 4 ORDER BY name;";
+        "SET NOCOUNT ON; SELECT 'OBSERVED_AT_UTC', CONVERT(varchar(33), SYSUTCDATETIME(), 127) + '+00:00'; " +
+        "SELECT name, state_desc FROM sys.databases WHERE database_id > 4 ORDER BY name;";
+
+    private const string ValidateAndCreateRunScript =
+        "root=$1; run=$2; test -d \"$root\"; test ! -L \"$root\"; root_real=$(realpath -e -- \"$root\"); test \"$root_real\" = \"$root\"; " +
+        "parent=\"$root/maliev-backups\"; if test -e \"$parent\" || test -L \"$parent\"; then test -d \"$parent\"; test ! -L \"$parent\"; else umask 077; mkdir -- \"$parent\"; fi; " +
+        "test \"$(stat -c %u -- \"$parent\")\" = \"$(id -u)\"; test \"$(stat -c %a -- \"$parent\")\" = 700; " +
+        "parent_real=$(realpath -e -- \"$parent\"); test \"$parent_real\" = \"$root_real/maliev-backups\"; target=\"$parent/$run\"; " +
+        "test ! -e \"$target\"; test ! -L \"$target\"; mkdir --mode=700 -- \"$target\"; test -d \"$target\"; test ! -L \"$target\"; " +
+        "test \"$(stat -c %u -- \"$target\")\" = \"$(id -u)\"; test \"$(stat -c %a -- \"$target\")\" = 700; " +
+        "target_real=$(realpath -e -- \"$target\"); test \"$target_real\" = \"$parent_real/$run\"";
+
+    private const string ValidateRunScript =
+        "root=$1; run=$2; test -d \"$root\"; test ! -L \"$root\"; root_real=$(realpath -e -- \"$root\"); test \"$root_real\" = \"$root\"; " +
+        "parent=\"$root/maliev-backups\"; target=\"$parent/$run\"; test -d \"$parent\"; test ! -L \"$parent\"; " +
+        "test -d \"$target\"; test ! -L \"$target\"; test \"$(stat -c %u -- \"$parent\")\" = \"$(id -u)\"; " +
+        "test \"$(stat -c %a -- \"$parent\")\" = 700; test \"$(stat -c %u -- \"$target\")\" = \"$(id -u)\"; " +
+        "test \"$(stat -c %a -- \"$target\")\" = 700; parent_real=$(realpath -e -- \"$parent\"); " +
+        "target_real=$(realpath -e -- \"$target\"); test \"$parent_real\" = \"$root_real/maliev-backups\"; test \"$target_real\" = \"$parent_real/$run\"";
 
     private readonly IBackupProcessRunner _runner;
     private readonly string _backupRoot;
@@ -44,7 +62,9 @@ public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullB
             cancellationToken).ConfigureAwait(false);
         (string podNamespace, string podName, string podUid, bool ready, bool containerPresent) =
             ParsePod(podResult.StandardOutput, request.ContainerName);
-        if (!containerPresent)
+        if (!ready || !containerPresent || !string.Equals(podNamespace, request.Namespace, StringComparison.Ordinal) ||
+            !string.Equals(podName, request.ExpectedPodName, StringComparison.Ordinal) ||
+            !string.Equals(podUid, request.ExpectedPodUid, StringComparison.Ordinal))
         {
             throw new Exact25FullBackupException("source_identity_invalid", "The approved SQL Server container is absent from the observed pod.");
         }
@@ -55,15 +75,18 @@ public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullB
             "source_inventory_query_failed",
             cancellationToken).ConfigureAwait(false);
 
-        return new(
+        (DateTimeOffset observedAtUtc, IReadOnlyList<SqlServerDatabaseState> databases) =
+            ParseInventory(inventoryResult.StandardOutput);
+        var source = new Exact25BackupSourceObservation(
             podNamespace,
             podName,
             podUid,
             request.ContainerName,
             ready,
-            request.ImmutableCutoffUtc,
-            CutoffIsImmutable: true,
-            ParseInventory(inventoryResult.StandardOutput));
+            observedAtUtc,
+            databases);
+        await FenceSourceAsync(source, cancellationToken).ConfigureAwait(false);
+        return source;
     }
 
     public async Task PrepareRunAsync(
@@ -73,11 +96,12 @@ public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullB
     {
         ValidateSourceIdentifiers(source);
         ValidateSafeIdentifier(runId);
-        string remoteRunDirectory = $"{_backupRoot}/maliev-backups/{runId}";
+        await FenceSourceAsync(source, cancellationToken).ConfigureAwait(false);
         _ = await RunRequiredAsync(
-            KubectlExec(source, "mkdir", "--mode=700", "--", remoteRunDirectory),
+            KubectlExec(source, "sh", "-ceu", ValidateAndCreateRunScript, "sh", _backupRoot, runId),
             "remote_backup_destination_exists_or_unavailable",
             cancellationToken).ConfigureAwait(false);
+        await FenceSourceAsync(source, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<RemoteFullBackupArtifact> CreateUniqueFullBackupAsync(
@@ -95,26 +119,37 @@ public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullB
             throw new Exact25FullBackupException("remote_backup_path_invalid", "The requested SQL Server backup path is outside the approved run directory.");
         }
 
+        string runId = remoteRelativePath.Split('/')[1];
+        await FenceSourceAsync(source, cancellationToken).ConfigureAwait(false);
+        await ValidateRunAsync(source, runId, cancellationToken).ConfigureAwait(false);
+
         string remotePath = $"{_backupRoot}/{remoteRelativePath}";
         string quotedDatabase = database.Replace("]", "]]", StringComparison.Ordinal);
-        string sql = $"BACKUP DATABASE [{quotedDatabase}] TO DISK = N'{remotePath}' WITH COPY_ONLY, CHECKSUM, COMPRESSION, NOFORMAT, NOINIT, STATS = 10;";
-        _ = await RunRequiredAsync(
+        string sql = $"BACKUP DATABASE [{quotedDatabase}] TO DISK = N'{remotePath}' WITH COPY_ONLY, CHECKSUM, COMPRESSION, NOFORMAT, NOINIT, STATS = 10; " +
+            "SELECT 'BACKUP_COMPLETED_AT_UTC', CONVERT(varchar(33), SYSUTCDATETIME(), 127) + '+00:00';";
+        BackupProcessResult backup = await RunRequiredAsync(
             SecureKubectlSqlCmdInvocation.Create(source.Namespace, source.PodName, source.ContainerName, sql, credential),
             "backup_create_failed",
             cancellationToken).ConfigureAwait(false);
+        DateTimeOffset completedAtUtc = ParseTimestampMarker(backup.StandardOutput, "BACKUP_COMPLETED_AT_UTC", "backup_completion_output_invalid");
 
+        await FenceSourceAsync(source, cancellationToken).ConfigureAwait(false);
+        await ValidateRunAsync(source, runId, cancellationToken).ConfigureAwait(false);
         const string metadataScript =
-            "test -f \"$1\"; size=$(stat -c %s -- \"$1\"); hash=$(sha256sum -- \"$1\"); hash=${hash%% *}; printf '%s|%s\\n' \"$size\" \"$hash\"";
+            "test -f \"$1\"; test ! -L \"$1\"; test \"$(stat -c %F -- \"$1\")\" = 'regular file'; " +
+            "test \"$(realpath -e -- \"$1\")\" = \"$1\"; size=$(stat -c %s -- \"$1\"); " +
+            "hash=$(sha256sum -- \"$1\"); hash=${hash%% *}; printf '%s|%s\\n' \"$size\" \"$hash\"";
         BackupProcessResult metadata = await RunRequiredAsync(
             KubectlExec(source, "sh", "-ceu", metadataScript, "sh", remotePath),
             "backup_metadata_failed",
             cancellationToken).ConfigureAwait(false);
+        await FenceSourceAsync(source, cancellationToken).ConfigureAwait(false);
         string[] fields = metadata.StandardOutput.Trim().Split('|');
         return fields.Length != 2 || !long.TryParse(fields[0], System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out long byteLength) || byteLength <= 0 ||
             !Sha256Value().IsMatch(fields[1])
             ? throw new Exact25FullBackupException("backup_metadata_invalid", "SQL Server backup metadata is invalid.")
-            : new(database, remoteRelativePath, byteLength, fields[1].ToLowerInvariant());
+            : new(database, remoteRelativePath, byteLength, fields[1].ToLowerInvariant(), completedAtUtc);
     }
 
     public async Task VerifyRestoreAsync(
@@ -126,12 +161,14 @@ public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullB
         ValidateSourceIdentifiers(source);
         ValidateArtifact(artifact);
         ArgumentNullException.ThrowIfNull(credential);
+        await FenceSourceAsync(source, cancellationToken).ConfigureAwait(false);
         string remotePath = $"{_backupRoot}/{artifact.RemoteRelativePath}";
         string sql = $"RESTORE VERIFYONLY FROM DISK = N'{remotePath}' WITH CHECKSUM;";
         _ = await RunRequiredAsync(
             SecureKubectlSqlCmdInvocation.Create(source.Namespace, source.PodName, source.ContainerName, sql, credential),
             "restore_verify_failed",
             cancellationToken).ConfigureAwait(false);
+        await FenceSourceAsync(source, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task CopyToLocalAsync(
@@ -143,6 +180,7 @@ public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullB
     {
         ValidateSourceIdentifiers(source);
         ValidateArtifact(artifact);
+        await FenceSourceAsync(source, cancellationToken).ConfigureAwait(false);
         if (!SafeLocalFileName().IsMatch(localRelativePath) ||
             !string.Equals(localRelativePath, Path.GetFileName(localRelativePath), StringComparison.Ordinal))
         {
@@ -171,13 +209,20 @@ public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullB
                     IsExplicitlyRetryableCopyFailure(result.StandardError));
             }
 
+            await FenceSourceAsync(source, cancellationToken).ConfigureAwait(false);
+
             var copied = new FileInfo(temporary);
-            if (!copied.Exists || copied.Length != artifact.ByteLength ||
+            if (!IsRegularNonLink(copied) || copied.Length != artifact.ByteLength ||
                 !FixedHashEquals(await ComputeSha256Async(temporary, cancellationToken).ConfigureAwait(false), artifact.Sha256))
             {
                 throw new Exact25FullBackupException("local_backup_hash_invalid", "The kubectl backup copy does not match the verified remote artifact.");
             }
 
+            copied.Refresh();
+            if (!IsRegularNonLink(copied))
+            {
+                throw new Exact25FullBackupException("local_backup_type_invalid", "The copied backup is not a regular non-link file.");
+            }
             File.Move(temporary, target);
         }
         catch
@@ -240,12 +285,22 @@ public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullB
         }
     }
 
-    private static List<SqlServerDatabaseState> ParseInventory(string output)
+    private static (DateTimeOffset ObservedAtUtc, IReadOnlyList<SqlServerDatabaseState> Databases) ParseInventory(string output)
     {
+        DateTimeOffset? observedAtUtc = null;
         var databases = new List<SqlServerDatabaseState>();
         foreach (string line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             string[] fields = line.Split('|', StringSplitOptions.TrimEntries);
+            if (fields.Length == 2 && string.Equals(fields[0], "OBSERVED_AT_UTC", StringComparison.Ordinal))
+            {
+                if (observedAtUtc is not null || !TryParseUtc(fields[1], out DateTimeOffset parsed))
+                {
+                    throw new Exact25FullBackupException("source_inventory_output_invalid", "The SQL Server observation time is malformed.");
+                }
+                observedAtUtc = parsed;
+                continue;
+            }
             if (fields.Length != 2 || !DatabaseName().IsMatch(fields[0]) || !DatabaseState().IsMatch(fields[1]))
             {
                 throw new Exact25FullBackupException("source_inventory_output_invalid", "The SQL Server inventory output is malformed.");
@@ -254,7 +309,53 @@ public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullB
             databases.Add(new(fields[0], fields[1]));
         }
 
-        return databases;
+        return observedAtUtc is null
+            ? throw new Exact25FullBackupException("source_inventory_output_invalid", "The SQL Server observation time is missing.")
+            : (observedAtUtc.Value, databases);
+    }
+
+    private async Task FenceSourceAsync(Exact25BackupSourceObservation source, CancellationToken cancellationToken)
+    {
+        BackupProcessResult result = await RunRequiredAsync(
+            Kubectl("get", "pod", source.PodName, "-n", source.Namespace, "-o", "json"),
+            "source_identity_changed",
+            cancellationToken).ConfigureAwait(false);
+        (string ns, string name, string uid, bool ready, bool containerPresent) = ParsePod(result.StandardOutput, source.ContainerName);
+        if (!ready || !containerPresent || !string.Equals(ns, source.Namespace, StringComparison.Ordinal) ||
+            !string.Equals(name, source.PodName, StringComparison.Ordinal) || !string.Equals(uid, source.PodUid, StringComparison.Ordinal))
+        {
+            throw new Exact25FullBackupException("source_identity_changed", "The SQL Server pod identity changed during backup production.");
+        }
+    }
+
+    private async Task ValidateRunAsync(Exact25BackupSourceObservation source, string runId, CancellationToken cancellationToken)
+    {
+        _ = await RunRequiredAsync(
+            KubectlExec(source, "sh", "-ceu", ValidateRunScript, "sh", _backupRoot, runId),
+            "remote_backup_directory_invalid",
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static DateTimeOffset ParseTimestampMarker(string output, string marker, string code)
+    {
+        string prefix = marker + "|";
+        string[] matches = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => line.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
+        return matches.Length == 1 && TryParseUtc(matches[0][prefix.Length..], out DateTimeOffset parsed)
+            ? parsed
+            : throw new Exact25FullBackupException(code, "SQL Server did not return one authoritative UTC timestamp.");
+    }
+
+    private static bool TryParseUtc(string value, out DateTimeOffset parsed)
+    {
+        return DateTimeOffset.TryParseExact(value, "O", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out parsed) && parsed.Offset == TimeSpan.Zero;
+    }
+
+    private static bool IsRegularNonLink(FileInfo file)
+    {
+        file.Refresh();
+        return file.Exists && file.LinkTarget is null && (file.Attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0;
     }
 
     private static void ValidateSourceIdentifiers(Exact25BackupSourceObservation source)
@@ -271,7 +372,7 @@ public sealed partial class KubernetesSqlServerFullBackupProcess : IExact25FullB
         ArgumentNullException.ThrowIfNull(artifact);
         if (!DatabaseInventory.ActiveDatabases.Contains(artifact.Database, StringComparer.Ordinal) ||
             !SafeRemoteBackupPath().IsMatch(artifact.RemoteRelativePath) || artifact.ByteLength <= 0 ||
-            !Sha256Value().IsMatch(artifact.Sha256))
+            !Sha256Value().IsMatch(artifact.Sha256) || artifact.CompletedAtUtc == default || artifact.CompletedAtUtc.Offset != TimeSpan.Zero)
         {
             throw new Exact25FullBackupException("remote_backup_artifact_invalid", "The remote backup artifact is unsafe or incomplete.");
         }

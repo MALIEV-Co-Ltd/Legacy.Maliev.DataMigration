@@ -205,24 +205,36 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
 
         Task<string> stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
         Task<string> stderr = process.StandardError.ReadToEndAsync(cancellationToken);
-        if (invocation.StandardInput.Length > 0)
-        {
-            await process.StandardInput.WriteAsync(invocation.StandardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
-        }
-
-        process.StandardInput.Close();
         try
         {
+            if (invocation.StandardInput.Length > 0)
+            {
+                await process.StandardInput.WriteAsync(invocation.StandardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
+            }
+
+            process.StandardInput.Close();
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            if (!process.HasExited)
+            try
             {
-                process.Kill(entireProcessTree: true);
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // The process exited between the state check and the kill request.
             }
 
+            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
+        }
+        finally
+        {
+            process.StandardInput.Close();
         }
 
         return new(process.ExitCode, await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false));
@@ -241,7 +253,9 @@ internal static class OwnerProtectedDirectory
             throw new IOException("The owner-protected directory requires a parent and a new name.");
         }
 
+        EnsureNoLinkAncestors(parent);
         _ = Directory.CreateDirectory(parent);
+        EnsureNoLinkAncestors(parent);
         string staging = Path.Combine(parent, $".{name}.{Guid.NewGuid():N}.tmp");
         try
         {
@@ -256,6 +270,23 @@ internal static class OwnerProtectedDirectory
             }
 
             throw;
+        }
+    }
+
+    private static void EnsureNoLinkAncestors(string path)
+    {
+        for (DirectoryInfo? current = new(Path.GetFullPath(path)); current is not null; current = current.Parent)
+        {
+            current.Refresh();
+            if (!current.Exists)
+            {
+                continue;
+            }
+
+            if (current.LinkTarget is not null || (current.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new IOException("The owner-protected directory path contains a symbolic link or reparse point.");
+            }
         }
     }
 

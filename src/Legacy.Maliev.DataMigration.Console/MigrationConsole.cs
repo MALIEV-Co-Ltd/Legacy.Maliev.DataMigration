@@ -1,4 +1,7 @@
 using System.Security.Cryptography;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -141,18 +144,19 @@ public static class MigrationConsole
         IExact25BackupRuntimeFactory backupRuntimeFactory,
         CancellationToken cancellationToken)
     {
-        MigrationConsoleConfiguration configuration = await ReadJsonAsync<MigrationConsoleConfiguration>(configPath, cancellationToken)
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new MigrationConsoleException("backup_deploy_gate_invalid", "Legacy application deployment must remain disabled during backup production.");
+        }
+
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+                configPath, "backup_config_unprotected", cancellationToken)
             .ConfigureAwait(false);
         FullBackupCommandConfiguration backup = configuration.FullBackup ??
             throw new MigrationConsoleException("backup_configuration_missing", "Full backup configuration is required.");
         if (!backup.AllowSourceBackup)
         {
             throw new MigrationConsoleException("backup_source_gate_invalid", "The protected configuration does not authorize a source backup.");
-        }
-
-        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new MigrationConsoleException("backup_deploy_gate_invalid", "Legacy application deployment must remain disabled during backup production.");
         }
 
         string? sqlUser = getEnvironmentVariable(BackupSqlUserEnvironmentVariable);
@@ -166,7 +170,8 @@ public static class MigrationConsole
         using ECDsa key = ECDsa.Create();
         try
         {
-            key.ImportFromPem(await File.ReadAllTextAsync(keyPath, cancellationToken).ConfigureAwait(false));
+            key.ImportFromPem(await ReadProtectedTextAsync(
+                keyPath, "backup_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
         }
         catch (CryptographicException)
         {
@@ -182,7 +187,7 @@ public static class MigrationConsole
             backup.GcsPrefix,
             backup.LocalWorkingDirectory,
             backup.RunId,
-            backup.ImmutableCutoffUtc,
+            backup.ApprovedRunUtc,
             backup.MaximumTransportAttempts);
         var credential = new SecureSqlBackupCredential(sqlUser, sqlPassword);
         var publisher = new AtomicBackupReceiptPublisher(backup.PublicationDirectory);
@@ -417,7 +422,7 @@ public static class MigrationConsole
             state.Artifacts,
             receipt.KeyId,
             key,
-            DateTimeOffset.UtcNow,
+            state.SourceObservedAtUtc,
             cancellationToken).ConfigureAwait(false);
         await WriteNewJsonAsync(receipt.OutputPath, backupReceipt, cancellationToken).ConfigureAwait(false);
     }
@@ -443,6 +448,33 @@ public static class MigrationConsole
         {
             throw new MigrationConsoleException("configuration_unavailable", "A referenced JSON document is unavailable.");
         }
+    }
+
+    private static async Task<T> ReadProtectedJsonAsync<T>(
+        string path,
+        string unprotectedCode,
+        CancellationToken cancellationToken)
+    {
+        await using FileStream stream = OwnerProtectedFilePolicy.OpenRead(path, unprotectedCode);
+        try
+        {
+            return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, cancellationToken).ConfigureAwait(false) ??
+                throw new MigrationConsoleException("configuration_invalid", "A protected JSON document is empty.");
+        }
+        catch (JsonException)
+        {
+            throw new MigrationConsoleException("configuration_invalid", "A protected JSON document is invalid.");
+        }
+    }
+
+    private static async Task<string> ReadProtectedTextAsync(
+        string path,
+        string unprotectedCode,
+        CancellationToken cancellationToken)
+    {
+        await using FileStream stream = OwnerProtectedFilePolicy.OpenRead(path, unprotectedCode);
+        using var reader = new StreamReader(stream, leaveOpen: true);
+        return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task WriteNewJsonAsync<T>(string path, T value, CancellationToken cancellationToken)
@@ -471,7 +503,7 @@ public static class MigrationConsole
         string GcsPrefix,
         string LocalWorkingDirectory,
         string RunId,
-        DateTimeOffset ImmutableCutoffUtc,
+        DateTimeOffset ApprovedRunUtc,
         int MaximumTransportAttempts,
         string PublicationDirectory,
         string KeyId,
@@ -519,7 +551,9 @@ public static class MigrationConsole
         string OutputDirectory,
         string PgDumpPath);
 
-    private sealed record BackupStateDocument(IReadOnlyList<VerifiedBackupStateArtifact> Artifacts);
+    private sealed record BackupStateDocument(
+        DateTimeOffset SourceObservedAtUtc,
+        IReadOnlyList<VerifiedBackupStateArtifact> Artifacts);
 
     private sealed class DisabledExternalCommandExecutor : IExternalCommandExecutor
     {
@@ -547,6 +581,69 @@ internal sealed class DefaultExact25BackupRuntimeFactory : IExact25BackupRuntime
         GoogleCloudImmutableBackupObjectStorage storage = await GoogleCloudImmutableBackupObjectStorage
             .CreateWithApplicationDefaultCredentialsAsync(cancellationToken).ConfigureAwait(false);
         return new(process, storage);
+    }
+}
+
+internal static class OwnerProtectedFilePolicy
+{
+    public static FileStream OpenRead(string path, string errorCode)
+    {
+        if (!IsOwnerOnly(path))
+        {
+            throw new MigrationConsoleException(errorCode, "The protected file must be owner-only and must not be a symbolic link.");
+        }
+
+        try
+        {
+            var stream = new FileStream(Path.GetFullPath(path), FileMode.Open, FileAccess.Read, FileShare.Read,
+                64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            if (!IsOwnerOnly(path))
+            {
+                stream.Dispose();
+                throw new MigrationConsoleException(errorCode, "The protected file changed while it was being opened.");
+            }
+            return stream;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new MigrationConsoleException(errorCode, "The protected file could not be opened safely.");
+        }
+    }
+
+    public static bool IsOwnerOnly(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var file = new FileInfo(Path.GetFullPath(path));
+        if (!file.Exists || file.LinkTarget is not null || (file.Attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            return false;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            return IsOwnerOnlyWindows(file.FullName);
+        }
+
+        UnixFileMode mode = File.GetUnixFileMode(file.FullName);
+        const UnixFileMode forbidden = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+            UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+        return (mode & forbidden) == 0 && (mode & UnixFileMode.UserRead) != 0;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static bool IsOwnerOnlyWindows(string path)
+    {
+        SecurityIdentifier current = WindowsIdentity.GetCurrent().User ?? throw new UnauthorizedAccessException();
+        FileSecurity security = new FileInfo(path).GetAccessControl();
+        return security.GetOwner(typeof(SecurityIdentifier)) is SecurityIdentifier owner && owner.Equals(current) &&
+            security.GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .Where(rule => rule.AccessControlType == AccessControlType.Allow)
+            .All(rule => rule.IdentityReference.Equals(current));
     }
 }
 

@@ -19,10 +19,17 @@ public sealed class MigrationConsoleTests : IDisposable
             await File.WriteAllTextAsync(path, database);
             byte[] content = await File.ReadAllBytesAsync(path);
             string hash = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
-            states.Add(new(database, path, $"database/full/run/{database}.bak", states.Count + 1, content.Length, hash));
+            states.Add(new(database, path, $"database/full/run/{database}.bak", states.Count + 1, content.Length, hash)
+            {
+                CompletedAtUtc = new DateTimeOffset(2026, 8, 30, 1, 1, 0, TimeSpan.Zero),
+            });
         }
         string statePath = Path.Combine(_root, "backup-state.json");
-        await File.WriteAllTextAsync(statePath, JsonSerializer.Serialize(new { artifacts = states }, JsonOptions));
+        await File.WriteAllTextAsync(statePath, JsonSerializer.Serialize(new
+        {
+            sourceObservedAtUtc = new DateTimeOffset(2026, 8, 30, 1, 0, 0, TimeSpan.Zero),
+            artifacts = states,
+        }, JsonOptions));
         string outputPath = Path.Combine(_root, "receipt.json");
         string configPath = Path.Combine(_root, "config.json");
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
@@ -172,7 +179,7 @@ public sealed class MigrationConsoleTests : IDisposable
     [Fact]
     public async Task RunAsync_BackupFull_ProtectedConfigurationAndEnvironmentComposeExactProducer()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         string workingDirectory = Path.Combine(_root, "recovery");
         string publicationDirectory = Path.Combine(_root, "receipt-publication");
         string configPath = Path.Combine(_root, "config.json");
@@ -187,7 +194,7 @@ public sealed class MigrationConsoleTests : IDisposable
                 gcsPrefix = "gs://maliev.com/database/full/2026-08-30/run-1/",
                 localWorkingDirectory = workingDirectory,
                 runId = "run-1",
-                immutableCutoffUtc = new DateTimeOffset(2026, 8, 30, 1, 0, 0, TimeSpan.Zero),
+                approvedRunUtc = new DateTimeOffset(2026, 8, 30, 1, 0, 0, TimeSpan.Zero),
                 maximumTransportAttempts = 3,
                 publicationDirectory,
                 keyId = "backup-key",
@@ -199,6 +206,8 @@ public sealed class MigrationConsoleTests : IDisposable
         {
             await File.WriteAllTextAsync(keyPath, key.ExportECPrivateKeyPem());
         }
+        ProtectFileOnUnix(configPath);
+        ProtectFileOnUnix(keyPath);
 
         var factory = new FakeExact25BackupRuntimeFactory();
         using var output = new StringWriter();
@@ -225,6 +234,78 @@ public sealed class MigrationConsoleTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_BackupFull_UnprotectedConfigurationFailsBeforeRuntimeComposition()
+    {
+        _ = Directory.CreateDirectory(_root);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, "{}");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(configPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+        var factory = new FakeExact25BackupRuntimeFactory();
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunForTestsAsync(
+            ["backup-full", "--config", configPath], output, error,
+            name => name == "LEGACY_DEPLOY_ENABLED" ? "false" : null, factory, CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal(0, factory.CreateAttempts);
+        Assert.Equal("backup_config_unprotected" + Environment.NewLine, error.ToString());
+    }
+
+    [Fact]
+    public async Task RunAsync_BackupFull_UnprotectedSigningKeyFailsBeforeRuntimeComposition()
+    {
+        OwnerProtectedDirectory.CreateNew(_root);
+        string configPath = Path.Combine(_root, "config.json");
+        string keyPath = Path.Combine(_root, "key.pem");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            fullBackup = new { allowSourceBackup = true },
+        }, JsonOptions));
+        await File.WriteAllTextAsync(keyPath, "not-read");
+        ProtectFileOnUnix(configPath);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
+        }
+        else
+        {
+            var security = new System.Security.AccessControl.FileSecurity();
+            System.Security.Principal.SecurityIdentifier owner = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+            security.SetOwner(owner);
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            security.AddAccessRule(new(owner, System.Security.AccessControl.FileSystemRights.FullControl,
+                System.Security.AccessControl.AccessControlType.Allow));
+            security.AddAccessRule(new(new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, null),
+                System.Security.AccessControl.FileSystemRights.Read, System.Security.AccessControl.AccessControlType.Allow));
+            new FileInfo(keyPath).SetAccessControl(security);
+        }
+        var factory = new FakeExact25BackupRuntimeFactory();
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunForTestsAsync(
+            ["backup-full", "--config", configPath], output, error,
+            name => name switch
+            {
+                "LEGACY_DEPLOY_ENABLED" => "false",
+                "LEGACY_MIGRATION_BACKUP_SQL_USERNAME" => "user",
+                "LEGACY_MIGRATION_BACKUP_SQL_PASSWORD" => "password",
+                "LEGACY_MIGRATION_RECEIPT_SIGNING_KEY_FILE" => keyPath,
+                _ => null,
+            }, factory, CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal(0, factory.CreateAttempts);
+        Assert.Equal("backup_signing_key_unprotected" + Environment.NewLine, error.ToString());
+    }
+
+    [Fact]
     public async Task RunAsync_BackupFull_DeployEnabledFailsBeforeRuntimeComposition()
     {
         _ = Directory.CreateDirectory(_root);
@@ -240,7 +321,7 @@ public sealed class MigrationConsoleTests : IDisposable
                 gcsPrefix = "gs://maliev.com/database/full/2026-08-30/run-1/",
                 localWorkingDirectory = Path.Combine(_root, "recovery"),
                 runId = "run-1",
-                immutableCutoffUtc = new DateTimeOffset(2026, 8, 30, 1, 0, 0, TimeSpan.Zero),
+                approvedRunUtc = new DateTimeOffset(2026, 8, 30, 1, 0, 0, TimeSpan.Zero),
                 maximumTransportAttempts = 3,
                 publicationDirectory = Path.Combine(_root, "publication"),
                 keyId = "backup-key",
@@ -282,6 +363,14 @@ public sealed class MigrationConsoleTests : IDisposable
         }
     }
 
+    private static void ProtectFileOnUnix(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
     private sealed class FakeBackupProcess : IExact25FullBackupProcess
     {
         public Task<Exact25BackupSourceObservation> InspectSourceAsync(
@@ -291,7 +380,7 @@ public sealed class MigrationConsoleTests : IDisposable
         {
             return Task.FromResult(new Exact25BackupSourceObservation(
                 request.Namespace, request.ExpectedPodName, request.ExpectedPodUid, request.ContainerName, true,
-                request.ImmutableCutoffUtc, true,
+                request.ApprovedRunUtc.AddMinutes(1),
                 DatabaseInventory.Entries.Keys.Order(StringComparer.Ordinal)
                     .Select(name => new SqlServerDatabaseState(name, "ONLINE")).ToArray()));
         }
@@ -310,7 +399,8 @@ public sealed class MigrationConsoleTests : IDisposable
         {
             byte[] content = System.Text.Encoding.UTF8.GetBytes(database);
             string sha256 = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
-            return Task.FromResult(new RemoteFullBackupArtifact(database, remoteRelativePath, content.Length, sha256));
+            return Task.FromResult(new RemoteFullBackupArtifact(
+                database, remoteRelativePath, content.Length, sha256, source.ObservedAtUtc.AddMinutes(1)));
         }
 
         public Task VerifyRestoreAsync(

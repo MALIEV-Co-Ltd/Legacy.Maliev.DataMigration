@@ -449,7 +449,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         var plan = new FreshSchemaPlan("2.0", _now.AddMinutes(-20), sourceCommit, databasePlans);
         string planHash = SchemaPlanCanonicalizer.ComputeSha256(plan);
         BackupReceipt backup = SignBackupReceipt(new(
-            "1.0",
+            "1.1",
             _now.AddMinutes(-25),
             DatabaseInventory.InventorySha256,
             manifestHash,
@@ -464,9 +464,13 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
                 GcsObject = $"database/full/2026-08-30/{database}.bak",
                 GcsGeneration = index + 1,
                 GcsSha256 = Hash($"backup:{database}"),
+                CompletedAtUtc = _now.AddMinutes(-25),
             }).ToArray(),
             "backup-key",
-            null));
+            null)
+        {
+            SourceObservedAtUtc = _now.AddMinutes(-26),
+        });
         ExecutionAuthorizationReceipt authorization = SignAuthorization(new(
             "2.0",
             Guid.Parse("11111111-1111-4111-8111-111111111111"),

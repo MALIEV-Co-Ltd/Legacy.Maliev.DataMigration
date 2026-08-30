@@ -9,7 +9,10 @@ public sealed record VerifiedBackupStateArtifact(
     string GcsObject,
     long GcsGeneration,
     long GcsByteLength,
-    string GcsSha256);
+    string GcsSha256)
+{
+    public DateTimeOffset? CompletedAtUtc { get; init; }
+}
 
 public static class BackupReceiptProducer
 {
@@ -17,13 +20,17 @@ public static class BackupReceiptProducer
         IReadOnlyCollection<VerifiedBackupStateArtifact> backupState,
         string keyId,
         ECDsa signingKey,
-        DateTimeOffset capturedAtUtc,
+        DateTimeOffset sourceObservedAtUtc,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(backupState);
         ArgumentException.ThrowIfNullOrWhiteSpace(keyId);
         ArgumentNullException.ThrowIfNull(signingKey);
         EnsureP256(signingKey);
+        if (sourceObservedAtUtc == default || sourceObservedAtUtc.Offset != TimeSpan.Zero)
+        {
+            throw new BackupReceiptProductionException("backup_state_capture_time_invalid", "The authoritative source observation time is invalid.");
+        }
 
         string[] observed = [.. backupState.Select(item => item.Database)];
         if (observed.Length != DatabaseInventory.ActiveDatabases.Count ||
@@ -43,6 +50,11 @@ public static class BackupReceiptProducer
             if (state.GcsGeneration <= 0 || state.GcsByteLength < 0 || !IsSha256(state.GcsSha256))
             {
                 throw new BackupReceiptProductionException("backup_state_cloud_metadata_invalid", "Approved cloud metadata is incomplete.");
+            }
+            if (state.CompletedAtUtc is null || state.CompletedAtUtc.Value.Offset != TimeSpan.Zero ||
+                state.CompletedAtUtc.Value < sourceObservedAtUtc)
+            {
+                throw new BackupReceiptProductionException("backup_state_capture_time_invalid", "The backup completion evidence is invalid.");
             }
 
             var file = new FileInfo(state.LocalPath);
@@ -70,18 +82,24 @@ public static class BackupReceiptProducer
                 GcsObject = state.GcsObject,
                 GcsGeneration = state.GcsGeneration,
                 GcsSha256 = state.GcsSha256.ToLowerInvariant(),
+                CompletedAtUtc = state.CompletedAtUtc,
             });
         }
 
+        DateTimeOffset capturedAtUtc = backupState.Max(state => state.CompletedAtUtc!.Value);
+
         string manifest = ComputeManifestSha256(artifacts);
         var unsigned = new BackupReceipt(
-            "1.0",
+            "1.1",
             capturedAtUtc.ToUniversalTime(),
             DatabaseInventory.InventorySha256,
             manifest,
             artifacts,
             keyId,
-            null);
+            null)
+        {
+            SourceObservedAtUtc = sourceObservedAtUtc,
+        };
         if (!ReceiptAttestation.TryCreatePayload(unsigned, out byte[] payload))
         {
             throw new BackupReceiptProductionException("backup_receipt_canonicalization_failed", "The receipt could not be canonicalized.");

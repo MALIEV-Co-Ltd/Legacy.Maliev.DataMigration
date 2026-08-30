@@ -341,13 +341,16 @@ public sealed class PreflightServiceTests
         mutate?.Invoke(artifacts);
 
         BackupReceipt unsignedReceipt = new(
-            SchemaVersion: "1.0",
+            SchemaVersion: "1.1",
             CapturedAtUtc: Now.AddHours(-1),
             DatabaseInventorySha256: DatabaseInventory.InventorySha256,
             ManifestSha256: ComputeManifestSha256(artifacts),
             Artifacts: artifacts,
             AttestationKeyId: ProducerKeyId,
-            AttestationSignature: null);
+            AttestationSignature: null)
+        {
+            SourceObservedAtUtc = Now.AddHours(-2),
+        };
         Assert.True(ReceiptAttestation.TryCreatePayload(unsignedReceipt, out byte[] payload));
         string signature = Convert.ToBase64String(
             ProducerSigningKey.SignData(payload, HashAlgorithmName.SHA256));
@@ -363,7 +366,10 @@ public sealed class PreflightServiceTests
             $"Full_{database}_2026-08-29_120000.bak",
             1024,
             digest,
-            digest);
+            digest)
+        {
+            CompletedAtUtc = Now.AddHours(-1),
+        };
     }
 
     private static MigrationPlan CreatePlan()

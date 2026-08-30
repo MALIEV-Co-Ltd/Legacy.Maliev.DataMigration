@@ -600,17 +600,23 @@ public sealed class GuardedShadowMigrationRunnerTests
                 $"Full_{database}_2026-08-29_120000.bak",
                 1024,
                 hash,
-                hash);
+                hash)
+            {
+                CompletedAtUtc = Now.AddHours(-1),
+            };
         })];
         string manifestHash = ComputeManifestSha256(artifacts);
         BackupReceipt receipt = new(
-            "1.0",
+            "1.1",
             Now.AddHours(-1),
             DatabaseInventory.InventorySha256,
             manifestHash,
             artifacts,
             KeyId,
-            null);
+            null)
+        {
+            SourceObservedAtUtc = Now.AddHours(-2),
+        };
         Assert.True(ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload));
         return receipt with
         {

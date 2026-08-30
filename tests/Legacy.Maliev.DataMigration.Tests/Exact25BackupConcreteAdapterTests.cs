@@ -13,11 +13,23 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
         var runner = new RecordingBackupProcessRunner([
             Success(PodJson()),
             Success(InventoryOutput()),
+            Success(PodJson()),
+            Success(PodJson()),
             Success(),
+            Success(PodJson()),
+            Success(PodJson()),
+            Success(),
+            Success("BACKUP_COMPLETED_AT_UTC|2026-08-30T01:04:05.0000000+00:00"),
+            Success(PodJson()),
             Success(),
             Success("35|" + Hash("verified-full-backup:ContactRequest")),
+            Success(PodJson()),
+            Success(PodJson()),
             Success(),
+            Success(PodJson()),
+            Success(PodJson()),
             Success(),
+            Success(PodJson()),
         ]);
         var adapter = new KubernetesSqlServerFullBackupProcess(runner);
         Exact25FullBackupRequest request = Request();
@@ -32,32 +44,70 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
         await adapter.CopyToLocalAsync(source, artifact, "Full_ContactRequest_run-1.bak", _root, CancellationToken.None);
 
         Assert.Equal("pod-uid-1", source.PodUid);
+        Assert.Equal(new DateTimeOffset(2026, 8, 30, 1, 2, 3, TimeSpan.Zero), source.ObservedAtUtc);
         Assert.Equal(DatabaseInventory.Entries.Keys.Order(StringComparer.Ordinal), source.UserDatabases.Select(item => item.Name));
         Assert.Equal(Hash("verified-full-backup:ContactRequest"), artifact.Sha256);
-        Assert.Equal(7, runner.Invocations.Count);
+        Assert.Equal(new DateTimeOffset(2026, 8, 30, 1, 4, 5, TimeSpan.Zero), artifact.CompletedAtUtc);
         Assert.All(runner.Invocations, invocation =>
         {
             Assert.DoesNotContain("backup-user", invocation.ToString(), StringComparison.Ordinal);
             Assert.DoesNotContain("backup-password", invocation.ToString(), StringComparison.Ordinal);
         });
-        Assert.Contains("COPY_ONLY", runner.Invocations[3].StandardInput, StringComparison.Ordinal);
-        Assert.Contains("CHECKSUM", runner.Invocations[3].StandardInput, StringComparison.Ordinal);
-        Assert.Contains("RESTORE VERIFYONLY", runner.Invocations[5].StandardInput, StringComparison.Ordinal);
-        Assert.DoesNotContain("ContactRequest", string.Join(' ', runner.Invocations[3].Arguments), StringComparison.Ordinal);
-        Assert.Equal("kubectl", runner.Invocations[6].FileName);
-        Assert.Contains("cp", runner.Invocations[6].Arguments);
+        SecureBackupProcessInvocation backup = Assert.Single(runner.Invocations, item => item.StandardInput.Contains("BACKUP DATABASE", StringComparison.Ordinal));
+        Assert.Contains("COPY_ONLY", backup.StandardInput, StringComparison.Ordinal);
+        Assert.Contains("CHECKSUM", backup.StandardInput, StringComparison.Ordinal);
+        Assert.Contains(runner.Invocations, item => item.StandardInput.Contains("RESTORE VERIFYONLY", StringComparison.Ordinal));
+        Assert.DoesNotContain("ContactRequest", string.Join(' ', backup.Arguments), StringComparison.Ordinal);
+        SecureBackupProcessInvocation copy = Assert.Single(runner.Invocations, item => item.Arguments.Contains("cp", StringComparer.Ordinal));
+        Assert.Equal("kubectl", copy.FileName);
         Assert.True(File.Exists(Path.Combine(_root, "Full_ContactRequest_run-1.bak")));
+    }
+
+    [Fact]
+    public async Task KubernetesAdapter_PodReplacementAfterInventoryFailsClosed()
+    {
+        var runner = new RecordingBackupProcessRunner([
+            Success(PodJson()),
+            Success(InventoryOutput()),
+            Success(PodJson(uid: "replacement-uid")),
+        ]);
+        var adapter = new KubernetesSqlServerFullBackupProcess(runner);
+
+        Exact25FullBackupException exception = await Assert.ThrowsAsync<Exact25FullBackupException>(() =>
+            adapter.InspectSourceAsync(Request(), new("user", "password"), CancellationToken.None));
+
+        Assert.Equal("source_identity_changed", exception.Code);
+    }
+
+    [Fact]
+    public async Task KubernetesAdapter_UnsafeRemoteParentFailsBeforeBackupMutation()
+    {
+        var runner = new RecordingBackupProcessRunner([
+            Success(PodJson()),
+            new BackupProcessResult(1, string.Empty, "unsafe remote parent"),
+        ]);
+        var adapter = new KubernetesSqlServerFullBackupProcess(runner);
+
+        Exact25FullBackupException exception = await Assert.ThrowsAsync<Exact25FullBackupException>(() =>
+            adapter.PrepareRunAsync(Source(), "run-1", CancellationToken.None));
+
+        Assert.Equal("remote_backup_destination_exists_or_unavailable", exception.Code);
+        Assert.DoesNotContain(runner.Invocations, item => item.StandardInput.Contains("BACKUP DATABASE", StringComparison.Ordinal));
     }
 
     [Fact]
     public async Task KubernetesAdapter_CopyFailureCleansTemporaryFileAndIsExplicitlyRetryable()
     {
-        var runner = new RecordingBackupProcessRunner([new BackupProcessResult(1, string.Empty, "transport is closing")]);
+        var runner = new RecordingBackupProcessRunner([
+            Success(PodJson()),
+            new BackupProcessResult(1, string.Empty, "transport is closing"),
+        ]);
         var adapter = new KubernetesSqlServerFullBackupProcess(runner);
         Exact25BackupSourceObservation source = Source();
         var artifact = new RemoteFullBackupArtifact(
             "ContactRequest", "maliev-backups/run-1/Full_ContactRequest_run-1.bak", 35,
-            Hash("verified-full-backup:ContactRequest"));
+            Hash("verified-full-backup:ContactRequest"),
+            new DateTimeOffset(2026, 8, 30, 1, 4, 5, TimeSpan.Zero));
         OwnerProtectedDirectory.CreateNew(_root);
 
         Exact25BackupTransportException exception = await Assert.ThrowsAsync<Exact25BackupTransportException>(() =>
@@ -120,14 +170,15 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
 
     private static string InventoryOutput()
     {
-        return string.Join('\n', DatabaseInventory.Entries.Keys.Order(StringComparer.Ordinal).Select(name => $"{name}|ONLINE"));
+        return "OBSERVED_AT_UTC|2026-08-30T01:02:03.0000000+00:00\n" +
+            string.Join('\n', DatabaseInventory.Entries.Keys.Order(StringComparer.Ordinal).Select(name => $"{name}|ONLINE"));
     }
 
-    private static string PodJson()
+    private static string PodJson(string uid = "pod-uid-1")
     {
         return JsonSerializer.Serialize(new
         {
-            metadata = new { uid = "pod-uid-1", name = "maliev-mssql-0", @namespace = "maliev" },
+            metadata = new { uid, name = "maliev-mssql-0", @namespace = "maliev" },
             spec = new { containers = new[] { new { name = "mssql" } } },
             status = new { conditions = new[] { new { type = "Ready", status = "True" } } },
         });
@@ -145,7 +196,7 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
     {
         return new(
         "maliev", "maliev-mssql-0", "pod-uid-1", "mssql", true,
-        new DateTimeOffset(2026, 8, 30, 1, 0, 0, TimeSpan.Zero), true,
+        new DateTimeOffset(2026, 8, 30, 1, 2, 3, TimeSpan.Zero),
         DatabaseInventory.Entries.Keys.Order(StringComparer.Ordinal).Select(name => new SqlServerDatabaseState(name, "ONLINE")).ToArray());
     }
 
