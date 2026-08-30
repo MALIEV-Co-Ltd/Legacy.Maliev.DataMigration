@@ -13,6 +13,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "cleanup-restore",
         "authorize-shadow",
         "sign-provenance",
+        "sign-quotation-schema-baseline",
     ];
 
     private static readonly string[] SecretOptionFragments =

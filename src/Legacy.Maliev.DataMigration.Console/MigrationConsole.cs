@@ -25,6 +25,7 @@ public static class MigrationConsole
     private const string ProvenanceSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_PROVENANCE_SIGNING_KEY_FILE";
     private const string DeployEnabledEnvironmentVariable = "LEGACY_DEPLOY_ENABLED";
     private const string AuthorizationSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE";
+    private const string QuotationSchemaSigningKeyEnvironmentVariable = "LEGACY_QUOTATION_SCHEMA_SIGNING_KEY_FILE";
     private const string LegacyNamespace = "maliev-legacy";
     private const string LegacyPostgreSqlCluster = "legacy-postgres-main";
     private const string KubernetesApiServer = "https://kubernetes.default.svc";
@@ -138,6 +139,10 @@ public static class MigrationConsole
                     await SignProvenanceAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("sign_provenance_complete").ConfigureAwait(false);
                     return 0;
+                case "sign-quotation-schema-baseline":
+                    await SignQuotationSchemaBaselineAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("quotation_schema_baseline_complete").ConfigureAwait(false);
+                    return 0;
                 default:
                     await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
                     return 2;
@@ -193,6 +198,55 @@ public static class MigrationConsole
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 70;
         }
+    }
+
+    private static async Task SignQuotationSchemaBaselineAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new MigrationExecutionException("quotation_schema_deploy_gate_invalid", "Legacy deployment must remain disabled while schema evidence is signed.");
+        }
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "quotation_schema_config_unprotected", cancellationToken).ConfigureAwait(false);
+        QuotationSchemaBaselineCommandConfiguration command = configuration.QuotationSchemaBaseline ??
+            throw new MigrationExecutionException("quotation_schema_configuration_missing", "Reviewed Quotation schema configuration is required.");
+        if (!command.AllowSigning)
+        {
+            throw new MigrationExecutionException("quotation_schema_owner_review_required", "Explicit owner review is required before schema evidence is signed.");
+        }
+        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
+            command.PlanPath, "quotation_schema_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(plan.SchemaVersion, "2.0", StringComparison.Ordinal) ||
+            !string.Equals(SchemaPlanCanonicalizer.ComputeSha256(plan), command.ReviewedSchemaPlanSha256, StringComparison.Ordinal))
+        {
+            throw new MigrationExecutionException("quotation_schema_plan_mismatch", "The schema plan does not match the reviewed digest.");
+        }
+        string database = command.Workload switch { "quotation" => "Quotation", "quotation-request" => "QuotationRequest", _ => string.Empty };
+        DatabaseSchemaPlan selected = plan.Databases.SingleOrDefault(item => item.Database == database) ??
+            throw new MigrationExecutionException("quotation_schema_database_missing", "The selected Quotation database is absent from the reviewed plan.");
+        string keyPath = getEnvironmentVariable(QuotationSchemaSigningKeyEnvironmentVariable) ??
+            throw new MigrationExecutionException("quotation_schema_signing_key_missing", "The protected Quotation schema signing key is required.");
+        using var signer = new P256MigrationEvidenceSigner(command.KeyId,
+            await ReadProtectedTextAsync(keyPath, "quotation_schema_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        if (!string.Equals(signer.PublicKeyFingerprintSha256, command.SigningKeyFingerprintSha256, StringComparison.Ordinal) ||
+            command.ForbiddenSigningKeyFingerprintsSha256.Count == 0 ||
+            command.ForbiddenSigningKeyFingerprintsSha256.Any(fingerprint =>
+                string.Equals(fingerprint, signer.PublicKeyFingerprintSha256, StringComparison.Ordinal)))
+        {
+            throw new MigrationExecutionException("quotation_schema_signing_role_invalid", "Quotation schema signing trust must be reviewed and distinct from other evidence roles.");
+        }
+        QuotationSchemaBaselineReceipt receipt = QuotationSchemaBaselineReceiptProducer.Produce(
+            new(command.Workload, command.SourceSnapshotId, command.CopyPlanId, selected, command.Host, command.Port,
+                database, command.ExpiresUtc), signer);
+        using JsonDocument envelope = JsonDocument.Parse(receipt.EnvelopeJson);
+        await WriteNewJsonAsync(command.OutputPath, new
+        {
+            Payload = envelope.RootElement.GetProperty("Payload").GetString(),
+            Signature = envelope.RootElement.GetProperty("Signature").GetString(),
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task AuthorizeShadowAsync(
@@ -1014,7 +1068,23 @@ public static class MigrationConsole
         RestoreBackupsCommandConfiguration? RestoreBackups = null,
         AuthorizeShadowCommandConfiguration? AuthorizeShadow = null,
         SignProvenanceCommandConfiguration? SignProvenance = null,
+        QuotationSchemaBaselineCommandConfiguration? QuotationSchemaBaseline = null,
         SigningRolesCommandConfiguration? SigningRoles = null);
+
+    private sealed record QuotationSchemaBaselineCommandConfiguration(
+        string PlanPath,
+        string OutputPath,
+        string ReviewedSchemaPlanSha256,
+        string Workload,
+        string SourceSnapshotId,
+        string CopyPlanId,
+        string Host,
+        int Port,
+        DateTimeOffset ExpiresUtc,
+        string KeyId,
+        string SigningKeyFingerprintSha256,
+        IReadOnlyList<string> ForbiddenSigningKeyFingerprintsSha256,
+        bool AllowSigning);
 
     private sealed record SigningRolesCommandConfiguration(
         TrustedKeyReference Backup,

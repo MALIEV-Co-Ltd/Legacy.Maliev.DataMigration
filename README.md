@@ -108,7 +108,7 @@ No executable migration logic was copied from those files.
 
 The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan`,
 `authorize-shadow`, `execute-shadow`, `export-local-snapshot`, `cleanup-restore`,
-`sign-provenance`, and `evidence`. Command lines may carry a protected
+`sign-provenance`, `sign-quotation-schema-baseline`, and `evidence`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
 cannot leak through process listings or logs. The host requires owner-only,
@@ -122,6 +122,16 @@ The receipt producer independently re-reads all 25 local backup files and binds
 their approved GCS object names,
 immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
 Signing keys are externally supplied and are never stored in this repository.
+
+`sign-quotation-schema-baseline` creates the exact domain-separated
+`Legacy.Maliev.QuotationService.SchemaBaselineReceipt.v1` envelope consumed by
+the Quotation migration runner. It fails closed unless deployment remains
+disabled, owner review is explicit, the complete schema-plan digest matches the
+reviewed value, the selected Quotation database exists in that plan, the
+workload and database agree, and a dedicated P-256 signing key is supplied via
+`LEGACY_QUOTATION_SCHEMA_SIGNING_KEY_FILE`. The protected configuration pins
+that key's fingerprint and lists forbidden fingerprints from the other evidence
+roles; an absent reuse fence or a matching fingerprint is rejected. Publication is create-only.
 
 `Exact25FullBackupProducer` is the fail-closed producer used by the daily backup
 adapter. It requires the exact 27-database source disposition inventory to be
