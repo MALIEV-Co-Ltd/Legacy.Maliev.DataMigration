@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.RegularExpressions;
 using Npgsql;
 
@@ -10,24 +8,11 @@ public sealed partial class PgDumpSource(string executablePath, string administr
 {
     public Task<Stream> OpenDumpAsync(string database, string shadowDatabase, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ProcessStartInfo startInfo = BuildStartInfo(executablePath, administrativeConnectionString, shadowDatabase);
         Process process = Process.Start(startInfo) ??
             throw new MigrationExecutionException("snapshot_dump_start_failed", "The PostgreSQL dump process could not start.");
-        CancellationTokenRegistration cancellation = cancellationToken.Register(() =>
-        {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // The process exited concurrently.
-            }
-        });
-        return Task.FromResult<Stream>(new PgDumpProcessStream(process, cancellation));
+        return Task.FromResult<Stream>(new PgDumpProcessStream(process));
     }
 
     internal static ProcessStartInfo BuildStartInfo(string executablePath, string connectionString, string shadowDatabase)
@@ -46,17 +31,15 @@ public sealed partial class PgDumpSource(string executablePath, string administr
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        string restrictKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(shadowDatabase))).ToLowerInvariant()[..32];
         foreach (string argument in new[]
         {
             "--dbname", shadowDatabase,
-            "--format=plain",
+            "--format=custom",
             "--encoding=UTF8",
             "--no-owner",
             "--no-privileges",
             "--no-comments",
             "--quote-all-identifiers",
-            "--restrict-key", restrictKey,
         })
         {
             start.ArgumentList.Add(argument);
@@ -72,8 +55,9 @@ public sealed partial class PgDumpSource(string executablePath, string administr
     [GeneratedRegex("^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$", RegexOptions.CultureInvariant)]
     private static partial Regex ShadowDatabaseName();
 
-    private sealed class PgDumpProcessStream(Process process, CancellationTokenRegistration cancellation) : Stream
+    private sealed class PgDumpProcessStream(Process process) : Stream
     {
+        private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(10);
         private readonly Stream _output = process.StandardOutput.BaseStream;
         private readonly Task _stderrDrain = process.StandardError.BaseStream.CopyToAsync(Null);
         private bool _disposed;
@@ -125,20 +109,44 @@ public sealed partial class PgDumpSource(string executablePath, string administr
                 _disposed = true;
                 try
                 {
-                    await _output.DisposeAsync().ConfigureAwait(false);
-                    await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-                    await _stderrDrain.ConfigureAwait(false);
-                    if (process.ExitCode != 0)
+                    Exception? primaryFailure = null;
+                    try
                     {
-                        throw new MigrationExecutionException("snapshot_dump_failed", "The PostgreSQL dump process failed.");
+                        await _output.DisposeAsync().ConfigureAwait(false);
+                        await process.WaitForExitAsync(CancellationToken.None).WaitAsync(ShutdownTimeout).ConfigureAwait(false);
+                        await _stderrDrain.WaitAsync(ShutdownTimeout).ConfigureAwait(false);
+                        if (process.ExitCode != 0)
+                        {
+                            throw new MigrationExecutionException("snapshot_dump_failed", "The PostgreSQL dump process failed.");
+                        }
                     }
+                    catch (Exception exception) when (exception is not OutOfMemoryException and not AccessViolationException)
+                    {
+                        primaryFailure = exception;
+                    }
+
+                    Exception? cleanupFailure = null;
+                    if (primaryFailure is not null)
+                    {
+                        try
+                        {
+                            await PgDumpProcessTermination.TerminateAndObserveAsync(process, ShutdownTimeout).ConfigureAwait(false);
+                            await PgDumpProcessTermination.AwaitDrainAsync(_stderrDrain, ShutdownTimeout).ConfigureAwait(false);
+                        }
+                        catch (Exception exception) when (exception is not OutOfMemoryException and not AccessViolationException)
+                        {
+                            cleanupFailure = exception;
+                        }
+                    }
+
+                    PgDumpProcessTermination.ThrowPrimaryOrAggregate(primaryFailure, cleanupFailure);
                 }
                 finally
                 {
-                    cancellation.Dispose();
                     process.Dispose();
                     await base.DisposeAsync().ConfigureAwait(false);
                 }
+
             }
             GC.SuppressFinalize(this);
         }

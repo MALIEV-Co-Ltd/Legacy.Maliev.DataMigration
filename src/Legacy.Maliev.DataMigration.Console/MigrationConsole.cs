@@ -317,9 +317,9 @@ public static class MigrationConsole
         byte[] key;
         try
         {
-            key = Convert.FromBase64String((await File.ReadAllTextAsync(keyPath, cancellationToken).ConfigureAwait(false)).Trim());
+            key = SnapshotRootKey.Load(keyPath);
         }
-        catch (FormatException)
+        catch (Exception exception) when (exception is InvalidOperationException or UnauthorizedAccessException or IOException)
         {
             throw new MigrationConsoleException("snapshot_key_invalid", "The snapshot encryption key file is invalid.");
         }
@@ -335,6 +335,7 @@ public static class MigrationConsole
             _ = await LocalSnapshotExporter.ExportAsync(
                 result.Receipt.Databases,
                 export.OutputDirectory,
+                result.Receipt.RunId.ToString("D"),
                 key,
                 dumpSource,
                 cancellationToken).ConfigureAwait(false);

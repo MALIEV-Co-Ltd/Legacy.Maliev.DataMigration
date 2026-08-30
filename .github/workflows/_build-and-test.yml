@@ -10,6 +10,20 @@ jobs:
   validate:
     name: validate
     runs-on: ubuntu-latest
+    services:
+      postgres18:
+        image: postgres:18@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: legacy_snapshot_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U legacy_snapshot_ci -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       LEGACY_DEPLOY_ENABLED: 'false'
       MALIEV_RUN_SQLSERVER_INTEGRATION: '1'
@@ -22,3 +36,39 @@ jobs:
         uses: MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@6017816fa67f369d785ed30794f002cfd6299af7
         with:
           solution: Legacy.Maliev.DataMigration.slnx
+      - name: Prepare PostgreSQL 18 client wrappers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >"${RUNNER_TEMP}/pg_dump18" <<'SCRIPT'
+          #!/usr/bin/env bash
+          if [[ "${1:-}" == "--version" ]]; then
+            exec docker exec -i ${{ job.services.postgres18.id }} pg_dump --version
+          fi
+          exec docker exec -i ${{ job.services.postgres18.id }} \
+            pg_dump --host=127.0.0.1 --username=legacy_snapshot_ci "$@"
+          SCRIPT
+          cat >"${RUNNER_TEMP}/pg_restore18" <<'SCRIPT'
+          #!/usr/bin/env bash
+          exec docker exec -i ${{ job.services.postgres18.id }} \
+            pg_restore "$@"
+          SCRIPT
+          chmod 0700 "${RUNNER_TEMP}/pg_dump18" "${RUNNER_TEMP}/pg_restore18"
+      - name: Verify PostgreSQL 18 snapshot producer compatibility
+        shell: bash
+        env:
+          MALIEV_RUN_PG18_SNAPSHOT_INTEGRATION: '1'
+          LEGACY_SNAPSHOT_INTEGRATION_SHADOW_DATABASE: legacy_shadow_integration_0123456789abcdef0123456789abcdef
+          PG_DUMP_PATH: ${{ runner.temp }}/pg_dump18
+          PG_RESTORE_PATH: ${{ runner.temp }}/pg_restore18
+        run: |
+          set -euo pipefail
+          export LEGACY_SNAPSHOT_INTEGRATION_CONNECTION="Host=127.0.0.1;Port=5432;Database=postgres;Username=legacy_snapshot_ci;SSL Mode=Disable"
+          docker exec ${{ job.services.postgres18.id }} \
+            createdb --host=127.0.0.1 --username=legacy_snapshot_ci "${LEGACY_SNAPSHOT_INTEGRATION_SHADOW_DATABASE}"
+          docker exec ${{ job.services.postgres18.id }} \
+            psql --host=127.0.0.1 --username=legacy_snapshot_ci --dbname="${LEGACY_SNAPSHOT_INTEGRATION_SHADOW_DATABASE}" \
+            --set=ON_ERROR_STOP=1 --command='CREATE TABLE snapshot_probe (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO snapshot_probe VALUES (1, '\''pg18'\'');'
+          dotnet test tests/Legacy.Maliev.DataMigration.Tests/Legacy.Maliev.DataMigration.Tests.csproj \
+            --configuration Release --no-build --no-restore \
+            --filter 'FullyQualifiedName~PgDumpPgRestoreCompatibilityIntegrationTests'
