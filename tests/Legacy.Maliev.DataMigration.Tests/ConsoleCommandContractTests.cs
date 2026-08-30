@@ -14,6 +14,7 @@ public sealed class ConsoleCommandContractTests
         "authorize-shadow",
         "sign-provenance",
         "sign-quotation-schema-baseline",
+        "sign-quotation-postgres-snapshot",
     ];
 
     [Theory]

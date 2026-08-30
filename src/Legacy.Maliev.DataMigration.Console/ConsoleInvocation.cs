@@ -14,6 +14,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "authorize-shadow",
         "sign-provenance",
         "sign-quotation-schema-baseline",
+        "sign-quotation-postgres-snapshot",
     ];
 
     private static readonly string[] SecretOptionFragments =
