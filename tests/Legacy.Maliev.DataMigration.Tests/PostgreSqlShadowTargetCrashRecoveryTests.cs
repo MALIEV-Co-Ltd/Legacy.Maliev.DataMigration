@@ -3,6 +3,91 @@ namespace Legacy.Maliev.DataMigration.Tests;
 [Collection(PostgreSqlAdapterTestGroup.Name)]
 public sealed class PostgreSqlShadowTargetCrashRecoveryTests(PostgreSqlAdapterFixture fixture)
 {
+    private static readonly DateTimeOffset Now = new(2026, 8, 29, 8, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public async Task RestartedLease_ConcreteJournalAndTargetCleanAbandonedShadowBeforeReplay()
+    {
+        string schema = $"journal_{Guid.NewGuid():N}";
+        var clock = new MutableTimeProvider(Now);
+        var crashed = new PostgreSqlMigrationRunJournal(new PostgreSqlMigrationRunJournalOptions(
+            fixture.ConnectionString,
+            schema,
+            "crashed-worker",
+            TimeSpan.FromMinutes(1),
+            clock));
+        var restarted = new PostgreSqlMigrationRunJournal(new PostgreSqlMigrationRunJournalOptions(
+            fixture.ConnectionString,
+            schema,
+            "restart-worker",
+            TimeSpan.FromMinutes(1),
+            clock));
+        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(fixture.ConnectionString));
+        var identity = new MigrationRunIdentity(
+            Guid.NewGuid(),
+            new string('a', 40),
+            new string('b', 64),
+            new string('c', 64),
+            new string('d', 64),
+            "generation-test");
+        MigrationRunLease crashedLease = Assert.IsType<MigrationRunLease>(
+            (await crashed.TryBeginAsync(identity, CancellationToken.None)).Lease);
+        var abandoned = new ShadowDatabase(
+            $"legacy_shadow_order_{Guid.NewGuid():N}",
+            identity.RunId.ToString("D"),
+            "Order")
+        {
+            OwnerAttempt = crashedLease.Attempt,
+            FencingToken = crashedLease.FencingToken,
+        };
+        await crashed.RegisterShadowAsync(crashedLease, abandoned, CancellationToken.None);
+        ShadowDatabase createdAbandoned = await target.CreateUniqueEmptyShadowAsync(abandoned, CancellationToken.None);
+        Assert.Equal(abandoned, createdAbandoned);
+
+        clock.Advance(TimeSpan.FromSeconds(61));
+        MigrationRunStartResult takeover = await restarted.TryBeginAsync(identity, CancellationToken.None);
+        MigrationRunLease restartedLease = Assert.IsType<MigrationRunLease>(takeover.Lease);
+        ShadowDatabase pending = Assert.Single(takeover.PendingShadows!);
+
+        await target.DeleteRunOwnedShadowAsync(pending, CancellationToken.None);
+        await restarted.RecordShadowCleanupAsync(
+            restartedLease,
+            new ShadowCleanupOutcome(pending.Name, true, null)
+            {
+                OwnerAttempt = pending.OwnerAttempt,
+                FencingToken = pending.FencingToken,
+            },
+            CancellationToken.None);
+
+        Assert.Empty(await restarted.GetPendingShadowsAsync(restartedLease, CancellationToken.None));
+
+        var replay = pending with
+        {
+            OwnerAttempt = restartedLease.Attempt,
+            FencingToken = restartedLease.FencingToken,
+        };
+        await restarted.RegisterShadowAsync(restartedLease, replay, CancellationToken.None);
+        replay = await target.CreateUniqueEmptyShadowAsync(replay, CancellationToken.None);
+        try
+        {
+            Assert.True(await target.IsEmptyAsync(replay, CancellationToken.None));
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(replay, CancellationToken.None);
+            await restarted.RecordShadowCleanupAsync(
+                restartedLease,
+                new ShadowCleanupOutcome(replay.Name, true, null)
+                {
+                    OwnerAttempt = replay.OwnerAttempt,
+                    FencingToken = replay.FencingToken,
+                },
+                CancellationToken.None);
+        }
+
+        Assert.Empty(await restarted.GetPendingShadowsAsync(restartedLease, CancellationToken.None));
+    }
+
     [Fact]
     public async Task DeleteRunOwnedShadowAsync_ExactMissingRegisteredShadow_IsIdempotent()
     {
@@ -44,6 +129,19 @@ public sealed class PostgreSqlShadowTargetCrashRecoveryTests(PostgreSqlAdapterFi
         finally
         {
             await target.DeleteRunOwnedShadowAsync(successor, CancellationToken.None);
+        }
+    }
+
+    private sealed class MutableTimeProvider(DateTimeOffset current) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow()
+        {
+            return current;
+        }
+
+        public void Advance(TimeSpan duration)
+        {
+            current += duration;
         }
     }
 }

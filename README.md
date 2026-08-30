@@ -185,9 +185,14 @@ The unit tests use stateful source/target/journal doubles for orchestration. The
 adapter suite also runs against a disposable PostgreSQL 18 Testcontainer to
 prove shadow ownership, whole-database commit gating, binary copy, independent
 schema/data reconciliation, atomic concurrent leases, persistent replay, and
-failure retry. SQL Server command and connection behavior is covered by
-fail-closed contract tests. A gated disposable SQL Server 2022 Testcontainer
-fixture exercises snapshot/catalog/streaming behavior when
+failure retry. The concrete PostgreSQL journal and shadow target are also tested
+together across an expired process lease: the restarted owner must discover and
+delete the exact fenced run-owned shadow before the same immutable run can
+replay. SQL Server command and connection behavior is covered by fail-closed
+contract tests. A gated disposable SQL Server 2022 Testcontainer fixture
+exercises snapshot/catalog/streaming behavior and proves that interrupted
+adapter disposal rolls back the source snapshot before a fresh adapter restart
+when
 `MALIEV_RUN_SQLSERVER_INTEGRATION=1`; production SQL Server is never a test
 fixture.
 
@@ -235,14 +240,12 @@ synchronization. Before a real shadow copy is allowed, the program still needs:
    to the current source commit;
 3. a bounded source write freeze or a reviewed change-capture mechanism (the
    legacy source does not currently provide a proven complete daily delta);
-4. independently reviewed crash-restart coverage for the concrete SQL Server
-   source adapter beyond the existing gated disposable SQL Server 2022 fixture;
-5. independent owner approval of the generated schema-v2 baseline hash and
+4. independent owner approval of the generated schema-v2 baseline hash and
    one-time AppHost verification receipt;
-6. pre/post table, row, key, relationship, sequence, and business-invariant
+5. pre/post table, row, key, relationship, sequence, and business-invariant
    parity proofs;
-7. a pinned, reviewable GitOps job and workload identity design; and
-8. explicit authorization before any database, GKE, GCS, or secret mutation.
+6. a pinned, reviewable GitOps job and workload identity design; and
+7. explicit authorization before any database, GKE, GCS, or secret mutation.
 
 Canonical promotion, traffic cutover, application deployment, and production
 database writes remain outside this slice and unauthorized.
