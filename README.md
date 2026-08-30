@@ -342,6 +342,22 @@ It then reconciles schema, row/null inventories, and next-identity values before
 commit. This fixture also protects mixed-case dynamic table names during
 PostgreSQL identity reseeding and sequence inspection.
 
+The fixture canonicalizes only line endings before checking its signed
+canonical-text digest; the contract separately retains each source file's exact
+byte digest. After exact-shadow reconciliation it creates the current
+EF-owned `QuotationAcceptedOutcome` shape, performs DML-only adoption, verifies
+all seven source facts including the seventh 100 ns tick, verifies the identity
+sequence, and proves an unchanged replay inserts nothing. It also materializes
+the analytics compatibility archive, inspects a real SELECT-only PostgreSQL
+role, and verifies exact archive rows with no analytics worker or credential
+role objects.
+
+The three-table script fixture deliberately proves the current outbox/recent
+quotation delta and its exact keys, indexes, and foreign-key columns. It is not
+a substitute for the guarded runner's complete signed production database plan:
+the full runner still derives every legacy table and column from the restored
+snapshot and fails closed on any extra or missing schema object.
+
 ## Downstream evidence compatibility
 
 The `evidence` command converts the signed execution result, signed backup

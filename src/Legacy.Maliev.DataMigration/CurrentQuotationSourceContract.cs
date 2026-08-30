@@ -4,7 +4,7 @@ using System.Text;
 
 namespace Legacy.Maliev.DataMigration;
 
-public sealed record SourceScriptContract(string Path, string Sha256);
+public sealed record SourceScriptContract(string Path, string Sha256, string CanonicalTextSha256);
 
 public sealed record SourceIdentityContract(long Seed, long Increment);
 
@@ -55,6 +55,35 @@ public sealed class QuotationOutcomeTransformException(string code, string messa
 
 public static class QuotationOutcomeTransformPlanner
 {
+    public static string ComputeContentSha256(IEnumerable<QuotationOutcomeSourceRow> sourceRows)
+    {
+        ArgumentNullException.ThrowIfNull(sourceRows);
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, new UTF8Encoding(false), leaveOpen: true);
+        foreach (QuotationOutcomeSourceRow row in sourceRows.OrderBy(row => row.ID))
+        {
+            writer.Write(row.ID);
+            WriteString(writer, row.EventKey);
+            writer.Write(row.QuotationID);
+            writer.Write(row.SourceRequestID.HasValue);
+            if (row.SourceRequestID.HasValue)
+            {
+                writer.Write(row.SourceRequestID.Value);
+            }
+
+            writer.Write(row.SourceJourneyID.HasValue);
+            if (row.SourceJourneyID.HasValue)
+            {
+                writer.Write(row.SourceJourneyID.Value.ToByteArray());
+            }
+
+            writer.Write(row.AcceptedUtc.Ticks);
+            WriteString(writer, row.AcceptanceOrigin);
+        }
+
+        return Convert.ToHexString(SHA256.HashData(stream.ToArray())).ToLowerInvariant();
+    }
+
     public static QuotationAcceptedOutcomeImportRow Map(QuotationOutcomeSourceRow source)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -106,6 +135,14 @@ public static class QuotationOutcomeTransformPlanner
             existingRows.ToDictionary(row => row.EventKey, StringComparer.Ordinal);
         Dictionary<long, QuotationAcceptedOutcomeImportRow> existingById =
             existingRows.ToDictionary(row => row.ID);
+        HashSet<string> sourceEventKeys = mapped.Select(row => row.EventKey).ToHashSet(StringComparer.Ordinal);
+        HashSet<long> sourceIds = mapped.Select(row => row.ID).ToHashSet();
+        if (existingRows.Any(row => !sourceEventKeys.Contains(row.EventKey) || !sourceIds.Contains(row.ID)))
+        {
+            throw new QuotationOutcomeTransformException(
+                "quotation_outcome_replay_conflict",
+                "The canonical inventory contains outcomes absent from the complete source inventory.");
+        }
         var inserts = new List<QuotationAcceptedOutcomeImportRow>();
         var alreadyApplied = new List<QuotationAcceptedOutcomeImportRow>();
 
@@ -148,6 +185,13 @@ public static class QuotationOutcomeTransformPlanner
                 "The source outcome row violates the signed source contract.");
         }
     }
+
+    private static void WriteString(BinaryWriter writer, string value)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(value);
+        writer.Write(bytes.Length);
+        writer.Write(bytes);
+    }
 }
 
 public sealed record QuotationOutcomeFieldMapping(string Source, string Target);
@@ -159,6 +203,14 @@ public sealed record AnalyticsArchiveContract(
     bool DirectGoogleAnalyticsCredentialsAllowed);
 
 public sealed record QuotationOutcomeAdoptionMode(string Mode, bool ImporterMayExecuteDdl);
+
+public sealed record QuotationOutcomeInventoryContract(long RowCount, string ContentSha256, long NextIdentity);
+
+public sealed record QuotationOutcomeDataContract(
+    QuotationOutcomeInventoryContract Source,
+    QuotationOutcomeInventoryContract ExpectedCanonical,
+    IReadOnlyList<long> InsertIds,
+    IReadOnlyList<long> ReplayIds);
 
 public sealed record QuotationOutcomeAdoptionContract(
     string SourceCommitSha,
@@ -173,7 +225,10 @@ public sealed record QuotationOutcomeAdoptionContract(
     bool SynthesizeMissingAcceptedQuotations,
     AnalyticsArchiveContract AnalyticsArchive,
     QuotationOutcomeAdoptionMode Adoption,
-    string? AttestationSignature = null);
+    string? AttestationSignature = null)
+{
+    public QuotationOutcomeDataContract? Data { get; init; }
+}
 
 public sealed record QuotationAdoptionObservation(
     string SourceCommitSha,
@@ -183,7 +238,10 @@ public sealed record QuotationAdoptionObservation(
     bool ImporterExecutedDdl,
     IReadOnlyList<string> AnalyticsArchivePrivileges,
     bool RuntimeWorkerConfigured,
-    bool DirectGoogleAnalyticsCredentialsConfigured);
+    bool DirectGoogleAnalyticsCredentialsConfigured)
+{
+    public QuotationOutcomeInventoryContract? VerifiedCanonical { get; init; }
+}
 
 public sealed class QuotationOutcomeAdoptionException(string code, string message) : InvalidOperationException(message)
 {
@@ -203,7 +261,9 @@ public static class QuotationOutcomeAdoptionValidator
             !FixedTimeShaEquals(observation.SourceContractSha256, contract.SourceContractSha256) ||
             !FixedTimeShaEquals(observation.CanonicalTargetSchemaSha256, contract.CanonicalTargetSchemaSha256) ||
             !observation.CanonicalSchemaCreatedByEf || observation.ImporterExecutedDdl || !archiveIsSelectOnly ||
-            observation.RuntimeWorkerConfigured || observation.DirectGoogleAnalyticsCredentialsConfigured)
+            observation.RuntimeWorkerConfigured || observation.DirectGoogleAnalyticsCredentialsConfigured ||
+            contract.Data is null || observation.VerifiedCanonical is null ||
+            observation.VerifiedCanonical != contract.Data.ExpectedCanonical)
         {
             throw new QuotationOutcomeAdoptionException(
                 "quotation_adoption_drift",
@@ -282,6 +342,14 @@ public static class QuotationOutcomeAdoptionAttestation
         writer.Write(contract.AnalyticsArchive.DirectGoogleAnalyticsCredentialsAllowed);
         Write(writer, contract.Adoption.Mode);
         writer.Write(contract.Adoption.ImporterMayExecuteDdl);
+        writer.Write(contract.Data is not null);
+        if (contract.Data is not null)
+        {
+            WriteInventory(writer, contract.Data.Source);
+            WriteInventory(writer, contract.Data.ExpectedCanonical);
+            WriteLongs(writer, contract.Data.InsertIds);
+            WriteLongs(writer, contract.Data.ReplayIds);
+        }
         return stream.ToArray();
     }
 
@@ -291,6 +359,22 @@ public static class QuotationOutcomeAdoptionAttestation
         writer.Write(bytes.Length);
         writer.Write(bytes);
     }
+
+    private static void WriteInventory(BinaryWriter writer, QuotationOutcomeInventoryContract inventory)
+    {
+        writer.Write(inventory.RowCount);
+        Write(writer, inventory.ContentSha256);
+        writer.Write(inventory.NextIdentity);
+    }
+
+    private static void WriteLongs(BinaryWriter writer, IReadOnlyList<long> values)
+    {
+        writer.Write(values.Count);
+        foreach (long value in values)
+        {
+            writer.Write(value);
+        }
+    }
 }
 
 public static class CurrentQuotationSourceContract
@@ -299,9 +383,9 @@ public static class CurrentQuotationSourceContract
 
     public static readonly IReadOnlyList<SourceScriptContract> SourceScripts =
     [
-        new("Maliev.SqlServer/Deployments/2026-08-12-ga4-quotation-lifecycle.sql", "5f4e276c1a281625153aefbfef129fb20232ff053e3a3142483e79acc6db98c6"),
-        new("Maliev.SqlServer/Deployments/2026-08-23-quotation-qualified-outcome.sql", "f112303fb61c53e80b470ac6f2a3e892bff6061da13efda46cf52a63423fb912"),
-        new("Maliev.SqlServer/Deployments/2026-08-30-ga4-quotation-source-reconciliation.sql", "e713841ba8f056e37a7e233a58323859bf4ba9fc57eadd3a149a0a71759928fc"),
+        new("Maliev.SqlServer/Deployments/2026-08-12-ga4-quotation-lifecycle.sql", "5f4e276c1a281625153aefbfef129fb20232ff053e3a3142483e79acc6db98c6", "c1b0e4bada8e404297e4baf147526d74a69dba7db83d517a057039fecc8c2c70"),
+        new("Maliev.SqlServer/Deployments/2026-08-23-quotation-qualified-outcome.sql", "f112303fb61c53e80b470ac6f2a3e892bff6061da13efda46cf52a63423fb912", "8e273c6fe4e4ed4d0fb36bf937233524bfcb56cdba25e1438d203bedd6253369"),
+        new("Maliev.SqlServer/Deployments/2026-08-30-ga4-quotation-source-reconciliation.sql", "e713841ba8f056e37a7e233a58323859bf4ba9fc57eadd3a149a0a71759928fc", "f0a686ec98d57200e28ee8b66fb81d685e4bbed92904722b694fe56bc9956ca1"),
     ];
 
     public static readonly SourceTableContract GoogleAnalyticsOutbox = new(
@@ -346,7 +430,10 @@ public static class CurrentQuotationSourceContract
 
     public static QuotationOutcomeAdoptionContract CreateAdoptionContract(
         string canonicalTargetSchemaSha256,
-        string attestationKeyId)
+        string attestationKeyId,
+        IReadOnlyCollection<QuotationOutcomeSourceRow> sourceRows,
+        IReadOnlyCollection<QuotationAcceptedOutcomeImportRow> existingRows,
+        long sourceNextIdentity)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(canonicalTargetSchemaSha256);
         ArgumentException.ThrowIfNullOrWhiteSpace(attestationKeyId);
@@ -356,6 +443,11 @@ public static class CurrentQuotationSourceContract
         }
 
         string[] fields = ["ID", "EventKey", "QuotationID", "SourceRequestID", "SourceJourneyID", "AcceptedUtc", "AcceptanceOrigin"];
+        QuotationOutcomeImportPlan plan = QuotationOutcomeTransformPlanner.Create(sourceRows, existingRows, sourceNextIdentity);
+        var inventory = new QuotationOutcomeInventoryContract(
+            sourceRows.Count,
+            QuotationOutcomeTransformPlanner.ComputeContentSha256(sourceRows),
+            sourceNextIdentity);
         return new(
             SourceCommitSha,
             SourceContractSha256,
@@ -368,7 +460,14 @@ public static class CurrentQuotationSourceContract
             PreserveNextIdentity: true,
             SynthesizeMissingAcceptedQuotations: false,
             new("legacy_compatibility.GoogleAnalyticsOutbox", true, false, false),
-            new("ef-schema-first-dml-only", false));
+            new("ef-schema-first-dml-only", false))
+        {
+            Data = new(
+                inventory,
+                inventory,
+                plan.Inserts.Select(row => row.ID).ToArray(),
+                plan.AlreadyApplied.Select(row => row.ID).ToArray()),
+        };
     }
 
     private static string ComputeSourceContractSha256()
@@ -377,7 +476,7 @@ public static class CurrentQuotationSourceContract
         _ = builder.Append(SourceCommitSha).Append('\n');
         foreach (SourceScriptContract script in SourceScripts)
         {
-            _ = builder.Append(script.Path).Append('|').Append(script.Sha256).Append('\n');
+            _ = builder.Append(script.Path).Append('|').Append(script.Sha256).Append('|').Append(script.CanonicalTextSha256).Append('\n');
         }
 
         AppendTable(builder, GoogleAnalyticsOutbox);

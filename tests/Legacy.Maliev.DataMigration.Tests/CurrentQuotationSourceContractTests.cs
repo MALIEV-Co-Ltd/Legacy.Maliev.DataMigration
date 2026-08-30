@@ -12,9 +12,9 @@ public sealed class CurrentQuotationSourceContractTests
         Assert.Equal("7b4b2af697207d36a6e7b7784dddefa150193e97", CurrentQuotationSourceContract.SourceCommitSha);
         Assert.Equal(
         [
-            new SourceScriptContract("Maliev.SqlServer/Deployments/2026-08-12-ga4-quotation-lifecycle.sql", "5f4e276c1a281625153aefbfef129fb20232ff053e3a3142483e79acc6db98c6"),
-            new SourceScriptContract("Maliev.SqlServer/Deployments/2026-08-23-quotation-qualified-outcome.sql", "f112303fb61c53e80b470ac6f2a3e892bff6061da13efda46cf52a63423fb912"),
-            new SourceScriptContract("Maliev.SqlServer/Deployments/2026-08-30-ga4-quotation-source-reconciliation.sql", "e713841ba8f056e37a7e233a58323859bf4ba9fc57eadd3a149a0a71759928fc"),
+            new SourceScriptContract("Maliev.SqlServer/Deployments/2026-08-12-ga4-quotation-lifecycle.sql", "5f4e276c1a281625153aefbfef129fb20232ff053e3a3142483e79acc6db98c6", "c1b0e4bada8e404297e4baf147526d74a69dba7db83d517a057039fecc8c2c70"),
+            new SourceScriptContract("Maliev.SqlServer/Deployments/2026-08-23-quotation-qualified-outcome.sql", "f112303fb61c53e80b470ac6f2a3e892bff6061da13efda46cf52a63423fb912", "8e273c6fe4e4ed4d0fb36bf937233524bfcb56cdba25e1438d203bedd6253369"),
+            new SourceScriptContract("Maliev.SqlServer/Deployments/2026-08-30-ga4-quotation-source-reconciliation.sql", "e713841ba8f056e37a7e233a58323859bf4ba9fc57eadd3a149a0a71759928fc", "f0a686ec98d57200e28ee8b66fb81d685e4bbed92904722b694fe56bc9956ca1"),
         ], CurrentQuotationSourceContract.SourceScripts);
 
         Assert.Equal(19, CurrentQuotationSourceContract.GoogleAnalyticsOutbox.Columns.Count);
@@ -104,11 +104,24 @@ public sealed class CurrentQuotationSourceContractTests
     }
 
     [Fact]
+    public void Transform_RejectsCanonicalRowsAbsentFromCompleteSourceInventory()
+    {
+        var canonicalOnly = new QuotationAcceptedOutcomeImportRow(
+            99, "canonical-only", 9001, null, null,
+            new DateTime(2026, 8, 30, 1, 2, 3, DateTimeKind.Unspecified), "employee");
+
+        QuotationOutcomeTransformException failure = Assert.Throws<QuotationOutcomeTransformException>(() =>
+            QuotationOutcomeTransformPlanner.Create([], [canonicalOnly], sourceNextIdentity: 1));
+
+        Assert.Equal("quotation_outcome_replay_conflict", failure.Code);
+    }
+
+    [Fact]
     public void SignedContract_BindsLosslessMappingArchiveIsolationAndEfFirstDmlOnlyAdoption()
     {
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         QuotationOutcomeAdoptionContract unsigned = CurrentQuotationSourceContract.CreateAdoptionContract(
-            TargetSchemaSha256, "quotation-adoption-review-key");
+            TargetSchemaSha256, "quotation-adoption-review-key", SourceRows(), [], 43);
         QuotationOutcomeAdoptionContract signed = QuotationOutcomeAdoptionAttestation.Sign(unsigned, key);
         var trust = new ReceiptAttestationTrustStore(
         [
@@ -131,6 +144,9 @@ public sealed class CurrentQuotationSourceContractTests
         Assert.False(signed.AnalyticsArchive.DirectGoogleAnalyticsCredentialsAllowed);
         Assert.Equal("ef-schema-first-dml-only", signed.Adoption.Mode);
         Assert.False(signed.Adoption.ImporterMayExecuteDdl);
+        Assert.Equal(2, signed.Data!.Source.RowCount);
+        Assert.Equal(43, signed.Data.Source.NextIdentity);
+        Assert.Equal([41L, 42L], signed.Data.InsertIds);
 
         Assert.False(QuotationOutcomeAdoptionAttestation.Verify(
             signed with { CanonicalTargetSchemaSha256 = new string('c', 64) }, trust));
@@ -140,7 +156,7 @@ public sealed class CurrentQuotationSourceContractTests
     public void AdoptionGate_FailsClosedOnSchemaArchivePrivilegeOrExistingRowDrift()
     {
         QuotationOutcomeAdoptionContract contract = CurrentQuotationSourceContract.CreateAdoptionContract(
-            TargetSchemaSha256, "quotation-adoption-review-key");
+            TargetSchemaSha256, "quotation-adoption-review-key", SourceRows(), [], 43);
         var valid = new QuotationAdoptionObservation(
             contract.SourceCommitSha,
             contract.SourceContractSha256,
@@ -149,7 +165,10 @@ public sealed class CurrentQuotationSourceContractTests
             ImporterExecutedDdl: false,
             AnalyticsArchivePrivileges: ["SELECT"],
             RuntimeWorkerConfigured: false,
-            DirectGoogleAnalyticsCredentialsConfigured: false);
+            DirectGoogleAnalyticsCredentialsConfigured: false)
+        {
+            VerifiedCanonical = contract.Data!.ExpectedCanonical,
+        };
 
         QuotationOutcomeAdoptionValidator.Validate(contract, valid);
 
@@ -162,11 +181,23 @@ public sealed class CurrentQuotationSourceContractTests
             valid with { AnalyticsArchivePrivileges = ["SELECT", "UPDATE"] },
             valid with { RuntimeWorkerConfigured = true },
             valid with { DirectGoogleAnalyticsCredentialsConfigured = true },
+            valid with { VerifiedCanonical = valid.VerifiedCanonical! with { RowCount = 1 } },
         })
         {
             QuotationOutcomeAdoptionException failure = Assert.Throws<QuotationOutcomeAdoptionException>(() =>
                 QuotationOutcomeAdoptionValidator.Validate(contract, drift));
             Assert.Equal("quotation_adoption_drift", failure.Code);
         }
+    }
+
+    private static QuotationOutcomeSourceRow[] SourceRows()
+    {
+        return [
+        new(41, "quotation-accepted:7001", 7001, null,
+            Guid.Parse("11111111-2222-3333-4444-555555555555"),
+            new DateTime(2026, 8, 30, 8, 9, 10, 123, DateTimeKind.Unspecified).AddTicks(4567), "customer"),
+        new(42, "quotation-accepted:7002", 7002, 91, null,
+            new DateTime(2026, 8, 30, 9, 10, 11, DateTimeKind.Unspecified), "employee"),
+    ];
     }
 }

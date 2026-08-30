@@ -1,6 +1,6 @@
 using Microsoft.Data.SqlClient;
+using Npgsql;
 using Testcontainers.MsSql;
-using Testcontainers.PostgreSql;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -9,12 +9,12 @@ public sealed class CurrentQuotationSourceIntegrationTests
     [SqlServerIntegrationFact]
     public async Task CurrentScripts_DeriveExactOutboxCatalogAndCopyEveryRowColumnIntoPostgreSql18()
     {
-        const string password = "MALIEV_test_Only!123456";
+        string password = $"M!{Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(20))}a1";
         await using MsSqlContainer sqlServer = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
             .WithPassword(password)
             .Build();
-        await using PostgreSqlContainer postgres = new PostgreSqlBuilder("postgres:18-alpine").Build();
-        await Task.WhenAll(sqlServer.StartAsync(), postgres.StartAsync());
+        var postgres = new PostgreSqlAdapterFixture();
+        await Task.WhenAll(sqlServer.StartAsync(), postgres.InitializeAsync());
 
         const string database = "QuotationCurrentSource";
         await using (var master = new SqlConnection(sqlServer.GetConnectionString()))
@@ -30,7 +30,12 @@ public sealed class CurrentQuotationSourceIntegrationTests
             await ExecuteAsync(setup, "CREATE TABLE dbo.Quotation (ID int IDENTITY(1,1) NOT NULL CONSTRAINT PK_Quotation PRIMARY KEY);");
             foreach (SourceScriptContract script in CurrentQuotationSourceContract.SourceScripts)
             {
-                await ExecuteAsync(setup, await File.ReadAllTextAsync(FixturePath(script.Path)));
+                string scriptText = await File.ReadAllTextAsync(FixturePath(script.Path));
+                string canonical = scriptText.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+                string observed = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+                Assert.Equal(script.CanonicalTextSha256, observed);
+                await ExecuteAsync(setup, scriptText);
             }
 
             await ExecuteAsync(setup, """
@@ -73,13 +78,29 @@ public sealed class CurrentQuotationSourceIntegrationTests
         Assert.Equal(3, plan.Tables.Count);
         AssertTable(plan, CurrentQuotationSourceContract.GoogleAnalyticsOutbox);
         AssertTable(plan, CurrentQuotationSourceContract.QuotationOutcomeOutbox);
+        TableCopyPlan quotation = Assert.Single(plan.Tables, table => table.SourceTable == "Quotation");
+        Assert.Equal(["ID", "SourceRequestID", "SourceJourneyID", "AcceptedUtc", "AcceptanceOrigin"], quotation.OrderedColumns);
+        Assert.Equal(["IX_Quotation_SourceJourneyID", "IX_Quotation_SourceRequestID"], quotation.Indexes.Select(index => index.Name).Order());
+
+        TableCopyPlan analytics = Assert.Single(plan.Tables, table => table.SourceTable == "GoogleAnalyticsOutbox");
+        Assert.Equal(
+            ["IX_GoogleAnalyticsOutbox_Due", "IX_GoogleAnalyticsOutbox_QuotationID", "IX_GoogleAnalyticsOutbox_SourceJourneyID", "IX_GoogleAnalyticsOutbox_SourceRequestID", "UX_GoogleAnalyticsOutbox_EventKey"],
+            analytics.Indexes.Select(index => index.Name).Order());
+        ForeignKeyCopyPlan analyticsQuotation = Assert.Single(analytics.ForeignKeys);
+        Assert.Equal("FK_GoogleAnalyticsOutbox_Quotation", analyticsQuotation.Name);
+        Assert.Equal(["QuotationID"], analyticsQuotation.Columns);
+        Assert.Equal(["ID"], analyticsQuotation.ReferencedColumns);
+
+        TableCopyPlan outcomes = Assert.Single(plan.Tables, table => table.SourceTable == "QuotationOutcomeOutbox");
+        Assert.Equal(["IX_QuotationOutcomeOutbox_QuotationID", "IX_QuotationOutcomeOutbox_SourceJourneyID", "IX_QuotationOutcomeOutbox_SourceRequestID"], outcomes.Indexes.Select(index => index.Name).Order());
+        Assert.Equal(["EventKey"], Assert.Single(outcomes.UniqueConstraints).Columns);
 
         IReadOnlyDictionary<string, long> sourceSequences =
             await source.InspectSequenceNextValuesAsync(database, plan, CancellationToken.None);
         Assert.Contains(sourceSequences, pair => pair.Key.EndsWith("GoogleAnalyticsOutbox.ID", StringComparison.Ordinal) && pair.Value == 48);
         Assert.Contains(sourceSequences, pair => pair.Key.EndsWith("QuotationOutcomeOutbox.ID", StringComparison.Ordinal) && pair.Value == 57);
 
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(postgres.GetConnectionString()));
+        PostgreSqlShadowTarget target = postgres.CreateShadowTarget();
         string runId = Guid.NewGuid().ToString("D");
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
             database,
@@ -118,12 +139,93 @@ public sealed class CurrentQuotationSourceIntegrationTests
             Assert.Equal(sourceSequences.OrderBy(pair => pair.Key), targetSequences.OrderBy(pair => pair.Key));
             await transaction.CommitAsync(CancellationToken.None);
             await source.CompleteDatabaseSnapshotAsync(database, CancellationToken.None);
+            await ProveCanonicalAdoptionAndRestrictedArchiveAsync(postgres.ConnectionString, shadow.Name);
         }
         finally
         {
             await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
             await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
+            await postgres.DisposeAsync();
         }
+    }
+
+    private static async Task ProveCanonicalAdoptionAndRestrictedArchiveAsync(string adminConnectionString, string database)
+    {
+        string role = $"legacy_analytics_reader_{Guid.NewGuid():N}";
+        var builder = new NpgsqlConnectionStringBuilder(adminConnectionString) { Database = database };
+        await using var connection = new NpgsqlConnection(builder.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            CREATE TABLE "QuotationAcceptedOutcome" (
+                "ID" bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                "EventKey" character varying(128) NOT NULL UNIQUE,
+                "QuotationID" integer NOT NULL,
+                "SourceRequestID" integer NULL,
+                "SourceJourneyID" uuid NULL,
+                "AcceptedUtc" timestamp without time zone NOT NULL,
+                "AcceptedUtcSubMicrosecondTicks" smallint NOT NULL DEFAULT 0,
+                "AcceptanceOrigin" character varying(16) NOT NULL);
+            CREATE SCHEMA legacy_compatibility;
+            CREATE TABLE legacy_compatibility."GoogleAnalyticsOutbox"
+                AS TABLE public."GoogleAnalyticsOutbox" WITH DATA;
+            REVOKE ALL ON legacy_compatibility."GoogleAnalyticsOutbox" FROM PUBLIC;
+            CREATE ROLE {role} NOLOGIN;
+            GRANT USAGE ON SCHEMA legacy_compatibility TO {role};
+            GRANT SELECT ON legacy_compatibility."GoogleAnalyticsOutbox" TO {role};
+            INSERT INTO "QuotationAcceptedOutcome"
+                ("ID", "EventKey", "QuotationID", "SourceRequestID", "SourceJourneyID", "AcceptedUtc",
+                 "AcceptedUtcSubMicrosecondTicks", "AcceptanceOrigin")
+            SELECT "ID", "EventKey", "QuotationID", "SourceRequestID", "SourceJourneyID",
+                   left("AcceptedUtc", 26)::timestamp without time zone,
+                   right("AcceptedUtc", 1)::smallint, "AcceptanceOrigin"
+            FROM public."QuotationOutcomeOutbox";
+            SELECT setval(pg_get_serial_sequence('"QuotationAcceptedOutcome"', 'ID'), 56, true);
+            """;
+        _ = await command.ExecuteNonQueryAsync();
+
+        command.CommandText = """
+            SELECT COUNT(*) FROM (
+                SELECT "ID", "EventKey", "QuotationID", "SourceRequestID", "SourceJourneyID",
+                       to_char("AcceptedUtc", 'YYYY-MM-DD"T"HH24:MI:SS.US') || "AcceptedUtcSubMicrosecondTicks"::text AS accepted,
+                       "AcceptanceOrigin"
+                FROM "QuotationAcceptedOutcome"
+                EXCEPT
+                SELECT "ID", "EventKey", "QuotationID", "SourceRequestID", "SourceJourneyID", "AcceptedUtc", "AcceptanceOrigin"
+                FROM public."QuotationOutcomeOutbox") drift;
+            """;
+        Assert.Equal(0L, (long)(await command.ExecuteScalarAsync())!);
+
+        command.CommandText = """
+            INSERT INTO "QuotationAcceptedOutcome"
+                ("ID", "EventKey", "QuotationID", "SourceRequestID", "SourceJourneyID", "AcceptedUtc",
+                 "AcceptedUtcSubMicrosecondTicks", "AcceptanceOrigin")
+            SELECT "ID", "EventKey", "QuotationID", "SourceRequestID", "SourceJourneyID",
+                   left("AcceptedUtc", 26)::timestamp without time zone,
+                   right("AcceptedUtc", 1)::smallint, "AcceptanceOrigin"
+            FROM public."QuotationOutcomeOutbox" source
+            WHERE NOT EXISTS (SELECT 1 FROM "QuotationAcceptedOutcome" target WHERE target."ID" = source."ID");
+            """;
+        Assert.Equal(0, await command.ExecuteNonQueryAsync());
+
+        command.CommandText = $"""
+            SELECT array_agg(privilege_type ORDER BY privilege_type)
+            FROM information_schema.role_table_grants
+            WHERE grantee = '{role}' AND table_schema = 'legacy_compatibility'
+              AND table_name = 'GoogleAnalyticsOutbox';
+            """;
+        Assert.Equal(["SELECT"], (string[])(await command.ExecuteScalarAsync())!);
+        command.CommandText = """
+            SELECT
+              (SELECT COUNT(*) FROM public."GoogleAnalyticsOutbox") =
+              (SELECT COUNT(*) FROM legacy_compatibility."GoogleAnalyticsOutbox")
+              AND NOT EXISTS (
+                SELECT * FROM public."GoogleAnalyticsOutbox"
+                EXCEPT SELECT * FROM legacy_compatibility."GoogleAnalyticsOutbox")
+              AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname ILIKE '%google%analytics%worker%')
+              AND NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname ILIKE '%google%analytics%credential%');
+            """;
+        Assert.True((bool)(await command.ExecuteScalarAsync())!);
     }
 
     private static void AssertSourceOutboxFacts(TableCopyPlan table, List<MigrationRow> rows)
