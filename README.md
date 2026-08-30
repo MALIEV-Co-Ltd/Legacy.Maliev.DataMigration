@@ -107,6 +107,27 @@ re-reads all 25 local backup files and binds their approved GCS object names,
 immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
 Signing keys are externally supplied and are never stored in this repository.
 
+`Exact25FullBackupProducer` is the fail-closed producer used by the daily backup
+adapter. It accepts only the exact 25-database migrate inventory, requires every
+source database to be `ONLINE`, binds the expected Kubernetes namespace, pod,
+pod UID, container, and immutable UTC cutoff, and creates uniquely named full
+backups only. It performs `RESTORE VERIFYONLY` before copying each artifact,
+hashes the retained local copy, uploads with create-only semantics, and verifies
+the immutable GCS generation, size, URI, and SHA-256 readback before producing
+the canonical signed receipt. Ambiguous backup or upload operations are never
+retried; only explicitly classified copy transport failures have a bounded
+three-attempt maximum. Recovery backups are retained on every failure.
+
+SQL credentials cross the `kubectl exec` child-process boundary only through
+standard input. The invocation diagnostic redacts standard input, and neither
+credentials nor SQL text appear in process arguments. The signed receipt is
+written into an owner-only staging directory and becomes visible through one
+new-directory atomic rename; an existing destination is never overwritten.
+The process and immutable-object-storage adapters remain injectable so their
+production implementations and workload identities can be reviewed separately.
+Differential backups and the retired `MachineLearning` and
+`MachineLearningData` databases are rejected by this contract.
+
 `scripts/restore-verified-sqlserver-backups.ps1` restores only the exact signed
 inventory into a disposable SQL Server 2022 instance. It runs `RESTORE
 VERIFYONLY`, discovers every logical file with `RESTORE FILELISTONLY`, supplies
@@ -233,9 +254,9 @@ or filesystem path is emitted.
 This slice does not approve a production run or daily production
 synchronization. Before a real shadow copy is allowed, the program still needs:
 
-1. an independently reviewed producer that creates current verified full-backup
-   receipts, observes hashes itself, protects its private signing key, and emits
-   the exact 25-database disposition;
+1. independently reviewed concrete Kubernetes/sqlcmd and immutable GCS adapters
+   for the exact-25 producer, including workload identity and protected external
+   signing-key injection;
 2. a freshly generated and independently reviewed 25-database schema plan bound
    to the current source commit;
 3. a bounded source write freeze or a reviewed change-capture mechanism (the
