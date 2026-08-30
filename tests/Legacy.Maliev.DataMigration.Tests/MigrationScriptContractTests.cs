@@ -43,6 +43,13 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("SET READ_ONLY", source, StringComparison.Ordinal);
         Assert.Contains("restore_container_cleanup_failed", provisioning, StringComparison.Ordinal);
         Assert.Contains("restore_volume_cleanup_failed", provisioning, StringComparison.Ordinal);
+        int volumeCreateStart = provisioning.IndexOf("DockerResult volumeCreate", StringComparison.Ordinal);
+        int volumeCreateEnd = provisioning.IndexOf("EnsureSuccess(volumeCreate", StringComparison.Ordinal);
+        string volumeCreateSection = provisioning[volumeCreateStart..volumeCreateEnd];
+        Assert.Contains("restore-volume-fingerprint", volumeCreateSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("volumeName", volumeCreateSection, StringComparison.Ordinal);
+        Assert.Contains("SERVERPROPERTY('ProductMajorVersion')", provisioning, StringComparison.Ordinal);
+        Assert.Contains("IsSqlServer2022", provisioning, StringComparison.Ordinal);
         Assert.Contains("restoreException", console, StringComparison.Ordinal);
         Assert.Contains("cleanupException", console, StringComparison.Ordinal);
         int restoreStart = console.IndexOf("private static async Task RestoreBackupsAsync", StringComparison.Ordinal);

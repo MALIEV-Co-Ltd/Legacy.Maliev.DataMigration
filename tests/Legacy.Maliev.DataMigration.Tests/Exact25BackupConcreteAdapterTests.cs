@@ -93,6 +93,34 @@ public sealed class Exact25BackupConcreteAdapterTests : IDisposable
             removalExitCode, resourceStillExists));
     }
 
+    [Theory]
+    [InlineData("daemon-volume", "run-1", "a", "daemon-volume", "run-1", "a", true)]
+    [InlineData("daemon-volume", "run-1", "a", "daemon-volume", "run-1", "b", false)]
+    [InlineData("daemon-volume", "run-1", "a", "successor", "run-1", "a", false)]
+    public void DockerVolumeCleanup_RequiresGeneratedNameRunBindingAndCryptographicFingerprint(
+        string expectedName,
+        string expectedRun,
+        string expectedFingerprint,
+        string observedName,
+        string observedRun,
+        string observedFingerprint,
+        bool owned)
+    {
+        expectedFingerprint = new string(expectedFingerprint[0], 64);
+        observedFingerprint = new string(observedFingerprint[0], 64);
+        Assert.Equal(owned, DockerDisposableSqlServerProvisioner.IsOwnedVolumeEvidence(
+            expectedName, expectedRun, expectedFingerprint, observedName, observedRun, observedFingerprint));
+    }
+
+    [Theory]
+    [InlineData("16", true)]
+    [InlineData("15", false)]
+    [InlineData("", false)]
+    public void SqlServerRestoreRuntime_RequiresProductMajorVersion16(string productMajorVersion, bool accepted)
+    {
+        Assert.Equal(accepted, DockerDisposableSqlServerProvisioner.IsSqlServer2022(productMajorVersion));
+    }
+
     [Fact]
     public async Task KubernetesAdapter_UsesPinnedPodIdentityExactInventoryAndSafeFixedCommands()
     {

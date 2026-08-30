@@ -19,9 +19,12 @@ public sealed record VerifiedRestoreResourceEvidence(
     string RunBinding,
     string VolumeName,
     string VolumeId,
+    string VolumeBinding,
+    string VolumeFingerprint,
     string MountPath,
     bool MountReadOnly,
-    string StagingImage);
+    string StagingImage,
+    string SqlServerProductMajorVersion);
 
 public sealed record VerifiedRestoreArtifactEvidence(
     string Database,
@@ -174,9 +177,12 @@ public static class VerifiedRestoreReceiptAttestation
             Write(writer, resources.RunBinding);
             Write(writer, resources.VolumeName);
             Write(writer, resources.VolumeId);
+            Write(writer, resources.VolumeBinding);
+            Write(writer, resources.VolumeFingerprint);
             Write(writer, resources.MountPath);
             writer.Write(resources.MountReadOnly);
             Write(writer, resources.StagingImage);
+            Write(writer, resources.SqlServerProductMajorVersion);
             writer.Write(receipt.Artifacts.Count);
             foreach (VerifiedRestoreArtifactEvidence artifact in receipt.Artifacts.OrderBy(item => item.Database, StringComparer.Ordinal))
             {
@@ -211,7 +217,9 @@ public static class VerifiedRestoreReceiptAttestation
         return HashWithOptionalPrefix(value.SqlServerImageId) && HashWithOptionalPrefix(value.ContainerId) &&
             !string.IsNullOrWhiteSpace(value.ContainerName) && !string.IsNullOrWhiteSpace(value.RunBinding) &&
             !string.IsNullOrWhiteSpace(value.VolumeName) && !string.IsNullOrWhiteSpace(value.VolumeId) &&
-            value.MountPath.Length > 0 && value.MountPath[0] == '/' && value.MountReadOnly;
+            !string.IsNullOrWhiteSpace(value.VolumeBinding) && Hash(value.VolumeFingerprint) &&
+            value.MountPath.Length > 0 && value.MountPath[0] == '/' && value.MountReadOnly &&
+            string.Equals(value.SqlServerProductMajorVersion, "16", StringComparison.Ordinal);
     }
 
     private static bool ValidArtifact(VerifiedRestoreArtifactEvidence value)

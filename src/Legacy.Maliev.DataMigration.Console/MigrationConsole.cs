@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Runtime.ExceptionServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -493,7 +494,7 @@ public static class MigrationConsole
                     connectionString,
                     restore.SqlServerDataDirectory,
                     new DockerVolumeBackupStager(
-                        restore.StagingVolumeName,
+                        resources.VolumeName,
                         restore.SqlServerVisibleRecoveryDirectory,
                         restore.StagingImage,
                         restore.SqlServerContainerName,
@@ -510,9 +511,12 @@ public static class MigrationConsole
                 resources.RunBinding,
                 resources.VolumeName,
                 resources.VolumeId,
+                resources.VolumeBinding,
+                resources.VolumeFingerprint,
                 resources.MountPath,
                 resources.MountReadOnly,
-                resources.StagingImage);
+                resources.StagingImage,
+                resources.SqlServerProductMajorVersion);
             VerifiedRestoreReceipt pending = VerifiedRestoreReceiptAttestation.Sign(new(
                 "1.0",
                 restoredAtUtc,
@@ -580,7 +584,7 @@ public static class MigrationConsole
             !VerifiedRestoreReceiptAttestation.Verify(pending, trust) ||
             !string.Equals(pending.AttestationKeyId, restore.ProvenanceKeyId, StringComparison.Ordinal) ||
             !string.Equals(pending.Resources.ContainerName, restore.SqlServerContainerName, StringComparison.Ordinal) ||
-            !string.Equals(pending.Resources.VolumeName, restore.StagingVolumeName, StringComparison.Ordinal) ||
+            !string.Equals(pending.Resources.VolumeBinding, restore.StagingVolumeName, StringComparison.Ordinal) ||
             !string.Equals(pending.Resources.RunBinding, restore.RunBinding, StringComparison.Ordinal))
         {
             throw new MigrationConsoleException("verified_restore_receipt_invalid", "The pending verified restore receipt is invalid or belongs to another run.");
@@ -590,12 +594,15 @@ public static class MigrationConsole
             pending.Resources.ContainerName,
             pending.Resources.VolumeId,
             pending.Resources.VolumeName,
+            pending.Resources.VolumeBinding,
+            pending.Resources.VolumeFingerprint,
             pending.Resources.RunBinding,
             pending.Resources.SqlServerImage,
             pending.Resources.SqlServerImageId,
             pending.Resources.StagingImage,
             pending.Resources.MountPath,
-            pending.Resources.MountReadOnly);
+            pending.Resources.MountReadOnly,
+            pending.Resources.SqlServerProductMajorVersion);
         using var cleanupTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cleanupTimeout.CancelAfter(TimeSpan.FromSeconds(30));
         await DockerDisposableSqlServerProvisioner.CleanupAsync(resources, cleanupTimeout.Token).ConfigureAwait(false);
@@ -639,11 +646,61 @@ public static class MigrationConsole
     private static async Task WriteNewJsonAsync<T>(string path, T value, CancellationToken cancellationToken)
     {
         string fullPath = Path.GetFullPath(path);
-        _ = Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
-        await using FileStream stream = new(fullPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024,
-            FileOptions.Asynchronous | FileOptions.WriteThrough);
-        await JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        string directory = Path.GetDirectoryName(fullPath)!;
+        _ = Directory.CreateDirectory(directory);
+        string temporaryPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
+        Exception? publicationFailure = null;
+        try
+        {
+            await using (FileStream stream = new(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                64 * 1024,
+                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temporaryPath, fullPath, overwrite: false);
+        }
+        catch (Exception exception)
+        {
+            publicationFailure = exception;
+        }
+        Exception? cleanupFailure = null;
+        try
+        {
+            File.Delete(temporaryPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            cleanupFailure = exception;
+        }
+        if (publicationFailure is not null && cleanupFailure is not null)
+        {
+            throw new AggregateException(
+                "Create-only JSON publication failed and its temporary file could not be removed.",
+                publicationFailure,
+                cleanupFailure);
+        }
+        if (cleanupFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+        }
+        if (publicationFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(publicationFailure).Throw();
+        }
+    }
+
+    internal static Task WriteNewJsonForTestsAsync<T>(string path, T value, CancellationToken cancellationToken)
+    {
+        return WriteNewJsonAsync(path, value, cancellationToken);
     }
 
     private sealed record MigrationConsoleConfiguration(

@@ -67,6 +67,10 @@ public sealed class VerifiedRestoreReceiptTests
             Receipt() with { Resources = null! }, out _));
         Assert.False(VerifiedRestoreReceiptAttestation.TryCreatePayload(
             Receipt() with { Artifacts = null! }, out _));
+        Assert.False(VerifiedRestoreReceiptAttestation.TryCreatePayload(
+            Receipt() with { Resources = Receipt().Resources with { SqlServerProductMajorVersion = "15" } }, out _));
+        Assert.False(VerifiedRestoreReceiptAttestation.TryCreatePayload(
+            Receipt() with { Resources = Receipt().Resources with { VolumeFingerprint = "reusable-name" } }, out _));
     }
 
     [Fact]
@@ -98,9 +102,12 @@ public sealed class VerifiedRestoreReceiptTests
             "run-1",
             "legacy-volume-run-1",
             "legacy-volume-run-1",
+            "legacy-volume-binding",
+            new string('e', 64),
             "/var/opt/mssql/recovery",
             MountReadOnly: true,
-            stagingImage);
+            stagingImage,
+            "16");
         VerifiedRestoreArtifactEvidence[] artifacts = [.. DatabaseInventory.ActiveDatabases.Select(database =>
             new VerifiedRestoreArtifactEvidence(database, 42, Digest, 42, Digest,
                 VerifyOnlyWithChecksum: true, SnapshotIsolationEnabled: true, ReadOnly: true))];

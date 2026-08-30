@@ -555,9 +555,12 @@ public static partial class AppHostMigrationEvidenceV2Producer
                 ["runBinding"] = receipt.Resources.RunBinding,
                 ["volumeId"] = receipt.Resources.VolumeId,
                 ["volumeName"] = receipt.Resources.VolumeName,
+                ["volumeBinding"] = receipt.Resources.VolumeBinding,
+                ["volumeFingerprint"] = receipt.Resources.VolumeFingerprint,
                 ["mountPath"] = receipt.Resources.MountPath,
                 ["mountReadOnly"] = receipt.Resources.MountReadOnly,
                 ["stagingImage"] = receipt.Resources.StagingImage,
+                ["sqlServerProductMajorVersion"] = receipt.Resources.SqlServerProductMajorVersion,
             },
             ["artifacts"] = new JsonArray(receipt.Artifacts.OrderBy(item => item.Database, StringComparer.Ordinal)
                 .Select(item => (JsonNode)new JsonObject

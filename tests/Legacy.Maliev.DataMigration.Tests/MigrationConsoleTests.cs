@@ -349,6 +349,39 @@ public sealed class MigrationConsoleTests : IDisposable
         Assert.Equal(string.Empty, output.ToString());
     }
 
+    [Fact]
+    public async Task CreateOnlyJsonPublication_IsAtomicCleansFailedTemporaryFileAndCanRetry()
+    {
+        _ = Directory.CreateDirectory(_root);
+        string path = Path.Combine(_root, "receipt.json");
+        await File.WriteAllTextAsync(path, "existing");
+
+        _ = await Assert.ThrowsAsync<IOException>(() => MigrationConsole.WriteNewJsonForTestsAsync(
+            path, new { state = "complete", count = 25 }, CancellationToken.None));
+
+        Assert.Equal("existing", await File.ReadAllTextAsync(path));
+        Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
+        File.Delete(path);
+
+        _ = await Assert.ThrowsAnyAsync<Exception>(() => MigrationConsole.WriteNewJsonForTestsAsync(
+            path, new FailingJsonValue(), CancellationToken.None));
+        Assert.False(File.Exists(path));
+        Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
+
+        await MigrationConsole.WriteNewJsonForTestsAsync(
+            path, new { state = "complete", count = 25 }, CancellationToken.None);
+
+        using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+        Assert.Equal("complete", document.RootElement.GetProperty("state").GetString());
+        Assert.Equal(25, document.RootElement.GetProperty("count").GetInt32());
+        Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
+    }
+
+    private sealed class FailingJsonValue
+    {
+        public string Value { get => throw new InvalidOperationException(field); } = "deterministic serialization failure";
+    }
+
     private static JsonSerializerOptions JsonOptions { get; } = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
     public void Dispose()

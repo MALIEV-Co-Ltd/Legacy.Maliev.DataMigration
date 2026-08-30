@@ -554,9 +554,12 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
                 "run-1",
                 "legacy-volume-run-1",
                 "legacy-volume-run-1",
+                "legacy-volume-binding",
+                new string('d', 64),
                 "/var/opt/mssql/backup",
                 true,
-                "alpine:3.20@sha256:" + new string('c', 64)),
+                "alpine:3.20@sha256:" + new string('c', 64),
+                "16"),
             [.. DatabaseInventory.ActiveDatabases.Select(database =>
                 new VerifiedRestoreArtifactEvidence(database, 42, digest, 42, digest, true, true, true))],
             RestoreCleanupDisposition.Removed,

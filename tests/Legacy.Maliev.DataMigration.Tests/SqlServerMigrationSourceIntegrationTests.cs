@@ -34,6 +34,7 @@ public sealed class SqlServerMigrationSourceIntegrationTests
         OwnerProtectedDirectory.CreateNew(root);
         const string backupFileName = "Full_Country_run-1.bak";
         string localBackup = Path.Combine(root, backupFileName);
+        DockerRestoreResources? restoreResources = null;
         try
         {
             await using (MsSqlContainer producer = new MsSqlBuilder(image)
@@ -77,7 +78,7 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                 TrustServerCertificate = true,
                 InitialCatalog = "master",
             }.ConnectionString;
-            _ = await DockerDisposableSqlServerProvisioner.ProvisionAsync(
+            restoreResources = await DockerDisposableSqlServerProvisioner.ProvisionAsync(
                 targetConnection, volume, targetContainerName, "/var/opt/mssql/backup",
                 pinnedImage, targetImageId, pinnedStagingImage, "run-1", CancellationToken.None);
             var sourceArtifact = new VerifiedBackupRestoreArtifact(
@@ -90,7 +91,7 @@ public sealed class SqlServerMigrationSourceIntegrationTests
             await using (sourceArtifact.RetainedHandle)
             {
                 var stager = new DockerVolumeBackupStager(
-                    volume, "/var/opt/mssql/backup", pinnedStagingImage, targetContainerName, targetImageId);
+                    restoreResources.VolumeName, "/var/opt/mssql/backup", pinnedStagingImage, targetContainerName, targetImageId);
                 staged = await stager.StageAsync(sourceArtifact, CancellationToken.None);
             }
 
@@ -122,7 +123,10 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                 Directory.Delete(root, recursive: true);
             }
             _ = await RunDockerAsync(["rm", "-f", targetContainerName]);
-            _ = await RunDockerAsync(["volume", "rm", "-f", volume]);
+            if (restoreResources is not null)
+            {
+                _ = await RunDockerAsync(["volume", "rm", "-f", restoreResources.VolumeName]);
+            }
         }
     }
 
