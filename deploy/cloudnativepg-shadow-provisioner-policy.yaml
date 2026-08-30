@@ -14,6 +14,10 @@ rules:
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["databases"]
     verbs: ["get", "create", "patch", "delete"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters"]
+    resourceNames: ["legacy-postgres-main"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

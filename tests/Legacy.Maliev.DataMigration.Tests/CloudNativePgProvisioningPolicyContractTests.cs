@@ -10,6 +10,9 @@ public sealed partial class CloudNativePgProvisioningPolicyContractTests
 
         Assert.Contains("system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner", policy, StringComparison.Ordinal);
         Assert.Contains("verbs: [\"get\", \"create\", \"patch\", \"delete\"]", policy, StringComparison.Ordinal);
+        Assert.Contains("resources: [\"clusters\"]", policy, StringComparison.Ordinal);
+        Assert.Contains("resourceNames: [\"legacy-postgres-main\"]", policy, StringComparison.Ordinal);
+        Assert.Contains("verbs: [\"get\"]", policy, StringComparison.Ordinal);
         Assert.DoesNotContain("\"list\"", policy, StringComparison.Ordinal);
         Assert.DoesNotContain("\"watch\"", policy, StringComparison.Ordinal);
         Assert.Contains("legacy-postgres-main", policy, StringComparison.Ordinal);

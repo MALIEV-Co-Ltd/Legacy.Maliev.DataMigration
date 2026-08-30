@@ -29,14 +29,14 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         using var output = new StringWriter();
         using var error = new StringWriter();
 
-        int exitCode = await MigrationConsole.RunAsync(
+        int exitCode = await MigrationConsole.RunAuthorizationForTestsAsync(
             ["authorize-shadow", "--config", fixture.ConfigPath], output, error,
             name => name switch
             {
                 "LEGACY_DEPLOY_ENABLED" => "false",
                 "LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE" => fixture.AuthorizationKeyPath,
                 _ => null,
-            }, CancellationToken.None);
+            }, new StubRuntimeAttestationFactory(), CancellationToken.None);
 
         Assert.Equal(0, exitCode);
         Assert.Equal(string.Empty, error.ToString());
@@ -51,14 +51,14 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         Assert.True(_authorizationKey.VerifyData(
             payload, Convert.FromBase64String(receipt.AttestationSignature!), HashAlgorithmName.SHA256));
 
-        int secondExit = await MigrationConsole.RunAsync(
+        int secondExit = await MigrationConsole.RunAuthorizationForTestsAsync(
             ["authorize-shadow", "--config", fixture.ConfigPath], TextWriter.Null, error,
             name => name switch
             {
                 "LEGACY_DEPLOY_ENABLED" => "false",
                 "LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE" => fixture.AuthorizationKeyPath,
                 _ => null,
-            }, CancellationToken.None);
+            }, new StubRuntimeAttestationFactory(), CancellationToken.None);
         Assert.Equal(65, secondExit);
         Assert.Equal("authorization_publication_failed" + Environment.NewLine, error.ToString());
     }
@@ -199,14 +199,14 @@ public sealed class OperatorSigningConsoleTests : IDisposable
     {
         using var output = new StringWriter();
         using var error = new StringWriter();
-        int exitCode = await MigrationConsole.RunAsync(
+        int exitCode = await MigrationConsole.RunAuthorizationForTestsAsync(
             ["authorize-shadow", "--config", fixture.ConfigPath], output, error,
             name => name switch
             {
                 "LEGACY_DEPLOY_ENABLED" => "false",
                 "LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE" => fixture.AuthorizationKeyPath,
                 _ => null,
-            }, CancellationToken.None);
+            }, new StubRuntimeAttestationFactory(), CancellationToken.None);
         return (exitCode, error.ToString().Trim());
     }
 
@@ -258,8 +258,6 @@ public sealed class OperatorSigningConsoleTests : IDisposable
                 outputPath,
                 expectedSourceCommitSha = SourceCommit,
                 reviewedSchemaPlanSha256 = reviewedPlanSha256 ?? planSha256,
-                runnerDigestSha256 = Hash("runner"),
-                targetGeneration = "review-20260830-a",
                 issuedAtUtc = issuedAtUtc ?? Now.AddMinutes(-1),
                 expiresAtUtc = expiresAtUtc ?? Now.AddMinutes(30),
                 keyId = "authorization-key",
@@ -280,11 +278,15 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         BackupReceipt backup = CreateBackupReceipt(unsigned: false);
         string planSha256 = SchemaPlanCanonicalizer.ComputeSha256(plan);
         const string runnerDigest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        const string targetGeneration = "review-20260830-a";
+        const string targetGeneration = "7";
+        var runnerManifest = new RunnerArtifactManifest(runnerDigest, [new("runner.dll", 1, Hash("runner-file"))]);
+        var targetObservation = new CloudNativePgTargetObservation(
+            "maliev-legacy", "legacy-postgres-main", "uid-a", "100", 7, 7,
+            "Cluster in healthy state", 2, 2, "legacy-postgres-main-1", "legacy-postgres-main-1", true, true, true, true);
         using var authorizationSigner = new P256MigrationEvidenceSigner("authorization-key", _authorizationKey.ExportECPrivateKeyPem());
         var backupTrust = new ReceiptAttestationTrustStore([new("backup-key", _backupKey.ExportSubjectPublicKeyInfo())]);
         ExecutionAuthorizationReceipt authorization = ReviewedExecutionAuthorizationProducer.Produce(
-            new(SourceCommit, planSha256, runnerDigest, targetGeneration, Now.AddMinutes(-5), Now.AddMinutes(30), true, 180),
+            new(SourceCommit, planSha256, runnerManifest, targetObservation, Now.AddMinutes(-5), Now.AddMinutes(30), true, 180),
             backup, plan, backupTrust, authorizationSigner, Now);
 
         IReadOnlyList<MigratedShadowDatabase> migrated = [.. DatabaseInventory.ActiveDatabases.Select((database, index) =>
@@ -488,4 +490,23 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         string BackupManifestSha256);
 
     private sealed record ProvenanceFixture(string ConfigPath, string OutputPath, string ProvenanceKeyPath);
+
+    private sealed class StubRuntimeAttestationFactory : IAuthorizationRuntimeAttestationFactory
+    {
+        public Task<RunnerArtifactManifest> MeasureRunnerAsync(CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new RunnerArtifactManifest(Hash("runner"), [new("runner.dll", 1, Hash("runner-file"))]));
+        }
+
+        public Task<CloudNativePgTargetObservation> ObserveTargetAsync(
+            string namespaceName,
+            string cluster,
+            Func<string, string?> getEnvironmentVariable,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new CloudNativePgTargetObservation(
+                namespaceName, cluster, "uid-a", "100", 7, 7, "Cluster in healthy state", 2, 2,
+                "legacy-postgres-main-1", "legacy-postgres-main-1", true, true, true, true));
+        }
+    }
 }

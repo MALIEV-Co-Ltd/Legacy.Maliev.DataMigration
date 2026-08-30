@@ -18,7 +18,10 @@ public sealed record ExecutionAuthorizationReceipt(
     IReadOnlyList<string>? AuthorizedDatabases,
     string? Mode,
     string? AttestationKeyId,
-    string? AttestationSignature);
+    string? AttestationSignature)
+{
+    public CloudNativePgTargetObservation? TargetObservation { get; init; }
+}
 
 public static class ExecutionAuthorizationAttestation
 {
@@ -37,7 +40,8 @@ public static class ExecutionAuthorizationAttestation
             receipt.TargetGeneration is null ||
             receipt.AuthorizedDatabases is null ||
             receipt.Mode is null ||
-            receipt.AttestationKeyId is null)
+            receipt.AttestationKeyId is null ||
+            (string.Equals(receipt.SchemaVersion, "2.1", StringComparison.Ordinal) && receipt.TargetObservation is null))
         {
             return false;
         }
@@ -55,6 +59,25 @@ public static class ExecutionAuthorizationAttestation
             WriteString(writer, receipt.BackupManifestSha256);
             WriteString(writer, receipt.RunnerDigestSha256);
             WriteString(writer, receipt.TargetGeneration);
+            if (string.Equals(receipt.SchemaVersion, "2.1", StringComparison.Ordinal))
+            {
+                CloudNativePgTargetObservation target = receipt.TargetObservation!;
+                WriteString(writer, target.Namespace);
+                WriteString(writer, target.Cluster);
+                WriteString(writer, target.Uid);
+                WriteString(writer, target.ResourceVersion);
+                writer.Write(target.Generation);
+                writer.Write(target.ObservedGeneration);
+                WriteString(writer, target.Phase);
+                writer.Write(target.Instances);
+                writer.Write(target.ReadyInstances);
+                WriteString(writer, target.CurrentPrimary);
+                WriteString(writer, target.TargetPrimary);
+                writer.Write(target.Ready);
+                writer.Write(target.ConsistentSystemId);
+                writer.Write(target.ContinuousArchiving);
+                writer.Write(target.LastBackupSucceeded);
+            }
             WriteString(writer, receipt.Mode);
             WriteString(writer, receipt.AttestationKeyId);
             string[] databases = [.. receipt.AuthorizedDatabases.OrderBy(database => database, StringComparer.Ordinal)];
@@ -88,7 +111,7 @@ internal static partial class ExecutionAuthorizationValidator
         IReceiptAttestationTrustStore trustStore)
     {
         List<PreflightError> errors = [];
-        if (!string.Equals(receipt.SchemaVersion, "2.0", StringComparison.Ordinal))
+        if (receipt.SchemaVersion is not ("2.0" or "2.1"))
         {
             errors.Add(new("execution_authorization_version_unknown", "The execution authorization version is not approved."));
         }
@@ -134,9 +157,18 @@ internal static partial class ExecutionAuthorizationValidator
             errors.Add(new("execution_runner_digest_mismatch", "The authorization does not bind the approved runner digest."));
         }
 
-        if (receipt.TargetGeneration is null || !TargetGeneration().IsMatch(receipt.TargetGeneration))
+        if (receipt.TargetGeneration is null ||
+            (receipt.SchemaVersion == "2.1" ? !NumericGeneration().IsMatch(receipt.TargetGeneration) : !TargetGeneration().IsMatch(receipt.TargetGeneration)))
         {
             errors.Add(new("execution_target_generation_invalid", "The target generation identifier is invalid."));
+        }
+
+        if (receipt.SchemaVersion == "2.1" && (receipt.TargetObservation is null || !receipt.TargetObservation.IsHealthy ||
+            !string.Equals(receipt.TargetObservation.Namespace, "maliev-legacy", StringComparison.Ordinal) ||
+            !string.Equals(receipt.TargetObservation.Cluster, "legacy-postgres-main", StringComparison.Ordinal) ||
+            !string.Equals(receipt.TargetGeneration, receipt.TargetObservation.Generation.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)))
+        {
+            errors.Add(new("execution_target_observation_invalid", "The authorization must bind the exact observed CloudNativePG target."));
         }
 
         IReadOnlyList<string> databases = receipt.AuthorizedDatabases ?? [];
@@ -201,4 +233,7 @@ internal static partial class ExecutionAuthorizationValidator
 
     [GeneratedRegex("^[a-z0-9][a-z0-9-]{2,62}$", RegexOptions.CultureInvariant)]
     private static partial Regex TargetGeneration();
+
+    [GeneratedRegex("^[1-9][0-9]{0,18}$", RegexOptions.CultureInvariant)]
+    private static partial Regex NumericGeneration();
 }
