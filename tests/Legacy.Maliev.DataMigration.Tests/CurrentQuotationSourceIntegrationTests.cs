@@ -229,11 +229,58 @@ public sealed class CurrentQuotationSourceIntegrationTests
                 connection, unsigned, sourceRows, 57, observation, trust, CancellationToken.None));
         command.CommandText = "SELECT COUNT(*) FROM \"QuotationAcceptedOutcome\";";
         Assert.Equal(0L, (long)(await command.ExecuteScalarAsync())!);
+        command.CommandText = "SELECT last_value::text || '|' || is_called::text FROM \"QuotationAcceptedOutcome_ID_seq\";";
+        string pristineSequence = (string)(await command.ExecuteScalarAsync())!;
+
+        QuotationOutcomeAdoptionContract wrongPartition = QuotationOutcomeAdoptionAttestation.Sign(
+            unsigned with
+            {
+                Data = unsigned.Data! with { InsertIds = [41], ReplayIds = [42] }
+            },
+            signingKey);
+        QuotationOutcomeAdoptionException partitionFailure = await Assert.ThrowsAsync<QuotationOutcomeAdoptionException>(() =>
+            PostgreSqlQuotationOutcomeAdopter.AdoptSignedAsync(
+                connection, wrongPartition, sourceRows, 57, observation, trust, CancellationToken.None));
+        Assert.Equal("quotation_adoption_partition_drift", partitionFailure.Code);
+        command.CommandText = "SELECT COUNT(*) FROM \"QuotationAcceptedOutcome\";";
+        Assert.Equal(0L, (long)(await command.ExecuteScalarAsync())!);
+        command.CommandText = "SELECT last_value::text || '|' || is_called::text FROM \"QuotationAcceptedOutcome_ID_seq\";";
+        Assert.Equal(pristineSequence, (string)(await command.ExecuteScalarAsync())!);
+
+        QuotationOutcomeAdoptionContract wrongCanonical = QuotationOutcomeAdoptionAttestation.Sign(
+            unsigned with
+            {
+                Data = unsigned.Data! with
+                {
+                    ExpectedCanonical = unsigned.Data!.ExpectedCanonical with { NextIdentity = 58 }
+                }
+            },
+            signingKey);
+        QuotationOutcomeAdoptionException canonicalFailure = await Assert.ThrowsAsync<QuotationOutcomeAdoptionException>(() =>
+            PostgreSqlQuotationOutcomeAdopter.AdoptSignedAsync(
+                connection, wrongCanonical, sourceRows, 57, observation, trust, CancellationToken.None));
+        Assert.Equal("quotation_adoption_target_drift", canonicalFailure.Code);
+        command.CommandText = "SELECT COUNT(*) FROM \"QuotationAcceptedOutcome\";";
+        Assert.Equal(0L, (long)(await command.ExecuteScalarAsync())!);
+        command.CommandText = "SELECT last_value::text || '|' || is_called::text FROM \"QuotationAcceptedOutcome_ID_seq\";";
+        Assert.Equal(pristineSequence, (string)(await command.ExecuteScalarAsync())!);
+
         QuotationOutcomeAdoptionResult adopted = await PostgreSqlQuotationOutcomeAdopter.AdoptSignedAsync(
             connection, signed, sourceRows, 57, observation, trust, CancellationToken.None);
         Assert.Equal(2, adopted.InsertedCount);
+        QuotationAcceptedOutcomeImportRow[] existingRows = sourceRows.Select(row =>
+            new QuotationAcceptedOutcomeImportRow(row.ID, row.EventKey, row.QuotationID, row.SourceRequestID,
+                row.SourceJourneyID, row.AcceptedUtc, row.AcceptanceOrigin)).ToArray();
+        QuotationOutcomeAdoptionContract replayUnsigned = CurrentQuotationSourceContract.CreateAdoptionContract(
+            schemaSha, "quotation-integration-key", sourceRows, existingRows, 57);
+        QuotationOutcomeAdoptionContract replaySigned = QuotationOutcomeAdoptionAttestation.Sign(replayUnsigned, signingKey);
+        var replayObservation = observation with
+        {
+            SourceCommitSha = replaySigned.SourceCommitSha,
+            SourceContractSha256 = replaySigned.SourceContractSha256
+        };
         QuotationOutcomeAdoptionResult replay = await PostgreSqlQuotationOutcomeAdopter.AdoptSignedAsync(
-            connection, signed, sourceRows, 57, observation, trust, CancellationToken.None);
+            connection, replaySigned, sourceRows, 57, replayObservation, trust, CancellationToken.None);
         Assert.Equal(0, replay.InsertedCount);
         Assert.Equal(2, replay.ReplayedCount);
 

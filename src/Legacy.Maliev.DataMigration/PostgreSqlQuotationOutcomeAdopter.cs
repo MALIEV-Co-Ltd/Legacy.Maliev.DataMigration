@@ -68,14 +68,13 @@ public sealed class PostgreSqlQuotationOutcomeAdopter
             observation with { VerifiedCanonical = contract.Data.ExpectedCanonical },
             trustStore);
         QuotationOutcomeAdoptionResult result = await AdoptAsync(
-            connection, sourceRows, sourceNextIdentity, cancellationToken).ConfigureAwait(false);
-        QuotationOutcomeSignedAdoptionGate.VerifyAndValidate(
-            contract, observation with { VerifiedCanonical = result.VerifiedCanonical }, trustStore);
+            connection, contract.Data, sourceRows, sourceNextIdentity, cancellationToken).ConfigureAwait(false);
         return result;
     }
 
     private static async Task<QuotationOutcomeAdoptionResult> AdoptAsync(
         NpgsqlConnection connection,
+        QuotationOutcomeDataContract signedData,
         IReadOnlyCollection<QuotationOutcomeSourceRow> sourceRows,
         long sourceNextIdentity,
         CancellationToken cancellationToken)
@@ -95,6 +94,16 @@ public sealed class PostgreSqlQuotationOutcomeAdopter
 
         QuotationAcceptedOutcomeImportRow[] existing = await ReadCanonicalAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         QuotationOutcomeImportPlan plan = QuotationOutcomeTransformPlanner.Create(sourceRows, existing, sourceNextIdentity);
+        long[] actualInsertIds = plan.Inserts.Select(row => row.ID).Order().ToArray();
+        long[] actualReplayIds = plan.AlreadyApplied.Select(row => row.ID).Order().ToArray();
+        if (!actualInsertIds.SequenceEqual(signedData.InsertIds.Order()) ||
+            !actualReplayIds.SequenceEqual(signedData.ReplayIds.Order()))
+        {
+            throw new QuotationOutcomeAdoptionException(
+                "quotation_adoption_partition_drift",
+                "The observed insert and replay partitions do not match the signed adoption contract.");
+        }
+
         foreach (QuotationAcceptedOutcomeImportRow row in plan.Inserts)
         {
             const string insertSql = """
@@ -115,6 +124,21 @@ public sealed class PostgreSqlQuotationOutcomeAdopter
             _ = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        QuotationAcceptedOutcomeImportRow[] verifiedRows = await ReadCanonicalAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        QuotationOutcomeSourceRow[] reconstructed = verifiedRows.Select(row => new QuotationOutcomeSourceRow(
+            row.ID, row.EventKey, row.QuotationID, row.SourceRequestID, row.SourceJourneyID,
+            row.AcceptedUtc, row.AcceptanceOrigin)).ToArray();
+        long verifiedRowCount = reconstructed.Length;
+        string verifiedContentSha256 = QuotationOutcomeTransformPlanner.ComputeContentSha256(reconstructed);
+        if (verifiedRowCount != signedData.ExpectedCanonical.RowCount ||
+            !string.Equals(verifiedContentSha256, signedData.ExpectedCanonical.ContentSha256, StringComparison.Ordinal) ||
+            sourceNextIdentity != signedData.ExpectedCanonical.NextIdentity)
+        {
+            throw new QuotationOutcomeAdoptionException(
+                "quotation_adoption_target_drift",
+                "The canonical rows or identity sequence do not match the signed adoption contract.");
+        }
+
         const string sequenceSql = "SELECT setval(pg_get_serial_sequence('\"QuotationAcceptedOutcome\"', 'ID'), $1, $2);";
         await using (var sequence = new NpgsqlCommand(sequenceSql, connection, transaction))
         {
@@ -123,14 +147,17 @@ public sealed class PostgreSqlQuotationOutcomeAdopter
             _ = await sequence.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        QuotationAcceptedOutcomeImportRow[] verifiedRows = await ReadCanonicalAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-        QuotationOutcomeSourceRow[] reconstructed = verifiedRows.Select(row => new QuotationOutcomeSourceRow(
-            row.ID, row.EventKey, row.QuotationID, row.SourceRequestID, row.SourceJourneyID,
-            row.AcceptedUtc, row.AcceptanceOrigin)).ToArray();
         var verified = new QuotationOutcomeInventoryContract(
-            reconstructed.Length,
-            QuotationOutcomeTransformPlanner.ComputeContentSha256(reconstructed),
+            verifiedRowCount,
+            verifiedContentSha256,
             await ReadNextIdentityAsync(connection, transaction, cancellationToken).ConfigureAwait(false));
+        if (verified != signedData.ExpectedCanonical)
+        {
+            throw new QuotationOutcomeAdoptionException(
+                "quotation_adoption_target_drift",
+                "The canonical identity sequence does not match the signed adoption contract.");
+        }
+
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new(plan.Inserts.Count, plan.AlreadyApplied.Count, verified);
     }
