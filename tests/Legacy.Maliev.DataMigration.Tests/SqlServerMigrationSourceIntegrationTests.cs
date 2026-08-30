@@ -20,6 +20,89 @@ public sealed class SqlServerIntegrationFactAttribute : FactAttribute
 public sealed class SqlServerMigrationSourceIntegrationTests
 {
     [SqlServerIntegrationFact]
+    public async Task DisposeAfterInterruptedSnapshot_RollsBackTransactionAndFreshAdapterCanRestart()
+    {
+        const string password = "MALIEV_test_Only!123456";
+        await using MsSqlContainer container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
+            .WithPassword(password)
+            .Build();
+        await container.StartAsync();
+
+        const string database = "CrashRestartTest";
+        await using (var setup = new SqlConnection(container.GetConnectionString()))
+        {
+            await setup.OpenAsync();
+            await using var command = setup.CreateCommand();
+            command.CommandText = $"""
+                CREATE DATABASE [{database}];
+                ALTER DATABASE [{database}] SET ALLOW_SNAPSHOT_ISOLATION ON;
+                """;
+            _ = await command.ExecuteNonQueryAsync();
+        }
+
+        string applicationName = $"Legacy.Maliev.DataMigration.CrashRestart.{Guid.NewGuid():N}";
+        var builder = new SqlConnectionStringBuilder(container.GetConnectionString())
+        {
+            InitialCatalog = database,
+            ApplicationName = applicationName,
+        };
+        await using (var setup = new SqlConnection(builder.ConnectionString))
+        {
+            await setup.OpenAsync();
+            await using var command = setup.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE dbo.Items (
+                    Id int NOT NULL CONSTRAINT PK_Items PRIMARY KEY,
+                    Value nvarchar(100) NOT NULL);
+                INSERT INTO dbo.Items (Id, Value) VALUES (1, N'before crash');
+                """;
+            _ = await command.ExecuteNonQueryAsync();
+        }
+
+        var interrupted = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(builder.ConnectionString));
+        await interrupted.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
+        Assert.Equal(1, await CountSnapshotTransactionsAsync(container.GetConnectionString(), applicationName));
+
+        // Simulate process teardown: no explicit Complete/Rollback call reaches the adapter.
+        await interrupted.DisposeAsync();
+        Assert.Equal(0, await CountSnapshotTransactionsAsync(container.GetConnectionString(), applicationName));
+
+        await using (var writer = new SqlConnection(builder.ConnectionString))
+        {
+            await writer.OpenAsync();
+            await using var command = writer.CreateCommand();
+            command.CommandText = "INSERT INTO dbo.Items (Id, Value) VALUES (2, N'after restart');";
+            _ = await command.ExecuteNonQueryAsync();
+        }
+
+        await using var restarted = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(builder.ConnectionString));
+        await restarted.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
+        var plan = new TableCopyPlan("dbo", "Items", "public", "items", ["Id", "Value"], ["Id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "int",
+                ["Value"] = "nvarchar(100)",
+            },
+            ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "integer",
+                ["Value"] = "text",
+            },
+            PrimaryKey = new PrimaryKeyCopyPlan("PK_Items", ["Id"]),
+        };
+        var observed = new List<MigrationRow>();
+        await foreach (MigrationRow row in restarted.ReadTableAsync(database, plan, CancellationToken.None))
+        {
+            observed.Add(row);
+        }
+
+        Assert.Equal([1, 2], observed.Select(row => Assert.IsType<int>(row.Values["Id"])).ToArray());
+        Assert.Equal(["before crash", "after restart"], observed.Select(row => Assert.IsType<string>(row.Values["Value"])).ToArray());
+        await restarted.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
+    }
+
+    [SqlServerIntegrationFact]
     public async Task SnapshotCatalogStreamingAndDispose_PreserveProductionSemantics()
     {
         const string password = "MALIEV_test_Only!123456";
@@ -209,5 +292,23 @@ public sealed class SqlServerMigrationSourceIntegrationTests
 
         await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
         await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
+    }
+
+    private static async Task<int> CountSnapshotTransactionsAsync(string connectionString, string applicationName)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM sys.dm_tran_session_transactions AS transaction_session
+            INNER JOIN sys.dm_exec_sessions AS session_row
+                ON session_row.session_id = transaction_session.session_id
+            WHERE session_row.program_name = @applicationName;
+            """;
+        _ = command.Parameters.AddWithValue("@applicationName", applicationName);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(CancellationToken.None),
+            System.Globalization.CultureInfo.InvariantCulture);
     }
 }
