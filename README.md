@@ -108,7 +108,7 @@ No executable migration logic was copied from those files.
 
 The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan`,
 `authorize-shadow`, `execute-shadow`, `export-local-snapshot`, `cleanup-restore`,
-`sign-provenance`, and `evidence`. Command lines may carry a protected
+`sign-provenance`, `sign-quotation-schema-baseline`, `sign-quotation-postgres-snapshot`, and `evidence`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
 cannot leak through process listings or logs. The host requires owner-only,
@@ -122,6 +122,29 @@ The receipt producer independently re-reads all 25 local backup files and binds
 their approved GCS object names,
 immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
 Signing keys are externally supplied and are never stored in this repository.
+
+`sign-quotation-schema-baseline` creates the exact domain-separated
+`Legacy.Maliev.QuotationService.SchemaBaselineReceipt.v1` envelope consumed by
+the Quotation migration runner. It fails closed unless deployment remains
+disabled, owner review is explicit, the complete schema-plan digest matches the
+reviewed value, the selected Quotation database exists in that plan, the
+workload and database agree, and a dedicated P-256 signing key is supplied via
+`LEGACY_QUOTATION_SCHEMA_SIGNING_KEY_FILE`. The protected configuration pins
+that key's fingerprint and derives its reuse fence from the protected five-role
+`SigningRoles` trust bundle; an optional configured denylist adds further roles.
+Any canonical P-256 SPKI fingerprint match is rejected. Publication is create-only.
+
+`QuotationPostgreSqlSnapshotReceiptProducer` signs the separate
+`Legacy.Maliev.QuotationService.PostgreSqlSnapshotReceipt.v1` domain only after
+binding an immutable backup object URI, exact generation, byte length and
+SHA-256, UTC recovery point, healthy reconciled CloudNativePG cluster UID and
+generation, run, copy plan, schema baseline, workload and database target.
+The non-test `sign-quotation-postgres-snapshot` command obtains application
+default credentials and reads the exact requested GCS generation plus required
+`maliev-snapshot-id`, `maliev-sha256`, and `maliev-recovery-point-utc` metadata.
+It independently observes the fixed in-cluster `maliev-legacy/legacy-postgres-main`
+CloudNativePG resource, rechecks both observations, applies the protected
+five-role `SigningRoles` reuse fence, and publishes only to a new protected path.
 
 `Exact25FullBackupProducer` is the fail-closed producer used by the daily backup
 adapter. It requires the exact 27-database source disposition inventory to be

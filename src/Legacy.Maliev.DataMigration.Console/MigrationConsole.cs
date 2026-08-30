@@ -25,6 +25,8 @@ public static class MigrationConsole
     private const string ProvenanceSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_PROVENANCE_SIGNING_KEY_FILE";
     private const string DeployEnabledEnvironmentVariable = "LEGACY_DEPLOY_ENABLED";
     private const string AuthorizationSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE";
+    private const string QuotationSchemaSigningKeyEnvironmentVariable = "LEGACY_QUOTATION_SCHEMA_SIGNING_KEY_FILE";
+    private const string QuotationSnapshotSigningKeyEnvironmentVariable = "LEGACY_QUOTATION_SNAPSHOT_SIGNING_KEY_FILE";
     private const string LegacyNamespace = "maliev-legacy";
     private const string LegacyPostgreSqlCluster = "legacy-postgres-main";
     private const string KubernetesApiServer = "https://kubernetes.default.svc";
@@ -50,6 +52,7 @@ public static class MigrationConsole
             getEnvironmentVariable,
             new DefaultExact25BackupRuntimeFactory(),
             new DefaultAuthorizationRuntimeAttestationFactory(),
+            new DefaultQuotationSnapshotRuntimeFactory(),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -62,7 +65,7 @@ public static class MigrationConsole
         CancellationToken cancellationToken)
     {
         return RunCoreAsync(arguments, output, error, getEnvironmentVariable, backupRuntimeFactory,
-            new DefaultAuthorizationRuntimeAttestationFactory(), cancellationToken);
+            new DefaultAuthorizationRuntimeAttestationFactory(), new DefaultQuotationSnapshotRuntimeFactory(), cancellationToken);
     }
 
     internal static Task<int> RunAuthorizationForTestsAsync(
@@ -74,7 +77,19 @@ public static class MigrationConsole
         CancellationToken cancellationToken)
     {
         return RunCoreAsync(arguments, output, error, getEnvironmentVariable, new DefaultExact25BackupRuntimeFactory(),
-            runtimeAttestationFactory, cancellationToken);
+            runtimeAttestationFactory, new DefaultQuotationSnapshotRuntimeFactory(), cancellationToken);
+    }
+
+    internal static Task<int> RunQuotationSnapshotForTestsAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        Func<string, string?> getEnvironmentVariable,
+        IQuotationSnapshotRuntimeFactory runtimeFactory,
+        CancellationToken cancellationToken)
+    {
+        return RunCoreAsync(arguments, output, error, getEnvironmentVariable, new DefaultExact25BackupRuntimeFactory(),
+            new DefaultAuthorizationRuntimeAttestationFactory(), runtimeFactory, cancellationToken);
     }
 
     private static async Task<int> RunCoreAsync(
@@ -84,6 +99,7 @@ public static class MigrationConsole
         Func<string, string?> getEnvironmentVariable,
         IExact25BackupRuntimeFactory backupRuntimeFactory,
         IAuthorizationRuntimeAttestationFactory runtimeAttestationFactory,
+        IQuotationSnapshotRuntimeFactory quotationSnapshotRuntimeFactory,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(arguments);
@@ -137,6 +153,15 @@ public static class MigrationConsole
                 case "sign-provenance":
                     await SignProvenanceAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("sign_provenance_complete").ConfigureAwait(false);
+                    return 0;
+                case "sign-quotation-schema-baseline":
+                    await SignQuotationSchemaBaselineAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("quotation_schema_baseline_complete").ConfigureAwait(false);
+                    return 0;
+                case "sign-quotation-postgres-snapshot":
+                    await SignQuotationPostgreSqlSnapshotAsync(
+                        invocation.ConfigPath, getEnvironmentVariable, quotationSnapshotRuntimeFactory, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("quotation_postgres_snapshot_complete").ConfigureAwait(false);
                     return 0;
                 default:
                     await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
@@ -193,6 +218,140 @@ public static class MigrationConsole
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 70;
         }
+    }
+
+    private static async Task SignQuotationSchemaBaselineAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new MigrationExecutionException("quotation_schema_deploy_gate_invalid", "Legacy deployment must remain disabled while schema evidence is signed.");
+        }
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "quotation_schema_config_unprotected", cancellationToken).ConfigureAwait(false);
+        QuotationSchemaBaselineCommandConfiguration command = configuration.QuotationSchemaBaseline ??
+            throw new MigrationExecutionException("quotation_schema_configuration_missing", "Reviewed Quotation schema configuration is required.");
+        if (!command.AllowSigning)
+        {
+            throw new MigrationExecutionException("quotation_schema_owner_review_required", "Explicit owner review is required before schema evidence is signed.");
+        }
+        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
+            command.PlanPath, "quotation_schema_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        SigningRoleTrustBundle signingRoles = await ReadSigningRolesAsync(
+            configuration.SigningRoles, cancellationToken).ConfigureAwait(false);
+        BindConfiguredSigningRoles(configuration, signingRoles);
+        if (!string.Equals(plan.SchemaVersion, "2.0", StringComparison.Ordinal) ||
+            !string.Equals(SchemaPlanCanonicalizer.ComputeSha256(plan), command.ReviewedSchemaPlanSha256, StringComparison.Ordinal))
+        {
+            throw new MigrationExecutionException("quotation_schema_plan_mismatch", "The schema plan does not match the reviewed digest.");
+        }
+        string database = command.Workload switch { "quotation" => "Quotation", "quotation-request" => "QuotationRequest", _ => string.Empty };
+        DatabaseSchemaPlan selected = plan.Databases.SingleOrDefault(item => item.Database == database) ??
+            throw new MigrationExecutionException("quotation_schema_database_missing", "The selected Quotation database is absent from the reviewed plan.");
+        string keyPath = getEnvironmentVariable(QuotationSchemaSigningKeyEnvironmentVariable) ??
+            throw new MigrationExecutionException("quotation_schema_signing_key_missing", "The protected Quotation schema signing key is required.");
+        using var signer = new P256MigrationEvidenceSigner(command.KeyId,
+            await ReadProtectedTextAsync(keyPath, "quotation_schema_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        EnsureAdditionalSignerSeparated(signer, command.SigningKeyFingerprintSha256,
+            command.ForbiddenSigningKeyFingerprintsSha256, signingRoles, "quotation_schema_signing_role_invalid");
+        QuotationSchemaBaselineReceipt receipt = QuotationSchemaBaselineReceiptProducer.Produce(
+            new(command.Workload, command.SourceSnapshotId, command.CopyPlanId, selected, command.Host, command.Port,
+                database, command.ExpiresUtc), signer);
+        using JsonDocument envelope = JsonDocument.Parse(receipt.EnvelopeJson);
+        await WriteNewJsonAsync(command.OutputPath, new
+        {
+            Payload = envelope.RootElement.GetProperty("Payload").GetString(),
+            Signature = envelope.RootElement.GetProperty("Signature").GetString(),
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task SignQuotationPostgreSqlSnapshotAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        IQuotationSnapshotRuntimeFactory runtimeFactory,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new MigrationExecutionException("quotation_snapshot_deploy_gate_invalid", "Legacy deployment must remain disabled while snapshot evidence is signed.");
+        }
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "quotation_snapshot_config_unprotected", cancellationToken).ConfigureAwait(false);
+        QuotationPostgreSqlSnapshotCommandConfiguration command = configuration.QuotationPostgreSqlSnapshot ??
+            throw new MigrationExecutionException("quotation_snapshot_configuration_missing", "Reviewed Quotation snapshot configuration is required.");
+        if (!command.AllowSigning || command.ClusterNamespace != LegacyNamespace || command.ClusterName != LegacyPostgreSqlCluster)
+        {
+            throw new MigrationExecutionException("quotation_snapshot_owner_review_required", "Explicit review of the fixed snapshot target is required.");
+        }
+        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
+            command.PlanPath, "quotation_snapshot_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        if (SchemaPlanCanonicalizer.ComputeSha256(plan) != command.ReviewedSchemaPlanSha256)
+        {
+            throw new MigrationExecutionException("quotation_snapshot_plan_mismatch", "The snapshot schema plan does not match the reviewed digest.");
+        }
+        string database = command.Workload switch { "quotation" => "Quotation", "quotation-request" => "QuotationRequest", _ => string.Empty };
+        DatabaseSchemaPlan selected = plan.Databases.SingleOrDefault(item => item.Database == database) ??
+            throw new MigrationExecutionException("quotation_snapshot_database_missing", "The selected Quotation database is absent from the reviewed plan.");
+        if (selected.TargetSchemaSha256 != command.SchemaHash)
+        {
+            throw new MigrationExecutionException("quotation_snapshot_schema_mismatch", "The snapshot schema hash is not the reviewed target schema.");
+        }
+        SigningRoleTrustBundle signingRoles = await ReadSigningRolesAsync(configuration.SigningRoles, cancellationToken).ConfigureAwait(false);
+        BindConfiguredSigningRoles(configuration, signingRoles);
+        string keyPath = getEnvironmentVariable(QuotationSnapshotSigningKeyEnvironmentVariable) ??
+            throw new MigrationExecutionException("quotation_snapshot_signing_key_missing", "The protected snapshot signing key is required.");
+        using var signer = new P256MigrationEvidenceSigner(command.KeyId,
+            await ReadProtectedTextAsync(keyPath, "quotation_snapshot_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        EnsureAdditionalSignerSeparated(signer, command.SigningKeyFingerprintSha256,
+            command.ForbiddenSigningKeyFingerprintsSha256, signingRoles, "quotation_snapshot_signing_role_invalid");
+        IImmutablePostgreSqlSnapshotObserver snapshotObserver = await runtimeFactory.CreateSnapshotObserverAsync(cancellationToken).ConfigureAwait(false);
+        ICloudNativePgTargetObserver targetObserver = runtimeFactory.CreateTargetObserver();
+        try
+        {
+            QuotationPostgreSqlSnapshotReceipt receipt = await QuotationPostgreSqlSnapshotReceiptProducer.ProduceAsync(
+                new(command.Workload, command.RunId, command.SourceSnapshotId, command.CopyPlanId, command.SchemaHash,
+                    command.Host, command.Port, database, command.SnapshotId, command.BackupObjectUri,
+                    command.BackupObjectGeneration, command.ClusterNamespace, command.ClusterName, command.ExpiresUtc,
+                    command.ForbiddenSigningKeyFingerprintsSha256), signer, snapshotObserver, targetObserver,
+                TimeProvider.System, cancellationToken).ConfigureAwait(false);
+            using JsonDocument envelope = JsonDocument.Parse(receipt.EnvelopeJson);
+            await WriteNewJsonAsync(command.OutputPath, new
+            {
+                Payload = envelope.RootElement.GetProperty("Payload").GetString(),
+                Signature = envelope.RootElement.GetProperty("Signature").GetString(),
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            (snapshotObserver as IDisposable)?.Dispose();
+            (targetObserver as IDisposable)?.Dispose();
+        }
+    }
+
+    private static void EnsureAdditionalSignerSeparated(
+        P256MigrationEvidenceSigner signer,
+        string configuredFingerprint,
+        IReadOnlyList<string> additionalForbiddenFingerprints,
+        SigningRoleTrustBundle signingRoles,
+        string errorCode)
+    {
+        string[] established = [signingRoles.Backup.Fingerprint, signingRoles.Authorization.Fingerprint,
+            signingRoles.Execution.Fingerprint, signingRoles.Provenance.Fingerprint, signingRoles.FinalEvidence.Fingerprint];
+        if (!FixedFingerprintEquals(signer.PublicKeyFingerprintSha256, configuredFingerprint) ||
+            established.Any(value => FixedFingerprintEquals(value, signer.PublicKeyFingerprintSha256)) ||
+            additionalForbiddenFingerprints.Any(value => FixedFingerprintEquals(value, signer.PublicKeyFingerprintSha256)))
+        {
+            throw new MigrationExecutionException(errorCode, "The additional signing role must be reviewed and distinct from all established evidence roles.");
+        }
+    }
+
+    private static bool FixedFingerprintEquals(string left, string right)
+    {
+        return left.Length == right.Length && CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.ASCII.GetBytes(left.ToLowerInvariant()),
+            System.Text.Encoding.ASCII.GetBytes(right.ToLowerInvariant()));
     }
 
     private static async Task AuthorizeShadowAsync(
@@ -1014,7 +1173,46 @@ public static class MigrationConsole
         RestoreBackupsCommandConfiguration? RestoreBackups = null,
         AuthorizeShadowCommandConfiguration? AuthorizeShadow = null,
         SignProvenanceCommandConfiguration? SignProvenance = null,
+        QuotationSchemaBaselineCommandConfiguration? QuotationSchemaBaseline = null,
+        QuotationPostgreSqlSnapshotCommandConfiguration? QuotationPostgreSqlSnapshot = null,
         SigningRolesCommandConfiguration? SigningRoles = null);
+
+    private sealed record QuotationSchemaBaselineCommandConfiguration(
+        string PlanPath,
+        string OutputPath,
+        string ReviewedSchemaPlanSha256,
+        string Workload,
+        string SourceSnapshotId,
+        string CopyPlanId,
+        string Host,
+        int Port,
+        DateTimeOffset ExpiresUtc,
+        string KeyId,
+        string SigningKeyFingerprintSha256,
+        IReadOnlyList<string> ForbiddenSigningKeyFingerprintsSha256,
+        bool AllowSigning);
+
+    private sealed record QuotationPostgreSqlSnapshotCommandConfiguration(
+        string PlanPath,
+        string OutputPath,
+        string ReviewedSchemaPlanSha256,
+        string Workload,
+        Guid RunId,
+        string SourceSnapshotId,
+        string CopyPlanId,
+        string SchemaHash,
+        string Host,
+        int Port,
+        string SnapshotId,
+        string BackupObjectUri,
+        long BackupObjectGeneration,
+        string ClusterNamespace,
+        string ClusterName,
+        DateTimeOffset ExpiresUtc,
+        string KeyId,
+        string SigningKeyFingerprintSha256,
+        IReadOnlyList<string> ForbiddenSigningKeyFingerprintsSha256,
+        bool AllowSigning);
 
     private sealed record SigningRolesCommandConfiguration(
         TrustedKeyReference Backup,
@@ -1152,6 +1350,30 @@ internal interface IAuthorizationRuntimeAttestationFactory
         string namespaceName,
         string cluster,
         CancellationToken cancellationToken);
+}
+
+internal interface IQuotationSnapshotRuntimeFactory
+{
+    Task<IImmutablePostgreSqlSnapshotObserver> CreateSnapshotObserverAsync(CancellationToken cancellationToken);
+    ICloudNativePgTargetObserver CreateTargetObserver();
+}
+
+internal sealed class DefaultQuotationSnapshotRuntimeFactory : IQuotationSnapshotRuntimeFactory
+{
+    public async Task<IImmutablePostgreSqlSnapshotObserver> CreateSnapshotObserverAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return await GoogleCloudImmutablePostgreSqlSnapshotObserver.CreateWithApplicationDefaultCredentialsAsync()
+            .ConfigureAwait(false);
+    }
+
+    public ICloudNativePgTargetObserver CreateTargetObserver()
+    {
+        return new CloudNativePgTargetObserver(new(
+            new Uri("https://kubernetes.default.svc", UriKind.Absolute),
+            "/var/run/secrets/kubernetes.io/serviceaccount/token",
+            "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"));
+    }
 }
 
 internal sealed class DefaultAuthorizationRuntimeAttestationFactory : IAuthorizationRuntimeAttestationFactory

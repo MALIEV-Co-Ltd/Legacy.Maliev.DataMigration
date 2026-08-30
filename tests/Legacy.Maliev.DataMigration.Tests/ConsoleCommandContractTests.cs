@@ -13,6 +13,8 @@ public sealed class ConsoleCommandContractTests
         "backup-full",
         "authorize-shadow",
         "sign-provenance",
+        "sign-quotation-schema-baseline",
+        "sign-quotation-postgres-snapshot",
     ];
 
     [Theory]
