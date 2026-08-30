@@ -265,6 +265,27 @@ public sealed class CurrentQuotationSourceIntegrationTests
         command.CommandText = "SELECT last_value::text || '|' || is_called::text FROM \"QuotationAcceptedOutcome_ID_seq\";";
         Assert.Equal(pristineSequence, (string)(await command.ExecuteScalarAsync())!);
 
+        QuotationOutcomeAdoptionContract wrongCanonicalContent = QuotationOutcomeAdoptionAttestation.Sign(
+            unsigned with
+            {
+                Data = unsigned.Data! with
+                {
+                    ExpectedCanonical = unsigned.Data!.ExpectedCanonical with
+                    {
+                        ContentSha256 = new string('0', 64)
+                    }
+                }
+            },
+            signingKey);
+        QuotationOutcomeAdoptionException contentFailure = await Assert.ThrowsAsync<QuotationOutcomeAdoptionException>(() =>
+            PostgreSqlQuotationOutcomeAdopter.AdoptSignedAsync(
+                connection, wrongCanonicalContent, sourceRows, 57, observation, trust, CancellationToken.None));
+        Assert.Equal("quotation_adoption_target_drift", contentFailure.Code);
+        command.CommandText = "SELECT COUNT(*) FROM \"QuotationAcceptedOutcome\";";
+        Assert.Equal(0L, (long)(await command.ExecuteScalarAsync())!);
+        command.CommandText = "SELECT last_value::text || '|' || is_called::text FROM \"QuotationAcceptedOutcome_ID_seq\";";
+        Assert.Equal(pristineSequence, (string)(await command.ExecuteScalarAsync())!);
+
         QuotationOutcomeAdoptionResult adopted = await PostgreSqlQuotationOutcomeAdopter.AdoptSignedAsync(
             connection, signed, sourceRows, 57, observation, trust, CancellationToken.None);
         Assert.Equal(2, adopted.InsertedCount);
