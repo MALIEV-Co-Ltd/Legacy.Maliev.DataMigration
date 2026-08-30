@@ -256,10 +256,14 @@ generation/status/spec and PostgreSQL owner/ACL before use. Direct SQL database
 creation by the migration credential is forbidden.
 
 The GitOps lane must supply namespace-scoped RBAC and a validating-admission
-policy that allow this service account to create/update/get only
-`postgresql.cnpg.io/v1 Database` resources for the pinned cluster, owner, labels,
-and `legacy_shadow_*` name contract. Those dormant manifests are deliberately not
-applied by this repository. This repository also does not apply PostgreSQL ACL
+policy that selects every mutation made by the dedicated migration service account
+and every current or old `legacy-shadow-*` object. Validation allows only the exact
+service-account plus run-owned shadow-name combination. Migration attempts against
+canonical or malformed resources and non-migration attempts against shadow resources
+are denied, while unrelated identities acting on canonical Database resources are
+not selected. The allowed `postgresql.cnpg.io/v1 Database` resources remain bound
+to the pinned cluster, owner, labels, and `legacy_shadow_*` name contract. Those
+dormant manifests are deliberately not applied by this repository. This repository also does not apply PostgreSQL ACL
 changes automatically. Replay, fencing, lease expiry, crash cleanup,
 and wrong-target checks remain enforced by the guarded runner. The command writes
 a new signed execution receipt and has no canonical-target or deployment mode.
