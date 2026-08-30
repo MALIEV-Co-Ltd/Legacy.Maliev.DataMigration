@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text.Json;
 using Legacy.Maliev.DataMigration.Console;
 
@@ -582,6 +584,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
     {
         string path = Path.Combine(_root, name);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(value, JsonOptions));
+        ProtectFile(path);
         return path;
     }
 
@@ -595,7 +598,25 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
     {
         string path = Path.Combine(_root, name);
         await File.WriteAllTextAsync(path, value);
+        ProtectFile(path);
         return path;
+    }
+
+    private static void ProtectFile(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            return;
+        }
+
+        SecurityIdentifier owner = WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("The test identity has no Windows SID.");
+        var security = new FileSecurity();
+        security.SetOwner(owner);
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(owner, FileSystemRights.FullControl, AccessControlType.Allow));
+        new FileInfo(path).SetAccessControl(security);
     }
 
     public void Dispose()

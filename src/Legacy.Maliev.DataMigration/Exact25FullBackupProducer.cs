@@ -236,7 +236,7 @@ public static partial class Exact25FullBackupProducer
             });
         }
 
-        BackupReceipt receipt = await BackupReceiptProducer.ProduceAsync(
+        BackupReceipt receipt = await ProduceReceiptAsync(
             states,
             receiptKeyId,
             receiptSigningKey,

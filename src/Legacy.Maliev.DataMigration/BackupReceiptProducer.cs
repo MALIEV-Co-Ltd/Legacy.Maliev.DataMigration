@@ -3,20 +3,20 @@ using System.Text;
 
 namespace Legacy.Maliev.DataMigration;
 
-public sealed record VerifiedBackupStateArtifact(
-    string Database,
-    string LocalPath,
-    string GcsObject,
-    long GcsGeneration,
-    long GcsByteLength,
-    string GcsSha256)
+public static partial class Exact25FullBackupProducer
 {
-    public DateTimeOffset? CompletedAtUtc { get; init; }
-}
+    private sealed record VerifiedBackupStateArtifact(
+        string Database,
+        string LocalPath,
+        string GcsObject,
+        long GcsGeneration,
+        long GcsByteLength,
+        string GcsSha256)
+    {
+        public DateTimeOffset? CompletedAtUtc { get; init; }
+    }
 
-public static class BackupReceiptProducer
-{
-    public static async Task<BackupReceipt> ProduceAsync(
+    private static async Task<BackupReceipt> ProduceReceiptAsync(
         IReadOnlyCollection<VerifiedBackupStateArtifact> backupState,
         string keyId,
         ECDsa signingKey,
@@ -29,7 +29,7 @@ public static class BackupReceiptProducer
         EnsureP256(signingKey);
         if (sourceObservedAtUtc == default || sourceObservedAtUtc.Offset != TimeSpan.Zero)
         {
-            throw new BackupReceiptProductionException("backup_state_capture_time_invalid", "The authoritative source observation time is invalid.");
+            throw ReceiptError("backup_state_capture_time_invalid", "The authoritative source observation time is invalid.");
         }
 
         string[] observed = [.. backupState.Select(item => item.Database)];
@@ -38,7 +38,7 @@ public static class BackupReceiptProducer
             !observed.OrderBy(item => item, StringComparer.Ordinal)
                 .SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
         {
-            throw new BackupReceiptProductionException(
+            throw ReceiptError(
                 "backup_state_database_coverage_invalid",
                 "Backup state must cover exactly the approved database inventory.");
         }
@@ -49,17 +49,17 @@ public static class BackupReceiptProducer
             cancellationToken.ThrowIfCancellationRequested();
             if (state.GcsGeneration <= 0 || state.GcsByteLength < 0 || !IsSha256(state.GcsSha256))
             {
-                throw new BackupReceiptProductionException("backup_state_cloud_metadata_invalid", "Approved cloud metadata is incomplete.");
+                throw ReceiptError("backup_state_cloud_metadata_invalid", "Approved cloud metadata is incomplete.");
             }
             if (state.CompletedAtUtc is null || state.CompletedAtUtc.Value.Offset != TimeSpan.Zero ||
                 state.CompletedAtUtc.Value < sourceObservedAtUtc)
             {
-                throw new BackupReceiptProductionException("backup_state_capture_time_invalid", "The backup completion evidence is invalid.");
+                throw ReceiptError("backup_state_capture_time_invalid", "The backup completion evidence is invalid.");
             }
 
             var file = new FileInfo(state.LocalPath);
             string localDirectory = file.DirectoryName
-                ?? throw new BackupReceiptProductionException("backup_state_local_path_invalid", "A local backup path is invalid.");
+                ?? throw ReceiptError("backup_state_local_path_invalid", "A local backup path is invalid.");
             try
             {
                 SecureLocalFile.EnsureOwnerOnlyDirectory(localDirectory);
@@ -67,11 +67,11 @@ public static class BackupReceiptProducer
             }
             catch (Exact25FullBackupException exception)
             {
-                throw new BackupReceiptProductionException("backup_state_local_path_invalid", exception.Message);
+                throw ReceiptError("backup_state_local_path_invalid", exception.Message);
             }
             if (!SecureLocalFile.IsOwnerOnlyFile(file) || file.Length != state.GcsByteLength)
             {
-                throw new BackupReceiptProductionException("backup_state_local_size_mismatch", "A local backup does not match approved cloud metadata.");
+                throw ReceiptError("backup_state_local_size_mismatch", "A local backup does not match approved cloud metadata.");
             }
 
             await using FileStream localRead = SecureLocalFile.OpenRead(state.LocalPath);
@@ -80,7 +80,7 @@ public static class BackupReceiptProducer
                 Encoding.ASCII.GetBytes(localSha256),
                 Encoding.ASCII.GetBytes(state.GcsSha256.ToLowerInvariant())))
             {
-                throw new BackupReceiptProductionException("backup_state_local_hash_mismatch", "A local backup does not match approved cloud metadata.");
+                throw ReceiptError("backup_state_local_hash_mismatch", "A local backup does not match approved cloud metadata.");
             }
 
             artifacts.Add(new BackupArtifact(
@@ -114,14 +114,14 @@ public static class BackupReceiptProducer
         };
         if (!ReceiptAttestation.TryCreatePayload(unsigned, out byte[] payload))
         {
-            throw new BackupReceiptProductionException("backup_receipt_canonicalization_failed", "The receipt could not be canonicalized.");
+            throw ReceiptError("backup_receipt_canonicalization_failed", "The receipt could not be canonicalized.");
         }
 
         string signature = Convert.ToBase64String(signingKey.SignData(payload, HashAlgorithmName.SHA256));
         return unsigned with { AttestationSignature = signature };
     }
 
-    internal static string ComputeManifestSha256(IEnumerable<BackupArtifact> artifacts)
+    private static string ComputeManifestSha256(IEnumerable<BackupArtifact> artifacts)
     {
         string canonical = string.Join('\n', artifacts
             .OrderBy(artifact => artifact.Database, StringComparer.Ordinal)
@@ -140,12 +140,12 @@ public static class BackupReceiptProducer
         ECParameters parameters = key.ExportParameters(false);
         if (key.KeySize != 256 || !string.Equals(parameters.Curve.Oid.Value, "1.2.840.10045.3.1.7", StringComparison.Ordinal))
         {
-            throw new BackupReceiptProductionException("backup_receipt_signing_key_curve_invalid", "The signing key must be ECDSA P-256.");
+            throw ReceiptError("backup_receipt_signing_key_curve_invalid", "The signing key must be ECDSA P-256.");
         }
     }
-}
 
-public sealed class BackupReceiptProductionException(string code, string message) : Exception(message)
-{
-    public string Code { get; } = code;
+    private static Exact25FullBackupException ReceiptError(string code, string message)
+    {
+        return new(code, message);
+    }
 }

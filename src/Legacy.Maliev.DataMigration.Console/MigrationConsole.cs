@@ -94,6 +94,10 @@ public static class MigrationConsole
                         cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("backup_full_complete").ConfigureAwait(false);
                     return 0;
+                case "verify-backup":
+                    await ProduceRestoreManifestAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("backup_verified").ConfigureAwait(false);
+                    return 0;
                 default:
                     await error.WriteLineAsync("stage_not_configured").ConfigureAwait(false);
                     return 2;
@@ -105,11 +109,6 @@ public static class MigrationConsole
             return 64;
         }
         catch (MigrationConsoleException exception)
-        {
-            await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
-            return 65;
-        }
-        catch (BackupReceiptProductionException exception)
         {
             await error.WriteLineAsync(exception.Code).ConfigureAwait(false);
             return 65;
@@ -365,8 +364,8 @@ public static class MigrationConsole
         var keys = new List<TrustedAttestationKey>(references.Count);
         foreach (TrustedKeyReference reference in references)
         {
-            byte[] publicKey = Convert.FromBase64String(await File.ReadAllTextAsync(reference.SubjectPublicKeyInfoPath, cancellationToken)
-                .ConfigureAwait(false));
+            byte[] publicKey = Convert.FromBase64String(await ReadProtectedTextAsync(
+                reference.SubjectPublicKeyInfoPath, "trusted_key_unprotected", cancellationToken).ConfigureAwait(false));
             keys.Add(new(reference.KeyId, publicKey));
         }
         return new(keys);
@@ -415,6 +414,20 @@ public static class MigrationConsole
         }
     }
 
+    private static async Task ProduceRestoreManifestAsync(string configPath, CancellationToken cancellationToken)
+    {
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "backup_config_unprotected", cancellationToken).ConfigureAwait(false);
+        RestoreManifestCommandConfiguration restore = configuration.RestoreManifest ??
+            throw new MigrationConsoleException("restore_manifest_configuration_missing", "Restore manifest configuration is required.");
+        BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
+            restore.ReceiptPath, "backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore trust = await ReadTrustStoreAsync(restore.ReceiptTrustedKeys, cancellationToken).ConfigureAwait(false);
+        BackupRestoreManifest manifest = await BackupRestoreManifestVerifier.CreateAsync(
+            receipt, trust, restore.RecoveryDirectory, cancellationToken).ConfigureAwait(false);
+        await WriteNewJsonAsync(restore.OutputPath, manifest, cancellationToken).ConfigureAwait(false);
+    }
+
     private static async Task<T> ReadProtectedJsonAsync<T>(
         string path,
         string unprotectedCode,
@@ -457,7 +470,8 @@ public static class MigrationConsole
         ExecuteShadowCommandConfiguration? ExecuteShadow = null,
         EvidenceCommandConfiguration? Evidence = null,
         ExportLocalSnapshotCommandConfiguration? ExportLocalSnapshot = null,
-        FullBackupCommandConfiguration? FullBackup = null);
+        FullBackupCommandConfiguration? FullBackup = null,
+        RestoreManifestCommandConfiguration? RestoreManifest = null);
 
     private sealed record FullBackupCommandConfiguration(
         string Namespace,
@@ -474,6 +488,12 @@ public static class MigrationConsole
         bool AllowSourceBackup);
 
     private sealed record PlanCommandConfiguration(string OutputPath, string SourceCommitSha);
+
+    private sealed record RestoreManifestCommandConfiguration(
+        string ReceiptPath,
+        string RecoveryDirectory,
+        string OutputPath,
+        IReadOnlyList<TrustedKeyReference> ReceiptTrustedKeys);
 
     private sealed record ExecuteShadowCommandConfiguration(
         string ReceiptPath,
@@ -556,7 +576,9 @@ internal static class OwnerProtectedFilePolicy
         {
             var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.None,
                 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            if (!HasNoLinkAncestors(fullPath) || !IsOwnerOnly(fullPath) || !HandleResolvesTo(stream.SafeFileHandle, fullPath))
+            if (!HasNoLinkAncestors(fullPath) || !IsOwnerOnly(fullPath) ||
+                !HandleResolvesTo(stream.SafeFileHandle, fullPath) ||
+                (!OperatingSystem.IsWindows() && !UnixHandleIsOwnedByEffectiveUser(stream.SafeFileHandle)))
             {
                 stream.Dispose();
                 throw new MigrationConsoleException(errorCode, "The protected file changed while it was being opened.");
@@ -590,7 +612,8 @@ internal static class OwnerProtectedFilePolicy
         UnixFileMode mode = File.GetUnixFileMode(file.FullName);
         const UnixFileMode forbidden = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
             UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
-        return (mode & forbidden) == 0 && (mode & UnixFileMode.UserRead) != 0;
+        return (mode & forbidden) == 0 && (mode & UnixFileMode.UserRead) != 0 &&
+            UnixPathIsOwnedByEffectiveUser(file.FullName);
     }
 
     private static bool HasNoLinkAncestors(string path)
@@ -626,9 +649,47 @@ internal static class OwnerProtectedFilePolicy
         {
             return null;
         }
-        const string devicePrefix = @"\\?\";
         string value = new(buffer, 0, checked((int)length));
-        return value.StartsWith(devicePrefix, StringComparison.Ordinal) ? value[devicePrefix.Length..] : value;
+        return NormalizeWindowsFinalPath(value);
+    }
+
+    internal static string NormalizeWindowsFinalPath(string value)
+    {
+        const string uncPrefix = @"\\?\UNC\";
+        const string devicePrefix = @"\\?\";
+        return value.StartsWith(uncPrefix, StringComparison.OrdinalIgnoreCase)
+            ? @"\\" + value[uncPrefix.Length..]
+            : value.StartsWith(devicePrefix, StringComparison.Ordinal) ? value[devicePrefix.Length..] : value;
+    }
+
+    internal static bool IsEffectiveUnixUserId(uint uid)
+    {
+        return OperatingSystem.IsLinux() && uid == GetEffectiveUserId();
+    }
+
+    [SupportedOSPlatform("linux")]
+    internal static uint GetEffectiveUserId()
+    {
+        return GetEffectiveUserIdNative();
+    }
+
+    private static bool UnixPathIsOwnedByEffectiveUser(string path)
+    {
+        return OperatingSystem.IsLinux() &&
+            Statx(AtCurrentWorkingDirectory, path, AtSymlinkNoFollow, StatxBasicStats, out LinuxStatx stat) == 0 &&
+            IsEffectiveUnixUserId(stat.Uid);
+    }
+
+    private static bool UnixHandleIsOwnedByEffectiveUser(SafeFileHandle handle)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return false;
+        }
+
+        int fd = checked((int)handle.DangerousGetHandle());
+        return Statx(fd, string.Empty, AtEmptyPath, StatxBasicStats, out LinuxStatx stat) == 0 &&
+            IsEffectiveUnixUserId(stat.Uid);
     }
 
     [SupportedOSPlatform("linux")]
@@ -646,6 +707,25 @@ internal static class OwnerProtectedFilePolicy
         uint capacity,
         uint flags);
 #pragma warning restore SYSLIB1054
+
+    private const int AtCurrentWorkingDirectory = -100;
+    private const int AtSymlinkNoFollow = 0x100;
+    private const int AtEmptyPath = 0x1000;
+    private const uint StatxBasicStats = 0x7ff;
+
+    [StructLayout(LayoutKind.Explicit, Size = 256)]
+    private struct LinuxStatx
+    {
+        [FieldOffset(20)] public uint Uid;
+    }
+
+#pragma warning disable SYSLIB1054, CA2101 // Fixed Linux ABI; UTF-8 path is explicit and no unsafe source-generated marshaller is enabled.
+    [DllImport("libc", EntryPoint = "geteuid", SetLastError = false)]
+    private static extern uint GetEffectiveUserIdNative();
+
+    [DllImport("libc", EntryPoint = "statx", SetLastError = true)]
+    private static extern int Statx(int directoryFileDescriptor, [MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags, uint mask, out LinuxStatx stat);
+#pragma warning restore SYSLIB1054, CA2101
 
     [SupportedOSPlatform("windows")]
     private static bool IsOwnerOnlyWindows(string path)

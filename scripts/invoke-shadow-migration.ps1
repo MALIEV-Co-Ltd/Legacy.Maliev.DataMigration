@@ -13,7 +13,8 @@ if ($env:LEGACY_DEPLOY_ENABLED -ne 'false') {
 
 $config = (Resolve-Path -LiteralPath $ProtectedConfigPath).Path
 $project = Join-Path $PSScriptRoot '..\src\Legacy.Maliev.DataMigration.Console\Legacy.Maliev.DataMigration.Console.csproj'
-foreach ($stage in @('receipt', 'plan', 'execute-shadow', 'evidence', 'export-local-snapshot')) {
+& (Join-Path $PSScriptRoot 'restore-verified-sqlserver-backups.ps1') -ProtectedConfigPath $config -RepositoryRoot (Join-Path $PSScriptRoot '..') -Configuration $Configuration
+foreach ($stage in @('plan', 'execute-shadow', 'evidence', 'export-local-snapshot')) {
     & dotnet run --project $project --configuration $Configuration --no-build -- $stage --config $config
     if ($LASTEXITCODE -ne 0) {
         throw "Shadow migration stage failed: $stage"

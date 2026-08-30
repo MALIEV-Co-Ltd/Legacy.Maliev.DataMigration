@@ -12,24 +12,8 @@ public sealed class MigrationConsoleTests : IDisposable
     public async Task RunAsync_ReceiptCommandIsDisabledBeforeReadingCallerSuppliedStateOrKey()
     {
         _ = Directory.CreateDirectory(_root);
-        var states = new List<VerifiedBackupStateArtifact>();
-        foreach (string database in DatabaseInventory.ActiveDatabases)
-        {
-            string path = Path.Combine(_root, $"Full_{database}_2026-08-30_000000.bak");
-            await File.WriteAllTextAsync(path, database);
-            byte[] content = await File.ReadAllBytesAsync(path);
-            string hash = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
-            states.Add(new(database, path, $"database/full/run/{database}.bak", states.Count + 1, content.Length, hash)
-            {
-                CompletedAtUtc = new DateTimeOffset(2026, 8, 30, 1, 1, 0, TimeSpan.Zero),
-            });
-        }
         string statePath = Path.Combine(_root, "backup-state.json");
-        await File.WriteAllTextAsync(statePath, JsonSerializer.Serialize(new
-        {
-            sourceObservedAtUtc = new DateTimeOffset(2026, 8, 30, 1, 0, 0, TimeSpan.Zero),
-            artifacts = states,
-        }, JsonOptions));
+        await File.WriteAllTextAsync(statePath, "must-not-be-read");
         string outputPath = Path.Combine(_root, "receipt.json");
         string configPath = Path.Combine(_root, "config.json");
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new

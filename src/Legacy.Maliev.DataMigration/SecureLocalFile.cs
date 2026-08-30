@@ -31,7 +31,8 @@ internal static class SecureLocalFile
             UnixFileMode mode = File.GetUnixFileMode(full);
             const UnixFileMode forbidden = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
                 UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
-            if ((mode & forbidden) != 0 || (mode & UnixFileMode.UserWrite) == 0)
+            if ((mode & forbidden) != 0 || (mode & UnixFileMode.UserWrite) == 0 ||
+                !UnixPathIsOwnedByEffectiveUser(full))
             {
                 throw new Exact25FullBackupException("local_backup_directory_invalid", "The local backup directory permissions are not owner-only.");
             }
@@ -54,6 +55,11 @@ internal static class SecureLocalFile
         {
             stream.Dispose();
             throw new Exact25FullBackupException("local_backup_type_invalid", "The opened local backup does not resolve to the approved path.");
+        }
+        if (!OperatingSystem.IsWindows() && !UnixHandleIsOwnedByEffectiveUser(stream.SafeFileHandle))
+        {
+            stream.Dispose();
+            throw new Exact25FullBackupException("local_backup_type_invalid", "The opened local backup is not owned by the effective user.");
         }
         file.Refresh();
         if (!IsOwnerOnlyFile(file))
@@ -85,7 +91,8 @@ internal static class SecureLocalFile
         UnixFileMode mode = File.GetUnixFileMode(file.FullName);
         const UnixFileMode forbidden = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
             UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
-        return (mode & forbidden) == 0 && (mode & UnixFileMode.UserRead) != 0;
+        return (mode & forbidden) == 0 && (mode & UnixFileMode.UserRead) != 0 &&
+            UnixPathIsOwnedByEffectiveUser(file.FullName);
     }
 
     public static async Task<string> ComputeSha256Async(FileStream stream, CancellationToken cancellationToken)
@@ -136,9 +143,47 @@ internal static class SecureLocalFile
             return null;
         }
 
-        const string devicePrefix = @"\\?\";
         string value = new(buffer, 0, checked((int)length));
-        return value.StartsWith(devicePrefix, StringComparison.Ordinal) ? value[devicePrefix.Length..] : value;
+        return NormalizeWindowsFinalPath(value);
+    }
+
+    internal static string NormalizeWindowsFinalPath(string value)
+    {
+        const string uncPrefix = @"\\?\UNC\";
+        const string devicePrefix = @"\\?\";
+        return value.StartsWith(uncPrefix, StringComparison.OrdinalIgnoreCase)
+            ? @"\\" + value[uncPrefix.Length..]
+            : value.StartsWith(devicePrefix, StringComparison.Ordinal) ? value[devicePrefix.Length..] : value;
+    }
+
+    internal static bool IsEffectiveUnixUserId(uint uid)
+    {
+        return OperatingSystem.IsLinux() && uid == GetEffectiveUserId();
+    }
+
+    [SupportedOSPlatform("linux")]
+    internal static uint GetEffectiveUserId()
+    {
+        return GetEffectiveUserIdNative();
+    }
+
+    private static bool UnixPathIsOwnedByEffectiveUser(string path)
+    {
+        return OperatingSystem.IsLinux() &&
+            Statx(AtCurrentWorkingDirectory, path, AtSymlinkNoFollow, StatxBasicStats, out LinuxStatx stat) == 0 &&
+            IsEffectiveUnixUserId(stat.Uid);
+    }
+
+    private static bool UnixHandleIsOwnedByEffectiveUser(SafeFileHandle handle)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return false;
+        }
+
+        int fd = checked((int)handle.DangerousGetHandle());
+        return Statx(fd, string.Empty, AtEmptyPath, StatxBasicStats, out LinuxStatx stat) == 0 &&
+            IsEffectiveUnixUserId(stat.Uid);
     }
 
     [SupportedOSPlatform("linux")]
@@ -156,6 +201,25 @@ internal static class SecureLocalFile
         uint capacity,
         uint flags);
 #pragma warning restore SYSLIB1054
+
+    private const int AtCurrentWorkingDirectory = -100;
+    private const int AtSymlinkNoFollow = 0x100;
+    private const int AtEmptyPath = 0x1000;
+    private const uint StatxBasicStats = 0x7ff;
+
+    [StructLayout(LayoutKind.Explicit, Size = 256)]
+    private struct LinuxStatx
+    {
+        [FieldOffset(20)] public uint Uid;
+    }
+
+#pragma warning disable SYSLIB1054, CA2101 // Fixed Linux ABI; UTF-8 path is explicit and no unsafe source-generated marshaller is enabled.
+    [DllImport("libc", EntryPoint = "geteuid", SetLastError = false)]
+    private static extern uint GetEffectiveUserIdNative();
+
+    [DllImport("libc", EntryPoint = "statx", SetLastError = true)]
+    private static extern int Statx(int directoryFileDescriptor, [MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags, uint mask, out LinuxStatx stat);
+#pragma warning restore SYSLIB1054, CA2101
 
     [SupportedOSPlatform("windows")]
     private static bool IsOwnerOnlyWindows(string path, bool directory, bool requireProtected)

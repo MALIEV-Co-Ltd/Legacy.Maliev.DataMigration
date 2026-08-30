@@ -43,6 +43,15 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         Assert.True(ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload));
         Assert.True(_signingKey.VerifyData(
             payload, Convert.FromBase64String(receipt.AttestationSignature!), HashAlgorithmName.SHA256));
+        var trust = new ReceiptAttestationTrustStore([
+            new TrustedAttestationKey("backup-key", _signingKey.ExportSubjectPublicKeyInfo()),
+        ]);
+        BackupRestoreManifest restoreManifest = await BackupRestoreManifestVerifier.CreateAsync(
+            receipt, trust, request.LocalWorkingDirectory, CancellationToken.None);
+        Assert.Equal("1.0", restoreManifest.SchemaVersion);
+        Assert.Equal(25, restoreManifest.Artifacts.Count);
+        Assert.All(restoreManifest.Artifacts, artifact =>
+            Assert.StartsWith(Path.GetFullPath(request.LocalWorkingDirectory), artifact.LocalPath, StringComparison.Ordinal));
         Assert.All(receipt.Artifacts!, artifact =>
         {
             Assert.Equal("Full", artifact!.BackupType);

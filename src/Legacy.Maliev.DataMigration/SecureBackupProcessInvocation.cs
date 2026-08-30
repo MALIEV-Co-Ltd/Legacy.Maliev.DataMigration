@@ -180,8 +180,64 @@ public interface IBackupProcessRunner
     }
 }
 
+internal interface IBackupProcessIo
+{
+    Stream CreateDestination(string path);
+    Task<string> ReadStandardOutputAsync(Process process, CancellationToken cancellationToken);
+    Task<string> ReadStandardErrorAsync(Process process, CancellationToken cancellationToken);
+    Task WriteStandardInputAsync(Process process, string input, CancellationToken cancellationToken);
+    Task CopyStandardOutputAsync(Process process, Stream destination, CancellationToken cancellationToken);
+    Task FlushDestinationAsync(Stream destination, CancellationToken cancellationToken);
+}
+
+internal sealed class SystemBackupProcessIo : IBackupProcessIo
+{
+    public Stream CreateDestination(string path)
+    {
+        return new FileStream(
+        path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024,
+        FileOptions.Asynchronous | FileOptions.WriteThrough);
+    }
+
+    public Task<string> ReadStandardOutputAsync(Process process, CancellationToken cancellationToken)
+    {
+        return process.StandardOutput.ReadToEndAsync(cancellationToken);
+    }
+
+    public Task<string> ReadStandardErrorAsync(Process process, CancellationToken cancellationToken)
+    {
+        return process.StandardError.ReadToEndAsync(cancellationToken);
+    }
+
+    public Task WriteStandardInputAsync(Process process, string input, CancellationToken cancellationToken)
+    {
+        return process.StandardInput.WriteAsync(input.AsMemory(), cancellationToken);
+    }
+
+    public Task CopyStandardOutputAsync(Process process, Stream destination, CancellationToken cancellationToken)
+    {
+        return process.StandardOutput.BaseStream.CopyToAsync(destination, cancellationToken);
+    }
+
+    public Task FlushDestinationAsync(Stream destination, CancellationToken cancellationToken)
+    {
+        return destination.FlushAsync(cancellationToken);
+    }
+}
+
 public sealed class SystemBackupProcessRunner : IBackupProcessRunner
 {
+    private readonly IBackupProcessIo _io;
+
+    public SystemBackupProcessRunner() : this(new SystemBackupProcessIo())
+    {
+    }
+
+    internal SystemBackupProcessRunner(IBackupProcessIo io)
+    {
+        _io = io ?? throw new ArgumentNullException(nameof(io));
+    }
+
     public async Task<BackupProcessResult> RunAsync(
         SecureBackupProcessInvocation invocation,
         CancellationToken cancellationToken)
@@ -213,33 +269,24 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
             throw new Exact25BackupTransportException("process_start_failed", $"Failed to start {invocation}: {exception.GetType().Name}.", retryable: false);
         }
 
-        Task<string> stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        Task<string> stderr = process.StandardError.ReadToEndAsync(cancellationToken);
+        Task<string> stdout = _io.ReadStandardOutputAsync(process, cancellationToken);
+        Task<string> stderr = _io.ReadStandardErrorAsync(process, cancellationToken);
         try
         {
             if (invocation.StandardInput.Length > 0)
             {
-                await process.StandardInput.WriteAsync(invocation.StandardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
+                await _io.WriteStandardInputAsync(process, invocation.StandardInput, cancellationToken).ConfigureAwait(false);
             }
 
             process.StandardInput.Close();
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            Task exited = process.WaitForExitAsync(cancellationToken);
+            await ThrowIfAnyCompletesFaultedAsync(exited, stdout, stderr).ConfigureAwait(false);
+            await Task.WhenAll(exited, stdout, stderr).ConfigureAwait(false);
+            return new(process.ExitCode, stdout.Result, stderr.Result);
         }
-        catch (OperationCanceledException)
+        catch
         {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // The process exited between the state check and the kill request.
-            }
-
-            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            await TerminateAndObserveAsync(process, stdout, stderr).ConfigureAwait(false);
             throw;
         }
         finally
@@ -247,7 +294,6 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
             process.StandardInput.Close();
         }
 
-        return new(process.ExitCode, await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false));
     }
 
     public async Task<BackupProcessResult> RunToNewFileAsync(
@@ -283,40 +329,80 @@ public sealed class SystemBackupProcessRunner : IBackupProcessRunner
             throw new Exact25BackupTransportException("process_start_failed", $"Failed to start {invocation}: {exception.GetType().Name}.", false);
         }
 
-        Task<string> stderr = process.StandardError.ReadToEndAsync(cancellationToken);
+        Task<string> stderr = _io.ReadStandardErrorAsync(process, cancellationToken);
+        Task? copy = null;
         try
         {
-            await using FileStream destination = new(fullDestination, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                1024 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough);
+            await using Stream destination = _io.CreateDestination(fullDestination);
             if (invocation.StandardInput.Length > 0)
             {
-                await process.StandardInput.WriteAsync(invocation.StandardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
+                await _io.WriteStandardInputAsync(process, invocation.StandardInput, cancellationToken).ConfigureAwait(false);
             }
             process.StandardInput.Close();
-            await process.StandardOutput.BaseStream.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
-            await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            copy = _io.CopyStandardOutputAsync(process, destination, cancellationToken);
+            Task exited = process.WaitForExitAsync(cancellationToken);
+            await ThrowIfAnyCompletesFaultedAsync(exited, copy, stderr).ConfigureAwait(false);
+            await Task.WhenAll(exited, copy, stderr).ConfigureAwait(false);
+            await _io.FlushDestinationAsync(destination, cancellationToken).ConfigureAwait(false);
+            return new(process.ExitCode, string.Empty, stderr.Result);
         }
-        catch (OperationCanceledException)
+        catch
         {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-            }
-            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            await TerminateAndObserveAsync(process, stderr, copy).ConfigureAwait(false);
             throw;
         }
         finally
         {
             process.StandardInput.Close();
         }
-        return new(process.ExitCode, string.Empty, await stderr.ConfigureAwait(false));
+    }
+
+    private static async Task ThrowIfAnyCompletesFaultedAsync(params Task[] tasks)
+    {
+        Task completed = await Task.WhenAny(tasks).ConfigureAwait(false);
+        await completed.ConfigureAwait(false);
+    }
+
+    private static async Task TerminateAndObserveAsync(Process process, params Task?[] backgroundTasks)
+    {
+        try
+        {
+            process.StandardInput.Close();
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
+        try
+        {
+            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
+        foreach (Task task in backgroundTasks.OfType<Task>())
+        {
+            try
+            {
+                await task.ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Preserve the original failure after every child I/O task has been observed.
+            }
+        }
     }
 }
 

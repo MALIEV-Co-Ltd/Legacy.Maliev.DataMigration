@@ -12,6 +12,12 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("WITH MOVE", script, StringComparison.Ordinal);
         Assert.Contains("SET READ_ONLY", script, StringComparison.Ordinal);
         Assert.Contains("database-disposition.json", script, StringComparison.Ordinal);
+        Assert.Contains("verify-backup", script, StringComparison.Ordinal);
+        Assert.Contains("Get-FileHash", script, StringComparison.Ordinal);
+        Assert.Contains("SET ALLOW_SNAPSHOT_ISOLATION ON", script, StringComparison.Ordinal);
+        Assert.Contains("snapshot_isolation_state", script, StringComparison.Ordinal);
+        Assert.Contains("SET READ_ONLY", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("backup-state.json", script, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("-Password", script, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -21,7 +27,8 @@ public sealed class MigrationScriptContractTests
         string script = File.ReadAllText(SourcePath("invoke-shadow-migration.ps1"));
 
         Assert.Contains("--config", script, StringComparison.Ordinal);
-        Assert.Contains("receipt", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("'receipt'", script, StringComparison.Ordinal);
+        Assert.Contains("restore-verified-sqlserver-backups.ps1", script, StringComparison.Ordinal);
         Assert.Contains("plan", script, StringComparison.Ordinal);
         Assert.Contains("execute-shadow", script, StringComparison.Ordinal);
         Assert.Contains("evidence", script, StringComparison.Ordinal);
