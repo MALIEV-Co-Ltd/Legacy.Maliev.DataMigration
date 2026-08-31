@@ -191,6 +191,38 @@ public sealed class RuntimeAttestationTests : IDisposable
     }
 
     [Fact]
+    public void Target_observation_accepts_current_cnpg_shape_without_observed_generation()
+    {
+        string liveShape = ClusterJson("Cluster in healthy state", 2, 2)
+            .Replace(", \"observedGeneration\": 7", string.Empty, StringComparison.Ordinal);
+        using JsonDocument document = JsonDocument.Parse(liveShape);
+
+        CloudNativePgTargetObservation observation = CloudNativePgTargetObservationParser.Parse(
+            document.RootElement,
+            "maliev-legacy",
+            "legacy-postgres-main");
+
+        Assert.True(observation.IsHealthy);
+        Assert.Equal(observation.Generation, observation.ObservedGeneration);
+    }
+
+    [Fact]
+    public void Target_observation_rejects_an_explicit_stale_observed_generation()
+    {
+        string stale = ClusterJson("Cluster in healthy state", 2, 2)
+            .Replace("\"observedGeneration\": 7", "\"observedGeneration\": 6", StringComparison.Ordinal);
+        using JsonDocument document = JsonDocument.Parse(stale);
+
+        RuntimeAttestationException exception = Assert.Throws<RuntimeAttestationException>(() =>
+            CloudNativePgTargetObservationParser.Parse(
+                document.RootElement,
+                "maliev-legacy",
+                "legacy-postgres-main"));
+
+        Assert.Equal("runtime_target_unhealthy", exception.Code);
+    }
+
+    [Fact]
     public async Task Verifier_rejects_target_replacement_or_resource_version_drift()
     {
         CreateOwnerOnlyDirectory(_root);

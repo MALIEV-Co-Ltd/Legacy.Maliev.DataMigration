@@ -292,7 +292,11 @@ public static class CloudNativePgTargetObservationParser
             string uid = metadata.GetProperty("uid").GetString() ?? "";
             string resourceVersion = metadata.GetProperty("resourceVersion").GetString() ?? "";
             long generation = metadata.GetProperty("generation").GetInt64();
-            long observedGeneration = status.GetProperty("observedGeneration").GetInt64();
+            // CloudNativePG v1 does not expose status.observedGeneration in every supported CRD.
+            // The signed resourceVersion plus the complete healthy target tuple is rechecked before execution.
+            long observedGeneration = status.TryGetProperty("observedGeneration", out JsonElement observedGenerationElement)
+                ? observedGenerationElement.GetInt64()
+                : generation;
             string phase = status.GetProperty("phase").GetString() ?? "";
             int instances = spec.GetProperty("instances").GetInt32();
             int readyInstances = status.GetProperty("readyInstances").GetInt32();
