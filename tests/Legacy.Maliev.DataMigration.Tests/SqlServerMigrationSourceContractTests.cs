@@ -101,6 +101,100 @@ public sealed class SqlServerMigrationSourceContractTests
         Assert.Equal(expected, SqlServerMigrationSource.TranslateExpressionForPostgreSql(source));
     }
 
+    [Theory]
+    [InlineData(
+        "(Trim(concat([FirstName],N' ',[LastName])))",
+        "btrim((((COALESCE(\"FirstName\", ''::character varying))::text || ' '::text) || (COALESCE(\"LastName\", ''::character varying))::text))")]
+    [InlineData(
+        "(CONVERT([decimal](18,2),[UnitPrice]*[Quantity]))",
+        "(((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2))::numeric(18,2)")]
+    [InlineData(
+        "(CONVERT([decimal](18,2),[UnitPrice]*[Quantity]-(([UnitPrice]*[Quantity])*[DiscountPercent])/(100)))",
+        "(((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) - ((((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) * \"DiscountPercent\"))::numeric(35,4) / (100)::numeric))::numeric(38,7)))::numeric(38,7))::numeric(18,2)")]
+    [InlineData(
+        "(CONVERT([decimal](18,2),[Total]-[WithholdingTax]))",
+        "(((\"Total\" - \"WithholdingTax\"))::numeric(19,2))::numeric(18,2)")]
+    [InlineData(
+        "(datediff(day,[CreatedDate],[FinishedDate]))",
+        "(\"FinishedDate\" - (\"CreatedDate\")::date)")]
+    [InlineData(
+        "([Quantity]-[Manufactured])",
+        "(\"Quantity\" - \"Manufactured\")")]
+    public void TranslateExpressionForPostgreSql_MapsComputedColumnsToImmutablePostgreSqlExpressions(
+        string source,
+        string expected)
+    {
+        var targetColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["FirstName"] = "character varying(256)",
+            ["LastName"] = "character varying(256)",
+            ["UnitPrice"] = "numeric(18,2)",
+            ["Quantity"] = "integer",
+            ["Manufactured"] = "integer",
+            ["DiscountPercent"] = "numeric(5,2)",
+            ["Total"] = "numeric(18,2)",
+            ["WithholdingTax"] = "numeric(18,2)",
+            ["CreatedDate"] = "timestamp without time zone",
+            ["FinishedDate"] = "date",
+        };
+        string translated = SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(source, targetColumnTypes);
+
+        Assert.Equal(expected, translated);
+        Assert.DoesNotContain("CONVERT", translated, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("datediff", translated, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("concat", translated, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TranslateGeneratedExpressionForPostgreSql_UnknownDecimalShape_FailsClosed()
+    {
+        var targetColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["Total"] = "numeric(18,2)",
+        };
+
+        MigrationExecutionException exception = Assert.Throws<MigrationExecutionException>(() =>
+            SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(
+                "(CONVERT([decimal](18,2),ROUND([Total],0)))",
+                targetColumnTypes));
+
+        Assert.Equal("source_computed_decimal_unsupported", exception.Code);
+    }
+
+    [Theory]
+    [InlineData("(getdate())")]
+    [InlineData("(newid())")]
+    [InlineData("(ABS([Quantity]))")]
+    public void TranslateGeneratedExpressionForPostgreSql_UnknownOrVolatileShape_FailsClosed(string source)
+    {
+        var targetColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["Quantity"] = "integer",
+        };
+
+        MigrationExecutionException exception = Assert.Throws<MigrationExecutionException>(() =>
+            SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(source, targetColumnTypes));
+
+        Assert.Equal("source_computed_expression_unsupported", exception.Code);
+    }
+
+    [Fact]
+    public void TranslateGeneratedExpressionForPostgreSql_TextTemporalOperand_FailsClosed()
+    {
+        var targetColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["CreatedDate"] = "text",
+            ["FinishedDate"] = "date",
+        };
+
+        MigrationExecutionException exception = Assert.Throws<MigrationExecutionException>(() =>
+            SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(
+                "(datediff(day,[CreatedDate],[FinishedDate]))",
+                targetColumnTypes));
+
+        Assert.Equal("source_computed_temporal_type_unsupported", exception.Code);
+    }
+
     [Fact]
     public async Task DisposeAsync_WithoutActiveSnapshots_IsIdempotent()
     {

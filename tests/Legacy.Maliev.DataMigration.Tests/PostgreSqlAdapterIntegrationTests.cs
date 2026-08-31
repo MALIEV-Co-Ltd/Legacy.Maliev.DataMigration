@@ -123,6 +123,138 @@ internal sealed class TestcontainerShadowDatabaseProvisioner(string administrato
 public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixture fixture)
 {
     [Fact]
+    public async Task ApplySchema_TranslatedComputedColumns_AreImmutableAndReconcileOnPostgreSql18()
+    {
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
+        string runId = Guid.NewGuid().ToString("D");
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "ComputedColumns",
+            $"legacy_shadow_compute_{Guid.NewGuid():N}",
+            runId,
+            CancellationToken.None);
+
+        try
+        {
+            var columnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["ID"] = "integer",
+                ["FirstName"] = "character varying(256)",
+                ["LastName"] = "character varying(256)",
+                ["FullName"] = "character varying(513)",
+                ["UnitPrice"] = "numeric(18,2)",
+                ["Quantity"] = "integer",
+                ["Manufactured"] = "integer",
+                ["Remaining"] = "integer",
+                ["DiscountPercent"] = "numeric(5,2)",
+                ["Subtotal"] = "numeric(18,2)",
+                ["Total"] = "numeric(18,2)",
+                ["WithholdingTax"] = "numeric(18,2)",
+                ["QuotedAmount"] = "numeric(18,2)",
+                ["CreatedDate"] = "timestamp without time zone",
+                ["FinishedDate"] = "date",
+                ["Turnaround"] = "integer",
+            };
+            var table = new TableCopyPlan(
+                "dbo",
+                "ComputedColumns",
+                "public",
+                "ComputedColumns",
+                ["ID", "FirstName", "LastName", "FullName", "UnitPrice", "Quantity", "Manufactured", "Remaining", "DiscountPercent", "Subtotal", "Total", "WithholdingTax", "QuotedAmount", "CreatedDate", "FinishedDate", "Turnaround"],
+                ["ID"])
+            {
+                SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["ID"] = "int",
+                    ["FirstName"] = "nvarchar",
+                    ["LastName"] = "nvarchar",
+                    ["FullName"] = "nvarchar",
+                    ["UnitPrice"] = "decimal",
+                    ["Quantity"] = "int",
+                    ["Manufactured"] = "int",
+                    ["Remaining"] = "int",
+                    ["DiscountPercent"] = "decimal",
+                    ["Subtotal"] = "decimal",
+                    ["Total"] = "decimal",
+                    ["WithholdingTax"] = "decimal",
+                    ["QuotedAmount"] = "decimal",
+                    ["CreatedDate"] = "datetime2",
+                    ["FinishedDate"] = "date",
+                    ["Turnaround"] = "int",
+                },
+                ColumnTypes = columnTypes,
+                NullableColumns = ["FirstName", "LastName", "FullName", "FinishedDate", "Turnaround"],
+                PrimaryKey = new PrimaryKeyCopyPlan("PK_ComputedColumns", ["ID"]),
+                GeneratedColumns =
+                [
+                    new("FullName", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(Trim(concat([FirstName],N' ',[LastName])))", columnTypes)),
+                    new("Remaining", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("([Quantity]-[Manufactured])", columnTypes)),
+                    new("Subtotal", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(CONVERT([decimal](18,2),[UnitPrice]*[Quantity]-(([UnitPrice]*[Quantity])*[DiscountPercent])/(100)))", columnTypes)),
+                    new("QuotedAmount", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(CONVERT([decimal](18,2),[Total]-[WithholdingTax]))", columnTypes)),
+                    new("Turnaround", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(datediff(day,[CreatedDate],[FinishedDate]))", columnTypes)),
+                ],
+            };
+            var draft = new DatabaseSchemaPlan("ComputedColumns", "1.0", Hash("source"), Hash("target"), [table]);
+            DatabaseSchemaPlan plan = draft with
+            {
+                TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft),
+            };
+
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+
+            var row = new MigrationRow(new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["ID"] = 1,
+                ["FirstName"] = null,
+                ["LastName"] = "Doe",
+                ["FullName"] = "Doe",
+                ["UnitPrice"] = 0.15m,
+                ["Quantity"] = 1,
+                ["Manufactured"] = 0,
+                ["Remaining"] = 1,
+                ["DiscountPercent"] = 10.00m,
+                ["Subtotal"] = 0.14m,
+                ["Total"] = 100.00m,
+                ["WithholdingTax"] = 7.00m,
+                ["QuotedAmount"] = 93.00m,
+                ["CreatedDate"] = new DateTime(2026, 1, 1, 23, 59, 0, DateTimeKind.Unspecified),
+                ["FinishedDate"] = new DateTime(2026, 1, 2),
+                ["Turnaround"] = 1,
+            });
+            Assert.Equal(1L, await transaction.CopyBatchAsync(table, [row], CancellationToken.None));
+            await transaction.FinalizeSchemaAsync(plan, CancellationToken.None);
+            Assert.Equal(
+                plan.TargetSchemaSha256,
+                await transaction.InspectSchemaAsync(plan, CancellationToken.None));
+            Assert.Equal(1L, (await transaction.InspectTableAsync(table, CancellationToken.None)).RowCount);
+            Assert.Empty(await transaction.InspectSequenceNextValuesAsync(plan, CancellationToken.None));
+            await transaction.CommitAsync(CancellationToken.None);
+
+            await using var verification = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(fixture.ShadowAdminConnectionString)
+            {
+                Database = shadow.Name,
+            }.ConnectionString);
+            await verification.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT \"FullName\", \"Subtotal\", \"Remaining\", \"QuotedAmount\", \"Turnaround\" FROM \"public\".\"ComputedColumns\" WHERE \"ID\" = 1;",
+                verification);
+            await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("Doe", reader.GetString(0));
+            Assert.Equal(0.14m, reader.GetDecimal(1));
+            Assert.Equal(1, reader.GetInt32(2));
+            Assert.Equal(93.00m, reader.GetDecimal(3));
+            Assert.Equal(1, reader.GetInt32(4));
+            Assert.False(await reader.ReadAsync());
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task ApplySchema_UtcClockDefault_ReconcilesWithPostgreSqlDeparser()
     {
         PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
