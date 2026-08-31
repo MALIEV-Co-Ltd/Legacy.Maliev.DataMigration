@@ -420,6 +420,7 @@ public sealed partial class GuardedShadowMigrationRunner
 {
     private readonly PreflightService _backupPreflight;
     private readonly IReceiptAttestationTrustStore _authorizationTrustStore;
+    private readonly IReceiptAttestationTrustStore _executionTrustStore;
     private readonly IReadOnlySqlServerMigrationSource _source;
     private readonly IPostgreSqlShadowTarget _target;
     private readonly IMigrationRunJournal _journal;
@@ -431,6 +432,7 @@ public sealed partial class GuardedShadowMigrationRunner
     public GuardedShadowMigrationRunner(
         PreflightService backupPreflight,
         IReceiptAttestationTrustStore authorizationTrustStore,
+        IReceiptAttestationTrustStore executionTrustStore,
         IReadOnlySqlServerMigrationSource source,
         IPostgreSqlShadowTarget target,
         IMigrationRunJournal journal,
@@ -441,6 +443,7 @@ public sealed partial class GuardedShadowMigrationRunner
     {
         ArgumentNullException.ThrowIfNull(backupPreflight);
         ArgumentNullException.ThrowIfNull(authorizationTrustStore);
+        ArgumentNullException.ThrowIfNull(executionTrustStore);
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(journal);
@@ -455,6 +458,7 @@ public sealed partial class GuardedShadowMigrationRunner
 
         _backupPreflight = backupPreflight;
         _authorizationTrustStore = authorizationTrustStore;
+        _executionTrustStore = executionTrustStore;
         _source = source;
         _target = target;
         _journal = journal;
@@ -1040,7 +1044,7 @@ public sealed partial class GuardedShadowMigrationRunner
                 exception);
         }
 
-        if (!_authorizationTrustStore.Verify(
+        if (!_executionTrustStore.Verify(
             receipt.AttestationKeyId,
             MigrationEvidenceAttestation.CreatePayload(receipt),
             signature))
@@ -1055,7 +1059,7 @@ public sealed partial class GuardedShadowMigrationRunner
     {
         byte[] payload = MigrationEvidenceAttestation.CreatePayload(receipt);
         byte[] signature = _evidenceSigner.Sign(payload);
-        return !_authorizationTrustStore.Verify(_evidenceSigner.KeyId, payload, signature)
+        return !_executionTrustStore.Verify(_evidenceSigner.KeyId, payload, signature)
             ? throw new MigrationExecutionException("evidence_signature_invalid", "Migration evidence signer is not trusted.")
             : (receipt with { AttestationSignature = Convert.ToBase64String(signature) });
     }
@@ -1064,7 +1068,7 @@ public sealed partial class GuardedShadowMigrationRunner
     {
         byte[] payload = MigrationEvidenceAttestation.CreatePayload(receipt);
         byte[] signature = _evidenceSigner.Sign(payload);
-        return !_authorizationTrustStore.Verify(_evidenceSigner.KeyId, payload, signature)
+        return !_executionTrustStore.Verify(_evidenceSigner.KeyId, payload, signature)
             ? throw new MigrationExecutionException("evidence_signature_invalid", "Migration evidence signer is not trusted.")
             : (receipt with { AttestationSignature = Convert.ToBase64String(signature) });
     }
