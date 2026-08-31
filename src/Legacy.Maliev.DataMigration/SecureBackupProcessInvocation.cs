@@ -65,10 +65,10 @@ public static class SecureKubectlSqlCmdInvocation
             ? ShellScript
             : "marker=$1; shift; test -f \"$marker\"; test ! -L \"$marker\"; test \"$(stat -c %u -- \"$marker\")\" = \"$(id -u)\"; test \"$(stat -c %a -- \"$marker\")\" = 600; " + ShellScript;
         string[] arguments = sessionMarker is null ? [
-            "exec", pod, "-n", @namespace, "-c", container, "--",
+            "exec", "-i", pod, "-n", @namespace, "-c", container, "--",
             "sh", "-ceu", shellScript,
         ] : [
-            "exec", pod, "-n", @namespace, "-c", container, "--",
+            "exec", "-i", pod, "-n", @namespace, "-c", container, "--",
             "sh", "-ceu", shellScript, "sh", sessionMarker,
         ];
         return new SecureBackupProcessInvocation("kubectl", arguments, standardInput);
