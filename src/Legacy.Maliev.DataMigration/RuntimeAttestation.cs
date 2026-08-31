@@ -273,14 +273,93 @@ public sealed record CloudNativePgTargetObservation(
     bool ContinuousArchiving,
     bool LastBackupSucceeded)
 {
-    public bool IsHealthy => Generation > 0 && ObservedGeneration == Generation && Instances > 0 && ReadyInstances == Instances &&
-        string.Equals(Phase, "Cluster in healthy state", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(CurrentPrimary) &&
-        string.Equals(CurrentPrimary, TargetPrimary, StringComparison.Ordinal) && Ready && ConsistentSystemId && ContinuousArchiving && LastBackupSucceeded;
+    public string ReconciliationEvidence { get; init; } = string.Empty;
+    public int ObservationReadCount { get; init; }
+    public int StatusInstances { get; init; }
+    public string SystemId { get; init; } = string.Empty;
+    public string InstanceNames { get; init; } = string.Empty;
+    public string HealthyInstances { get; init; } = string.Empty;
+    public int PvcCount { get; init; }
+    public string HealthyPvcs { get; init; } = string.Empty;
+    public string DanglingPvcs { get; init; } = string.Empty;
+    public string InitializingPvcs { get; init; } = string.Empty;
+    public string ResizingPvcs { get; init; } = string.Empty;
+    public string UnusablePvcs { get; init; } = string.Empty;
+    public string ReadyReason { get; init; } = string.Empty;
+    public string ConsistentSystemIdReason { get; init; } = string.Empty;
+    public string ContinuousArchivingReason { get; init; } = string.Empty;
+    public string LastBackupSucceededReason { get; init; } = string.Empty;
+
+    public bool IsHealthy => HasHealthyTargetState && HasReconciliationEvidence;
+
+    internal bool HasHealthyTargetState => Generation > 0 && Instances > 0 && StatusInstances == Instances &&
+        ReadyInstances == Instances && Count(InstanceNames) == Instances &&
+        string.Equals(InstanceNames, HealthyInstances, StringComparison.Ordinal) &&
+        PvcCount == Instances && Count(HealthyPvcs) == PvcCount &&
+        string.IsNullOrEmpty(DanglingPvcs) && string.IsNullOrEmpty(InitializingPvcs) &&
+        string.IsNullOrEmpty(ResizingPvcs) && string.IsNullOrEmpty(UnusablePvcs) &&
+        !string.IsNullOrWhiteSpace(SystemId) &&
+        string.Equals(Phase, "Cluster in healthy state", StringComparison.Ordinal) &&
+        !string.IsNullOrWhiteSpace(CurrentPrimary) && string.Equals(CurrentPrimary, TargetPrimary, StringComparison.Ordinal) &&
+        Ready && string.Equals(ReadyReason, "ClusterIsReady", StringComparison.Ordinal) &&
+        ConsistentSystemId && string.Equals(ConsistentSystemIdReason, "Unique", StringComparison.Ordinal) &&
+        ContinuousArchiving && string.Equals(ContinuousArchivingReason, "ContinuousArchivingSuccess", StringComparison.Ordinal) &&
+        LastBackupSucceeded && string.Equals(LastBackupSucceededReason, "LastBackupSucceeded", StringComparison.Ordinal);
+
+    private bool HasReconciliationEvidence =>
+        (string.Equals(ReconciliationEvidence, "observed-generation", StringComparison.Ordinal) &&
+        ObservationReadCount == 1 && ObservedGeneration == Generation) ||
+        (string.Equals(ReconciliationEvidence, "stable-resource-version-double-read", StringComparison.Ordinal) &&
+        ObservationReadCount == 2 && ObservedGeneration == 0);
+
+    private static int Count(string canonicalSet)
+    {
+        return string.IsNullOrEmpty(canonicalSet) ? 0 : canonicalSet.Count(character => character == '\n') + 1;
+    }
 }
 
 public static class CloudNativePgTargetObservationParser
 {
     public static CloudNativePgTargetObservation Parse(JsonElement root, string expectedNamespace, string expectedCluster)
+    {
+        CloudNativePgTargetObservation result = ParseSnapshot(root, expectedNamespace, expectedCluster);
+        return !result.HasHealthyTargetState
+            ? throw Error("runtime_target_unhealthy", "The CloudNativePG target is not fully healthy and reconciled.")
+            : !result.IsHealthy
+            ? throw Error("runtime_target_reconciliation_unproven", "The CloudNativePG target does not expose current reconciliation evidence.")
+            : result;
+    }
+
+    public static CloudNativePgTargetObservation ParseStableDoubleRead(
+        JsonElement firstRoot,
+        JsonElement secondRoot,
+        string expectedNamespace,
+        string expectedCluster)
+    {
+        CloudNativePgTargetObservation first = ParseSnapshot(firstRoot, expectedNamespace, expectedCluster);
+        CloudNativePgTargetObservation second = ParseSnapshot(secondRoot, expectedNamespace, expectedCluster);
+        if (!string.IsNullOrEmpty(first.ReconciliationEvidence) || !string.IsNullOrEmpty(second.ReconciliationEvidence) ||
+            first != second)
+        {
+            throw Error("runtime_target_drift", "The CloudNativePG target changed between stable observation reads.");
+        }
+
+        if (!first.HasHealthyTargetState)
+        {
+            throw Error("runtime_target_unhealthy", "The CloudNativePG target is not fully healthy and reconciled.");
+        }
+
+        CloudNativePgTargetObservation result = second with
+        {
+            ReconciliationEvidence = "stable-resource-version-double-read",
+            ObservationReadCount = 2,
+        };
+        return !result.IsHealthy
+            ? throw Error("runtime_target_unhealthy", "The CloudNativePG target is not fully healthy and reconciled.")
+            : result;
+    }
+
+    private static CloudNativePgTargetObservation ParseSnapshot(JsonElement root, string expectedNamespace, string expectedCluster)
     {
         try
         {
@@ -292,31 +371,70 @@ public static class CloudNativePgTargetObservationParser
             string uid = metadata.GetProperty("uid").GetString() ?? "";
             string resourceVersion = metadata.GetProperty("resourceVersion").GetString() ?? "";
             long generation = metadata.GetProperty("generation").GetInt64();
-            long observedGeneration = status.GetProperty("observedGeneration").GetInt64();
             string phase = status.GetProperty("phase").GetString() ?? "";
             int instances = spec.GetProperty("instances").GetInt32();
+            int statusInstances = status.GetProperty("instances").GetInt32();
             int readyInstances = status.GetProperty("readyInstances").GetInt32();
             string currentPrimary = status.GetProperty("currentPrimary").GetString() ?? "";
             string targetPrimary = status.GetProperty("targetPrimary").GetString() ?? "";
-            bool Condition(string type)
+            var observedGenerations = new List<long>();
+            if (status.TryGetProperty("observedGeneration", out JsonElement topLevelObservedGeneration))
             {
-                return status.GetProperty("conditions").EnumerateArray().Any(condition =>
-                string.Equals(condition.GetProperty("type").GetString(), type, StringComparison.Ordinal) &&
-                string.Equals(condition.GetProperty("status").GetString(), "True", StringComparison.Ordinal));
+                observedGenerations.Add(topLevelObservedGeneration.GetInt64());
             }
 
-            if (!string.Equals(ns, expectedNamespace, StringComparison.Ordinal) || !string.Equals(name, expectedCluster, StringComparison.Ordinal) ||
-                string.IsNullOrWhiteSpace(uid) || string.IsNullOrWhiteSpace(resourceVersion) || generation <= 0)
+            ConditionEvidence Condition(string type)
             {
-                throw Error("runtime_target_identity_invalid", "The observed CloudNativePG target identity is invalid.");
+                JsonElement[] matches = [.. status.GetProperty("conditions").EnumerateArray().Where(condition =>
+                    string.Equals(condition.GetProperty("type").GetString(), type, StringComparison.Ordinal))];
+                if (matches.Length != 1)
+                {
+                    return new(false, string.Empty);
+                }
+
+                JsonElement condition = matches[0];
+                if (condition.TryGetProperty("observedGeneration", out JsonElement conditionObservedGeneration))
+                {
+                    observedGenerations.Add(conditionObservedGeneration.GetInt64());
+                }
+
+                return new(
+                    string.Equals(condition.GetProperty("status").GetString(), "True", StringComparison.Ordinal),
+                    condition.TryGetProperty("reason", out JsonElement reason) ? reason.GetString() ?? string.Empty : string.Empty);
             }
 
-            var result = new CloudNativePgTargetObservation(ns, name, uid, resourceVersion, generation, observedGeneration, phase,
-                instances, readyInstances, currentPrimary, targetPrimary, Condition("Ready"), Condition("ConsistentSystemID"),
-                Condition("ContinuousArchiving"), Condition("LastBackupSucceeded"));
-            return !result.IsHealthy
-                ? throw Error("runtime_target_unhealthy", "The CloudNativePG target is not fully healthy and reconciled.")
-                : result;
+            ConditionEvidence ready = Condition("Ready");
+            ConditionEvidence consistentSystemId = Condition("ConsistentSystemID");
+            ConditionEvidence continuousArchiving = Condition("ContinuousArchiving");
+            ConditionEvidence lastBackupSucceeded = Condition("LastBackupSucceeded");
+
+            return !string.Equals(ns, expectedNamespace, StringComparison.Ordinal) || !string.Equals(name, expectedCluster, StringComparison.Ordinal) ||
+                string.IsNullOrWhiteSpace(uid) || string.IsNullOrWhiteSpace(resourceVersion) || generation <= 0
+                ? throw Error("runtime_target_identity_invalid", "The observed CloudNativePG target identity is invalid.")
+                : observedGenerations.Any(value => value != generation)
+                ? throw Error("runtime_target_unhealthy", "The CloudNativePG target reports a stale observed generation.")
+                : new CloudNativePgTargetObservation(
+                ns, name, uid, resourceVersion, generation, observedGenerations.Count == 0 ? 0 : generation, phase,
+                instances, readyInstances, currentPrimary, targetPrimary, ready.Status, consistentSystemId.Status,
+                continuousArchiving.Status, lastBackupSucceeded.Status)
+                {
+                    ReconciliationEvidence = observedGenerations.Count == 0 ? string.Empty : "observed-generation",
+                    ObservationReadCount = 1,
+                    StatusInstances = statusInstances,
+                    SystemId = status.GetProperty("systemID").GetString() ?? string.Empty,
+                    InstanceNames = CanonicalSet(status.GetProperty("instanceNames")),
+                    HealthyInstances = CanonicalSet(status.GetProperty("instancesStatus").GetProperty("healthy")),
+                    PvcCount = status.GetProperty("pvcCount").GetInt32(),
+                    HealthyPvcs = CanonicalSet(status.GetProperty("healthyPVC")),
+                    DanglingPvcs = OptionalCanonicalSet(status, "danglingPVC"),
+                    InitializingPvcs = OptionalCanonicalSet(status, "initializingPVC"),
+                    ResizingPvcs = OptionalCanonicalSet(status, "resizingPVC"),
+                    UnusablePvcs = OptionalCanonicalSet(status, "unusablePVC"),
+                    ReadyReason = ready.Reason,
+                    ConsistentSystemIdReason = consistentSystemId.Reason,
+                    ContinuousArchivingReason = continuousArchiving.Reason,
+                    LastBackupSucceededReason = lastBackupSucceeded.Reason,
+                };
         }
         catch (RuntimeAttestationException) { throw; }
         catch (Exception exception) when (exception is KeyNotFoundException or InvalidOperationException or FormatException or OverflowException)
@@ -325,10 +443,28 @@ public static class CloudNativePgTargetObservationParser
         }
     }
 
+    private static string OptionalCanonicalSet(JsonElement parent, string propertyName)
+    {
+        return parent.TryGetProperty(propertyName, out JsonElement value) && value.ValueKind == JsonValueKind.Array
+            ? CanonicalSet(value)
+            : string.Empty;
+    }
+
+    private static string CanonicalSet(JsonElement array)
+    {
+        return string.Join('\n', array.EnumerateArray()
+            .Select(value => value.GetString() ?? string.Empty)
+            .Where(value => value.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal));
+    }
+
     private static RuntimeAttestationException Error(string code, string message)
     {
         return new(code, message);
     }
+
+    private sealed record ConditionEvidence(bool Status, string Reason);
 }
 
 public interface ICloudNativePgTargetObserver
@@ -376,8 +512,10 @@ public sealed record CloudNativePgTargetObserverOptions(Uri ApiServer, string Se
 
 public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, IDisposable
 {
+    private static readonly TimeSpan StableReadDelay = TimeSpan.FromSeconds(2);
     private readonly HttpClient _client;
     private readonly string _tokenFile;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
 
     public CloudNativePgTargetObserver(CloudNativePgTargetObserverOptions options)
     {
@@ -407,29 +545,30 @@ public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, 
             return customChain.Build(new X509Certificate2(certificate));
         };
         _client = new HttpClient(handler) { BaseAddress = options.ApiServer };
+        _delay = Task.Delay;
+    }
+
+    internal CloudNativePgTargetObserver(
+        HttpClient client,
+        string tokenFile,
+        Func<TimeSpan, CancellationToken, Task> delay)
+    {
+        _client = client;
+        _tokenFile = tokenFile;
+        _delay = delay;
     }
 
     public async Task<CloudNativePgTargetObservation> ObserveAsync(string namespaceName, string cluster, CancellationToken cancellationToken)
     {
         try
         {
-            string token = (await File.ReadAllTextAsync(_tokenFile, cancellationToken).ConfigureAwait(false)).Trim();
-            if (token.Length == 0)
-            {
-                throw new RuntimeAttestationException("runtime_target_token_invalid", "The read-only Kubernetes token is empty.");
-            }
-
-            using var request = new HttpRequestMessage(HttpMethod.Get,
-                $"/apis/postgresql.cnpg.io/v1/namespaces/{Uri.EscapeDataString(namespaceName)}/clusters/{Uri.EscapeDataString(cluster)}");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            using HttpResponseMessage response = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new RuntimeAttestationException("runtime_target_observation_failed", "The exact CloudNativePG target could not be observed.");
-            }
-
-            using JsonDocument document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
-            return CloudNativePgTargetObservationParser.Parse(document.RootElement, namespaceName, cluster);
+            return await ObserveWithStableFallbackAsync(
+                (_, observedNamespace, observedCluster) => ObserveSnapshotAsync(
+                    observedNamespace, observedCluster, cancellationToken),
+                _delay,
+                namespaceName,
+                cluster,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (RuntimeAttestationException)
         {
@@ -439,6 +578,60 @@ public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, 
         {
             throw new RuntimeAttestationException("runtime_target_observation_failed", "The exact CloudNativePG target could not be observed securely.");
         }
+    }
+
+    internal static async Task<CloudNativePgTargetObservation> ObserveWithStableFallbackAsync(
+        Func<CancellationToken, string, string, Task<JsonElement>> observe,
+        Func<TimeSpan, CancellationToken, Task> delay,
+        string namespaceName,
+        string cluster,
+        CancellationToken cancellationToken)
+    {
+        JsonElement first = await observe(cancellationToken, namespaceName, cluster).ConfigureAwait(false);
+        try
+        {
+            return CloudNativePgTargetObservationParser.Parse(first, namespaceName, cluster);
+        }
+        catch (RuntimeAttestationException exception) when (exception.Code == "runtime_target_reconciliation_unproven")
+        {
+            await delay(StableReadDelay, cancellationToken).ConfigureAwait(false);
+            JsonElement second = await observe(cancellationToken, namespaceName, cluster).ConfigureAwait(false);
+            return CloudNativePgTargetObservationParser.ParseStableDoubleRead(
+                first, second, namespaceName, cluster);
+        }
+    }
+
+    private async Task<JsonElement> ObserveSnapshotAsync(
+        string namespaceName,
+        string cluster,
+        CancellationToken cancellationToken)
+    {
+        string token = (await File.ReadAllTextAsync(_tokenFile, cancellationToken).ConfigureAwait(false)).Trim();
+        if (!IsValidBoundToken(token))
+        {
+            throw new RuntimeAttestationException("runtime_target_token_invalid", "The projected Kubernetes bound token is empty or invalid.");
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get,
+            $"/apis/postgresql.cnpg.io/v1/namespaces/{Uri.EscapeDataString(namespaceName)}/clusters/{Uri.EscapeDataString(cluster)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using HttpResponseMessage response = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new RuntimeAttestationException("runtime_target_observation_failed", "The exact CloudNativePG target could not be observed.");
+        }
+
+        using JsonDocument document = await JsonDocument.ParseAsync(
+            await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return document.RootElement.Clone();
+    }
+
+    private static bool IsValidBoundToken(string token)
+    {
+        string[] segments = token.Split('.');
+        return segments.Length == 3 && segments.All(segment => segment.Length > 0 &&
+            segment.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_'));
     }
 
     public void Dispose()

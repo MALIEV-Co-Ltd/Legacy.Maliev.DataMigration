@@ -280,9 +280,9 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         const string runnerDigest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         const string targetGeneration = "7";
         var runnerManifest = new RunnerArtifactManifest(runnerDigest, [new("runner.dll", 1, Hash("runner-file"))]);
-        var targetObservation = new CloudNativePgTargetObservation(
+        var targetObservation = CompleteTarget(new CloudNativePgTargetObservation(
             "maliev-legacy", "legacy-postgres-main", "uid-a", "100", 7, 7,
-            "Cluster in healthy state", 2, 2, "legacy-postgres-main-1", "legacy-postgres-main-1", true, true, true, true);
+            "Cluster in healthy state", 2, 2, "legacy-postgres-main-1", "legacy-postgres-main-1", true, true, true, true));
         using var authorizationSigner = new P256MigrationEvidenceSigner("authorization-key", _authorizationKey.ExportECPrivateKeyPem());
         var backupTrust = new ReceiptAttestationTrustStore([new("backup-key", _backupKey.ExportSubjectPublicKeyInfo())]);
         ExecutionAuthorizationReceipt authorization = ReviewedExecutionAuthorizationProducer.Produce(
@@ -503,9 +503,28 @@ public sealed class OperatorSigningConsoleTests : IDisposable
             string cluster,
             CancellationToken cancellationToken)
         {
-            return Task.FromResult(new CloudNativePgTargetObservation(
+            return Task.FromResult(CompleteTarget(new CloudNativePgTargetObservation(
                 namespaceName, cluster, "uid-a", "100", 7, 7, "Cluster in healthy state", 2, 2,
-                "legacy-postgres-main-1", "legacy-postgres-main-1", true, true, true, true));
+                "legacy-postgres-main-1", "legacy-postgres-main-1", true, true, true, true)));
         }
+    }
+
+    private static CloudNativePgTargetObservation CompleteTarget(CloudNativePgTargetObservation target)
+    {
+        return target with
+        {
+            ReconciliationEvidence = "observed-generation",
+            ObservationReadCount = 1,
+            StatusInstances = 2,
+            SystemId = "123456789",
+            InstanceNames = "legacy-postgres-main-1\nlegacy-postgres-main-2",
+            HealthyInstances = "legacy-postgres-main-1\nlegacy-postgres-main-2",
+            PvcCount = 2,
+            HealthyPvcs = "legacy-postgres-main-1\nlegacy-postgres-main-2",
+            ReadyReason = "ClusterIsReady",
+            ConsistentSystemIdReason = "Unique",
+            ContinuousArchivingReason = "ContinuousArchivingSuccess",
+            LastBackupSucceededReason = "LastBackupSucceeded",
+        };
     }
 }
