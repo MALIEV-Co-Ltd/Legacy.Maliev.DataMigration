@@ -123,6 +123,100 @@ internal sealed class TestcontainerShadowDatabaseProvisioner(string administrato
 public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixture fixture)
 {
     [Fact]
+    public async Task ApplySchema_UtcClockDefault_ReconcilesWithPostgreSqlDeparser()
+    {
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
+        string runId = Guid.NewGuid().ToString("D");
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Contact",
+            $"legacy_shadow_contact_{Guid.NewGuid():N}",
+            runId,
+            CancellationToken.None);
+
+        try
+        {
+            var table = new TableCopyPlan(
+                "dbo",
+                "Message",
+                "public",
+                "Message",
+                ["ID", "CreatedDate"],
+                ["ID"])
+            {
+                SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["ID"] = "int",
+                    ["CreatedDate"] = "datetime2",
+                },
+                ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["ID"] = "integer",
+                    ["CreatedDate"] = "timestamp without time zone",
+                },
+                NullableColumns = ["CreatedDate"],
+                PrimaryKey = new PrimaryKeyCopyPlan("PK_Message", ["ID"]),
+                DefaultExpressions = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["CreatedDate"] = SqlServerMigrationSource.TranslateExpressionForPostgreSql("(getutcdate())"),
+                },
+            };
+            var draft = new DatabaseSchemaPlan("Contact", "1.0", Hash("source"), Hash("target"), [table]);
+            DatabaseSchemaPlan plan = draft with
+            {
+                TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft),
+            };
+
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+
+            Assert.Equal(
+                plan.TargetSchemaSha256,
+                await transaction.InspectSchemaAsync(plan, CancellationToken.None));
+
+            await transaction.RollbackAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task WholeDatabaseTransaction_DisposeClosesEphemeralShadowSessionBeforeCleanup()
+    {
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
+        string runId = Guid.NewGuid().ToString("D");
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Contact",
+            $"legacy_shadow_contact_{Guid.NewGuid():N}",
+            runId,
+            CancellationToken.None);
+
+        try
+        {
+            await using (IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+            }
+
+            await using var observer = new NpgsqlConnection(fixture.ConnectionString);
+            await observer.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT count(*) FROM pg_catalog.pg_stat_activity WHERE datname = $1;",
+                observer);
+            _ = command.Parameters.AddWithValue(shadow.Name);
+
+            Assert.Equal(0L, (long)(await command.ExecuteScalarAsync() ?? -1L));
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task Exact25DeterministicShadowNames_CreateAndDeleteWithoutPostgresTruncation()
     {
         PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
