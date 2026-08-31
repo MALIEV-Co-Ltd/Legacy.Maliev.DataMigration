@@ -48,6 +48,10 @@ public sealed partial class SqlServerMigrationSource
                 column => column.Column,
                 column => SqlServerTypeMapping.Map(column.DeclaredType),
                 StringComparer.Ordinal);
+            IReadOnlyDictionary<string, string> sourceColumnTypes = inventory.Columns.ToDictionary(
+                column => column.Column,
+                column => column.DeclaredType,
+                StringComparer.Ordinal);
             var table = new TableCopyPlan(
                 inventory.SourceSchema,
                 inventory.SourceTable,
@@ -57,7 +61,7 @@ public sealed partial class SqlServerMigrationSource
                 ordering)
             {
                 SourceKnownEmpty = sourceKnownEmpty,
-                SourceColumnTypes = inventory.Columns.ToDictionary(column => column.Column, column => column.DeclaredType, StringComparer.Ordinal),
+                SourceColumnTypes = sourceColumnTypes,
                 SourceColumns = inventory.Columns,
                 ColumnTypes = targetColumnTypes,
                 NullableColumns = nullable,
@@ -79,7 +83,10 @@ public sealed partial class SqlServerMigrationSource
                     .Where(column => !string.IsNullOrWhiteSpace(column.ComputedExpression))
                     .Select(column => new GeneratedColumnCopyPlan(
                         column.Column,
-                        TranslateGeneratedExpressionForPostgreSql(column.ComputedExpression, targetColumnTypes)))],
+                        TranslateGeneratedExpressionForPostgreSql(
+                            column.ComputedExpression,
+                            sourceColumnTypes,
+                            targetColumnTypes)))],
                 CheckConstraints = [.. tableChecks.Select(check => new CheckConstraintCopyPlan(check.Name, TranslateExpressionForPostgreSql(check.Expression))
                 {
                     Columns = inventory.OrderedColumns,
@@ -266,9 +273,18 @@ public sealed partial class SqlServerMigrationSource
 
     internal static string TranslateGeneratedExpressionForPostgreSql(
         string expression,
+        IReadOnlyDictionary<string, string> sourceColumnTypes,
         IReadOnlyDictionary<string, string> targetColumnTypes)
     {
+        ArgumentNullException.ThrowIfNull(sourceColumnTypes);
         ArgumentNullException.ThrowIfNull(targetColumnTypes);
+        if (VolatileGeneratedExpression().IsMatch(expression))
+        {
+            throw new MigrationExecutionException(
+                "source_computed_expression_volatile",
+                "Volatile SQL Server computed expressions cannot be represented by immutable PostgreSQL generated columns.");
+        }
+
         string translated = TranslateExpressionForPostgreSql(expression);
         Match trimConcat = TrimConcatGeneratedColumn().Match(translated);
         if (trimConcat.Success)
@@ -297,17 +313,24 @@ public sealed partial class SqlServerMigrationSource
         Match dateDiff = DateDiffDayGeneratedColumn().Match(translated);
         if (dateDiff.Success)
         {
-            string start = DateOperand(dateDiff.Groups["start"].Value, targetColumnTypes);
-            string end = DateOperand(dateDiff.Groups["end"].Value, targetColumnTypes);
+            string start = DateOperand(dateDiff.Groups["start"].Value, sourceColumnTypes, targetColumnTypes);
+            string end = DateOperand(dateDiff.Groups["end"].Value, sourceColumnTypes, targetColumnTypes);
             return $"({end} - {start})";
         }
 
         Match arithmetic = BinaryArithmeticGeneratedColumn().Match(translated);
-        return arithmetic.Success
-            ? $"({arithmetic.Groups["left"].Value} {arithmetic.Groups["operator"].Value} {arithmetic.Groups["right"].Value})"
-            : throw new MigrationExecutionException(
-                "source_computed_expression_unsupported",
-                "A SQL Server computed expression is outside the approved immutable PostgreSQL translation set.");
+        if (arithmetic.Success)
+        {
+            _ = NumericOperand(arithmetic.Groups["left"].Value, targetColumnTypes);
+            _ = NumericOperand(arithmetic.Groups["right"].Value, targetColumnTypes);
+            _ = GetColumnType(arithmetic.Groups["left"].Value, sourceColumnTypes);
+            _ = GetColumnType(arithmetic.Groups["right"].Value, sourceColumnTypes);
+            return $"({arithmetic.Groups["left"].Value} {arithmetic.Groups["operator"].Value} {arithmetic.Groups["right"].Value})";
+        }
+
+        throw new MigrationExecutionException(
+            "source_computed_expression_unsupported",
+            "A SQL Server computed expression is outside the approved immutable PostgreSQL translation set.");
     }
 
     private static string TranslateDecimalGeneratedExpression(
@@ -403,8 +426,8 @@ public sealed partial class SqlServerMigrationSource
     private static DecimalShape AddOrSubtract(DecimalShape left, DecimalShape right)
     {
         int scale = Math.Max(left.Scale, right.Scale);
-        int integral = Math.Max(left.Precision - left.Scale, right.Precision - right.Scale);
-        int precision = integral + scale + 1;
+        int integral = Math.Max(left.Precision - left.Scale, right.Precision - right.Scale) + 1;
+        int precision = integral + scale;
         return precision <= 38
             ? new(precision, scale)
             : new(38, Math.Min(scale, 38 - integral));
@@ -431,17 +454,24 @@ public sealed partial class SqlServerMigrationSource
 
     private static string DateOperand(
         string quotedIdentifier,
+        IReadOnlyDictionary<string, string> sourceColumnTypes,
         IReadOnlyDictionary<string, string> targetColumnTypes)
     {
-        string type = GetColumnType(quotedIdentifier, targetColumnTypes);
-        return type switch
-        {
-            "date" => quotedIdentifier,
-            "timestamp without time zone" => $"({quotedIdentifier})::date",
-            _ => throw new MigrationExecutionException(
+        string sourceType = GetColumnType(quotedIdentifier, sourceColumnTypes).Trim().ToLowerInvariant();
+        string targetType = GetColumnType(quotedIdentifier, targetColumnTypes);
+        return !SqlServerTemporalType().IsMatch(sourceType)
+            ? throw new MigrationExecutionException(
                 "source_computed_temporal_type_unsupported",
-                "A SQL Server DATEDIFF computed expression references an unsupported temporal source column."),
-        };
+                "A SQL Server DATEDIFF computed expression references an unsupported temporal source column.")
+            : (sourceType, targetType) switch
+            {
+                ("date", "date") => quotedIdentifier,
+                (_, "timestamp without time zone") when LosslessSqlServerTimestampType().IsMatch(sourceType) =>
+                    $"({quotedIdentifier})::date",
+                _ => throw new MigrationExecutionException(
+                    "source_computed_temporal_mapping_unproven",
+                    "A SQL Server DATEDIFF computed expression requires an approved lossless source-to-target temporal mapping."),
+            };
     }
 
     private static string GetColumnType(
@@ -461,6 +491,9 @@ public sealed partial class SqlServerMigrationSource
 
     [GeneratedRegex("(?<![A-Za-z0-9_])N'", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex UnicodeStringPrefix();
+
+    [GeneratedRegex("\\b(?:CURRENT_TIMESTAMP|GETDATE|GETUTCDATE|SYSDATETIME|SYSUTCDATETIME|SYSDATETIMEOFFSET|NEWID|NEWSEQUENTIALID|RAND)\\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex VolatileGeneratedExpression();
 
     [GeneratedRegex("^\\(Trim\\(concat\\((?<first>\"(?:[^\"]|\"\")+\"),' ',(?<last>\"(?:[^\"]|\"\")+\")\\)\\)\\)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex TrimConcatGeneratedColumn();
@@ -485,6 +518,12 @@ public sealed partial class SqlServerMigrationSource
 
     [GeneratedRegex("^numeric\\((?<precision>[0-9]+),(?<scale>[0-9]+)\\)$", RegexOptions.CultureInvariant)]
     private static partial Regex NumericType();
+
+    [GeneratedRegex("^(?:date|datetime|smalldatetime|datetime2\\([0-7]\\)|datetimeoffset(?:\\([0-7]\\))?)$", RegexOptions.CultureInvariant)]
+    private static partial Regex SqlServerTemporalType();
+
+    [GeneratedRegex("^(?:datetime|smalldatetime|datetime2\\([0-6]\\))$", RegexOptions.CultureInvariant)]
+    private static partial Regex LosslessSqlServerTimestampType();
 
     private readonly record struct DecimalShape(int Precision, int Scale);
 
