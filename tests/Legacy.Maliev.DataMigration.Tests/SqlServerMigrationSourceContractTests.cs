@@ -90,6 +90,17 @@ public sealed class SqlServerMigrationSourceContractTests
             SqlServerMigrationSource.BuildReadTableCommand(table));
     }
 
+    [Theory]
+    [InlineData("(getutcdate())", "(timezone('UTC'::text, CURRENT_TIMESTAMP))")]
+    [InlineData("GETUTCDATE()", "timezone('UTC'::text, CURRENT_TIMESTAMP)")]
+    [InlineData("(getdate())", "(CURRENT_TIMESTAMP)")]
+    public void TranslateExpressionForPostgreSql_MapsSqlServerClockDefaults(
+        string source,
+        string expected)
+    {
+        Assert.Equal(expected, SqlServerMigrationSource.TranslateExpressionForPostgreSql(source));
+    }
+
     [Fact]
     public async Task DisposeAsync_WithoutActiveSnapshots_IsIdempotent()
     {

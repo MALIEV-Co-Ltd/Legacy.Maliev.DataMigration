@@ -70,11 +70,11 @@ public sealed partial class SqlServerMigrationSource
                 ForeignKeys = CreateForeignKeys(tableForeignKeys),
                 DefaultExpressions = tableColumns
                     .Where(column => !string.IsNullOrWhiteSpace(column.DefaultExpression) && string.IsNullOrWhiteSpace(column.ComputedExpression))
-                    .ToDictionary(column => column.Column, column => TranslateExpression(column.DefaultExpression), StringComparer.Ordinal),
+                    .ToDictionary(column => column.Column, column => TranslateExpressionForPostgreSql(column.DefaultExpression), StringComparer.Ordinal),
                 GeneratedColumns = [.. tableColumns
                     .Where(column => !string.IsNullOrWhiteSpace(column.ComputedExpression))
-                    .Select(column => new GeneratedColumnCopyPlan(column.Column, TranslateExpression(column.ComputedExpression)))],
-                CheckConstraints = [.. tableChecks.Select(check => new CheckConstraintCopyPlan(check.Name, TranslateExpression(check.Expression))
+                    .Select(column => new GeneratedColumnCopyPlan(column.Column, TranslateExpressionForPostgreSql(column.ComputedExpression)))],
+                CheckConstraints = [.. tableChecks.Select(check => new CheckConstraintCopyPlan(check.Name, TranslateExpressionForPostgreSql(check.Expression))
                 {
                     Columns = inventory.OrderedColumns,
                 })],
@@ -224,7 +224,7 @@ public sealed partial class SqlServerMigrationSource
         {
             DescendingColumns = index.DescendingColumns,
             IncludedColumns = index.IncludedColumns,
-            FilterPredicate = string.IsNullOrWhiteSpace(index.Filter) ? null : TranslateExpression(index.Filter),
+            FilterPredicate = string.IsNullOrWhiteSpace(index.Filter) ? null : TranslateExpressionForPostgreSql(index.Filter),
         })];
     }
 
@@ -247,9 +247,10 @@ public sealed partial class SqlServerMigrationSource
         return string.Equals(sourceSchema, "dbo", StringComparison.Ordinal) ? "public" : sourceSchema;
     }
 
-    private static string TranslateExpression(string expression)
+    internal static string TranslateExpressionForPostgreSql(string expression)
     {
         string translated = BracketedIdentifier().Replace(expression, match => $"\"{match.Groups[1].Value.Replace("\"", "\"\"", StringComparison.Ordinal)}\"")
+            .Replace("getutcdate()", "timezone('UTC'::text, CURRENT_TIMESTAMP)", StringComparison.OrdinalIgnoreCase)
             .Replace("getdate()", "CURRENT_TIMESTAMP", StringComparison.OrdinalIgnoreCase)
             .Replace("sysdatetime()", "CURRENT_TIMESTAMP", StringComparison.OrdinalIgnoreCase)
             .Replace("newid()", "gen_random_uuid()", StringComparison.OrdinalIgnoreCase)

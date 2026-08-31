@@ -282,7 +282,11 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
 
     private NpgsqlConnection CreateShadowConnection(string database)
     {
-        var builder = new NpgsqlConnectionStringBuilder(_administrativeConnectionString) { Database = database };
+        var builder = new NpgsqlConnectionStringBuilder(_administrativeConnectionString)
+        {
+            Database = database,
+            Pooling = false,
+        };
         return new NpgsqlConnection(builder.ConnectionString);
     }
 
