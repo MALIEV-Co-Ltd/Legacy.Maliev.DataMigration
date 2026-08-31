@@ -407,6 +407,7 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         Assert.DoesNotContain("SELECT name", arguments, StringComparison.Ordinal);
         Assert.DoesNotContain("-P", invocation.Arguments);
         Assert.DoesNotContain("-U", invocation.Arguments);
+        Assert.Contains("-i", invocation.Arguments);
         Assert.Contains("/opt/mssql-tools18/bin/sqlcmd", arguments, StringComparison.Ordinal);
         Assert.Contains("/opt/mssql-tools/bin/sqlcmd", arguments, StringComparison.Ordinal);
         Assert.Equal("secret-user\nsecret-password\nSELECT name FROM sys.databases;\n", invocation.StandardInput);
