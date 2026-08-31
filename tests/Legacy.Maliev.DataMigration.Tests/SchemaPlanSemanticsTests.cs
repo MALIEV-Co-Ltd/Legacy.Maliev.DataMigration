@@ -298,6 +298,27 @@ public sealed class SchemaPlanSemanticsTests
     }
 
     [Fact]
+    public void Validate_KeylessTableProvenEmpty_AllowsValueIndependentEmptyOrdering()
+    {
+        TableCopyPlan baseline = CreateTable();
+        TableCopyPlan table = baseline with
+        {
+            OrderByColumns = baseline.OrderedColumns,
+            PrimaryKey = null,
+            UniqueConstraints = [],
+            SourceKnownEmpty = true,
+        };
+
+        IReadOnlyList<PreflightError> errors = SchemaPlanCanonicalizer.Validate(
+            CreatePlan(table),
+            new GuardedRunnerPolicy(SourceCommit, RunnerDigest),
+            CapturedAt.AddMinutes(1),
+            TimeSpan.FromHours(1));
+
+        Assert.DoesNotContain(errors, error => error.Code == "order_by_not_total");
+    }
+
+    [Fact]
     public void Validate_DisabledOrUntrustedForeignKey_FailsClosed()
     {
         TableCopyPlan table = CreateTable() with

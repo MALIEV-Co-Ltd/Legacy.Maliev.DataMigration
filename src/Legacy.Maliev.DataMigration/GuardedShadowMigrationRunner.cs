@@ -687,6 +687,12 @@ public sealed partial class GuardedShadowMigrationRunner
                 using var collector = new TableEvidenceCollector(table);
                 long count = await CopySourceTableAsync(transaction, databasePlan.Database, table, collector, cancellationToken)
                     .ConfigureAwait(false);
+                if (table.SourceKnownEmpty && count != 0)
+                {
+                    throw new MigrationExecutionException(
+                        "source_empty_table_drift",
+                        $"{databasePlan.Database}.{table.SourceTable} was no longer empty at execution time.");
+                }
                 TableReconciliationEvidence sourceEvidence = collector.Finish();
                 IReadOnlyDictionary<string, long> sourceOrphans = await _source
                     .InspectForeignKeyOrphansAsync(databasePlan.Database, table, cancellationToken)

@@ -802,7 +802,9 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         using var collector = new TableEvidenceCollector(table);
         string columns = string.Join(", ", table.OrderedColumns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
         string ordering = string.Join(", ", table.OrderByColumns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
-        string readSql = $"SELECT {columns} FROM {Qualified(table.TargetSchema, table.TargetTable)} ORDER BY {ordering};";
+        string readSql = table.SourceKnownEmpty
+            ? $"SELECT {columns} FROM {Qualified(table.TargetSchema, table.TargetTable)};"
+            : $"SELECT {columns} FROM {Qualified(table.TargetSchema, table.TargetTable)} ORDER BY {ordering};";
         await using (var read = new NpgsqlCommand(readSql, connection, transaction))
         await using (NpgsqlDataReader reader = await read.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken).ConfigureAwait(false))
         {
