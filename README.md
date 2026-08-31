@@ -277,7 +277,10 @@ immediately revoke `CONNECT` from `PUBLIC` before any data operation.
 PostgreSQL bootstrap must therefore revoke `PUBLIC` `CONNECT` from the configured
 administrative database, `template1`, the migration-control database, and every
 canonical database, then grant access explicitly to their dedicated roles. The
-shadow role receives `CONNECT` only on its administrative database and remains `NOCREATEDB`;
+`postgres` administrative database must explicitly retain `CONNECT` for both
+`streaming_replica` and `legacy_migration_shadow` after revoking `PUBLIC`; removing
+the replication role breaks CloudNativePG health. The shadow role receives no
+`CREATE` privilege there and remains `NOCREATEDB`;
 the control role receives database-local `CONNECT` and `CREATE` only on
 `legacy_migration_control`. CloudNativePG first reconciles each exact run-owned
 `Database` resource with `allowConnections: false`; only after the runtime owner
@@ -289,12 +292,17 @@ creation by the migration credential is forbidden.
 The GitOps lane must supply namespace-scoped RBAC and a validating-admission
 policy that selects every mutation made by the dedicated migration service account
 and every current or old object whose metadata uses `legacy-shadow-*` or whose
-database name uses `legacy_shadow_*`. Validation allows only the exact
-service-account plus run-owned shadow-name combination. Migration attempts against
-canonical or malformed resources and non-migration attempts against shadow resources
-are denied, while unrelated identities acting on canonical Database resources are
-not selected. The allowed `postgresql.cnpg.io/v1 Database` resources remain bound
-to the pinned cluster, owner, labels, and `legacy_shadow_*` name contract. Those
+database name uses `legacy_shadow_*`. The migration service account alone may
+create, delete, or perform guarded spec updates. The exact CloudNativePG instance
+manager `system:serviceaccount:maliev-legacy:legacy-postgres-main` may only update
+an existing fenced shadow resource when spec, labels, annotations, owner references,
+and every finalizer other than `cnpg.io/deleteDatabase` are unchanged. This permits
+controller-owned status and delete-finalizer reconciliation without granting create,
+delete, ownership, fencing, or spec authority. Migration attempts against canonical
+or malformed resources and all other identities acting on shadow resources are
+denied, while unrelated identities acting on canonical Database resources are not
+selected. The allowed `postgresql.cnpg.io/v1 Database` resources remain bound to
+the pinned cluster, owner, labels, and `legacy_shadow_*` name contract. Those
 dormant manifests are deliberately not applied by this repository. This repository also does not apply PostgreSQL ACL
 changes automatically. Replay, fencing, lease expiry, crash cleanup,
 and wrong-target checks remain enforced by the guarded runner. The command writes

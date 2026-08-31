@@ -44,15 +44,17 @@ spec:
       - apiGroups: ["postgresql.cnpg.io"]
         apiVersions: ["v1"]
         operations: ["CREATE", "UPDATE", "DELETE"]
-        resources: ["databases"]
+        resources: ["databases", "databases/status"]
   matchConditions:
     - name: migration-identity-or-shadow-object
       expression: "request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner' || (object != null && (object.metadata.name.startsWith('legacy-shadow-') || object.spec.name.startsWith('legacy_shadow_'))) || (oldObject != null && (oldObject.metadata.name.startsWith('legacy-shadow-') || oldObject.spec.name.startsWith('legacy_shadow_')))"
   validations:
     - expression: "request.namespace == 'maliev-legacy'"
       message: Migration Database mutations are restricted to the maliev-legacy namespace.
-    - expression: "request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner'"
-      message: Only the dedicated migration identity may mutate legacy shadow resources.
+    - expression: "request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-data-migration-shadow-provisioner' || (request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-postgres-main' && request.operation == 'UPDATE')"
+      message: Only the dedicated migration identity or the exact CloudNativePG instance manager may perform its restricted update on legacy shadow resources.
+    - expression: "request.userInfo.username != 'system:serviceaccount:maliev-legacy:legacy-postgres-main' || (request.operation == 'UPDATE' && object != null && oldObject != null && object.spec == oldObject.spec && object.metadata.labels == oldObject.metadata.labels && object.metadata.annotations == oldObject.metadata.annotations && ((!has(object.metadata.ownerReferences) && !has(oldObject.metadata.ownerReferences)) || (has(object.metadata.ownerReferences) && has(oldObject.metadata.ownerReferences) && object.metadata.ownerReferences == oldObject.metadata.ownerReferences)) && (has(object.metadata.finalizers) ? object.metadata.finalizers.filter(finalizer, finalizer != 'cnpg.io/deleteDatabase') : []) == (has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers.filter(finalizer, finalizer != 'cnpg.io/deleteDatabase') : []))"
+      message: The CloudNativePG instance manager may update only status and its exact cnpg.io/deleteDatabase finalizer on an otherwise unchanged fenced shadow resource.
     - expression: "(object == null ? oldObject : object).metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$') && (object == null ? oldObject : object).spec.name.matches('^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$')"
       message: Only exact run-owned shadow Database resources are permitted.
     - expression: "(object == null ? oldObject : object).metadata.name.matches('^legacy-shadow-[a-z0-9-]+-[0-9a-f]{32}$')"
@@ -73,7 +75,7 @@ spec:
       message: Shadow PostgreSQL names are immutable during updates.
     - expression: "request.operation != 'DELETE' || (oldObject.spec.databaseReclaimPolicy == 'delete' && oldObject.spec.allowConnections == false && oldObject.spec.ensure == 'absent')"
       message: Shadow deletion requires the fenced disabled absent state and delete reclaim policy.
-    - expression: "object == null || object.spec.allowConnections == false || (oldObject != null && oldObject.spec.allowConnections == false && object.spec.ensure == 'present')"
+    - expression: "object == null || object.spec.allowConnections == false || (oldObject != null && oldObject.spec.allowConnections == false && object.spec.ensure == 'present') || (request.userInfo.username == 'system:serviceaccount:maliev-legacy:legacy-postgres-main' && oldObject != null && object.spec == oldObject.spec)"
       message: Connections may only be enabled from a fenced disabled resource.
 ---
 apiVersion: admissionregistration.k8s.io/v1

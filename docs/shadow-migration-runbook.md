@@ -131,13 +131,34 @@ GCS objects. Approved execution creates or patches run-owned CloudNativePG
 journal. Applying RBAC/admission policies, PostgreSQL ACLs, secrets, or workload
 identity also mutates live state. Every such action needs explicit authorization.
 
+The reviewed PostgreSQL ACL bootstrap for the `postgres` administrative database
+must preserve CloudNativePG replication while removing ambient access:
+
+```sql
+REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
+GRANT CONNECT ON DATABASE postgres TO streaming_replica;
+GRANT CONNECT ON DATABASE postgres TO legacy_migration_shadow;
+REVOKE CREATE ON DATABASE postgres FROM legacy_migration_shadow;
+```
+
+Do not substitute a blanket revoke from `streaming_replica`. The shadow role remains
+`NOCREATEDB` and may connect only to `postgres` plus its exact role-owned
+`legacy_shadow_*` databases.
+
 The dormant admission policy selects requests made by the dedicated migration
 service account or requests whose current/old object uses the `legacy-shadow-*`
 resource prefix or the `legacy_shadow_*` database-name prefix. It then requires
-both the exact service account and exact shadow
-resource/database names. Consequently migration-to-canonical and other-to-shadow
-mutations are denied, while unrelated controller operations on canonical resources
-are outside this policy rather than disrupted by it.
+exact shadow resource/database names. The migration service account owns create,
+delete, and guarded spec operations. The exact
+`system:serviceaccount:maliev-legacy:legacy-postgres-main` instance manager is a
+narrow exception for UPDATE only: the current and old objects must exist, and spec,
+labels, annotations, owner references, and all finalizers except
+`cnpg.io/deleteDatabase` must remain equal. Thus controller status/finalizer
+reconciliation can complete, while controller create/delete and spec, ownership,
+label, annotation, fencing, owner-reference, or foreign-finalizer drift are denied.
+Migration-to-canonical and other-to-shadow mutations remain denied, while unrelated
+controller operations on canonical resources are outside this policy rather than
+disrupted by it.
 
 Canonical promotion, traffic cutover, application deployment, and canonical
 production writes are absent and remain unauthorized.
