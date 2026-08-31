@@ -41,7 +41,9 @@ public sealed class GuardedShadowMigrationRunnerTests
 
     private static readonly DateTimeOffset Now = new(2026, 8, 29, 14, 0, 0, TimeSpan.Zero);
     private static readonly ECDsa SigningKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    private static readonly ECDsa ExecutionSigningKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private const string KeyId = "migration-authorizer-1";
+    private const string ExecutionKeyId = "migration-execution-1";
     private const string CurrentSourceCommit = CurrentQuotationSourceContract.SourceCommitSha;
     private static readonly string RunnerDigest = Hash("guarded-shadow-runner-v1");
 
@@ -66,7 +68,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         Assert.All(harness.Target.Created, shadow => Assert.StartsWith("legacy_shadow_", shadow.Name, StringComparison.Ordinal));
         Assert.Empty(harness.Target.Deleted);
         Assert.True(MigrationEvidenceAttestation.CreatePayload(result.Receipt).Length > 0);
-        Assert.True(SigningKey.VerifyData(
+        Assert.True(ExecutionSigningKey.VerifyData(
             MigrationEvidenceAttestation.CreatePayload(result.Receipt),
             Convert.FromBase64String(result.Receipt.AttestationSignature!),
             HashAlgorithmName.SHA256));
@@ -510,7 +512,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         MigrationFailureReceipt receipt = Assert.Single(harness.Journal.Failed);
         Assert.Equal("shadow_database_not_empty", receipt.FailureCode);
         Assert.Contains(receipt.Cleanup, outcome => !outcome.Deleted && outcome.ErrorCode == "shadow_delete_failed");
-        Assert.True(SigningKey.VerifyData(
+        Assert.True(ExecutionSigningKey.VerifyData(
             MigrationEvidenceAttestation.CreatePayload(receipt),
             Convert.FromBase64String(receipt.AttestationSignature!),
             HashAlgorithmName.SHA256));
@@ -520,6 +522,8 @@ public sealed class GuardedShadowMigrationRunnerTests
     {
         TrustedAttestationKey trustedKey = new(KeyId, SigningKey.ExportSubjectPublicKeyInfo());
         var trustStore = new ReceiptAttestationTrustStore([trustedKey]);
+        var executionTrustStore = new ReceiptAttestationTrustStore(
+            [new TrustedAttestationKey(ExecutionKeyId, ExecutionSigningKey.ExportSubjectPublicKeyInfo())]);
         FakeSource source = new();
         FakeTarget target = new();
         InMemoryJournal journal = new();
@@ -528,10 +532,11 @@ public sealed class GuardedShadowMigrationRunnerTests
         var runner = new GuardedShadowMigrationRunner(
             new PreflightService(new NeverExternalCommandExecutor(), trustStore),
             trustStore,
+            executionTrustStore,
             source,
             target,
             journal,
-            new TestEvidenceSigner(KeyId, SigningKey),
+            new TestEvidenceSigner(ExecutionKeyId, ExecutionSigningKey),
             timeProvider,
             new GuardedRunnerPolicy(CurrentSourceCommit, RunnerDigest),
             runtimeAttestationVerifier ?? new AcceptingRuntimeVerifier());

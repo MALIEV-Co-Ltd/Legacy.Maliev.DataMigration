@@ -730,8 +730,11 @@ public static class MigrationConsole
             execute.AuthorizationPath, "shadow_authorization_unprotected", cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore receiptTrust = await ReadTrustStoreAsync(execute.ReceiptTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(execute.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(
+            [configuration.SigningRoles!.Execution], cancellationToken).ConfigureAwait(false);
         EnsureTrustMatchesRole(receiptTrust, signingRoles.Backup, "shadow_backup_trust_mismatch");
         EnsureTrustMatchesRole(authorizationTrust, signingRoles.Authorization, "shadow_authorization_trust_mismatch");
+        EnsureTrustMatchesRole(executionTrust, signingRoles.Execution, "shadow_execution_trust_mismatch");
         string privateKeyPem = await ReadProtectedTextAsync(
             evidenceKeyPath, "shadow_signing_key_unprotected", cancellationToken).ConfigureAwait(false);
         using var evidenceSigner = new P256MigrationEvidenceSigner(execute.EvidenceKeyId, privateKeyPem);
@@ -768,6 +771,7 @@ public static class MigrationConsole
         var runner = new GuardedShadowMigrationRunner(
             new PreflightService(new DisabledExternalCommandExecutor(), receiptTrust),
             authorizationTrust,
+            executionTrust,
             source,
             target,
             journal,
