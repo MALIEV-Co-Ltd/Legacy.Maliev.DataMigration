@@ -368,6 +368,48 @@ public sealed class RuntimeAttestationTests : IDisposable
     }
 
     [Fact]
+    public async Task Target_observer_rereads_a_rotated_bound_token_before_the_fallback_get()
+    {
+        CreateOwnerOnlyDirectory(_root);
+        string tokenFile = Path.Combine(_root, "token");
+        await File.WriteAllTextAsync(tokenFile, "aaa.bbb.ccc");
+        string liveShape = ClusterJson("Cluster in healthy state", 2, 2)
+            .Replace(", \"observedGeneration\": 7", string.Empty, StringComparison.Ordinal);
+        var handler = new RotatingTokenHandler(tokenFile, "ddd.eee.fff", liveShape);
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("https://kubernetes.default.svc") };
+        using var observer = new CloudNativePgTargetObserver(client, tokenFile, (_, _) => Task.CompletedTask);
+
+        CloudNativePgTargetObservation observation = await observer.ObserveAsync(
+            "maliev-legacy",
+            "legacy-postgres-main",
+            CancellationToken.None);
+
+        Assert.True(observation.IsHealthy);
+        Assert.Equal(["aaa.bbb.ccc", "ddd.eee.fff"], handler.BearerTokens);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("not a bound token")]
+    public async Task Target_observer_rejects_an_empty_or_invalid_rotated_token_before_the_fallback_get(string rotatedToken)
+    {
+        CreateOwnerOnlyDirectory(_root);
+        string tokenFile = Path.Combine(_root, "token");
+        await File.WriteAllTextAsync(tokenFile, "aaa.bbb.ccc");
+        string liveShape = ClusterJson("Cluster in healthy state", 2, 2)
+            .Replace(", \"observedGeneration\": 7", string.Empty, StringComparison.Ordinal);
+        var handler = new RotatingTokenHandler(tokenFile, rotatedToken, liveShape);
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("https://kubernetes.default.svc") };
+        using var observer = new CloudNativePgTargetObserver(client, tokenFile, (_, _) => Task.CompletedTask);
+
+        RuntimeAttestationException exception = await Assert.ThrowsAsync<RuntimeAttestationException>(() =>
+            observer.ObserveAsync("maliev-legacy", "legacy-postgres-main", CancellationToken.None));
+
+        Assert.Equal("runtime_target_token_invalid", exception.Code);
+        Assert.Equal(["aaa.bbb.ccc"], handler.BearerTokens);
+    }
+
+    [Fact]
     public async Task Verifier_rejects_target_replacement_or_resource_version_drift()
     {
         CreateOwnerOnlyDirectory(_root);
@@ -537,6 +579,25 @@ public sealed class RuntimeAttestationTests : IDisposable
         public Task<CloudNativePgTargetObservation> ObserveAsync(string @namespace, string cluster, CancellationToken cancellationToken)
         {
             return Task.FromResult(observation);
+        }
+    }
+
+    private sealed class RotatingTokenHandler(string tokenFile, string rotatedToken, string responseJson) : HttpMessageHandler
+    {
+        public List<string> BearerTokens { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            BearerTokens.Add(request.Headers.Authorization?.Parameter ?? string.Empty);
+            if (BearerTokens.Count == 1)
+            {
+                await File.WriteAllTextAsync(tokenFile, rotatedToken, cancellationToken);
+            }
+
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(responseJson),
+            };
         }
     }
 }

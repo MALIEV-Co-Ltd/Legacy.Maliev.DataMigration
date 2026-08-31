@@ -252,6 +252,14 @@ validates the API server against the projected CA and rereads the short-lived
 bound token for every request. Authorization and execution independently measure
 the owner-only, non-link Release publication and observe exactly
 `maliev-legacy/legacy-postgres-main` before any journal or shadow mutation.
+
+The schema-2.1 authorization signature now binds the complete target observation,
+including reconciliation evidence, read count, instance/PVC sets, system ID, and
+condition reasons. This intentionally invalidates authorizations produced before
+those fields were added; verification fails closed and the operator must issue a
+new short-lived authorization. No pre-fix authorization exists for the current
+shadow activation run.
+
 The durable journal uses an independently supplied
 `LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION` whose database must be exactly
 `legacy_migration_control`. The protected command configuration names the

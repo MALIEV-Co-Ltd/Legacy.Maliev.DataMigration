@@ -515,6 +515,7 @@ public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, 
     private static readonly TimeSpan StableReadDelay = TimeSpan.FromSeconds(2);
     private readonly HttpClient _client;
     private readonly string _tokenFile;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
 
     public CloudNativePgTargetObserver(CloudNativePgTargetObserverOptions options)
     {
@@ -544,19 +545,27 @@ public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, 
             return customChain.Build(new X509Certificate2(certificate));
         };
         _client = new HttpClient(handler) { BaseAddress = options.ApiServer };
+        _delay = Task.Delay;
+    }
+
+    internal CloudNativePgTargetObserver(
+        HttpClient client,
+        string tokenFile,
+        Func<TimeSpan, CancellationToken, Task> delay)
+    {
+        _client = client;
+        _tokenFile = tokenFile;
+        _delay = delay;
     }
 
     public async Task<CloudNativePgTargetObservation> ObserveAsync(string namespaceName, string cluster, CancellationToken cancellationToken)
     {
         try
         {
-            string token = (await File.ReadAllTextAsync(_tokenFile, cancellationToken).ConfigureAwait(false)).Trim();
-            return token.Length == 0
-                ? throw new RuntimeAttestationException("runtime_target_token_invalid", "The read-only Kubernetes token is empty.")
-                : await ObserveWithStableFallbackAsync(
+            return await ObserveWithStableFallbackAsync(
                 (_, observedNamespace, observedCluster) => ObserveSnapshotAsync(
-                    token, observedNamespace, observedCluster, cancellationToken),
-                Task.Delay,
+                    observedNamespace, observedCluster, cancellationToken),
+                _delay,
                 namespaceName,
                 cluster,
                 cancellationToken).ConfigureAwait(false);
@@ -593,11 +602,16 @@ public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, 
     }
 
     private async Task<JsonElement> ObserveSnapshotAsync(
-        string token,
         string namespaceName,
         string cluster,
         CancellationToken cancellationToken)
     {
+        string token = (await File.ReadAllTextAsync(_tokenFile, cancellationToken).ConfigureAwait(false)).Trim();
+        if (!IsValidBoundToken(token))
+        {
+            throw new RuntimeAttestationException("runtime_target_token_invalid", "The projected Kubernetes bound token is empty or invalid.");
+        }
+
         using var request = new HttpRequestMessage(HttpMethod.Get,
             $"/apis/postgresql.cnpg.io/v1/namespaces/{Uri.EscapeDataString(namespaceName)}/clusters/{Uri.EscapeDataString(cluster)}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -611,6 +625,13 @@ public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, 
             await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false),
             cancellationToken: cancellationToken).ConfigureAwait(false);
         return document.RootElement.Clone();
+    }
+
+    private static bool IsValidBoundToken(string token)
+    {
+        string[] segments = token.Split('.');
+        return segments.Length == 3 && segments.All(segment => segment.Length > 0 &&
+            segment.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_'));
     }
 
     public void Dispose()
