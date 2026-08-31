@@ -1,8 +1,8 @@
 {
   "schemaVersion": "1.0",
-  "inventorySha256": "8efc45d3d677be4aeb76e0f3e0944559791c5b0259adc77b9748c7eaed9fb3d7",
+  "inventorySha256": "5e6061790b86e816624e0a6e318a12c1c294e4d4fc165bc8a93c2af40b5a37f6",
   "signatureBinding": "BackupReceipt.DatabaseInventorySha256",
-  "selectedDatabaseCount": 25,
+  "selectedDatabaseCount": 24,
   "databases": [
     { "database": "ContactRequest", "owner": "Legacy.Maliev.ContactService", "disposition": "Migrate" },
     { "database": "Country", "owner": "Legacy.Maliev.CatalogService", "disposition": "Migrate" },
@@ -13,7 +13,7 @@
     { "database": "DataProtectionKeysEmployee", "owner": "Legacy.Maliev.AuthService", "disposition": "Migrate" },
     { "database": "Employee", "owner": "Legacy.Maliev.EmployeeService", "disposition": "Migrate" },
     { "database": "EmployeeIdentity", "owner": "Legacy.Maliev.AuthService", "disposition": "Migrate" },
-    { "database": "Hangfire", "owner": "Legacy.Maliev.CompatibilityContracts", "disposition": "Migrate" },
+    { "database": "Hangfire", "owner": "Legacy.Maliev.CompatibilityContracts", "disposition": "Excluded" },
     { "database": "Invoice", "owner": "Legacy.Maliev.AccountingService", "disposition": "Migrate" },
     { "database": "JobOffers", "owner": "Legacy.Maliev.CareerService", "disposition": "Migrate" },
     { "database": "LocationData", "owner": "Legacy.Maliev.CatalogService", "disposition": "Migrate" },

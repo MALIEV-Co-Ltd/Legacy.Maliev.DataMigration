@@ -466,7 +466,7 @@ public sealed class MigrationConsoleTests : IDisposable
         await File.WriteAllTextAsync(path, "existing");
 
         _ = await Assert.ThrowsAsync<IOException>(() => MigrationConsole.WriteNewJsonForTestsAsync(
-            path, new { state = "complete", count = 25 }, CancellationToken.None));
+            path, new { state = "complete", count = 24 }, CancellationToken.None));
 
         Assert.Equal("existing", await File.ReadAllTextAsync(path));
         Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
@@ -478,11 +478,11 @@ public sealed class MigrationConsoleTests : IDisposable
         Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
 
         await MigrationConsole.WriteNewJsonForTestsAsync(
-            path, new { state = "complete", count = 25 }, CancellationToken.None);
+            path, new { state = "complete", count = 24 }, CancellationToken.None);
 
         using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
         Assert.Equal("complete", document.RootElement.GetProperty("state").GetString());
-        Assert.Equal(25, document.RootElement.GetProperty("count").GetInt32());
+        Assert.Equal(24, document.RootElement.GetProperty("count").GetInt32());
         Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
     }
 

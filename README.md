@@ -1,7 +1,7 @@
 # Legacy.Maliev.DataMigration
 
 Local PostgreSQL review snapshots use the fail-closed `MLVSNP02` contract. The exporter stages each
-dump in a newly created owner-only directory, records the exact migration run id and canonical exact-25
+dump in a newly created owner-only directory, records the exact migration run id and canonical exact-24
 semantic manifest digest, derives separate AES-GCM and HMAC-SHA256 keys from the external 32-byte root
 key with HKDF-SHA256, binds every archive to the run id, database name, and manifest digest as AEAD AAD,
 then authenticates the complete manifest including ciphertext metadata. Version 1 is not accepted.
@@ -81,11 +81,12 @@ failure paths retain signed reconciliation and shadow-cleanup evidence.
 
 ## Approved database disposition
 
-The contract contains all 27 currently known historical names. Exactly 25 are
-active migration inputs. `Hangfire` and `Log` are preserved as read-only
-archival data under `Legacy.Maliev.CompatibilityContracts`; `ContactRequest`
+The contract contains all 27 currently known historical names. Exactly 24 are
+active migration inputs. `Hangfire` is excluded because the unused scheduler was
+retired; `Log` remains read-only archival data under
+`Legacy.Maliev.CompatibilityContracts`; `ContactRequest`
 and `LocationData` are active inputs owned by ContactService and CatalogService.
-Only `MachineLearning` and `MachineLearningData` are excluded because those
+`MachineLearning` and `MachineLearningData` are also excluded because those
 features were deliberately retired. A receipt, schema plan, and execution
 authorization must cover every active database exactly once and cannot include
 an excluded or unknown database. The machine-readable
@@ -118,7 +119,7 @@ backup, authorization, execution, provenance, and final-evidence public keys and
 reject any duplicate fingerprint before shadow provisioning can begin. The
 `execute-shadow` command independently requires `LEGACY_DEPLOY_ENABLED=false`;
 the wrapper is not the security boundary.
-The receipt producer independently re-reads all 25 local backup files and binds
+The receipt producer independently re-reads all 24 local backup files and binds
 their approved GCS object names,
 immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
 Signing keys are externally supplied and are never stored in this repository.
@@ -197,7 +198,7 @@ adapter, the Application Default Credentials GCS adapter, and atomic receipt
 publisher. Contract tests replace that runtime before any process or network
 operation, so repository validation never performs a live backup.
 
-`restore-backups` re-verifies the producer signature and exact 25-item inventory,
+`restore-backups` re-verifies the producer signature and exact 24-item inventory,
 derives every local recovery path from the signed filenames, securely reopens and
 re-hashes each owner-only artifact, and retains the verified file handle while a pinned
 helper image streams those exact bytes into a create-only object in a run-owned Docker
@@ -324,7 +325,7 @@ a new signed execution receipt and has no canonical-target or deployment mode.
 - carry a valid signature from a configured trusted producer key.
 
 A valid preflight plan must remain `plan-only`, disallow target writes, request
-no external actions, cover all 25 target schema versions exactly, and use only
+no external actions, cover all 24 target schema versions exactly, and use only
 target schema version `1.0`.
 
 A fresh schema plan uses schema version `2.0`, binds an exact 40-character source
@@ -434,7 +435,7 @@ never fabricates an equal cross-engine schema hash. The signed result now retain
 observed foreign-key relationship counts and source/target sequence-next-value
 parity in addition to table rows, ordered content, null counts, aggregate hashes,
 and zero-orphan evidence. The schema-v2 document emits a single whole-table
-content batch backed by that signed table hash, the exact 25 migrated databases,
+content batch backed by that signed table hash, the exact 24 migrated databases,
 the two excluded databases, deterministic nested mapping inventories, and a
 separate review baseline. The baseline is not self-approving: its byte SHA-256
 must still be recorded independently and supplied to the AppHost verifier.

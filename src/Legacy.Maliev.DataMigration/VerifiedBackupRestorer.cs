@@ -146,7 +146,7 @@ public static class VerifiedBackupRestorer
             !receipt.Artifacts.Select(item => item?.Database).Order(StringComparer.Ordinal)
                 .SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
         {
-            throw new Exact25FullBackupException("restore_receipt_invalid", "The signed exact-25 backup receipt is invalid.");
+            throw new Exact25FullBackupException("restore_receipt_invalid", "The signed exact-24 backup receipt is invalid.");
         }
     }
 
@@ -191,7 +191,7 @@ public sealed class SqlServerBackupRestoreTarget(
         ArgumentNullException.ThrowIfNull(artifact);
         if (!DatabaseInventory.ActiveDatabases.Contains(artifact.Database, StringComparer.Ordinal))
         {
-            throw new Exact25FullBackupException("restore_database_invalid", "The restore database is outside the exact-25 inventory.");
+            throw new Exact25FullBackupException("restore_database_invalid", "The restore database is outside the exact-24 inventory.");
         }
 
         SqlServerStagedBackup staged = await _stager.StageAsync(artifact, cancellationToken).ConfigureAwait(false);

@@ -18,7 +18,7 @@ public static class DatabaseInventory
                 ["DataProtectionKeys"] = Migrate("Legacy.Maliev.AuthService"),
                 ["EmployeeIdentity"] = Migrate("Legacy.Maliev.AuthService"),
                 ["Employee"] = Migrate("Legacy.Maliev.EmployeeService"),
-                ["Hangfire"] = Migrate("Legacy.Maliev.CompatibilityContracts"),
+                ["Hangfire"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.Excluded),
                 ["Invoice"] = Migrate("Legacy.Maliev.AccountingService"),
                 ["JobOffers"] = Migrate("Legacy.Maliev.CareerService"),
                 ["Log"] = Migrate("Legacy.Maliev.CompatibilityContracts"),

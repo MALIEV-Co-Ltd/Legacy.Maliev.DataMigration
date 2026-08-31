@@ -80,13 +80,13 @@ public sealed class SqlServerMigrationSourceContractTests
     [Fact]
     public void BuildReadTableCommand_SourceProvenEmpty_DoesNotCompileAnUnnecessaryOrderExpression()
     {
-        var table = new TableCopyPlan("HangFire", "Counter", "hangfire", "Counter", ["Key", "Value"], ["Key", "Value"])
+        var table = new TableCopyPlan("Archive", "Counter", "archive", "Counter", ["Key", "Value"], ["Key", "Value"])
         {
             SourceKnownEmpty = true,
         };
 
         Assert.Equal(
-            "SELECT [Key], [Value] FROM [HangFire].[Counter];",
+            "SELECT [Key], [Value] FROM [Archive].[Counter];",
             SqlServerMigrationSource.BuildReadTableCommand(table));
     }
 
@@ -94,7 +94,7 @@ public sealed class SqlServerMigrationSourceContractTests
     public void BuildStreamingReadTableCommand_QuotesReservedMaterializedIdentifiers()
     {
         var table = new TableCopyPlan(
-            "HangFire",
+            "Archive",
             "Hash",
             "public",
             "Hash",
@@ -114,7 +114,7 @@ public sealed class SqlServerMigrationSourceContractTests
 
         Assert.Equal(
             "SELECT [Key], [Field], [ExpireAt], DATALENGTH(CONVERT(varchar(max), [Value] COLLATE Latin1_General_100_BIN2_UTF8)) " +
-            "FROM [HangFire].[Hash] ORDER BY [Key], [Field];",
+            "FROM [Archive].[Hash] ORDER BY [Key], [Field];",
             sql);
     }
 

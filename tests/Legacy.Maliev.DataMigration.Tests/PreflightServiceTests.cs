@@ -14,8 +14,9 @@ public sealed class PreflightServiceTests
     public void Inventory_ApprovedContract_PreservesEverySelectedProductionDatabase()
     {
         Assert.Equal(27, DatabaseInventory.Entries.Count);
-        Assert.Equal(25, DatabaseInventory.ActiveDatabases.Count);
-        Assert.Equal(DatabaseDisposition.Migrate, DatabaseInventory.Entries["Hangfire"].Disposition);
+        Assert.Equal(24, DatabaseInventory.ActiveDatabases.Count);
+        Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["Hangfire"].Disposition);
+        Assert.DoesNotContain("Hangfire", DatabaseInventory.ActiveDatabases);
         Assert.Equal(DatabaseDisposition.Migrate, DatabaseInventory.Entries["Log"].Disposition);
         Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["MachineLearning"].Disposition);
         Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["MachineLearningData"].Disposition);
@@ -46,7 +47,7 @@ public sealed class PreflightServiceTests
                 StringComparer.Ordinal);
 
         Assert.Equal(DatabaseInventory.Entries.OrderBy(item => item.Key), artifact.OrderBy(item => item.Key));
-        Assert.Equal(25, root.GetProperty("selectedDatabaseCount").GetInt32());
+        Assert.Equal(24, root.GetProperty("selectedDatabaseCount").GetInt32());
         Assert.Equal("BackupReceipt.DatabaseInventorySha256", root.GetProperty("signatureBinding").GetString());
     }
 
