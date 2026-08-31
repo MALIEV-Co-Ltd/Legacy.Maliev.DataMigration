@@ -44,6 +44,10 @@ public sealed partial class SqlServerMigrationSource
                         "Every non-empty source table requires a non-null unique ordering key.");
             }
             string targetSchema = TargetSchema(inventory.SourceSchema);
+            IReadOnlyDictionary<string, string> targetColumnTypes = inventory.Columns.ToDictionary(
+                column => column.Column,
+                column => SqlServerTypeMapping.Map(column.DeclaredType),
+                StringComparer.Ordinal);
             var table = new TableCopyPlan(
                 inventory.SourceSchema,
                 inventory.SourceTable,
@@ -55,7 +59,7 @@ public sealed partial class SqlServerMigrationSource
                 SourceKnownEmpty = sourceKnownEmpty,
                 SourceColumnTypes = inventory.Columns.ToDictionary(column => column.Column, column => column.DeclaredType, StringComparer.Ordinal),
                 SourceColumns = inventory.Columns,
-                ColumnTypes = inventory.Columns.ToDictionary(column => column.Column, column => SqlServerTypeMapping.Map(column.DeclaredType), StringComparer.Ordinal),
+                ColumnTypes = targetColumnTypes,
                 NullableColumns = nullable,
                 IdentityColumns = [.. tableColumns.Where(column => column.Identity).Select(column => column.Column)],
                 Identities = [.. tableColumns.Where(column => column.Identity).Select(column => new IdentityCopyPlan(
@@ -73,7 +77,9 @@ public sealed partial class SqlServerMigrationSource
                     .ToDictionary(column => column.Column, column => TranslateExpressionForPostgreSql(column.DefaultExpression), StringComparer.Ordinal),
                 GeneratedColumns = [.. tableColumns
                     .Where(column => !string.IsNullOrWhiteSpace(column.ComputedExpression))
-                    .Select(column => new GeneratedColumnCopyPlan(column.Column, TranslateExpressionForPostgreSql(column.ComputedExpression)))],
+                    .Select(column => new GeneratedColumnCopyPlan(
+                        column.Column,
+                        TranslateGeneratedExpressionForPostgreSql(column.ComputedExpression, targetColumnTypes)))],
                 CheckConstraints = [.. tableChecks.Select(check => new CheckConstraintCopyPlan(check.Name, TranslateExpressionForPostgreSql(check.Expression))
                 {
                     Columns = inventory.OrderedColumns,
@@ -258,11 +264,231 @@ public sealed partial class SqlServerMigrationSource
         return UnicodeStringPrefix().Replace(translated, "'");
     }
 
+    internal static string TranslateGeneratedExpressionForPostgreSql(
+        string expression,
+        IReadOnlyDictionary<string, string> targetColumnTypes)
+    {
+        ArgumentNullException.ThrowIfNull(targetColumnTypes);
+        string translated = TranslateExpressionForPostgreSql(expression);
+        Match trimConcat = TrimConcatGeneratedColumn().Match(translated);
+        if (trimConcat.Success)
+        {
+            string first = trimConcat.Groups["first"].Value;
+            string last = trimConcat.Groups["last"].Value;
+            _ = GetColumnType(first, targetColumnTypes).StartsWith("character varying", StringComparison.Ordinal) &&
+                GetColumnType(last, targetColumnTypes).StartsWith("character varying", StringComparison.Ordinal)
+                ? true
+                : throw new MigrationExecutionException(
+                    "source_computed_text_type_unsupported",
+                    "The SQL Server CONCAT computed expression requires character-varying source columns.");
+            return $"btrim((((COALESCE({first}, ''::character varying))::text || ' '::text) || (COALESCE({last}, ''::character varying))::text))";
+        }
+
+        Match decimalConvert = DecimalConvertGeneratedColumn().Match(translated);
+        if (decimalConvert.Success)
+        {
+            return TranslateDecimalGeneratedExpression(
+                decimalConvert.Groups["value"].Value,
+                decimalConvert.Groups["precision"].Value,
+                decimalConvert.Groups["scale"].Value,
+                targetColumnTypes);
+        }
+
+        Match dateDiff = DateDiffDayGeneratedColumn().Match(translated);
+        if (dateDiff.Success)
+        {
+            string start = DateOperand(dateDiff.Groups["start"].Value, targetColumnTypes);
+            string end = DateOperand(dateDiff.Groups["end"].Value, targetColumnTypes);
+            return $"({end} - {start})";
+        }
+
+        Match arithmetic = BinaryArithmeticGeneratedColumn().Match(translated);
+        return arithmetic.Success
+            ? $"({arithmetic.Groups["left"].Value} {arithmetic.Groups["operator"].Value} {arithmetic.Groups["right"].Value})"
+            : throw new MigrationExecutionException(
+                "source_computed_expression_unsupported",
+                "A SQL Server computed expression is outside the approved immutable PostgreSQL translation set.");
+    }
+
+    private static string TranslateDecimalGeneratedExpression(
+        string value,
+        string precision,
+        string scale,
+        IReadOnlyDictionary<string, string> targetColumnTypes)
+    {
+        Match multiplication = NumericMultiplication().Match(value);
+        if (multiplication.Success)
+        {
+            NumericTerm left = NumericOperand(multiplication.Groups["left"].Value, targetColumnTypes);
+            NumericTerm right = NumericOperand(multiplication.Groups["right"].Value, targetColumnTypes);
+            DecimalShape product = Multiply(left.Shape, right.Shape);
+            string valueAtSourcePrecision = CastNumeric($"({left.Expression} * {right.Expression})", product);
+            return CastNumeric(valueAtSourcePrecision, ParseShape(precision, scale));
+        }
+
+        Match subtraction = NumericSubtraction().Match(value);
+        if (subtraction.Success)
+        {
+            NumericTerm left = NumericOperand(subtraction.Groups["left"].Value, targetColumnTypes);
+            NumericTerm right = NumericOperand(subtraction.Groups["right"].Value, targetColumnTypes);
+            DecimalShape difference = AddOrSubtract(left.Shape, right.Shape);
+            string valueAtSourcePrecision = CastNumeric($"({left.Expression} - {right.Expression})", difference);
+            return CastNumeric(valueAtSourcePrecision, ParseShape(precision, scale));
+        }
+
+        Match discounted = DiscountedSubtotal().Match(value);
+        if (discounted.Success &&
+            string.Equals(discounted.Groups["price"].Value, discounted.Groups["priceAgain"].Value, StringComparison.Ordinal) &&
+            string.Equals(discounted.Groups["quantity"].Value, discounted.Groups["quantityAgain"].Value, StringComparison.Ordinal))
+        {
+            NumericTerm price = NumericOperand(discounted.Groups["price"].Value, targetColumnTypes);
+            NumericTerm quantity = NumericOperand(discounted.Groups["quantity"].Value, targetColumnTypes);
+            NumericTerm discount = NumericOperand(discounted.Groups["discount"].Value, targetColumnTypes);
+            var integerLiteral = new NumericTerm("(100)::numeric", new(10, 0));
+            DecimalShape grossShape = Multiply(price.Shape, quantity.Shape);
+            string gross = CastNumeric($"({price.Expression} * {quantity.Expression})", grossShape);
+            DecimalShape discountAmountShape = Multiply(grossShape, discount.Shape);
+            string discountAmount = CastNumeric($"({gross} * {discount.Expression})", discountAmountShape);
+            DecimalShape discountedShape = Divide(discountAmountShape, integerLiteral.Shape);
+            string discountedAmount = CastNumeric($"({discountAmount} / {integerLiteral.Expression})", discountedShape);
+            DecimalShape subtotalShape = AddOrSubtract(grossShape, discountedShape);
+            string subtotal = CastNumeric($"({gross} - {discountedAmount})", subtotalShape);
+            return CastNumeric(subtotal, ParseShape(precision, scale));
+        }
+
+        throw new MigrationExecutionException(
+            "source_computed_decimal_unsupported",
+            "A SQL Server decimal computed expression cannot be translated safely to PostgreSQL.");
+    }
+
+    private static NumericTerm NumericOperand(
+        string quotedIdentifier,
+        IReadOnlyDictionary<string, string> targetColumnTypes)
+    {
+        string type = GetColumnType(quotedIdentifier, targetColumnTypes);
+
+        return type switch
+        {
+            "smallint" => new($"({quotedIdentifier})::numeric", new(5, 0)),
+            "integer" => new($"({quotedIdentifier})::numeric", new(10, 0)),
+            "bigint" => new($"({quotedIdentifier})::numeric", new(19, 0)),
+            _ when NumericType().Match(type) is { Success: true } numeric => new(
+                quotedIdentifier,
+                ParseShape(numeric.Groups["precision"].Value, numeric.Groups["scale"].Value)),
+            _ => throw new MigrationExecutionException(
+                "source_computed_numeric_type_unsupported",
+                "A SQL Server decimal computed expression references a non-numeric source column."),
+        };
+    }
+
+    private static DecimalShape ParseShape(string precision, string scale)
+    {
+        return new(
+            int.Parse(precision, NumberStyles.None, CultureInfo.InvariantCulture),
+            int.Parse(scale, NumberStyles.None, CultureInfo.InvariantCulture));
+    }
+
+    private static DecimalShape Multiply(DecimalShape left, DecimalShape right)
+    {
+        return Reduce(left.Precision + right.Precision + 1, left.Scale + right.Scale);
+    }
+
+    private static DecimalShape Divide(DecimalShape left, DecimalShape right)
+    {
+        int scale = Math.Max(6, left.Scale + right.Precision + 1);
+        int precision = left.Precision - left.Scale + right.Scale + scale;
+        return Reduce(precision, scale);
+    }
+
+    private static DecimalShape AddOrSubtract(DecimalShape left, DecimalShape right)
+    {
+        int scale = Math.Max(left.Scale, right.Scale);
+        int integral = Math.Max(left.Precision - left.Scale, right.Precision - right.Scale);
+        int precision = integral + scale + 1;
+        return precision <= 38
+            ? new(precision, scale)
+            : new(38, Math.Min(scale, 38 - integral));
+    }
+
+    private static DecimalShape Reduce(int precision, int scale)
+    {
+        if (precision <= 38)
+        {
+            return new(precision, scale);
+        }
+
+        int integral = precision - scale;
+        int reducedScale = integral < 32
+            ? Math.Min(scale, 38 - integral)
+            : scale > 6 ? 6 : scale;
+        return new(38, reducedScale);
+    }
+
+    private static string CastNumeric(string expression, DecimalShape shape)
+    {
+        return $"({expression})::numeric({shape.Precision},{shape.Scale})";
+    }
+
+    private static string DateOperand(
+        string quotedIdentifier,
+        IReadOnlyDictionary<string, string> targetColumnTypes)
+    {
+        string type = GetColumnType(quotedIdentifier, targetColumnTypes);
+        return type switch
+        {
+            "date" => quotedIdentifier,
+            "timestamp without time zone" => $"({quotedIdentifier})::date",
+            _ => throw new MigrationExecutionException(
+                "source_computed_temporal_type_unsupported",
+                "A SQL Server DATEDIFF computed expression references an unsupported temporal source column."),
+        };
+    }
+
+    private static string GetColumnType(
+        string quotedIdentifier,
+        IReadOnlyDictionary<string, string> targetColumnTypes)
+    {
+        string column = quotedIdentifier[1..^1].Replace("\"\"", "\"", StringComparison.Ordinal);
+        return targetColumnTypes.TryGetValue(column, out string? mappedType)
+            ? mappedType
+            : throw new MigrationExecutionException(
+                "source_computed_column_missing",
+                "A computed expression references a column outside the source schema plan.");
+    }
+
     [GeneratedRegex("\\[([^]\\0]+)\\]", RegexOptions.CultureInvariant)]
     private static partial Regex BracketedIdentifier();
 
     [GeneratedRegex("(?<![A-Za-z0-9_])N'", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex UnicodeStringPrefix();
+
+    [GeneratedRegex("^\\(Trim\\(concat\\((?<first>\"(?:[^\"]|\"\")+\"),' ',(?<last>\"(?:[^\"]|\"\")+\")\\)\\)\\)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex TrimConcatGeneratedColumn();
+
+    [GeneratedRegex("^\\(CONVERT\\(\"decimal\"\\((?<precision>[0-9]+),(?<scale>[0-9]+)\\),(?<value>.+)\\)\\)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex DecimalConvertGeneratedColumn();
+
+    [GeneratedRegex("^\\(datediff\\(day,(?<start>\"(?:[^\"]|\"\")+\"),(?<end>\"(?:[^\"]|\"\")+\")\\)\\)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex DateDiffDayGeneratedColumn();
+
+    [GeneratedRegex("^\\((?<left>\"(?:[^\"]|\"\")+\")(?<operator>[-+])(?<right>\"(?:[^\"]|\"\")+\")\\)$", RegexOptions.CultureInvariant)]
+    private static partial Regex BinaryArithmeticGeneratedColumn();
+
+    [GeneratedRegex("^(?<left>\"(?:[^\"]|\"\")+\")\\*(?<right>\"(?:[^\"]|\"\")+\")$", RegexOptions.CultureInvariant)]
+    private static partial Regex NumericMultiplication();
+
+    [GeneratedRegex("^(?<left>\"(?:[^\"]|\"\")+\")-(?<right>\"(?:[^\"]|\"\")+\")$", RegexOptions.CultureInvariant)]
+    private static partial Regex NumericSubtraction();
+
+    [GeneratedRegex("^(?<price>\"(?:[^\"]|\"\")+\")\\*(?<quantity>\"(?:[^\"]|\"\")+\")-\\(\\((?<priceAgain>\"(?:[^\"]|\"\")+\")\\*(?<quantityAgain>\"(?:[^\"]|\"\")+\")\\)\\*(?<discount>\"(?:[^\"]|\"\")+\")\\)/\\(100\\)$", RegexOptions.CultureInvariant)]
+    private static partial Regex DiscountedSubtotal();
+
+    [GeneratedRegex("^numeric\\((?<precision>[0-9]+),(?<scale>[0-9]+)\\)$", RegexOptions.CultureInvariant)]
+    private static partial Regex NumericType();
+
+    private readonly record struct DecimalShape(int Precision, int Scale);
+
+    private readonly record struct NumericTerm(string Expression, DecimalShape Shape);
 
     private sealed record ColumnDetails(string Schema, string Table, int Ordinal, string Column, bool Nullable, bool Identity,
         long IdentitySeed, long IdentityIncrement, long? IdentityCurrent, string DefaultExpression, string ComputedExpression);
