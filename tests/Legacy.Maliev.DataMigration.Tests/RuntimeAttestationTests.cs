@@ -191,19 +191,87 @@ public sealed class RuntimeAttestationTests : IDisposable
     }
 
     [Fact]
-    public void Target_observation_accepts_current_cnpg_shape_without_observed_generation()
+    public void Target_observation_rejects_a_single_current_cnpg_read_without_reconciliation_evidence()
     {
         string liveShape = ClusterJson("Cluster in healthy state", 2, 2)
             .Replace(", \"observedGeneration\": 7", string.Empty, StringComparison.Ordinal);
         using JsonDocument document = JsonDocument.Parse(liveShape);
 
-        CloudNativePgTargetObservation observation = CloudNativePgTargetObservationParser.Parse(
-            document.RootElement,
+        RuntimeAttestationException exception = Assert.Throws<RuntimeAttestationException>(() =>
+            CloudNativePgTargetObservationParser.Parse(
+                document.RootElement,
+                "maliev-legacy",
+                "legacy-postgres-main"));
+
+        Assert.Equal("runtime_target_reconciliation_unproven", exception.Code);
+    }
+
+    [Fact]
+    public void Target_observation_accepts_two_stable_current_cnpg_reads_without_fabricating_observed_generation()
+    {
+        string liveShape = ClusterJson("Cluster in healthy state", 2, 2)
+            .Replace(", \"observedGeneration\": 7", string.Empty, StringComparison.Ordinal);
+        using JsonDocument first = JsonDocument.Parse(liveShape);
+        using JsonDocument second = JsonDocument.Parse(liveShape);
+
+        CloudNativePgTargetObservation observation = CloudNativePgTargetObservationParser.ParseStableDoubleRead(
+            first.RootElement,
+            second.RootElement,
             "maliev-legacy",
             "legacy-postgres-main");
 
         Assert.True(observation.IsHealthy);
-        Assert.Equal(observation.Generation, observation.ObservedGeneration);
+        Assert.Equal(0, observation.ObservedGeneration);
+        Assert.Equal("stable-resource-version-double-read", observation.ReconciliationEvidence);
+        Assert.Equal(2, observation.ObservationReadCount);
+        Assert.Equal("legacy-postgres-main-1\nlegacy-postgres-main-2", observation.InstanceNames);
+        Assert.Equal(observation.InstanceNames, observation.HealthyInstances);
+        Assert.Equal(observation.HealthyPvcs, observation.InstanceNames);
+    }
+
+    [Theory]
+    [InlineData("\"resourceVersion\": \"100\"", "\"resourceVersion\": \"101\"")]
+    [InlineData("\"generation\": 7", "\"generation\": 8")]
+    [InlineData("\"readyInstances\": 2", "\"readyInstances\": 1")]
+    [InlineData("\"currentPrimary\": \"legacy-postgres-main-1\"", "\"currentPrimary\": \"legacy-postgres-main-2\"")]
+    public void Target_observation_rejects_drift_between_current_cnpg_reads(string original, string replacement)
+    {
+        string firstShape = ClusterJson("Cluster in healthy state", 2, 2)
+            .Replace(", \"observedGeneration\": 7", string.Empty, StringComparison.Ordinal);
+        string secondShape = firstShape.Replace(original, replacement, StringComparison.Ordinal);
+        using JsonDocument first = JsonDocument.Parse(firstShape);
+        using JsonDocument second = JsonDocument.Parse(secondShape);
+
+        RuntimeAttestationException exception = Assert.Throws<RuntimeAttestationException>(() =>
+            CloudNativePgTargetObservationParser.ParseStableDoubleRead(
+                first.RootElement,
+                second.RootElement,
+                "maliev-legacy",
+                "legacy-postgres-main"));
+
+        Assert.Equal("runtime_target_drift", exception.Code);
+    }
+
+    [Theory]
+    [InlineData("\"healthyPVC\": [\"legacy-postgres-main-1\", \"legacy-postgres-main-2\"]", "\"healthyPVC\": [\"legacy-postgres-main-1\"]")]
+    [InlineData("\"danglingPVC\": []", "\"danglingPVC\": [\"legacy-postgres-main-old\"]")]
+    [InlineData("\"reason\": \"ClusterIsReady\"", "\"reason\": \"Reconciling\"")]
+    public void Target_observation_rejects_incomplete_health_evidence(string original, string replacement)
+    {
+        string liveShape = ClusterJson("Cluster in healthy state", 2, 2)
+            .Replace(", \"observedGeneration\": 7", string.Empty, StringComparison.Ordinal)
+            .Replace(original, replacement, StringComparison.Ordinal);
+        using JsonDocument first = JsonDocument.Parse(liveShape);
+        using JsonDocument second = JsonDocument.Parse(liveShape);
+
+        RuntimeAttestationException exception = Assert.Throws<RuntimeAttestationException>(() =>
+            CloudNativePgTargetObservationParser.ParseStableDoubleRead(
+                first.RootElement,
+                second.RootElement,
+                "maliev-legacy",
+                "legacy-postgres-main"));
+
+        Assert.Equal("runtime_target_unhealthy", exception.Code);
     }
 
     [Fact]
@@ -220,6 +288,83 @@ public sealed class RuntimeAttestationTests : IDisposable
                 "legacy-postgres-main"));
 
         Assert.Equal("runtime_target_unhealthy", exception.Code);
+    }
+
+    [Fact]
+    public void Target_observation_accepts_matching_condition_observed_generation_as_explicit_evidence()
+    {
+        string conditionEvidence = ClusterJson("Cluster in healthy state", 2, 2)
+            .Replace(", \"observedGeneration\": 7", string.Empty, StringComparison.Ordinal)
+            .Replace(
+                "\"type\": \"Ready\", \"status\": \"True\"",
+                "\"type\": \"Ready\", \"status\": \"True\", \"observedGeneration\": 7",
+                StringComparison.Ordinal);
+        using JsonDocument document = JsonDocument.Parse(conditionEvidence);
+
+        CloudNativePgTargetObservation observation = CloudNativePgTargetObservationParser.Parse(
+            document.RootElement,
+            "maliev-legacy",
+            "legacy-postgres-main");
+
+        Assert.Equal("observed-generation", observation.ReconciliationEvidence);
+        Assert.Equal(7, observation.ObservedGeneration);
+        Assert.Equal(1, observation.ObservationReadCount);
+    }
+
+    [Fact]
+    public async Task Target_observer_delays_and_reads_twice_only_when_cnpg_omits_observed_generation()
+    {
+        string liveShape = ClusterJson("Cluster in healthy state", 2, 2)
+            .Replace(", \"observedGeneration\": 7", string.Empty, StringComparison.Ordinal);
+        using JsonDocument document = JsonDocument.Parse(liveShape);
+        int reads = 0;
+        int delays = 0;
+
+        CloudNativePgTargetObservation observation = await CloudNativePgTargetObserver.ObserveWithStableFallbackAsync(
+            (_, _, _) =>
+            {
+                reads++;
+                return Task.FromResult(document.RootElement.Clone());
+            },
+            (_, _) =>
+            {
+                delays++;
+                return Task.CompletedTask;
+            },
+            "maliev-legacy",
+            "legacy-postgres-main",
+            CancellationToken.None);
+
+        Assert.Equal(2, reads);
+        Assert.Equal(1, delays);
+        Assert.Equal("stable-resource-version-double-read", observation.ReconciliationEvidence);
+    }
+
+    [Fact]
+    public async Task Target_observer_prefers_explicit_observed_generation_without_a_fallback_read()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClusterJson("Cluster in healthy state", 2, 2));
+        int reads = 0;
+        int delays = 0;
+
+        CloudNativePgTargetObservation observation = await CloudNativePgTargetObserver.ObserveWithStableFallbackAsync(
+            (_, _, _) =>
+            {
+                reads++;
+                return Task.FromResult(document.RootElement.Clone());
+            },
+            (_, _) =>
+            {
+                delays++;
+                return Task.CompletedTask;
+            },
+            "maliev-legacy",
+            "legacy-postgres-main",
+            CancellationToken.None);
+
+        Assert.Equal(1, reads);
+        Assert.Equal(0, delays);
+        Assert.Equal("observed-generation", observation.ReconciliationEvidence);
     }
 
     [Fact]
@@ -264,6 +409,24 @@ public sealed class RuntimeAttestationTests : IDisposable
             authorization with { TargetObservation = target with { Uid = "uid-replaced" } }, out byte[] replaced));
 
         Assert.NotEqual(original, replaced);
+
+        Assert.True(ExecutionAuthorizationAttestation.TryCreatePayload(
+            authorization with
+            {
+                TargetObservation = target with
+                {
+                    ReconciliationEvidence = "stable-resource-version-double-read",
+                    ObservationReadCount = 2,
+                    ObservedGeneration = 0,
+                },
+            },
+            out byte[] fallback));
+        Assert.NotEqual(original, fallback);
+
+        Assert.True(ExecutionAuthorizationAttestation.TryCreatePayload(
+            authorization with { TargetObservation = target with { HealthyPvcs = "legacy-postgres-main-1" } },
+            out byte[] incompletePvc));
+        Assert.NotEqual(original, incompletePvc);
     }
 
     [Theory]
@@ -280,7 +443,21 @@ public sealed class RuntimeAttestationTests : IDisposable
         return new(
         "maliev-legacy", "legacy-postgres-main", uid, resourceVersion, 7, 7,
         "Cluster in healthy state", 2, 2, "legacy-postgres-main-1", "legacy-postgres-main-1",
-        true, true, true, true);
+        true, true, true, true)
+        {
+            ReconciliationEvidence = "observed-generation",
+            ObservationReadCount = 1,
+            StatusInstances = 2,
+            SystemId = "123456789",
+            InstanceNames = "legacy-postgres-main-1\nlegacy-postgres-main-2",
+            HealthyInstances = "legacy-postgres-main-1\nlegacy-postgres-main-2",
+            PvcCount = 2,
+            HealthyPvcs = "legacy-postgres-main-1\nlegacy-postgres-main-2",
+            ReadyReason = "ClusterIsReady",
+            ConsistentSystemIdReason = "Unique",
+            ContinuousArchivingReason = "ContinuousArchivingSuccess",
+            LastBackupSucceededReason = "LastBackupSucceeded",
+        };
     }
 
     private static string ClusterJson(string phase, int instances, int readyInstances)
@@ -290,13 +467,18 @@ public sealed class RuntimeAttestationTests : IDisposable
           "metadata": { "name": "legacy-postgres-main", "namespace": "maliev-legacy", "uid": "uid-a", "resourceVersion": "100", "generation": 7 },
           "spec": { "instances": {{instances}} },
           "status": {
-            "phase": "{{phase}}", "readyInstances": {{readyInstances}}, "observedGeneration": 7,
+            "phase": "{{phase}}", "instances": {{instances}}, "readyInstances": {{readyInstances}}, "observedGeneration": 7,
             "currentPrimary": "legacy-postgres-main-1", "targetPrimary": "legacy-postgres-main-1",
+            "systemID": "123456789", "pvcCount": {{instances}},
+            "instanceNames": ["legacy-postgres-main-1", "legacy-postgres-main-2"],
+            "instancesStatus": { "healthy": ["legacy-postgres-main-1", "legacy-postgres-main-2"] },
+            "healthyPVC": ["legacy-postgres-main-1", "legacy-postgres-main-2"],
+            "danglingPVC": [], "initializingPVC": [], "resizingPVC": [], "unusablePVC": [],
             "conditions": [
-              { "type": "Ready", "status": "True" },
-              { "type": "ConsistentSystemID", "status": "True" },
-              { "type": "ContinuousArchiving", "status": "True" },
-              { "type": "LastBackupSucceeded", "status": "True" }
+              { "type": "Ready", "status": "True", "reason": "ClusterIsReady" },
+              { "type": "ConsistentSystemID", "status": "True", "reason": "Unique" },
+              { "type": "ContinuousArchiving", "status": "True", "reason": "ContinuousArchivingSuccess" },
+              { "type": "LastBackupSucceeded", "status": "True", "reason": "LastBackupSucceeded" }
             ]
           }
         }

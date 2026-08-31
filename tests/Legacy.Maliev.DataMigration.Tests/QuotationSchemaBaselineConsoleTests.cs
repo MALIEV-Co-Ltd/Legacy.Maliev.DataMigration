@@ -201,7 +201,21 @@ public sealed class QuotationSchemaBaselineConsoleTests : IDisposable
         {
             return new TargetObserver(new(
             "maliev-legacy", "legacy-postgres-main", "cluster-uid", "123", 7, 7, "Cluster in healthy state", 2, 2,
-            "primary-1", "primary-1", true, true, true, true));
+            "primary-1", "primary-1", true, true, true, true)
+            {
+                ReconciliationEvidence = "observed-generation",
+                ObservationReadCount = 1,
+                StatusInstances = 2,
+                SystemId = "123456789",
+                InstanceNames = "primary-1\nreplica-1",
+                HealthyInstances = "primary-1\nreplica-1",
+                PvcCount = 2,
+                HealthyPvcs = "primary-1\nreplica-1",
+                ReadyReason = "ClusterIsReady",
+                ConsistentSystemIdReason = "Unique",
+                ContinuousArchivingReason = "ContinuousArchivingSuccess",
+                LastBackupSucceededReason = "LastBackupSucceeded",
+            });
         }
     }
     private sealed class SnapshotObserver(ImmutablePostgreSqlSnapshotObservation value) : IImmutablePostgreSqlSnapshotObserver

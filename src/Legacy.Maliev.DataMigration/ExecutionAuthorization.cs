@@ -77,6 +77,22 @@ public static class ExecutionAuthorizationAttestation
                 writer.Write(target.ConsistentSystemId);
                 writer.Write(target.ContinuousArchiving);
                 writer.Write(target.LastBackupSucceeded);
+                WriteString(writer, target.ReconciliationEvidence);
+                writer.Write(target.ObservationReadCount);
+                writer.Write(target.StatusInstances);
+                WriteString(writer, target.SystemId);
+                WriteString(writer, target.InstanceNames);
+                WriteString(writer, target.HealthyInstances);
+                writer.Write(target.PvcCount);
+                WriteString(writer, target.HealthyPvcs);
+                WriteString(writer, target.DanglingPvcs);
+                WriteString(writer, target.InitializingPvcs);
+                WriteString(writer, target.ResizingPvcs);
+                WriteString(writer, target.UnusablePvcs);
+                WriteString(writer, target.ReadyReason);
+                WriteString(writer, target.ConsistentSystemIdReason);
+                WriteString(writer, target.ContinuousArchivingReason);
+                WriteString(writer, target.LastBackupSucceededReason);
             }
             WriteString(writer, receipt.Mode);
             WriteString(writer, receipt.AttestationKeyId);
