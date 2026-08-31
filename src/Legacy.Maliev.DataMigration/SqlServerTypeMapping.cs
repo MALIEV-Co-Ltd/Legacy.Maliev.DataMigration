@@ -23,6 +23,7 @@ public static partial class SqlServerTypeMapping
             "float" => "double precision",
             "real" => "real",
             "uniqueidentifier" => "uuid",
+            "sysname" => "character varying(128)",
             "date" => "date",
             "time" => "time without time zone",
             "datetime" or "smalldatetime" => "timestamp without time zone",

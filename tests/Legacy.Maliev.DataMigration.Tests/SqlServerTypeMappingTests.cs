@@ -9,6 +9,7 @@ public sealed class SqlServerTypeMappingTests
     [InlineData("uniqueidentifier", "uuid")]
     [InlineData("decimal(19,4)", "numeric(19,4)")]
     [InlineData("nvarchar(200)", "character varying(200)")]
+    [InlineData("sysname", "character varying(128)")]
     [InlineData("nvarchar(max)", "text")]
     [InlineData("varbinary(max)", "bytea")]
     [InlineData("datetime2(6)", "timestamp without time zone")]
