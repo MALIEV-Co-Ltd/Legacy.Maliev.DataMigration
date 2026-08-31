@@ -5,6 +5,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
     private static readonly HashSet<string> Commands =
     [
         "plan",
+        "plan-digest",
         "execute-shadow",
         "evidence",
         "export-local-snapshot",

@@ -107,7 +107,7 @@ No executable migration logic was copied from those files.
 
 ## Receipt and execution contracts
 
-The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan`,
+The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan`, `plan-digest`,
 `authorize-shadow`, `execute-shadow`, `export-local-snapshot`, `cleanup-restore`,
 `sign-provenance`, `sign-quotation-schema-baseline`, `sign-quotation-postgres-snapshot`, and `evidence`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
@@ -458,7 +458,7 @@ synchronization. Before a real shadow copy is allowed, the program still needs:
 1. owner-reviewed runtime configuration that binds the daily adapter to the
    concrete Kubernetes/sqlcmd and Workload Identity GCS adapters plus protected
    external signing-key injection;
-2. a freshly generated and independently reviewed 25-database schema plan bound
+2. a freshly generated and independently reviewed 24-database schema plan bound
    to the current source commit;
 3. a bounded source write freeze or a reviewed change-capture mechanism (the
    legacy source does not currently provide a proven complete daily delta);

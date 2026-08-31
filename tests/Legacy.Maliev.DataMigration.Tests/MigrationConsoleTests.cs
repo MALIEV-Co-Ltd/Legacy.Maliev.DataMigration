@@ -104,6 +104,37 @@ public sealed class MigrationConsoleTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_PlanDigest_PrintsCanonicalDigestFromProtectedGeneratedPlan()
+    {
+        OwnerProtectedDirectory.CreateNew(_root);
+        string planPath = Path.Combine(_root, "plan.json");
+        var plan = new FreshSchemaPlan(
+            "2.0",
+            new DateTimeOffset(2026, 8, 31, 8, 0, 0, TimeSpan.Zero),
+            new string('a', 40),
+            []);
+        await File.WriteAllTextAsync(planPath, JsonSerializer.Serialize(plan, JsonOptions));
+        ProtectFileOnUnix(planPath);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            plan = new { outputPath = planPath, sourceCommitSha = new string('a', 40) },
+        }, JsonOptions));
+        ProtectFileOnUnix(configPath);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["plan-digest", "--config", configPath], output, error, _ => null, CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(
+            $"schema_plan_sha256={SchemaPlanCanonicalizer.ComputeSha256(plan)}{Environment.NewLine}",
+            output.ToString());
+        Assert.Equal(string.Empty, error.ToString());
+    }
+
+    [Fact]
     public async Task RunAsync_ExecuteShadow_MissingRuntimeReferencesFailsClosed()
     {
         OwnerProtectedDirectory.CreateNew(_root);

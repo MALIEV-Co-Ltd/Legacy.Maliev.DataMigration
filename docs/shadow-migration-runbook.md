@@ -1,4 +1,4 @@
-# Exact-25 shadow migration operator runbook
+# Exact-24 shadow migration operator runbook
 
 This runbook does not authorize a production operation. It defines a preparation
 phase, a mandatory owner-review stop, an approved execution phase, and a separate
@@ -97,7 +97,8 @@ Preparation performs the explicitly allowed source backup and immutable GCS
 upload, restores only into disposable local SQL Server 2022, and generates the
 fresh plan.
 
-**STOP.** Record the plan file byte hash and canonical schema-plan SHA-256,
+**STOP.** Preparation prints `schema_plan_sha256=<digest>` using the canonical
+`SchemaPlanCanonicalizer`. Record that digest and the plan file byte hash,
 inspect all 24 database plans, and place that exact canonical digest into
 `authorizeShadow.reviewedSchemaPlanSha256`. Do not continue until the owner has
 reviewed the plan and set `allowShadowAuthorization: true`.
@@ -118,7 +119,7 @@ set `signProvenance.allowProvenanceSigning: true`.
   -ProtectedConfigPath $Config -Configuration Release
 ```
 
-Finalization writes a new MLVSNP02 directory containing exactly 25 encrypted
+Finalization writes a new MLVSNP02 directory containing exactly 24 encrypted
 dumps and `manifest.json`, removes disposable SQL Server resources, signs
 provenance only from the completed cleanup receipt, and atomically publishes
 final evidence and its review baseline.
