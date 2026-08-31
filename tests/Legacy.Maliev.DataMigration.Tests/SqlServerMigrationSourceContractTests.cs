@@ -90,6 +90,34 @@ public sealed class SqlServerMigrationSourceContractTests
             SqlServerMigrationSource.BuildReadTableCommand(table));
     }
 
+    [Fact]
+    public void BuildStreamingReadTableCommand_QuotesReservedMaterializedIdentifiers()
+    {
+        var table = new TableCopyPlan(
+            "HangFire",
+            "Hash",
+            "public",
+            "Hash",
+            ["Key", "Field", "Value", "ExpireAt"],
+            ["Key", "Field"])
+        {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Key"] = "nvarchar(100)",
+                ["Field"] = "nvarchar(100)",
+                ["Value"] = "nvarchar(max)",
+                ["ExpireAt"] = "datetime2(7)",
+            },
+        };
+
+        string sql = SqlServerMigrationSource.BuildStreamingReadTableCommand(table);
+
+        Assert.Equal(
+            "SELECT [Key], [Field], [ExpireAt], DATALENGTH(CONVERT(varchar(max), [Value] COLLATE Latin1_General_100_BIN2_UTF8)) " +
+            "FROM [HangFire].[Hash] ORDER BY [Key], [Field];",
+            sql);
+    }
+
     [Theory]
     [InlineData("(getutcdate())", "(timezone('UTC'::text, CURRENT_TIMESTAMP))")]
     [InlineData("GETUTCDATE()", "timezone('UTC'::text, CURRENT_TIMESTAMP)")]

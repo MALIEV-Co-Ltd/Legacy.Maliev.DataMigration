@@ -508,7 +508,7 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         return NormalizeSourceValue(value, sourceType, string.Empty);
     }
 
-    private static string BuildStreamingReadTableCommand(TableCopyPlan table)
+    internal static string BuildStreamingReadTableCommand(TableCopyPlan table)
     {
         IReadOnlyList<string> keys = table.PrimaryKey?.Columns ?? table.OrderByColumns;
         if (keys.Count == 0 || keys.Any(column => IsLargeValueType(table.SourceColumnTypes[column])))
@@ -520,7 +520,7 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             .Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
                 ? $"DATALENGTH({QuoteIdentifier(column)})"
                 : $"DATALENGTH(CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
-        string select = $"SELECT {string.Join(", ", materialized.Concat(lengthProbes))} " +
+        string select = $"SELECT {string.Join(", ", materialized.Select(QuoteIdentifier).Concat(lengthProbes))} " +
             $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)}";
         return table.SourceKnownEmpty
             ? $"{select};"
