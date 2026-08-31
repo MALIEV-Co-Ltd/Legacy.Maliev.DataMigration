@@ -329,6 +329,10 @@ public sealed class SqlServerMigrationSourceIntegrationTests
                     CONSTRAINT PK_Child PRIMARY KEY (Id),
                     CONSTRAINT FK_Child_Parent FOREIGN KEY (TenantId, ParentId)
                         REFERENCES sales.Parent (TenantId, Id) ON DELETE CASCADE);
+                CREATE TABLE sales.EmptyCounter (
+                    [Key] nvarchar(100) NOT NULL,
+                    [Value] int NOT NULL,
+                    ExpireAt datetime NULL);
                 CREATE INDEX IX_Child_Amount ON sales.Child (Amount DESC)
                     INCLUDE (ThaiName) WHERE Amount > 0;
                 INSERT INTO sales.Parent (TenantId, Id) VALUES (1, 10);
@@ -391,6 +395,9 @@ public sealed class SqlServerMigrationSourceIntegrationTests
 
         DatabaseSchemaPlan generatedPlan = await source.GenerateDatabasePlanAsync(database, CancellationToken.None);
         TableCopyPlan generatedChild = Assert.Single(generatedPlan.Tables, table => table.SourceTable == "Child");
+        TableCopyPlan generatedEmptyCounter = Assert.Single(generatedPlan.Tables, table => table.SourceTable == "EmptyCounter");
+        Assert.True(generatedEmptyCounter.SourceKnownEmpty);
+        Assert.Equal(generatedEmptyCounter.OrderedColumns, generatedEmptyCounter.OrderByColumns);
         Assert.Equal(["Id"], generatedChild.PrimaryKey!.Columns);
         Assert.Equal(["TenantId", "Id"], Assert.Single(generatedPlan.Tables, table => table.SourceTable == "Parent").PrimaryKey!.Columns);
         Assert.Equal("text", generatedChild.ColumnTypes["LocalTime"]);

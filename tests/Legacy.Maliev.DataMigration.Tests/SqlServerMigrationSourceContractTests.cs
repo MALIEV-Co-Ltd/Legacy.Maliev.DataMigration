@@ -78,6 +78,19 @@ public sealed class SqlServerMigrationSourceContractTests
     }
 
     [Fact]
+    public void BuildReadTableCommand_SourceProvenEmpty_DoesNotCompileAnUnnecessaryOrderExpression()
+    {
+        var table = new TableCopyPlan("HangFire", "Counter", "hangfire", "Counter", ["Key", "Value"], ["Key", "Value"])
+        {
+            SourceKnownEmpty = true,
+        };
+
+        Assert.Equal(
+            "SELECT [Key], [Value] FROM [HangFire].[Counter];",
+            SqlServerMigrationSource.BuildReadTableCommand(table));
+    }
+
+    [Fact]
     public async Task DisposeAsync_WithoutActiveSnapshots_IsIdempotent()
     {
         await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(

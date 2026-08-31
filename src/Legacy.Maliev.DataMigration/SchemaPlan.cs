@@ -15,6 +15,8 @@ public sealed record TableCopyPlan(
 {
     public int BatchSize { get; init; } = 10_000;
 
+    public bool SourceKnownEmpty { get; init; }
+
     public IReadOnlyDictionary<string, string> ColumnTypes { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -275,7 +277,10 @@ public static partial class SchemaPlanCanonicalizer
                 totalKeys.AddRange(table.UniqueConstraints
                     .Where(unique => !unique.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any())
                     .Select(unique => unique.Columns));
-                if (!totalKeys.Any(key => key.All(column => table.OrderByColumns.Contains(column, StringComparer.Ordinal))))
+                bool hasProvenTotalKey = totalKeys.Any(key => key.All(column => table.OrderByColumns.Contains(column, StringComparer.Ordinal)));
+                bool hasProvenEmptyOrdering = table.SourceKnownEmpty &&
+                    table.OrderByColumns.SequenceEqual(table.OrderedColumns, StringComparer.Ordinal);
+                if (!hasProvenTotalKey && !hasProvenEmptyOrdering)
                 {
                     errors.Add(new("order_by_not_total", $"{database.Database}.{table.SourceTable} ordering is not proven unique."));
                 }
@@ -361,6 +366,7 @@ public static partial class SchemaPlanCanonicalizer
                     WriteString(writer, table.TargetTable);
                     WriteStrings(writer, table.OrderedColumns);
                     WriteStrings(writer, table.OrderByColumns);
+                    writer.Write(table.SourceKnownEmpty);
                     writer.Write(table.BatchSize);
                     foreach (string column in table.OrderedColumns)
                     {

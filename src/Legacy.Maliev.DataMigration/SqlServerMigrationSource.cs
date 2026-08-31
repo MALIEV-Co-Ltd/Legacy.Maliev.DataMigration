@@ -491,11 +491,16 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
     internal static string BuildReadTableCommand(TableCopyPlan table)
     {
         ArgumentNullException.ThrowIfNull(table);
-        return table.OrderedColumns.Count == 0 || table.OrderByColumns.Count == 0
-            ? throw new ArgumentException("A deterministic table read requires columns and ordering.", nameof(table))
-            : $"SELECT {string.Join(", ", table.OrderedColumns.Select(QuoteIdentifier))} " +
-            $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)} " +
-            $"ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
+        if (table.OrderedColumns.Count == 0 || table.OrderByColumns.Count == 0)
+        {
+            throw new ArgumentException("A deterministic table read requires columns and ordering.", nameof(table));
+        }
+
+        string select = $"SELECT {string.Join(", ", table.OrderedColumns.Select(QuoteIdentifier))} " +
+            $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)}";
+        return table.SourceKnownEmpty
+            ? $"{select};"
+            : $"{select} ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
     }
 
     internal static object? NormalizeSourceValue(object? value, string sourceType)
@@ -515,9 +520,11 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
             .Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
                 ? $"DATALENGTH({QuoteIdentifier(column)})"
                 : $"DATALENGTH(CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
-        return $"SELECT {string.Join(", ", materialized.Concat(lengthProbes))} " +
-            $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)} " +
-            $"ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
+        string select = $"SELECT {string.Join(", ", materialized.Concat(lengthProbes))} " +
+            $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)}";
+        return table.SourceKnownEmpty
+            ? $"{select};"
+            : $"{select} ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
     }
 
     private static StreamingLob CreateStreamingLob(

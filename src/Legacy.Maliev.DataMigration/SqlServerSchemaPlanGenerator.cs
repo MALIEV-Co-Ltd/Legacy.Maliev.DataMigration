@@ -31,9 +31,18 @@ public sealed partial class SqlServerMigrationSource
             PrimaryKeyCopyPlan? primaryKey = CreatePrimaryKey(tableIndexes);
             UniqueConstraintCopyPlan[] uniqueConstraints = CreateUniqueConstraints(tableIndexes);
             string[] nullable = [.. tableColumns.Where(column => column.Nullable).Select(column => column.Column)];
-            IReadOnlyList<string> ordering = primaryKey?.Columns ?? uniqueConstraints
-                .FirstOrDefault(unique => !unique.Columns.Intersect(nullable, StringComparer.Ordinal).Any())?.Columns ??
-                throw new MigrationExecutionException("source_table_total_order_missing", "Every source table requires a non-null unique ordering key.");
+            IReadOnlyList<string>? ordering = primaryKey?.Columns ?? uniqueConstraints
+                .FirstOrDefault(unique => !unique.Columns.Intersect(nullable, StringComparer.Ordinal).Any())?.Columns;
+            bool sourceKnownEmpty = false;
+            if (ordering is null)
+            {
+                sourceKnownEmpty = await IsTableEmptyAsync(lease, inventory, cancellationToken).ConfigureAwait(false);
+                ordering = sourceKnownEmpty
+                    ? inventory.OrderedColumns
+                    : throw new MigrationExecutionException(
+                        "source_table_total_order_missing",
+                        "Every non-empty source table requires a non-null unique ordering key.");
+            }
             string targetSchema = TargetSchema(inventory.SourceSchema);
             var table = new TableCopyPlan(
                 inventory.SourceSchema,
@@ -43,6 +52,7 @@ public sealed partial class SqlServerMigrationSource
                 inventory.OrderedColumns,
                 ordering)
             {
+                SourceKnownEmpty = sourceKnownEmpty,
                 SourceColumnTypes = inventory.Columns.ToDictionary(column => column.Column, column => column.DeclaredType, StringComparer.Ordinal),
                 SourceColumns = inventory.Columns,
                 ColumnTypes = inventory.Columns.ToDictionary(column => column.Column, column => SqlServerTypeMapping.Map(column.DeclaredType), StringComparer.Ordinal),
@@ -74,6 +84,17 @@ public sealed partial class SqlServerMigrationSource
 
         var draft = new DatabaseSchemaPlan(database, "1.0", schema.SchemaSha256, new string('0', 64), tables);
         return draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+    }
+
+    private static async Task<bool> IsTableEmptyAsync(
+        SnapshotLease lease,
+        SourceTableInventory table,
+        CancellationToken cancellationToken)
+    {
+        string sql = $"SELECT CASE WHEN EXISTS (SELECT TOP (1) 1 FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)}) THEN 0 ELSE 1 END;";
+        await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction);
+        object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return Convert.ToInt32(result, CultureInfo.InvariantCulture) == 1;
     }
 
     private static async Task<IReadOnlyDictionary<(string, string), ColumnDetails[]>> ReadColumnDetailsAsync(
