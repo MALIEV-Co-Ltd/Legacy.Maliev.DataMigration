@@ -37,7 +37,7 @@ public sealed class LocalSnapshotExporterTests : IDisposable
         Assert.Equal("run-20260830", manifest.SnapshotId);
         Assert.Matches("^[0-9a-f]{64}$", manifest.ManifestDigestSha256);
         Assert.Matches("^[0-9a-f]{64}$", manifest.ManifestMacSha256);
-        Assert.Equal(25, manifest.Databases.Count);
+        Assert.Equal(24, manifest.Databases.Count);
         Assert.Equal(DatabaseInventory.ActiveDatabases, source.Opened);
         Assert.All(manifest.Databases, database =>
         {

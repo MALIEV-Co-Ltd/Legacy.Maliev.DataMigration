@@ -1,4 +1,4 @@
-# Exact-25 shadow migration operator runbook
+# Exact-24 shadow migration operator runbook
 
 This runbook does not authorize a production operation. It defines a preparation
 phase, a mandatory owner-review stop, an approved execution phase, and a separate
@@ -68,14 +68,14 @@ and rejects unknown properties.
   directory; snapshot/backup generation/restore/evidence/lease identities and
   times; and the distinct final-evidence key ID.
 
-`authorize-shadow` re-hashes the exact fresh plan, verifies the signed exact-25
+`authorize-shadow` re-hashes the exact fresh plan, verifies the signed exact-24
 backup, validates plan freshness and source commit, rejects stale approval
 windows and backup/authorization key reuse, measures the complete owner-only
 Release publication, and observes the exact healthy CloudNativePG target before
 publishing create-only. It cannot mint an authorization without the reviewed plan
 digest and explicit allow flag.
 
-`sign-provenance` verifies the exact-25 signed execution, authorization, backup,
+`sign-provenance` verifies the exact-24 signed execution, authorization, backup,
 and final restore receipt. Cleanup must be `Removed`; a pending cleanup receipt
 cannot produce provenance.
 
@@ -97,8 +97,9 @@ Preparation performs the explicitly allowed source backup and immutable GCS
 upload, restores only into disposable local SQL Server 2022, and generates the
 fresh plan.
 
-**STOP.** Record the plan file byte hash and canonical schema-plan SHA-256,
-inspect all 25 database plans, and place that exact canonical digest into
+**STOP.** Preparation prints `schema_plan_sha256=<digest>` using the canonical
+`SchemaPlanCanonicalizer`. Record that digest and the plan file byte hash,
+inspect all 24 database plans, and place that exact canonical digest into
 `authorizeShadow.reviewedSchemaPlanSha256`. Do not continue until the owner has
 reviewed the plan and set `allowShadowAuthorization: true`.
 
@@ -109,7 +110,7 @@ reviewed the plan and set `allowShadowAuthorization: true`.
 
 The approved phase signs the reviewed authorization and writes only run-owned
 `legacy_shadow_*` databases plus `legacy_migration_control`. Inspect the signed
-result: it must cover exactly 25 databases and prove table row, content,
+result: it must cover exactly 24 databases and prove table row, content,
 aggregate, null, relationship, orphan, and sequence parity. After that review,
 set `signProvenance.allowProvenanceSigning: true`.
 
@@ -118,7 +119,7 @@ set `signProvenance.allowProvenanceSigning: true`.
   -ProtectedConfigPath $Config -Configuration Release
 ```
 
-Finalization writes a new MLVSNP02 directory containing exactly 25 encrypted
+Finalization writes a new MLVSNP02 directory containing exactly 24 encrypted
 dumps and `manifest.json`, removes disposable SQL Server resources, signs
 provenance only from the completed cleanup receipt, and atomically publishes
 final evidence and its review baseline.

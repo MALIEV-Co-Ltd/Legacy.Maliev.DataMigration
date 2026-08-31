@@ -154,6 +154,25 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
                 ["FinishedDate"] = "date",
                 ["Turnaround"] = "integer",
             };
+            var sourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["ID"] = "int",
+                ["FirstName"] = "nvarchar(256)",
+                ["LastName"] = "nvarchar(256)",
+                ["FullName"] = "nvarchar(513)",
+                ["UnitPrice"] = "decimal(18,2)",
+                ["Quantity"] = "int",
+                ["Manufactured"] = "int",
+                ["Remaining"] = "int",
+                ["DiscountPercent"] = "decimal(5,2)",
+                ["Subtotal"] = "decimal(18,2)",
+                ["Total"] = "decimal(18,2)",
+                ["WithholdingTax"] = "decimal(18,2)",
+                ["QuotedAmount"] = "decimal(18,2)",
+                ["CreatedDate"] = "datetime2(6)",
+                ["FinishedDate"] = "date",
+                ["Turnaround"] = "int",
+            };
             var table = new TableCopyPlan(
                 "dbo",
                 "ComputedColumns",
@@ -162,35 +181,17 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
                 ["ID", "FirstName", "LastName", "FullName", "UnitPrice", "Quantity", "Manufactured", "Remaining", "DiscountPercent", "Subtotal", "Total", "WithholdingTax", "QuotedAmount", "CreatedDate", "FinishedDate", "Turnaround"],
                 ["ID"])
             {
-                SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
-                {
-                    ["ID"] = "int",
-                    ["FirstName"] = "nvarchar",
-                    ["LastName"] = "nvarchar",
-                    ["FullName"] = "nvarchar",
-                    ["UnitPrice"] = "decimal",
-                    ["Quantity"] = "int",
-                    ["Manufactured"] = "int",
-                    ["Remaining"] = "int",
-                    ["DiscountPercent"] = "decimal",
-                    ["Subtotal"] = "decimal",
-                    ["Total"] = "decimal",
-                    ["WithholdingTax"] = "decimal",
-                    ["QuotedAmount"] = "decimal",
-                    ["CreatedDate"] = "datetime2",
-                    ["FinishedDate"] = "date",
-                    ["Turnaround"] = "int",
-                },
+                SourceColumnTypes = sourceColumnTypes,
                 ColumnTypes = columnTypes,
                 NullableColumns = ["FirstName", "LastName", "FullName", "FinishedDate", "Turnaround"],
                 PrimaryKey = new PrimaryKeyCopyPlan("PK_ComputedColumns", ["ID"]),
                 GeneratedColumns =
                 [
-                    new("FullName", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(Trim(concat([FirstName],N' ',[LastName])))", columnTypes)),
-                    new("Remaining", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("([Quantity]-[Manufactured])", columnTypes)),
-                    new("Subtotal", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(CONVERT([decimal](18,2),[UnitPrice]*[Quantity]-(([UnitPrice]*[Quantity])*[DiscountPercent])/(100)))", columnTypes)),
-                    new("QuotedAmount", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(CONVERT([decimal](18,2),[Total]-[WithholdingTax]))", columnTypes)),
-                    new("Turnaround", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(datediff(day,[CreatedDate],[FinishedDate]))", columnTypes)),
+                    new("FullName", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(Trim(concat([FirstName],N' ',[LastName])))", sourceColumnTypes, columnTypes)),
+                    new("Remaining", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("([Quantity]-[Manufactured])", sourceColumnTypes, columnTypes)),
+                    new("Subtotal", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(CONVERT([decimal](18,2),[UnitPrice]*[Quantity]-(([UnitPrice]*[Quantity])*[DiscountPercent])/(100)))", sourceColumnTypes, columnTypes)),
+                    new("QuotedAmount", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(CONVERT([decimal](18,2),[Total]-[WithholdingTax]))", sourceColumnTypes, columnTypes)),
+                    new("Turnaround", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(datediff(day,[CreatedDate],[FinishedDate]))", sourceColumnTypes, columnTypes)),
                 ],
             };
             var draft = new DatabaseSchemaPlan("ComputedColumns", "1.0", Hash("source"), Hash("target"), [table]);

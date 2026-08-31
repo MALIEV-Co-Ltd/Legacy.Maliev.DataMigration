@@ -104,6 +104,37 @@ public sealed class MigrationConsoleTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_PlanDigest_PrintsCanonicalDigestFromProtectedGeneratedPlan()
+    {
+        OwnerProtectedDirectory.CreateNew(_root);
+        string planPath = Path.Combine(_root, "plan.json");
+        var plan = new FreshSchemaPlan(
+            "2.0",
+            new DateTimeOffset(2026, 8, 31, 8, 0, 0, TimeSpan.Zero),
+            new string('a', 40),
+            []);
+        await File.WriteAllTextAsync(planPath, JsonSerializer.Serialize(plan, JsonOptions));
+        ProtectFileOnUnix(planPath);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            plan = new { outputPath = planPath, sourceCommitSha = new string('a', 40) },
+        }, JsonOptions));
+        ProtectFileOnUnix(configPath);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["plan-digest", "--config", configPath], output, error, _ => null, CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(
+            $"schema_plan_sha256={SchemaPlanCanonicalizer.ComputeSha256(plan)}{Environment.NewLine}",
+            output.ToString());
+        Assert.Equal(string.Empty, error.ToString());
+    }
+
+    [Fact]
     public async Task RunAsync_ExecuteShadow_MissingRuntimeReferencesFailsClosed()
     {
         OwnerProtectedDirectory.CreateNew(_root);
@@ -466,7 +497,7 @@ public sealed class MigrationConsoleTests : IDisposable
         await File.WriteAllTextAsync(path, "existing");
 
         _ = await Assert.ThrowsAsync<IOException>(() => MigrationConsole.WriteNewJsonForTestsAsync(
-            path, new { state = "complete", count = 25 }, CancellationToken.None));
+            path, new { state = "complete", count = 24 }, CancellationToken.None));
 
         Assert.Equal("existing", await File.ReadAllTextAsync(path));
         Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
@@ -478,11 +509,11 @@ public sealed class MigrationConsoleTests : IDisposable
         Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
 
         await MigrationConsole.WriteNewJsonForTestsAsync(
-            path, new { state = "complete", count = 25 }, CancellationToken.None);
+            path, new { state = "complete", count = 24 }, CancellationToken.None);
 
         using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
         Assert.Equal("complete", document.RootElement.GetProperty("state").GetString());
-        Assert.Equal(25, document.RootElement.GetProperty("count").GetInt32());
+        Assert.Equal(24, document.RootElement.GetProperty("count").GetInt32());
         Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
     }
 

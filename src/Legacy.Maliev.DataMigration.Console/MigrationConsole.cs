@@ -117,6 +117,10 @@ public static class MigrationConsole
                     await ProducePlanAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("plan_complete").ConfigureAwait(false);
                     return 0;
+                case "plan-digest":
+                    string planDigest = await ComputePlanDigestAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync($"schema_plan_sha256={planDigest}").ConfigureAwait(false);
+                    return 0;
                 case "execute-shadow":
                     await ExecuteShadowAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("execute_shadow_complete").ConfigureAwait(false);
@@ -899,6 +903,23 @@ public static class MigrationConsole
             DateTimeOffset.UtcNow,
             cancellationToken).ConfigureAwait(false);
         await WriteNewJsonAsync(plan.OutputPath, schemaPlan, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<string> ComputePlanDigestAsync(
+        string configPath,
+        CancellationToken cancellationToken)
+    {
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "plan_digest_config_unprotected", cancellationToken).ConfigureAwait(false);
+        PlanCommandConfiguration command = configuration.Plan ??
+            throw new MigrationConsoleException("plan_configuration_missing", "Plan configuration is required.");
+        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
+            command.OutputPath, "plan_digest_input_unprotected", cancellationToken).ConfigureAwait(false);
+        return string.Equals(plan.SourceCommitSha, command.SourceCommitSha, StringComparison.Ordinal)
+            ? SchemaPlanCanonicalizer.ComputeSha256(plan)
+            : throw new MigrationConsoleException(
+                "plan_source_commit_mismatch",
+                "The generated schema plan is not bound to the configured source commit.");
     }
 
     private static async Task RestoreBackupsAsync(

@@ -80,13 +80,13 @@ public sealed class SqlServerMigrationSourceContractTests
     [Fact]
     public void BuildReadTableCommand_SourceProvenEmpty_DoesNotCompileAnUnnecessaryOrderExpression()
     {
-        var table = new TableCopyPlan("HangFire", "Counter", "hangfire", "Counter", ["Key", "Value"], ["Key", "Value"])
+        var table = new TableCopyPlan("Archive", "Counter", "archive", "Counter", ["Key", "Value"], ["Key", "Value"])
         {
             SourceKnownEmpty = true,
         };
 
         Assert.Equal(
-            "SELECT [Key], [Value] FROM [HangFire].[Counter];",
+            "SELECT [Key], [Value] FROM [Archive].[Counter];",
             SqlServerMigrationSource.BuildReadTableCommand(table));
     }
 
@@ -94,7 +94,7 @@ public sealed class SqlServerMigrationSourceContractTests
     public void BuildStreamingReadTableCommand_QuotesReservedMaterializedIdentifiers()
     {
         var table = new TableCopyPlan(
-            "HangFire",
+            "Archive",
             "Hash",
             "public",
             "Hash",
@@ -114,7 +114,7 @@ public sealed class SqlServerMigrationSourceContractTests
 
         Assert.Equal(
             "SELECT [Key], [Field], [ExpireAt], DATALENGTH(CONVERT(varchar(max), [Value] COLLATE Latin1_General_100_BIN2_UTF8)) " +
-            "FROM [HangFire].[Hash] ORDER BY [Key], [Field];",
+            "FROM [Archive].[Hash] ORDER BY [Key], [Field];",
             sql);
     }
 
@@ -138,7 +138,7 @@ public sealed class SqlServerMigrationSourceContractTests
         "(((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2))::numeric(18,2)")]
     [InlineData(
         "(CONVERT([decimal](18,2),[UnitPrice]*[Quantity]-(([UnitPrice]*[Quantity])*[DiscountPercent])/(100)))",
-        "(((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) - ((((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) * \"DiscountPercent\"))::numeric(35,4) / (100)::numeric))::numeric(38,7)))::numeric(38,7))::numeric(18,2)")]
+        "(((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) - ((((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) * \"DiscountPercent\"))::numeric(35,4) / (100)::numeric))::numeric(38,7)))::numeric(38,6))::numeric(18,2)")]
     [InlineData(
         "(CONVERT([decimal](18,2),[Total]-[WithholdingTax]))",
         "(((\"Total\" - \"WithholdingTax\"))::numeric(19,2))::numeric(18,2)")]
@@ -152,6 +152,19 @@ public sealed class SqlServerMigrationSourceContractTests
         string source,
         string expected)
     {
+        var sourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["FirstName"] = "nvarchar(256)",
+            ["LastName"] = "nvarchar(256)",
+            ["UnitPrice"] = "decimal(18,2)",
+            ["Quantity"] = "int",
+            ["Manufactured"] = "int",
+            ["DiscountPercent"] = "decimal(5,2)",
+            ["Total"] = "decimal(18,2)",
+            ["WithholdingTax"] = "decimal(18,2)",
+            ["CreatedDate"] = "datetime2(6)",
+            ["FinishedDate"] = "date",
+        };
         var targetColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["FirstName"] = "character varying(256)",
@@ -165,7 +178,10 @@ public sealed class SqlServerMigrationSourceContractTests
             ["CreatedDate"] = "timestamp without time zone",
             ["FinishedDate"] = "date",
         };
-        string translated = SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(source, targetColumnTypes);
+        string translated = SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(
+            source,
+            sourceColumnTypes,
+            targetColumnTypes);
 
         Assert.Equal(expected, translated);
         Assert.DoesNotContain("CONVERT", translated, StringComparison.OrdinalIgnoreCase);
@@ -184,16 +200,22 @@ public sealed class SqlServerMigrationSourceContractTests
         MigrationExecutionException exception = Assert.Throws<MigrationExecutionException>(() =>
             SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(
                 "(CONVERT([decimal](18,2),ROUND([Total],0)))",
+                new Dictionary<string, string>(StringComparer.Ordinal) { ["Total"] = "decimal(18,2)" },
                 targetColumnTypes));
 
         Assert.Equal("source_computed_decimal_unsupported", exception.Code);
     }
 
     [Theory]
-    [InlineData("(getdate())")]
-    [InlineData("(newid())")]
-    [InlineData("(ABS([Quantity]))")]
-    public void TranslateGeneratedExpressionForPostgreSql_UnknownOrVolatileShape_FailsClosed(string source)
+    [InlineData("(getdate())", "source_computed_expression_volatile")]
+    [InlineData("(GETUTCDATE())", "source_computed_expression_volatile")]
+    [InlineData("(newid())", "source_computed_expression_volatile")]
+    [InlineData("(RAND())", "source_computed_expression_volatile")]
+    [InlineData("(CURRENT_TIMESTAMP)", "source_computed_expression_volatile")]
+    [InlineData("(ABS([Quantity]))", "source_computed_expression_unsupported")]
+    public void TranslateGeneratedExpressionForPostgreSql_UnknownOrVolatileShape_FailsClosed(
+        string source,
+        string expectedCode)
     {
         var targetColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -201,9 +223,12 @@ public sealed class SqlServerMigrationSourceContractTests
         };
 
         MigrationExecutionException exception = Assert.Throws<MigrationExecutionException>(() =>
-            SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(source, targetColumnTypes));
+            SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(
+                source,
+                new Dictionary<string, string>(StringComparer.Ordinal) { ["Quantity"] = "int" },
+                targetColumnTypes));
 
-        Assert.Equal("source_computed_expression_unsupported", exception.Code);
+        Assert.Equal(expectedCode, exception.Code);
     }
 
     [Fact]
@@ -218,9 +243,69 @@ public sealed class SqlServerMigrationSourceContractTests
         MigrationExecutionException exception = Assert.Throws<MigrationExecutionException>(() =>
             SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(
                 "(datediff(day,[CreatedDate],[FinishedDate]))",
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["CreatedDate"] = "nvarchar(max)",
+                    ["FinishedDate"] = "date",
+                },
                 targetColumnTypes));
 
         Assert.Equal("source_computed_temporal_type_unsupported", exception.Code);
+    }
+
+    [Theory]
+    [InlineData("datetimeoffset(7)", "timestamp without time zone")]
+    [InlineData("datetime2(7)", "timestamp without time zone")]
+    [InlineData("datetime2(6)", "text")]
+    public void TranslateGeneratedExpressionForPostgreSql_UnprovenTemporalMapping_FailsClosed(
+        string sourceStartType,
+        string targetStartType)
+    {
+        var sourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["CreatedDate"] = sourceStartType,
+            ["FinishedDate"] = "date",
+        };
+        var targetColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["CreatedDate"] = targetStartType,
+            ["FinishedDate"] = "date",
+        };
+
+        MigrationExecutionException exception = Assert.Throws<MigrationExecutionException>(() =>
+            SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(
+                "(datediff(day,[CreatedDate],[FinishedDate]))",
+                sourceColumnTypes,
+                targetColumnTypes));
+
+        Assert.Equal("source_computed_temporal_mapping_unproven", exception.Code);
+    }
+
+    [Theory]
+    [InlineData("([Missing]-[Manufactured])", "source_computed_column_missing")]
+    [InlineData("([Name]-[Manufactured])", "source_computed_numeric_type_unsupported")]
+    public void TranslateGeneratedExpressionForPostgreSql_UnprovenArithmeticOperand_FailsClosed(
+        string source,
+        string expectedCode)
+    {
+        var sourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["Name"] = "nvarchar(100)",
+            ["Manufactured"] = "int",
+        };
+        var targetColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["Name"] = "character varying(100)",
+            ["Manufactured"] = "integer",
+        };
+
+        MigrationExecutionException exception = Assert.Throws<MigrationExecutionException>(() =>
+            SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(
+                source,
+                sourceColumnTypes,
+                targetColumnTypes));
+
+        Assert.Equal(expectedCode, exception.Code);
     }
 
     [Fact]

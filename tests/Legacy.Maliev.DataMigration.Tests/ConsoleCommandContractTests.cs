@@ -7,6 +7,7 @@ public sealed class ConsoleCommandContractTests
     public static TheoryData<string> SupportedCommands =>
     [
         "plan",
+        "plan-digest",
         "execute-shadow",
         "evidence",
         "export-local-snapshot",

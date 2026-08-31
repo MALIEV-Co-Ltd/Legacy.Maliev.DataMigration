@@ -20,15 +20,15 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Fact]
-    public void CreateShadowName_AllExact25NamesAreDeterministicCollisionSafeAndWithinPostgresLimit()
+    public void CreateShadowName_AllExact24NamesAreDeterministicCollisionSafeAndWithinPostgresLimit()
     {
         Guid runId = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
         string[] names = DatabaseInventory.ActiveDatabases
             .Select(database => GuardedShadowMigrationRunner.CreateShadowName(database, runId))
             .ToArray();
 
-        Assert.Equal(25, names.Length);
-        Assert.Equal(25, names.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(24, names.Length);
+        Assert.Equal(24, names.Distinct(StringComparer.Ordinal).Count());
         Assert.All(names, name =>
         {
             Assert.True(Encoding.UTF8.GetByteCount(name) <= 63, name);
@@ -55,16 +55,16 @@ public sealed class GuardedShadowMigrationRunnerTests
         MigrationExecutionResult result = await harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None);
 
         Assert.Equal(MigrationExecutionStatus.Completed, result.Status);
-        Assert.Equal(25, result.Receipt.Databases.Count);
+        Assert.Equal(24, result.Receipt.Databases.Count);
         Assert.Equal(Now, result.Receipt.CompletedAtUtc);
-        Assert.Equal(25, harness.Source.SchemaInspections.Count);
-        Assert.Equal(25, harness.Source.SnapshotsStarted.Count);
-        Assert.Equal(25, harness.Source.SnapshotsCompleted.Count);
+        Assert.Equal(24, harness.Source.SchemaInspections.Count);
+        Assert.Equal(24, harness.Source.SnapshotsStarted.Count);
+        Assert.Equal(24, harness.Source.SnapshotsCompleted.Count);
         Assert.Empty(harness.Source.SnapshotsRolledBack);
-        Assert.Equal(25, harness.Target.Created.Count);
-        Assert.Equal(25, harness.Target.Transactions.Count(transaction => transaction.Committed));
+        Assert.Equal(24, harness.Target.Created.Count);
+        Assert.Equal(24, harness.Target.Transactions.Count(transaction => transaction.Committed));
         Assert.All(harness.Target.Transactions, transaction => Assert.True(transaction.VerifiedBeforeCommit));
-        Assert.Equal(25, harness.Target.Created.Select(shadow => shadow.Name).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(24, harness.Target.Created.Select(shadow => shadow.Name).Distinct(StringComparer.Ordinal).Count());
         Assert.All(harness.Target.Created, shadow => Assert.StartsWith("legacy_shadow_", shadow.Name, StringComparison.Ordinal));
         Assert.Empty(harness.Target.Deleted);
         Assert.True(MigrationEvidenceAttestation.CreatePayload(result.Receipt).Length > 0);

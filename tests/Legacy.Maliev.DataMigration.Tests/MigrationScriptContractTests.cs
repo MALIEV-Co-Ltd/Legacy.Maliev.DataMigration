@@ -100,6 +100,7 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("backup-full", prepare, StringComparison.Ordinal);
         Assert.Contains("restore-verified-sqlserver-backups.ps1", prepare, StringComparison.Ordinal);
         Assert.Contains("plan", prepare, StringComparison.Ordinal);
+        Assert.Contains("plan-digest", prepare, StringComparison.Ordinal);
         Assert.DoesNotContain("authorize-shadow", prepare, StringComparison.Ordinal);
         Assert.DoesNotContain("execute-shadow", prepare, StringComparison.Ordinal);
 
