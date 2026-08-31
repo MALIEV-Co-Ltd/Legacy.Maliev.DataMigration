@@ -32,7 +32,9 @@ public static class SecureKubectlSqlCmdInvocation
 {
     private const string ShellScript =
         "IFS= read -r SQLCMDUSER; IFS= read -r SQLCMDPASSWORD; export SQLCMDUSER SQLCMDPASSWORD; " +
-        "exec /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -r 1 -W -h -1 -s '|'";
+        "if test -x /opt/mssql-tools18/bin/sqlcmd; then sqlcmd=/opt/mssql-tools18/bin/sqlcmd; " +
+        "elif test -x /opt/mssql-tools/bin/sqlcmd; then sqlcmd=/opt/mssql-tools/bin/sqlcmd; " +
+        "else exit 127; fi; exec \"$sqlcmd\" -S localhost -C -b -r 1 -W -h -1 -s '|'";
 
     public static SecureBackupProcessInvocation Create(
         string @namespace,
