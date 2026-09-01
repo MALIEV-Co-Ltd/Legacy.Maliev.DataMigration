@@ -112,6 +112,10 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
         Assert.Contains("FROM ${DOTNET_SDK_IMAGE} AS build", dockerfile, StringComparison.Ordinal);
         Assert.Contains("ARG DOTNET_RUNTIME_IMAGE", dockerfile, StringComparison.Ordinal);
         Assert.Contains("FROM ${DOTNET_RUNTIME_IMAGE} AS runtime", dockerfile, StringComparison.Ordinal);
+        Assert.Contains("COPY --from=build --chown=65532:65532 --chmod=0700 /runner/ /runner/", dockerfile, StringComparison.Ordinal);
+        Assert.True(
+            dockerfile.IndexOf("COPY --from=build --chown=65532:65532", StringComparison.Ordinal) <
+            dockerfile.IndexOf("WORKDIR /runner", dockerfile.IndexOf("FROM ${DOTNET_RUNTIME_IMAGE} AS runtime", StringComparison.Ordinal), StringComparison.Ordinal));
         int firstFrom = dockerfile.IndexOf("FROM ", StringComparison.Ordinal);
         Assert.True(dockerfile.IndexOf("ARG DOTNET_SDK_IMAGE", StringComparison.Ordinal) < firstFrom);
         Assert.True(dockerfile.IndexOf("ARG DOTNET_RUNTIME_IMAGE", StringComparison.Ordinal) < firstFrom);
