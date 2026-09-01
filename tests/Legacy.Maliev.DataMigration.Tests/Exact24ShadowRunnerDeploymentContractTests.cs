@@ -11,7 +11,7 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
         Assert.Equal(1, Count(template, "image: __STAGER_IMAGE_DIGEST__"));
         Assert.Contains("serviceAccountName: legacy-data-migration-shadow-provisioner", template, StringComparison.Ordinal);
         Assert.Contains("automountServiceAccountToken: false", template, StringComparison.Ordinal);
-        Assert.Contains("audience: https://kubernetes.default.svc", template, StringComparison.Ordinal);
+        Assert.DoesNotContain("audience:", template, StringComparison.Ordinal);
         Assert.Contains("expirationSeconds: 600", template, StringComparison.Ordinal);
         Assert.Contains("mountPath: /var/run/secrets/kubernetes.io/serviceaccount", template, StringComparison.Ordinal);
         Assert.Contains("name: kube-root-ca.crt", template, StringComparison.Ordinal);
@@ -136,7 +136,7 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
         Assert.Contains("args: [\"authorize-cleanup\", \"--config\", \"/run/legacy-migration/run-config.json\"]", template, StringComparison.Ordinal);
         Assert.Contains("serviceAccountName: legacy-data-migration-shadow-provisioner", template, StringComparison.Ordinal);
         Assert.Contains("automountServiceAccountToken: false", template, StringComparison.Ordinal);
-        Assert.Contains("audience: https://kubernetes.default.svc", template, StringComparison.Ordinal);
+        Assert.DoesNotContain("audience:", template, StringComparison.Ordinal);
         Assert.Contains("expirationSeconds: 600", template, StringComparison.Ordinal);
         Assert.Contains("claimName: __RUN_ARTIFACTS_PVC_NAME__", template, StringComparison.Ordinal);
         Assert.Equal(2, Count(template, "secretName: __SIGNING_SECRET_NAME__"));
