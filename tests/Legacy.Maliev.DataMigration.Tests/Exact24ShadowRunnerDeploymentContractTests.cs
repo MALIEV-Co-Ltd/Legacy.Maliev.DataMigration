@@ -75,13 +75,19 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
     public void DockerBuildContract_RequiresCallerSuppliedDigestPinnedBases()
     {
         string dockerfile = Read("deploy", "exact24-shadow-runner.Dockerfile");
+        string dockerignore = Read(".dockerignore");
         string builder = Read("scripts", "build-exact24-shadow-runner.ps1");
 
         Assert.Contains("ARG DOTNET_SDK_IMAGE", dockerfile, StringComparison.Ordinal);
         Assert.Contains("FROM ${DOTNET_SDK_IMAGE} AS build", dockerfile, StringComparison.Ordinal);
         Assert.Contains("ARG DOTNET_RUNTIME_IMAGE", dockerfile, StringComparison.Ordinal);
         Assert.Contains("FROM ${DOTNET_RUNTIME_IMAGE} AS runtime", dockerfile, StringComparison.Ordinal);
+        int firstFrom = dockerfile.IndexOf("FROM ", StringComparison.Ordinal);
+        Assert.True(dockerfile.IndexOf("ARG DOTNET_SDK_IMAGE", StringComparison.Ordinal) < firstFrom);
+        Assert.True(dockerfile.IndexOf("ARG DOTNET_RUNTIME_IMAGE", StringComparison.Ordinal) < firstFrom);
         Assert.DoesNotContain("FROM mcr.microsoft.com/dotnet", dockerfile, StringComparison.Ordinal);
+        Assert.Contains("**/bin", dockerignore, StringComparison.Ordinal);
+        Assert.Contains("**/obj", dockerignore, StringComparison.Ordinal);
         Assert.Contains("@sha256:[0-9a-f]{64}", builder, StringComparison.Ordinal);
         Assert.Contains("--build-arg \"DOTNET_SDK_IMAGE=$DotNetSdkImage\"", builder, StringComparison.Ordinal);
         Assert.Contains("--build-arg \"DOTNET_RUNTIME_IMAGE=$DotNetRuntimeImage\"", builder, StringComparison.Ordinal);

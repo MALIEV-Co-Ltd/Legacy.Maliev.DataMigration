@@ -3,6 +3,7 @@
 # Both build arguments must be complete registry references pinned by sha256.
 # scripts/build-exact24-shadow-runner.ps1 validates that contract before Docker runs.
 ARG DOTNET_SDK_IMAGE
+ARG DOTNET_RUNTIME_IMAGE
 FROM ${DOTNET_SDK_IMAGE} AS build
 
 WORKDIR /source
@@ -15,7 +16,6 @@ RUN dotnet publish src/Legacy.Maliev.DataMigration.Console/Legacy.Maliev.DataMig
     --configuration Release --no-restore --output /runner \
     -p:UseAppHost=false -p:ContinuousIntegrationBuild=true
 
-ARG DOTNET_RUNTIME_IMAGE
 FROM ${DOTNET_RUNTIME_IMAGE} AS runtime
 
 WORKDIR /runner
