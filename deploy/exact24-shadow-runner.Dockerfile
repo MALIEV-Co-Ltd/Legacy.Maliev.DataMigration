@@ -18,6 +18,10 @@ RUN dotnet publish src/Legacy.Maliev.DataMigration.Console/Legacy.Maliev.DataMig
 
 FROM ${DOTNET_RUNTIME_IMAGE} AS runtime
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build --chown=65532:65532 --chmod=0700 /runner/ /runner/
 WORKDIR /runner
 
