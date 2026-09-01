@@ -145,7 +145,7 @@ try {
     $artifactsDirectory = Join-Path $runDirectory 'artifacts'
     New-OwnerOnlyDirectory $keysDirectory
     New-OwnerOnlyDirectory $artifactsDirectory
-    foreach ($name in @('backup-work', 'restore', 'plan', 'authorization', 'execution', 'cleanup', 'provenance')) {
+    foreach ($name in @('restore', 'plan', 'authorization', 'execution', 'cleanup', 'provenance')) {
         New-OwnerOnlyDirectory (Join-Path $artifactsDirectory $name)
     }
     New-OwnerOnlyDirectory (Join-Path (Join-Path $artifactsDirectory 'cleanup') 'failures')
