@@ -1334,6 +1334,10 @@ public static class MigrationConsole
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(temporaryPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
             File.Move(temporaryPath, fullPath, overwrite: false);
         }
         catch (Exception exception)

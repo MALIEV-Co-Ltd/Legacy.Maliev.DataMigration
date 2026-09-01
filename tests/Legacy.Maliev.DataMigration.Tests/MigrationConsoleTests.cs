@@ -527,7 +527,7 @@ public sealed class MigrationConsoleTests : IDisposable
     [Fact]
     public async Task CreateOnlyJsonPublication_IsAtomicCleansFailedTemporaryFileAndCanRetry()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         string path = Path.Combine(_root, "receipt.json");
         await File.WriteAllTextAsync(path, "existing");
 
@@ -549,6 +549,7 @@ public sealed class MigrationConsoleTests : IDisposable
         using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
         Assert.Equal("complete", document.RootElement.GetProperty("state").GetString());
         Assert.Equal(24, document.RootElement.GetProperty("count").GetInt32());
+        Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(path));
         Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
     }
 

@@ -146,7 +146,7 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         int secondExit = await RunCleanupAuthorizationAsync(fixture, retryOutput, retryError);
 
         Assert.Equal(0, firstExit);
-        Assert.Equal(0, secondExit);
+        Assert.True(secondExit == 0, retryError.ToString());
         Assert.Equal("authorize_cleanup_complete" + Environment.NewLine, retryOutput.ToString());
         Assert.Equal(string.Empty, retryError.ToString());
         Assert.Equal(firstBytes, await File.ReadAllBytesAsync(fixture.OutputPath));
