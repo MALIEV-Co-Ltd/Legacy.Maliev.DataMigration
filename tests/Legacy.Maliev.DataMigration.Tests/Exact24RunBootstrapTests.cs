@@ -50,6 +50,7 @@ public sealed class Exact24RunBootstrapTests
             Assert.NotEqual(working, publication);
             Assert.False(Directory.Exists(working));
             Assert.False(Directory.Exists(publication));
+            Assert.Equal(working, root.GetProperty("restoreBackups").GetProperty("recoveryDirectory").GetString());
             Assert.False(Directory.Exists(root.GetProperty("exportLocalSnapshot").GetProperty("outputDirectory").GetString()!));
             Assert.False(Directory.Exists(root.GetProperty("evidence").GetProperty("publicationDirectory").GetString()!));
 

@@ -219,7 +219,7 @@ try {
             publicationDirectory = $backupPublicationDirectory; keyId = $roles.backup.keyId; allowSourceBackup = $false
         }
         restoreBackups = [ordered]@{
-            receiptPath = $receiptPath; recoveryDirectory = $restoreDirectory; sqlServerDataDirectory = '/var/opt/mssql/data'
+            receiptPath = $receiptPath; recoveryDirectory = $backupWorkingDirectory; sqlServerDataDirectory = '/var/opt/mssql/data'
             sqlServerVisibleRecoveryDirectory = '/var/opt/mssql/recovery'; stagingVolumeName = "legacy-restore-$($runGuid.ToString('N'))"
             stagingImage = $StagingImage; sqlServerContainerName = "legacy-sqlrestore-$($runGuid.ToString('N').Substring(0, 20))"
             sqlServerImageId = $SqlServerImageId; sqlServerImage = $SqlServerImage; runBinding = $runGuid.ToString('D')
