@@ -110,10 +110,12 @@ public sealed class MigrationScriptContractTests
         Assert.DoesNotContain("evidence", execute, StringComparison.Ordinal);
 
         int snapshot = finalize.IndexOf("export-local-snapshot", StringComparison.Ordinal);
+        int shadowCleanup = finalize.IndexOf("cleanup-shadows", StringComparison.Ordinal);
         int cleanup = finalize.IndexOf("cleanup-restore", StringComparison.Ordinal);
         int provenance = finalize.IndexOf("sign-provenance", StringComparison.Ordinal);
         int evidence = finalize.IndexOf(" evidence ", StringComparison.Ordinal);
-        Assert.True(snapshot >= 0 && snapshot < cleanup);
+        Assert.True(snapshot >= 0 && snapshot < shadowCleanup);
+        Assert.True(shadowCleanup < cleanup);
         Assert.True(cleanup < provenance);
         Assert.True(provenance < evidence);
         Assert.Contains("finally", finalize, StringComparison.OrdinalIgnoreCase);

@@ -19,6 +19,8 @@ $cleanupFailure = $null
 try {
     & dotnet run --project $project --configuration $Configuration --no-build -- export-local-snapshot --config $config
     if ($LASTEXITCODE -ne 0) { throw 'Authenticated local snapshot export failed.' }
+    & dotnet run --project $project --configuration $Configuration --no-build -- cleanup-shadows --config $config
+    if ($LASTEXITCODE -ne 0) { throw 'Signed fenced post-export shadow cleanup failed.' }
 }
 catch {
     $snapshotFailure = $_.Exception

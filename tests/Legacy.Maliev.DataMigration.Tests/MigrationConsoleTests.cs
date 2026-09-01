@@ -301,6 +301,39 @@ public sealed class MigrationConsoleTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_CleanupShadows_RequiresDeploymentDisabledBeforeReadingArtifacts()
+    {
+        OwnerProtectedDirectory.CreateNew(_root);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            cleanupShadows = new
+            {
+                executionResultPath = "execution.json",
+                receiptPath = "receipt.json",
+                planPath = "plan.json",
+                authorizationPath = "authorization.json",
+                snapshotManifestPath = "manifest.json",
+                outputPath = "cleanup.json",
+                receiptTrustedKeys = Array.Empty<object>(),
+                authorizationTrustedKeys = Array.Empty<object>(),
+                evidenceKeyId = "execution-key",
+                expectedShadowAdminRole = "legacy_migration_shadow",
+            },
+        }, JsonOptions));
+        ProtectFileOnUnix(configPath);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["cleanup-shadows", "--config", configPath], output, error, _ => null, CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal("cleanup_deploy_gate_invalid" + Environment.NewLine, error.ToString());
+        Assert.Equal(string.Empty, output.ToString());
+    }
+
+    [Fact]
     public async Task RunAsync_BackupFull_ProtectedConfigurationAndEnvironmentComposeExactProducer()
     {
         OwnerProtectedDirectory.CreateNew(_root);

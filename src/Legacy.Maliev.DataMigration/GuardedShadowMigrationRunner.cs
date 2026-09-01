@@ -77,7 +77,12 @@ public sealed record MigratedShadowDatabase(
     string Database,
     string ShadowName,
     long TotalRows,
-    string ContentSha256);
+    string ContentSha256)
+{
+    public int OwnerAttempt { get; init; }
+
+    public Guid FencingToken { get; init; }
+}
 
 public sealed record MigrationExecutionReceipt(
     Guid RunId,
@@ -777,7 +782,11 @@ public sealed partial class GuardedShadowMigrationRunner
                 databasePlan.Database,
                 shadow.Name,
                 targetTables.Sum(item => item.RowCount),
-                HashEvidence(targetTables));
+                HashEvidence(targetTables))
+            {
+                OwnerAttempt = shadow.OwnerAttempt,
+                FencingToken = shadow.FencingToken,
+            };
         }
         catch (Exception exception)
         {

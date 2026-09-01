@@ -66,6 +66,11 @@ public sealed class GuardedShadowMigrationRunnerTests
         Assert.All(harness.Target.Transactions, transaction => Assert.True(transaction.VerifiedBeforeCommit));
         Assert.Equal(24, harness.Target.Created.Select(shadow => shadow.Name).Distinct(StringComparer.Ordinal).Count());
         Assert.All(harness.Target.Created, shadow => Assert.StartsWith("legacy_shadow_", shadow.Name, StringComparison.Ordinal));
+        Assert.All(result.Receipt.Databases, migrated =>
+        {
+            Assert.True(migrated.OwnerAttempt > 0);
+            Assert.NotEqual(Guid.Empty, migrated.FencingToken);
+        });
         Assert.Empty(harness.Target.Deleted);
         Assert.True(MigrationEvidenceAttestation.CreatePayload(result.Receipt).Length > 0);
         Assert.True(ExecutionSigningKey.VerifyData(

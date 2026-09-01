@@ -60,6 +60,11 @@ and rejects unknown properties.
   cannot be supplied by the configuration.
 - `exportLocalSnapshot`: completed result path, a new output directory, and the
   pinned `pg_dump` path.
+- `cleanupShadows`: signed execution, backup receipt, fresh plan, authorization,
+  authenticated MLVSNP02 manifest, and create-new cleanup-receipt paths; backup
+  and authorization trust references; the execution evidence key ID; and the
+  exact `legacy_migration_shadow` role. It cannot accept alternate cluster,
+  namespace, API, token, or CA locations.
 - `signProvenance`: evidence-bound create-new output path, independently reviewed
   plan digest, current UTC issue time, provenance key ID, and
   `allowProvenanceSigning: true`.
@@ -131,7 +136,15 @@ API endpoint, a tag-only image, or an ad-hoc container configuration.
 ```
 
 Finalization writes a new MLVSNP02 directory containing exactly 24 encrypted
-dumps and `manifest.json`, removes disposable SQL Server resources, signs
+dumps and `manifest.json`, then requires `cleanup-shadows` to reverify the signed
+execution, source receipt, fresh plan, authorization, current target observation,
+snapshot MAC, exact inventory, deterministic names, owner attempts, and fencing
+tokens. It emits a create-new execution-key-signed receipt and deletes only those
+run-owned shadows through the guarded CloudNativePG API. Use the dormant
+`deploy/exact24-shadow-cleanup-job.template.yaml` with the same digest-pinned
+runner, bound service account, owner artifacts PVC, and separately referenced
+runtime/signing/snapshot Secrets after local export completes. Finalization then
+removes disposable SQL Server resources and signs
 provenance only from the completed cleanup receipt, and atomically publishes
 final evidence and its review baseline.
 

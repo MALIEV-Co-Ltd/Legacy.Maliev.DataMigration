@@ -69,6 +69,25 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
         Assert.Contains("--build-arg \"DOTNET_RUNTIME_IMAGE=$DotNetRuntimeImage\"", builder, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void CleanupTemplate_IsDormantSecretFreeAndUsesTheSameBoundIdentity()
+    {
+        string template = Read("deploy", "exact24-shadow-cleanup-job.template.yaml");
+
+        Assert.Contains("args: [\"cleanup-shadows\", \"--config\", \"/run/legacy-migration/run-config.json\"]", template, StringComparison.Ordinal);
+        Assert.Contains("serviceAccountName: legacy-data-migration-shadow-provisioner", template, StringComparison.Ordinal);
+        Assert.Contains("automountServiceAccountToken: false", template, StringComparison.Ordinal);
+        Assert.Contains("audience: https://kubernetes.default.svc", template, StringComparison.Ordinal);
+        Assert.Contains("expirationSeconds: 600", template, StringComparison.Ordinal);
+        Assert.Contains("claimName: __RUN_ARTIFACTS_PVC_NAME__", template, StringComparison.Ordinal);
+        Assert.Contains("secretName: __SIGNING_SECRET_NAME__", template, StringComparison.Ordinal);
+        Assert.Contains("secretName: __SNAPSHOT_SECRET_NAME__", template, StringComparison.Ordinal);
+        Assert.Contains("name: __RUNTIME_SECRET_NAME__", template, StringComparison.Ordinal);
+        Assert.DoesNotContain("kind: Secret", template, StringComparison.Ordinal);
+        Assert.DoesNotContain("value: Host=", template, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("value: Server=", template, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string Read(params string[] path)
     {
         return File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. path]));

@@ -133,6 +133,10 @@ public static class MigrationConsole
                     await ExportLocalSnapshotAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("export_local_snapshot_complete").ConfigureAwait(false);
                     return 0;
+                case "cleanup-shadows":
+                    await CleanupShadowsAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("shadow_cleanup_complete").ConfigureAwait(false);
+                    return 0;
                 case "backup-full":
                     await ProduceFullBackupAsync(
                         invocation.ConfigPath,
@@ -693,6 +697,85 @@ public static class MigrationConsole
         }
     }
 
+    private static async Task CleanupShadowsAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new MigrationConsoleException("cleanup_deploy_gate_invalid", "Legacy deployment must remain disabled during shadow cleanup.");
+        }
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "cleanup_config_unprotected", cancellationToken).ConfigureAwait(false);
+        CleanupShadowsCommandConfiguration cleanup = configuration.CleanupShadows ??
+            throw new MigrationConsoleException("cleanup_configuration_missing", "Reviewed post-export cleanup configuration is required.");
+        string? targetConnection = getEnvironmentVariable(PostgreSqlConnectionEnvironmentVariable);
+        string? evidenceKeyPath = getEnvironmentVariable(ExecutionSigningKeyEnvironmentVariable);
+        string? snapshotKeyPath = getEnvironmentVariable(SnapshotKeyEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(targetConnection) || string.IsNullOrWhiteSpace(evidenceKeyPath) ||
+            string.IsNullOrWhiteSpace(snapshotKeyPath))
+        {
+            throw new MigrationConsoleException("cleanup_runtime_reference_missing", "Cleanup runtime references are required.");
+        }
+
+        SigningRoleTrustBundle signingRoles = await ReadSigningRolesAsync(configuration.SigningRoles, cancellationToken).ConfigureAwait(false);
+        MigrationExecutionResult execution = await ReadProtectedJsonAsync<MigrationExecutionResult>(
+            cleanup.ExecutionResultPath, "cleanup_execution_unprotected", cancellationToken).ConfigureAwait(false);
+        BackupReceipt backup = await ReadProtectedJsonAsync<BackupReceipt>(
+            cleanup.ReceiptPath, "cleanup_backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
+        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
+            cleanup.PlanPath, "cleanup_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        ExecutionAuthorizationReceipt authorization = await ReadProtectedJsonAsync<ExecutionAuthorizationReceipt>(
+            cleanup.AuthorizationPath, "cleanup_authorization_unprotected", cancellationToken).ConfigureAwait(false);
+        LocalSnapshotManifest snapshot = await ReadProtectedJsonAsync<LocalSnapshotManifest>(
+            cleanup.SnapshotManifestPath, "cleanup_snapshot_unprotected", cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore backupTrust = await ReadTrustStoreAsync(cleanup.ReceiptTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(cleanup.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(
+            [configuration.SigningRoles!.Execution], cancellationToken).ConfigureAwait(false);
+        EnsureTrustMatchesRole(backupTrust, signingRoles.Backup, "cleanup_backup_trust_mismatch");
+        EnsureTrustMatchesRole(authorizationTrust, signingRoles.Authorization, "cleanup_authorization_trust_mismatch");
+        EnsureTrustMatchesRole(executionTrust, signingRoles.Execution, "cleanup_execution_trust_mismatch");
+
+        using var signer = new P256MigrationEvidenceSigner(cleanup.EvidenceKeyId, await ReadProtectedTextAsync(
+            evidenceKeyPath, "cleanup_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        EnsureSignerMatchesRole(signer, signingRoles.Execution,
+            [signingRoles.Backup, signingRoles.Authorization, signingRoles.Provenance, signingRoles.FinalEvidence],
+            "cleanup_signing_key_untrusted", "signing_role_key_reuse");
+        byte[] snapshotKey;
+        await using (FileStream keyStream = OwnerProtectedFilePolicy.OpenRead(snapshotKeyPath, "snapshot_key_unprotected"))
+        {
+            snapshotKey = SnapshotRootKey.Load(keyStream);
+        }
+        try
+        {
+            using var provisioner = new CloudNativePgShadowDatabaseProvisioner(new(
+                new Uri(KubernetesApiServer, UriKind.Absolute), LegacyNamespace, LegacyPostgreSqlCluster,
+                cleanup.ExpectedShadowAdminRole, KubernetesServiceAccountTokenFile,
+                KubernetesServiceAccountCaFile, TimeSpan.FromMinutes(5)));
+            using var observer = new CloudNativePgTargetObserver(new(
+                new Uri(KubernetesApiServer, UriKind.Absolute), KubernetesServiceAccountTokenFile,
+                KubernetesServiceAccountCaFile));
+            await new RuntimeAttestationVerifier(AppContext.BaseDirectory, observer, LegacyNamespace, LegacyPostgreSqlCluster)
+                .VerifyAsync(authorization, cancellationToken).ConfigureAwait(false);
+            var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(targetConnection, provisioner));
+            var service = new PostExportShadowCleanupService(
+                target, backupTrust, executionTrust, authorizationTrust, signer, TimeProvider.System);
+            PostExportShadowCleanupReceipt result = await service.CleanupAsync(
+                execution, backup, plan, authorization, snapshot, snapshotKey, cancellationToken).ConfigureAwait(false);
+            await WriteNewJsonAsync(cleanup.OutputPath, result, cancellationToken).ConfigureAwait(false);
+            if (!result.IsComplete)
+            {
+                throw new MigrationConsoleException("shadow_cleanup_incomplete", "One or more run-owned shadows could not be deleted.");
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(snapshotKey);
+        }
+    }
+
     private static async Task ExecuteShadowAsync(
         string configPath,
         Func<string, string?> getEnvironmentVariable,
@@ -1194,6 +1277,7 @@ public static class MigrationConsole
         ExecuteShadowCommandConfiguration? ExecuteShadow = null,
         EvidenceCommandConfiguration? Evidence = null,
         ExportLocalSnapshotCommandConfiguration? ExportLocalSnapshot = null,
+        CleanupShadowsCommandConfiguration? CleanupShadows = null,
         FullBackupCommandConfiguration? FullBackup = null,
         RestoreBackupsCommandConfiguration? RestoreBackups = null,
         AuthorizeShadowCommandConfiguration? AuthorizeShadow = null,
@@ -1348,6 +1432,18 @@ public static class MigrationConsole
         string ExecutionResultPath,
         string OutputDirectory,
         string PgDumpPath);
+
+    private sealed record CleanupShadowsCommandConfiguration(
+        string ExecutionResultPath,
+        string ReceiptPath,
+        string PlanPath,
+        string AuthorizationPath,
+        string SnapshotManifestPath,
+        string OutputPath,
+        IReadOnlyList<TrustedKeyReference> ReceiptTrustedKeys,
+        IReadOnlyList<TrustedKeyReference> AuthorizationTrustedKeys,
+        string EvidenceKeyId,
+        string ExpectedShadowAdminRole);
 
     private sealed class DisabledExternalCommandExecutor : IExternalCommandExecutor
     {

@@ -9,6 +9,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "execute-shadow",
         "evidence",
         "export-local-snapshot",
+        "cleanup-shadows",
         "backup-full",
         "restore-backups",
         "cleanup-restore",

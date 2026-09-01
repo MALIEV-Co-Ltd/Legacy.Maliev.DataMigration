@@ -108,7 +108,7 @@ No executable migration logic was copied from those files.
 ## Receipt and execution contracts
 
 The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan`, `plan-digest`,
-`authorize-shadow`, `execute-shadow`, `export-local-snapshot`, `cleanup-restore`,
+`authorize-shadow`, `execute-shadow`, `export-local-snapshot`, `cleanup-shadows`, `cleanup-restore`,
 `sign-provenance`, `sign-quotation-schema-baseline`, `sign-quotation-postgres-snapshot`, and `evidence`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
@@ -226,7 +226,8 @@ could regenerate a plan and cross the owner-review boundary in one invocation.
 The replacements are deliberately separate: `prepare-shadow-migration.ps1`
 stops after backup, restore, and plan; `execute-approved-shadow-migration.ps1`
 requires the exact reviewed plan digest and explicit allow flag before signing
-and executing; and `finalize-shadow-migration.ps1` exports the snapshot, removes
+and executing; and `finalize-shadow-migration.ps1` exports the snapshot, emits a
+signed fenced cleanup receipt while deleting only its run-owned shadows, removes
 the disposable restore, signs provenance, and only then produces evidence. Every
 phase requires `LEGACY_DEPLOY_ENABLED=false`. See
 [`docs/shadow-migration-runbook.md`](docs/shadow-migration-runbook.md).
