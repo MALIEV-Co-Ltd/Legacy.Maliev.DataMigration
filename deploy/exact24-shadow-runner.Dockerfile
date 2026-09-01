@@ -18,8 +18,8 @@ RUN dotnet publish src/Legacy.Maliev.DataMigration.Console/Legacy.Maliev.DataMig
 
 FROM ${DOTNET_RUNTIME_IMAGE} AS runtime
 
+COPY --from=build --chown=65532:65532 --chmod=0700 /runner/ /runner/
 WORKDIR /runner
-COPY --from=build /runner/ ./
 
 USER 65532:65532
 
