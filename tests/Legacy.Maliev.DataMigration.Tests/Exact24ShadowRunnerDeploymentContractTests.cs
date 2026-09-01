@@ -40,6 +40,28 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
     }
 
     [Fact]
+    public void Jobs_UseCapacitySafeReservationsWithoutReducingRuntimeLimits()
+    {
+        foreach (string template in new[]
+        {
+            Read("deploy", "exact24-shadow-runner-job.template.yaml"),
+            Read("deploy", "exact24-shadow-cleanup-job.template.yaml"),
+        })
+        {
+            Assert.Contains("requests:", template, StringComparison.Ordinal);
+            Assert.Equal(1, Count(template, "cpu: 10m"));
+            Assert.Equal(1, Count(template, "memory: 32Mi"));
+        }
+
+        string runner = Read("deploy", "exact24-shadow-runner-job.template.yaml");
+        Assert.Contains("cpu: \"2\"", runner, StringComparison.Ordinal);
+        Assert.Contains("memory: 2Gi", runner, StringComparison.Ordinal);
+        string cleanup = Read("deploy", "exact24-shadow-cleanup-job.template.yaml");
+        Assert.Contains("cpu: \"1\"", cleanup, StringComparison.Ordinal);
+        Assert.Contains("memory: 1Gi", cleanup, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void JobTemplate_AuthorizesBeforeExecutingAndPersistsCreateNewOutputs()
     {
         string template = Read("deploy", "exact24-shadow-runner-job.template.yaml");
