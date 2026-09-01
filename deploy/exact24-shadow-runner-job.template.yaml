@@ -23,6 +23,11 @@ spec:
       automountServiceAccountToken: false
       restartPolicy: Never
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       initContainers:
@@ -38,8 +43,9 @@ spec:
           securityContext: &runnerSecurityContext
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
-            runAsUser: 0
-            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
             capabilities:
               drop: ["ALL"]
           resources: &runnerResources
@@ -49,10 +55,10 @@ spec:
             limits:
               cpu: "2"
               memory: 2Gi
-          volumeMounts: &runnerVolumeMounts
+          volumeMounts:
             - name: run-artifacts
               mountPath: /run/legacy-migration
-            - name: signing-material
+            - name: authorization-signing-material
               mountPath: /run/legacy-migration/signing
               readOnly: true
             - name: kubernetes-api-access
@@ -85,23 +91,38 @@ spec:
               value: /run/legacy-migration/signing/execution-private.pem
           securityContext: *runnerSecurityContext
           resources: *runnerResources
-          volumeMounts: *runnerVolumeMounts
+          volumeMounts:
+            - name: run-artifacts
+              mountPath: /run/legacy-migration
+            - name: execution-signing-material
+              mountPath: /run/legacy-migration/signing
+              readOnly: true
+            - name: kubernetes-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
       volumes:
         - name: run-artifacts
           persistentVolumeClaim:
             claimName: __RUN_ARTIFACTS_PVC_NAME__
-        - name: signing-material
+        - name: authorization-signing-material
           secret:
             secretName: __SIGNING_SECRET_NAME__
-            defaultMode: 256
+            defaultMode: 288
             items:
               - key: authorization-private.pem
                 path: authorization-private.pem
+                mode: 288
+        - name: execution-signing-material
+          secret:
+            secretName: __SIGNING_SECRET_NAME__
+            defaultMode: 288
+            items:
               - key: execution-private.pem
                 path: execution-private.pem
+                mode: 288
         - name: kubernetes-api-access
           projected:
-            defaultMode: 256
+            defaultMode: 288
             sources:
               - serviceAccountToken:
                   path: token
@@ -112,3 +133,4 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
+                      mode: 288

@@ -35,7 +35,10 @@ public sealed record MigrationEvidenceProvenanceReceipt(
     string TargetGeneration,
     DateTimeOffset IssuedAtUtc,
     string AttestationKeyId,
-    string? AttestationSignature);
+    string? AttestationSignature)
+{
+    public string CleanupReceiptSha256 { get; init; } = string.Empty;
+}
 
 public static class MigrationEvidenceProvenanceAttestation
 {
@@ -51,6 +54,7 @@ public static class MigrationEvidenceProvenanceAttestation
             receipt.RunId == Guid.Empty || string.IsNullOrWhiteSpace(receipt.SourceCommitSha) ||
             string.IsNullOrWhiteSpace(receipt.SchemaPlanSha256) || string.IsNullOrWhiteSpace(receipt.BackupManifestSha256) ||
             string.IsNullOrWhiteSpace(receipt.RunnerDigestSha256) || string.IsNullOrWhiteSpace(receipt.TargetGeneration) ||
+            string.IsNullOrWhiteSpace(receipt.CleanupReceiptSha256) ||
             string.IsNullOrWhiteSpace(receipt.AttestationKeyId))
         {
             return false;
@@ -75,6 +79,7 @@ public static class MigrationEvidenceProvenanceAttestation
             Write(writer, receipt.BackupManifestSha256);
             Write(writer, receipt.RunnerDigestSha256);
             Write(writer, receipt.TargetGeneration);
+            Write(writer, receipt.CleanupReceiptSha256);
             Write(writer, Utc(receipt.IssuedAtUtc));
             Write(writer, receipt.AttestationKeyId);
         }
@@ -105,6 +110,8 @@ public sealed record AppHostMigrationEvidenceV2Request(
     MigrationEvidenceProvenanceReceipt Provenance)
 {
     public VerifiedRestoreReceipt? VerifiedRestoreReceipt { get; init; }
+
+    public PostExportShadowCleanupReceipt? CleanupReceipt { get; init; }
 }
 
 public sealed record AppHostMigrationEvidenceV2Document(
@@ -204,6 +211,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
                 ["state"] = "completed",
             },
             ["verifiedRestore"] = BuildVerifiedRestoreEvidence(request.VerifiedRestoreReceipt!),
+            ["shadowCleanup"] = BuildShadowCleanupEvidence(request.CleanupReceipt!),
             ["inventory"] = BuildInventory(),
             ["archives"] = new JsonArray(),
             ["databases"] = databaseEvidence,
@@ -253,6 +261,12 @@ public static partial class AppHostMigrationEvidenceV2Producer
         VerifyBackup(request.BackupReceipt, backupTrust);
         VerifyAuthorization(request.Authorization, authorizationTrust);
         VerifyExecution(execution, executionTrust);
+        if (request.CleanupReceipt is null || !request.CleanupReceipt.IsComplete ||
+            request.CleanupReceipt.RunId != execution.RunId ||
+            !PostExportShadowCleanupAttestation.Verify(request.CleanupReceipt, executionTrust))
+        {
+            throw Error("shadow_cleanup_receipt_invalid", "Signed evidence requires complete exact-24 post-export shadow cleanup.");
+        }
         VerifyProvenance(request.Provenance, provenanceTrust);
         if (request.VerifiedRestoreReceipt is null ||
             request.VerifiedRestoreReceipt.CleanupDisposition != RestoreCleanupDisposition.Removed ||
@@ -295,6 +309,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
             !FixedHashEquals(provenance.SchemaPlanSha256, planSha256) ||
             !FixedHashEquals(provenance.BackupManifestSha256, request.BackupReceipt.ManifestSha256) ||
             !FixedHashEquals(provenance.RunnerDigestSha256, execution.RunnerDigestSha256) ||
+            !FixedHashEquals(provenance.CleanupReceiptSha256, PostExportShadowCleanupAttestation.Digest(request.CleanupReceipt)) ||
             !string.Equals(provenance.TargetGeneration, execution.TargetGeneration, StringComparison.Ordinal))
         {
             throw Error("provenance_binding_invalid", "Signed evidence provenance does not match the migration artifacts and configuration.");
@@ -322,8 +337,8 @@ public static partial class AppHostMigrationEvidenceV2Producer
         }
 
 
-        if (provenance.IssuedAtUtc < request.Authorization.IssuedAtUtc ||
-            provenance.IssuedAtUtc > execution.CompletedAtUtc ||
+        if (provenance.IssuedAtUtc < request.CleanupReceipt.CleanedAtUtc ||
+            provenance.IssuedAtUtc > nowUtc ||
             !BackupArtifactsMatchSignedProvenance(request.BackupReceipt, provenance.BackupUri))
         {
             throw Error("provenance_binding_invalid", "Signed evidence provenance is outside the execution window or backup receipt scope.");
@@ -576,6 +591,20 @@ public static partial class AppHostMigrationEvidenceV2Producer
                 }).ToArray()),
             ["attestationKeyId"] = receipt.AttestationKeyId,
             ["attestationSignature"] = receipt.AttestationSignature,
+        };
+    }
+
+    private static JsonObject BuildShadowCleanupEvidence(PostExportShadowCleanupReceipt receipt)
+    {
+        return new()
+        {
+            ["schemaVersion"] = receipt.SchemaVersion,
+            ["runId"] = receipt.RunId.ToString("D"),
+            ["cleanedAtUtc"] = Utc(receipt.CleanedAtUtc),
+            ["receiptSha256"] = PostExportShadowCleanupAttestation.Digest(receipt),
+            ["snapshotManifestDigestSha256"] = receipt.SnapshotManifestDigestSha256,
+            ["databaseCount"] = receipt.Cleanup.Count,
+            ["complete"] = receipt.IsComplete,
         };
     }
 

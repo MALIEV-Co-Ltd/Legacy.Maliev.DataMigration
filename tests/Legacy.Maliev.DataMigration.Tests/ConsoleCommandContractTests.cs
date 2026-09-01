@@ -14,6 +14,7 @@ public sealed class ConsoleCommandContractTests
         "cleanup-shadows",
         "backup-full",
         "authorize-shadow",
+        "authorize-cleanup",
         "sign-provenance",
         "sign-quotation-schema-baseline",
         "sign-quotation-postgres-snapshot",
@@ -43,6 +44,7 @@ public sealed class ConsoleCommandContractTests
     [InlineData("authorize-shadow")]
     [InlineData("sign-provenance")]
     [InlineData("cleanup-shadows")]
+    [InlineData("authorize-cleanup")]
     public void Parse_SigningCommandsRejectInlinePrivateKeys(string command)
     {
         CommandLineException exception = Assert.Throws<CommandLineException>(() =>

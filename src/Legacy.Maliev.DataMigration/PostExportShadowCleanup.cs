@@ -16,19 +16,42 @@ public sealed record PostExportShadowCleanupReceipt(
     public bool IsComplete => Cleanup.Count == DatabaseInventory.ActiveDatabases.Count && Cleanup.All(item => item.Deleted);
 }
 
+public static class PostExportShadowCleanupAttestation
+{
+    public static bool Verify(PostExportShadowCleanupReceipt receipt, IReceiptAttestationTrustStore trust)
+    {
+        try
+        {
+            return !string.IsNullOrWhiteSpace(receipt.AttestationSignature) &&
+                trust.Verify(receipt.AttestationKeyId, MigrationEvidenceAttestation.CreatePayload(receipt),
+                    Convert.FromBase64String(receipt.AttestationSignature));
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    public static string Digest(PostExportShadowCleanupReceipt receipt)
+    {
+        return Convert.ToHexString(SHA256.HashData(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(receipt))).ToLowerInvariant();
+    }
+}
+
 public sealed class PostExportShadowCleanupService(
     IPostgreSqlShadowTarget target,
     IReceiptAttestationTrustStore backupTrust,
     IReceiptAttestationTrustStore executionTrust,
     IReceiptAttestationTrustStore authorizationTrust,
     IMigrationEvidenceSigner signer,
+    ICleanupTargetVerifier targetVerifier,
     TimeProvider timeProvider)
 {
     public async Task<PostExportShadowCleanupReceipt> CleanupAsync(
         MigrationExecutionResult execution,
         BackupReceipt backup,
         FreshSchemaPlan plan,
-        ExecutionAuthorizationReceipt authorization,
+        CleanupAuthorizationReceipt authorization,
         LocalSnapshotManifest snapshot,
         ReadOnlyMemory<byte> snapshotRootKey,
         CancellationToken cancellationToken)
@@ -38,13 +61,15 @@ public sealed class PostExportShadowCleanupService(
         ArgumentNullException.ThrowIfNull(snapshot);
         ValidateExecution(execution);
         ValidateSourceArtifacts(backup, plan, execution.Receipt);
-        ValidateAuthorization(authorization, execution.Receipt);
-        ValidateSnapshot(snapshot, execution.Receipt, snapshotRootKey.Span);
+        ValidateAuthorization(authorization, execution.Receipt, snapshot, timeProvider.GetUtcNow());
+        CleanupContract.ValidateSnapshot(snapshot, execution.Receipt, snapshotRootKey.Span);
 
         var outcomes = new List<ShadowCleanupOutcome>(execution.Receipt.Databases.Count);
         foreach (MigratedShadowDatabase migrated in execution.Receipt.Databases.OrderBy(item => item.Database, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            ValidateAuthorization(authorization, execution.Receipt, snapshot, timeProvider.GetUtcNow());
+            await targetVerifier.VerifyAsync(authorization, cancellationToken).ConfigureAwait(false);
             var shadow = new ShadowDatabase(migrated.ShadowName, execution.Receipt.RunId.ToString("D"), migrated.Database)
             {
                 OwnerAttempt = migrated.OwnerAttempt,
@@ -69,11 +94,10 @@ public sealed class PostExportShadowCleanupService(
             }
         }
 
-        byte[] executionPayload = MigrationEvidenceAttestation.CreatePayload(execution.Receipt);
         var unsigned = new PostExportShadowCleanupReceipt(
             "1.0",
             execution.Receipt.RunId,
-            Convert.ToHexString(SHA256.HashData(executionPayload)).ToLowerInvariant(),
+            CleanupContract.ExecutionDigest(execution.Receipt),
             snapshot.ManifestDigestSha256,
             timeProvider.GetUtcNow(),
             new ReadOnlyCollection<ShadowCleanupOutcome>(outcomes),
@@ -93,8 +117,8 @@ public sealed class PostExportShadowCleanupService(
         if (!ReceiptAttestation.TryCreatePayload(backup, out byte[] payload) ||
             !TryDecodeSignature(backup.AttestationSignature, out byte[] signature) ||
             !backupTrust.Verify(backup.AttestationKeyId!, payload, signature) ||
-            !FixedHash(backup.ManifestSha256 ?? string.Empty, execution.BackupManifestSha256) ||
-            !FixedHash(SchemaPlanCanonicalizer.ComputeSha256(plan), execution.SchemaPlanSha256) ||
+            !CleanupContract.FixedHash(backup.ManifestSha256 ?? string.Empty, execution.BackupManifestSha256) ||
+            !CleanupContract.FixedHash(SchemaPlanCanonicalizer.ComputeSha256(plan), execution.SchemaPlanSha256) ||
             !string.Equals(plan.SourceCommitSha, execution.SourceCommitSha, StringComparison.Ordinal))
         {
             throw new MigrationExecutionException("cleanup_source_artifact_invalid", "Cleanup source artifacts do not bind the successful execution.");
@@ -121,45 +145,37 @@ public sealed class PostExportShadowCleanupService(
         }
     }
 
-    private void ValidateAuthorization(ExecutionAuthorizationReceipt authorization, MigrationExecutionReceipt execution)
+    private void ValidateAuthorization(
+        CleanupAuthorizationReceipt authorization,
+        MigrationExecutionReceipt execution,
+        LocalSnapshotManifest snapshot,
+        DateTimeOffset nowUtc)
     {
-        if (authorization.SchemaVersion != "2.1" || authorization.RunId != execution.RunId ||
-            authorization.SourceCommitSha != execution.SourceCommitSha ||
-            authorization.SchemaPlanSha256 != execution.SchemaPlanSha256 ||
-            authorization.BackupManifestSha256 != execution.BackupManifestSha256 ||
-            authorization.RunnerDigestSha256 != execution.RunnerDigestSha256 ||
-            authorization.TargetGeneration != execution.TargetGeneration ||
-            authorization.Mode != "shadow-only" || authorization.TargetObservation is null ||
-            !ExecutionAuthorizationAttestation.TryCreatePayload(authorization, out byte[] payload))
+        byte[] payload = CleanupAuthorizationAttestation.CreatePayload(authorization);
+        bool distinctAuthorizationRole = authorizationTrust.TryGetPublicKeyFingerprintSha256(
+            authorization.AttestationKeyId, out string authorizationFingerprint) &&
+            executionTrust.TryGetPublicKeyFingerprintSha256(execution.AttestationKeyId, out string executionFingerprint) &&
+            !string.Equals(authorizationFingerprint, executionFingerprint, StringComparison.OrdinalIgnoreCase);
+        if (authorization.SchemaVersion != "1.0" || authorization.RunId != execution.RunId ||
+            !CleanupContract.FixedHash(authorization.ExecutionReceiptSha256, CleanupContract.ExecutionDigest(execution)) ||
+            !CleanupContract.FixedHash(authorization.SnapshotManifestDigestSha256, snapshot.ManifestDigestSha256) ||
+            authorization.Mode != "cleanup-run-owned-shadows" || !authorization.TargetObservation.IsHealthy ||
+            !authorization.OwnerApproved ||
+            authorization.TargetObservation.Namespace != "maliev-legacy" ||
+            authorization.TargetObservation.Cluster != "legacy-postgres-main" ||
+            authorization.IssuedAtUtc.Offset != TimeSpan.Zero || authorization.ExpiresAtUtc.Offset != TimeSpan.Zero ||
+            authorization.IssuedAtUtc > nowUtc || authorization.ExpiresAtUtc <= nowUtc ||
+            authorization.ExpiresAtUtc <= authorization.IssuedAtUtc ||
+            authorization.ExpiresAtUtc - authorization.IssuedAtUtc > TimeSpan.FromHours(1) ||
+            !distinctAuthorizationRole)
         {
             throw new MigrationExecutionException("cleanup_authorization_invalid", "Cleanup authorization does not bind the successful execution.");
         }
 
         byte[] signature = DecodeSignature(authorization.AttestationSignature, "cleanup_authorization_invalid");
-        if (!authorizationTrust.Verify(authorization.AttestationKeyId!, payload, signature))
+        if (!authorizationTrust.Verify(authorization.AttestationKeyId, payload, signature))
         {
             throw new MigrationExecutionException("cleanup_authorization_invalid", "Cleanup authorization signature is not trusted.");
-        }
-    }
-
-    private static void ValidateSnapshot(
-        LocalSnapshotManifest snapshot,
-        MigrationExecutionReceipt execution,
-        ReadOnlySpan<byte> rootKey)
-    {
-        string expectedId = execution.RunId.ToString("D");
-        string semantic = SnapshotManifestAuthentication.ComputeSemanticDigest(snapshot.SnapshotId, snapshot.Databases);
-        string mac = SnapshotManifestAuthentication.ComputeMac(snapshot with { ManifestMacSha256 = string.Empty }, rootKey);
-        if (snapshot.SchemaVersion != 2 || snapshot.Format != "MLVSNP02" ||
-            snapshot.Encryption != "AES-256-GCM-chunked-v2" || snapshot.SnapshotId != expectedId ||
-            !FixedHash(snapshot.ManifestDigestSha256, semantic) || !FixedHash(snapshot.ManifestMacSha256, mac) ||
-            snapshot.Databases.Count != DatabaseInventory.ActiveDatabases.Count ||
-            !snapshot.Databases.Select(item => item.Database).Order(StringComparer.Ordinal)
-                .SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
-            snapshot.Databases.Any(item => execution.Databases.All(migrated =>
-                migrated.Database != item.Database || migrated.ShadowName != item.ShadowDatabase)))
-        {
-            throw new MigrationExecutionException("cleanup_snapshot_invalid", "Cleanup requires the authenticated exact-24 snapshot exported from this execution.");
         }
     }
 
@@ -193,9 +209,4 @@ public sealed class PostExportShadowCleanupService(
         }
     }
 
-    private static bool FixedHash(string left, string right)
-    {
-        return left.Length == right.Length && CryptographicOperations.FixedTimeEquals(
-            System.Text.Encoding.ASCII.GetBytes(left), System.Text.Encoding.ASCII.GetBytes(right));
-    }
 }

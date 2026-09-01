@@ -65,6 +65,14 @@ and rejects unknown properties.
   and authorization trust references; the execution evidence key ID; and the
   exact `legacy_migration_shadow` role. It cannot accept alternate cluster,
   namespace, API, token, or CA locations.
+- `authorizeCleanup`: completed signed execution, authenticated snapshot manifest,
+  create-new authorization output, current UTC issue/expiry no more than one hour
+  apart, authorization key ID, and `allowCleanupAuthorization: true`. Cleanup uses
+  a dedicated `cleanup-run-owned-shadows` authorization created only after snapshot
+  review; execution authorization cannot be replayed for deletion. Incomplete
+  cleanup evidence is written under the owner-only unique
+  `cleanupShadows.failurePublicationDirectory`; the canonical output remains absent
+  and reusable until a retry produces a complete receipt.
 - `signProvenance`: evidence-bound create-new output path, independently reviewed
   plan digest, current UTC issue time, provenance key ID, and
   `allowProvenanceSigning: true`.
@@ -129,6 +137,13 @@ artifact PVC, runtime connection Secret, and signing-file Secret. The template
 explicitly projects the short-lived bound service-account token and cluster CA at
 the fixed in-cluster paths. Do not use the host's `kubectl` token, a caller-supplied
 API endpoint, a tag-only image, or an ad-hoc container configuration.
+The owner must prepare the artifact PVC root with UID/GID `65532:65532` and mode
+`0770`, so only that identity/group can write the run directory. The image and
+both Jobs require that fixed non-root identity;
+`fsGroup: 65532` makes the RWO volume and mode `0440` token, CA, and Secret
+projections readable without granting write access to key material. Authorization
+and execution use separate projections from the consolidated signing Secret, so
+neither phase can mount the other phase's private key.
 
 ```powershell
 & "$Repository\scripts\finalize-shadow-migration.ps1" `
@@ -136,16 +151,19 @@ API endpoint, a tag-only image, or an ad-hoc container configuration.
 ```
 
 Finalization writes a new MLVSNP02 directory containing exactly 24 encrypted
-dumps and `manifest.json`, then requires `cleanup-shadows` to reverify the signed
+dumps and `manifest.json`, mints a separately reviewed short-lived cleanup
+authorization, then requires `cleanup-shadows` to reverify the signed
 execution, source receipt, fresh plan, authorization, current target observation,
 snapshot MAC, exact inventory, deterministic names, owner attempts, and fencing
-tokens. It emits a create-new execution-key-signed receipt and deletes only those
+tokens. The exact target is freshly re-observed before every destructive delete.
+It emits a create-new execution-key-signed receipt and deletes only those
 run-owned shadows through the guarded CloudNativePG API. Use the dormant
 `deploy/exact24-shadow-cleanup-job.template.yaml` with the same digest-pinned
 runner, bound service account, owner artifacts PVC, and separately referenced
 runtime/signing/snapshot Secrets after local export completes. Finalization then
-removes disposable SQL Server resources and signs
-provenance only from the completed cleanup receipt, and atomically publishes
+removes disposable SQL Server resources and signs provenance only after verifying
+the complete cleanup receipt. Provenance and schema-v2 evidence bind the digest
+of that signed receipt, and atomically publish
 final evidence and its review baseline.
 
 ## Live-write gates

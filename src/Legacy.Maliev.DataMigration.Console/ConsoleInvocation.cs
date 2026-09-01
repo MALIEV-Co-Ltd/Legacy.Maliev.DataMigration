@@ -14,6 +14,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "restore-backups",
         "cleanup-restore",
         "authorize-shadow",
+        "authorize-cleanup",
         "sign-provenance",
         "sign-quotation-schema-baseline",
         "sign-quotation-postgres-snapshot",

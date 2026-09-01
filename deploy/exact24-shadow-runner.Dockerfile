@@ -21,4 +21,6 @@ FROM ${DOTNET_RUNTIME_IMAGE} AS runtime
 WORKDIR /runner
 COPY --from=build /runner/ ./
 
+USER 65532:65532
+
 ENTRYPOINT ["dotnet", "Legacy.Maliev.DataMigration.Console.dll"]

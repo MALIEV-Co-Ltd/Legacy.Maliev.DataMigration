@@ -110,11 +110,13 @@ public sealed class MigrationScriptContractTests
         Assert.DoesNotContain("evidence", execute, StringComparison.Ordinal);
 
         int snapshot = finalize.IndexOf("export-local-snapshot", StringComparison.Ordinal);
+        int cleanupAuthorization = finalize.IndexOf("authorize-cleanup", StringComparison.Ordinal);
         int shadowCleanup = finalize.IndexOf("cleanup-shadows", StringComparison.Ordinal);
         int cleanup = finalize.IndexOf("cleanup-restore", StringComparison.Ordinal);
         int provenance = finalize.IndexOf("sign-provenance", StringComparison.Ordinal);
         int evidence = finalize.IndexOf(" evidence ", StringComparison.Ordinal);
-        Assert.True(snapshot >= 0 && snapshot < shadowCleanup);
+        Assert.True(snapshot >= 0 && snapshot < cleanupAuthorization);
+        Assert.True(cleanupAuthorization < shadowCleanup);
         Assert.True(shadowCleanup < cleanup);
         Assert.True(cleanup < provenance);
         Assert.True(provenance < evidence);
@@ -130,6 +132,20 @@ public sealed class MigrationScriptContractTests
         Assert.DoesNotContain("kubectl", all, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("gcloud", all, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("invoke-shadow-migration.ps1", all, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CleanupPublication_ReservesCanonicalOutputForCompleteReceiptAndUsesUniqueFailureEvidence()
+    {
+        string source = File.ReadAllText(ConsoleSourceCodePath("MigrationConsole.cs"));
+        int incomplete = source.IndexOf("if (!result.IsComplete)", StringComparison.Ordinal);
+        int failureDirectory = source.IndexOf("cleanup.FailurePublicationDirectory", incomplete, StringComparison.Ordinal);
+        int failureSuffix = source.IndexOf(".cleanup-failure.json", incomplete, StringComparison.Ordinal);
+        int canonical = source.IndexOf("WriteNewJsonAsync(cleanup.OutputPath", incomplete, StringComparison.Ordinal);
+
+        Assert.True(incomplete >= 0 && failureDirectory > incomplete);
+        Assert.True(failureSuffix > failureDirectory && canonical > failureSuffix);
+        Assert.Contains("Guid.NewGuid():N", source[incomplete..canonical], StringComparison.Ordinal);
     }
 
     private static string SourcePath(string file)

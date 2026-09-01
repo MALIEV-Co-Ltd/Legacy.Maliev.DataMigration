@@ -108,7 +108,7 @@ No executable migration logic was copied from those files.
 ## Receipt and execution contracts
 
 The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan`, `plan-digest`,
-`authorize-shadow`, `execute-shadow`, `export-local-snapshot`, `cleanup-shadows`, `cleanup-restore`,
+`authorize-shadow`, `execute-shadow`, `export-local-snapshot`, `authorize-cleanup`, `cleanup-shadows`, `cleanup-restore`,
 `sign-provenance`, `sign-quotation-schema-baseline`, `sign-quotation-postgres-snapshot`, and `evidence`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
@@ -319,9 +319,12 @@ runner image itself must also be referenced by digest. The Job uses the dedicate
 shadow-provisioner service account with automatic token mounting disabled and
 projects a ten-minute bound token plus `kube-root-ca.crt` at the exact fixed paths
 used by runtime attestation. Run artifacts live on an owner-prepared RWO PVC so
-the create-new authorization and execution result survive the Job. Connection
+only the fixed non-root UID/GID `65532:65532` may write them. The Pod uses that
+group for the PVC and group-readable `0440` projections; authorization and
+execution receive separate single-key projections from the signing Secret.
+This lets the create-new authorization and execution result survive the Job. Connection
 strings come only from `SecretKeyRef`; private signing files come only from a
-root-readable `0400` Secret volume. No Secret object or value is embedded in the
+group-readable, non-writable `0440` Secret projection. No Secret object or value is embedded in the
 template.
 
 Build a candidate locally without applying it:
