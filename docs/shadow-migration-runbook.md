@@ -114,6 +114,17 @@ result: it must cover exactly 24 databases and prove table row, content,
 aggregate, null, relationship, orphan, and sequence parity. After that review,
 set `signProvenance.allowProvenanceSigning: true`.
 
+The command above is the host-side representation of the two approved
+subcommands. Live execution must use the dormant
+`deploy/exact24-shadow-runner-job.template.yaml` contract from the same reviewed
+commit. Build its runner only through `scripts/build-exact24-shadow-runner.ps1`
+with digest-pinned SDK and runtime bases. Render every placeholder in a separately
+reviewed manifest: a digest-pinned runner image, unique run id, owner-prepared RWO
+artifact PVC, runtime connection Secret, and signing-file Secret. The template
+explicitly projects the short-lived bound service-account token and cluster CA at
+the fixed in-cluster paths. Do not use the host's `kubectl` token, a caller-supplied
+API endpoint, a tag-only image, or an ad-hoc container configuration.
+
 ```powershell
 & "$Repository\scripts\finalize-shadow-migration.ps1" `
   -ProtectedConfigPath $Config -Configuration Release

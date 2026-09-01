@@ -309,6 +309,32 @@ changes automatically. Replay, fencing, lease expiry, crash cleanup,
 and wrong-target checks remain enforced by the guarded runner. The command writes
 a new signed execution receipt and has no canonical-target or deployment mode.
 
+`deploy/exact24-shadow-runner.Dockerfile` and
+`deploy/exact24-shadow-runner-job.template.yaml` define the dormant in-cluster
+execution contract. The build script rejects tag-only SDK or runtime bases; both
+must be complete `@sha256:` references. The Job template is never applied by this
+repository. An owner-reviewed renderer must replace every `__...__` token, and the
+runner image itself must also be referenced by digest. The Job uses the dedicated
+shadow-provisioner service account with automatic token mounting disabled and
+projects a ten-minute bound token plus `kube-root-ca.crt` at the exact fixed paths
+used by runtime attestation. Run artifacts live on an owner-prepared RWO PVC so
+the create-new authorization and execution result survive the Job. Connection
+strings come only from `SecretKeyRef`; private signing files come only from a
+root-readable `0400` Secret volume. No Secret object or value is embedded in the
+template.
+
+Build a candidate locally without applying it:
+
+```powershell
+.\scripts\build-exact24-shadow-runner.ps1 `
+  -DotNetSdkImage '<reviewed-sdk-registry-reference>@sha256:<64-lowercase-hex>' `
+  -DotNetRuntimeImage '<reviewed-runtime-registry-reference>@sha256:<64-lowercase-hex>' `
+  -LocalImageTag 'legacy-maliev-data-migration:exact24-review'
+```
+
+Publishing an image, provisioning the artifacts PVC or Secrets, rendering or
+applying the Job, and running either phase remain separately authorized writes.
+
 `PreflightService.Validate` accepts an in-memory `BackupReceipt` and
 `MigrationPlan`. A valid receipt must:
 
@@ -317,7 +343,7 @@ a new signed execution receipt and has no canonical-target or deployment mode.
   and SHA-256 evidence;
 - be no older than the caller-supplied positive maximum age and not be future-dated;
 - match the immutable database-disposition inventory SHA-256;
-- contain exactly one full `.bak` artifact for each of the 25 active databases;
+- contain exactly one full `.bak` artifact for each of the 24 active databases;
 - provide positive byte counts and well-formed declared and independently
   observed SHA-256 values;
 - have matching declared and observed artifact hashes; and
