@@ -8,6 +8,7 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
         string template = Read("deploy", "exact24-shadow-runner-job.template.yaml");
 
         Assert.Equal(2, Count(template, "image: __RUNNER_IMAGE_DIGEST__"));
+        Assert.Equal(1, Count(template, "image: __STAGER_IMAGE_DIGEST__"));
         Assert.Contains("serviceAccountName: legacy-data-migration-shadow-provisioner", template, StringComparison.Ordinal);
         Assert.Contains("automountServiceAccountToken: false", template, StringComparison.Ordinal);
         Assert.Contains("audience: https://kubernetes.default.svc", template, StringComparison.Ordinal);
@@ -31,6 +32,9 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
         Assert.Contains("secretName: __SIGNING_SECRET_NAME__", template, StringComparison.Ordinal);
         Assert.Equal(3, Count(template, "name: __RUNTIME_SECRET_NAME__"));
         Assert.Contains("defaultMode: 288", template, StringComparison.Ordinal);
+        Assert.Contains("medium: Memory", template, StringComparison.Ordinal);
+        Assert.Contains("umask 077", template, StringComparison.Ordinal);
+        Assert.Contains("chmod 600", template, StringComparison.Ordinal);
         Assert.Contains("readOnlyRootFilesystem: true", template, StringComparison.Ordinal);
         Assert.Contains("allowPrivilegeEscalation: false", template, StringComparison.Ordinal);
         Assert.Contains("drop: [\"ALL\"]", template, StringComparison.Ordinal);
@@ -66,9 +70,10 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
     {
         string template = Read("deploy", "exact24-shadow-runner-job.template.yaml");
 
+        int stage = template.IndexOf("stage-owner-protected-signing-material", StringComparison.Ordinal);
         int authorize = template.IndexOf("authorize-shadow", StringComparison.Ordinal);
         int execute = template.IndexOf("execute-shadow", StringComparison.Ordinal);
-        Assert.True(authorize >= 0 && execute > authorize);
+        Assert.True(stage >= 0 && authorize > stage && execute > authorize);
         Assert.Contains("initContainers:", template, StringComparison.Ordinal);
         Assert.Contains("args: [\"authorize-shadow\", \"--config\", \"/run/legacy-migration/run-config.json\"]", template, StringComparison.Ordinal);
         Assert.Contains("args: [\"execute-shadow\", \"--config\", \"/run/legacy-migration/run-config.json\"]", template, StringComparison.Ordinal);
@@ -79,7 +84,7 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
     public void JobTemplate_IsolatesAuthorizationAndExecutionPrivateKeys()
     {
         string template = Read("deploy", "exact24-shadow-runner-job.template.yaml");
-        string init = Slice(template, "      initContainers:", "      containers:");
+        string init = Slice(template, "        - name: authorize-reviewed-plan", "      containers:");
         string executor = Slice(template, "      containers:", "      volumes:");
 
         Assert.Contains("name: authorization-signing-material", init, StringComparison.Ordinal);
@@ -91,6 +96,9 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
         Assert.DoesNotContain("authorization-signing-material", executor, StringComparison.Ordinal);
         Assert.DoesNotContain("authorization-private.pem", executor, StringComparison.Ordinal);
         Assert.Equal(2, Count(template, "secretName: __SIGNING_SECRET_NAME__"));
+        Assert.Contains("name: authorization-signing-source", template, StringComparison.Ordinal);
+        Assert.Contains("name: execution-signing-source", template, StringComparison.Ordinal);
+        Assert.Equal(2, Count(template, "medium: Memory"));
     }
 
     [Fact]
@@ -130,10 +138,14 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
         Assert.Equal(2, Count(template, "secretName: __SIGNING_SECRET_NAME__"));
         Assert.Contains("secretName: __SNAPSHOT_SECRET_NAME__", template, StringComparison.Ordinal);
         Assert.Contains("name: __RUNTIME_SECRET_NAME__", template, StringComparison.Ordinal);
+        Assert.Contains("stage-owner-protected-cleanup-material", template, StringComparison.Ordinal);
+        Assert.Equal(3, Count(template, "medium: Memory"));
+        Assert.Contains("umask 077", template, StringComparison.Ordinal);
+        Assert.Contains("chmod 600", template, StringComparison.Ordinal);
         Assert.DoesNotContain("kind: Secret", template, StringComparison.Ordinal);
         Assert.DoesNotContain("value: Host=", template, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("value: Server=", template, StringComparison.OrdinalIgnoreCase);
-        string authorizer = Slice(template, "      initContainers:", "      containers:");
+        string authorizer = Slice(template, "        - name: authorize-reviewed-cleanup", "      containers:");
         string cleanup = Slice(template, "      containers:", "      volumes:");
         Assert.Contains("authorization-private.pem", authorizer, StringComparison.Ordinal);
         Assert.DoesNotContain("execution-private.pem", authorizer, StringComparison.Ordinal);
