@@ -112,6 +112,8 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
         Assert.Contains("FROM ${DOTNET_SDK_IMAGE} AS build", dockerfile, StringComparison.Ordinal);
         Assert.Contains("ARG DOTNET_RUNTIME_IMAGE", dockerfile, StringComparison.Ordinal);
         Assert.Contains("FROM ${DOTNET_RUNTIME_IMAGE} AS runtime", dockerfile, StringComparison.Ordinal);
+        Assert.Contains("apt-get install -y --no-install-recommends libgssapi-krb5-2", dockerfile, StringComparison.Ordinal);
+        Assert.Contains("rm -rf /var/lib/apt/lists/*", dockerfile, StringComparison.Ordinal);
         Assert.Contains("COPY --from=build --chown=65532:65532 --chmod=0700 /runner/ /runner/", dockerfile, StringComparison.Ordinal);
         Assert.True(
             dockerfile.IndexOf("COPY --from=build --chown=65532:65532", StringComparison.Ordinal) <
