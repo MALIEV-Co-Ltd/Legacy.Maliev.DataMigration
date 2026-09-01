@@ -15,7 +15,7 @@ public sealed class Exact24RunBootstrapTests
     {
         string parent = Path.Combine(Path.GetTempPath(), $"legacy-bootstrap-test-{Guid.NewGuid():N}");
         string outputRoot = Path.Combine(parent, "owner-runs");
-        Directory.CreateDirectory(parent);
+        _ = Directory.CreateDirectory(parent);
         try
         {
             BootstrapResult result = await RunBootstrapAsync(outputRoot);
@@ -85,7 +85,10 @@ public sealed class Exact24RunBootstrapTests
         }
         finally
         {
-            if (Directory.Exists(parent)) Directory.Delete(parent, recursive: true);
+            if (Directory.Exists(parent))
+            {
+                Directory.Delete(parent, recursive: true);
+            }
         }
     }
 
@@ -94,7 +97,7 @@ public sealed class Exact24RunBootstrapTests
     {
         string parent = Path.Combine(Path.GetTempPath(), $"legacy-bootstrap-unprotected-{Guid.NewGuid():N}");
         string outputRoot = Path.Combine(parent, "runs");
-        Directory.CreateDirectory(outputRoot);
+        _ = Directory.CreateDirectory(outputRoot);
         try
         {
             ProcessResult result = await InvokeScriptAsync(outputRoot);
@@ -103,7 +106,10 @@ public sealed class Exact24RunBootstrapTests
         }
         finally
         {
-            if (Directory.Exists(parent)) Directory.Delete(parent, recursive: true);
+            if (Directory.Exists(parent))
+            {
+                Directory.Delete(parent, recursive: true);
+            }
         }
     }
 
@@ -168,7 +174,10 @@ public sealed class Exact24RunBootstrapTests
             "-SqlServerImageId", $"sha256:{digest}",
             "-PgDumpPath", Path.Combine(Path.GetTempPath(), "pg_dump")
         ];
-        foreach (string argument in arguments) start.ArgumentList.Add(argument);
+        foreach (string argument in arguments)
+        {
+            start.ArgumentList.Add(argument);
+        }
         using Process process = Process.Start(start) ?? throw new InvalidOperationException("PowerShell could not be started.");
         string stdout = await process.StandardOutput.ReadToEndAsync();
         string stderr = await process.StandardError.ReadToEndAsync();
@@ -202,8 +211,11 @@ public sealed class Exact24RunBootstrapTests
         Assert.True(SecureLocalFile.IsOwnerOnlyFile(new FileInfo(path)));
     }
 
-    private static string ScriptPath() => Path.GetFullPath(Path.Combine(
-        AppContext.BaseDirectory, "../../../../../scripts/new-exact24-run-config.ps1"));
+    private static string ScriptPath()
+    {
+        return Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "../../../../../scripts/new-exact24-run-config.ps1"));
+    }
 
     private sealed record BootstrapResult(
         string RunDirectory,
@@ -215,7 +227,9 @@ public sealed class Exact24RunBootstrapTests
 
     private sealed class ThrowingBackupRuntimeFactory : IExact25BackupRuntimeFactory
     {
-        public Task<Exact25BackupRuntime> CreateAsync(CancellationToken cancellationToken) =>
+        public Task<Exact25BackupRuntime> CreateAsync(CancellationToken cancellationToken)
+        {
             throw new InvalidOperationException("The plan parser test must not create backup runtime dependencies.");
+        }
     }
 }
