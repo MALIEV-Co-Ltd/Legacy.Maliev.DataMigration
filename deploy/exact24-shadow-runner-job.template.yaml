@@ -31,6 +31,43 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       initContainers:
+        - name: stage-owner-protected-signing-material
+          image: __STAGER_IMAGE_DIGEST__
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              umask 077
+              cp /source/authorization/authorization-private.pem /staged/authorization/authorization-private.pem
+              cp /source/execution/execution-private.pem /staged/execution/execution-private.pem
+              chmod 600 /staged/authorization/authorization-private.pem /staged/execution/execution-private.pem
+          securityContext: &stagerSecurityContext
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 24Mi
+          volumeMounts:
+            - name: authorization-signing-source
+              mountPath: /source/authorization
+              readOnly: true
+            - name: execution-signing-source
+              mountPath: /source/execution
+              readOnly: true
+            - name: authorization-signing-material
+              mountPath: /staged/authorization
+            - name: execution-signing-material
+              mountPath: /staged/execution
         - name: authorize-reviewed-plan
           image: __RUNNER_IMAGE_DIGEST__
           imagePullPolicy: IfNotPresent
@@ -104,7 +141,7 @@ spec:
         - name: run-artifacts
           persistentVolumeClaim:
             claimName: __RUN_ARTIFACTS_PVC_NAME__
-        - name: authorization-signing-material
+        - name: authorization-signing-source
           secret:
             secretName: __SIGNING_SECRET_NAME__
             defaultMode: 288
@@ -112,7 +149,7 @@ spec:
               - key: authorization-private.pem
                 path: authorization-private.pem
                 mode: 288
-        - name: execution-signing-material
+        - name: execution-signing-source
           secret:
             secretName: __SIGNING_SECRET_NAME__
             defaultMode: 288
@@ -120,6 +157,14 @@ spec:
               - key: execution-private.pem
                 path: execution-private.pem
                 mode: 288
+        - name: authorization-signing-material
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: execution-signing-material
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
         - name: kubernetes-api-access
           projected:
             defaultMode: 288
