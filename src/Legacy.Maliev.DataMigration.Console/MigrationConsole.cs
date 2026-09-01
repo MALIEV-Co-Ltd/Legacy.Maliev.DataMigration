@@ -466,23 +466,44 @@ public static class MigrationConsole
             authorize.SnapshotManifestPath, "cleanup_authorization_snapshot_unprotected", cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(
             [configuration.SigningRoles!.Execution], cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(
+            [configuration.SigningRoles.Authorization], cancellationToken).ConfigureAwait(false);
         EnsureTrustMatchesRole(executionTrust, roles.Execution, "cleanup_authorization_execution_trust_mismatch");
-        using var signer = new P256MigrationEvidenceSigner(authorize.KeyId, await ReadProtectedTextAsync(
-            keyPath, "cleanup_authorization_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
-        EnsureSignerMatchesRole(signer, roles.Authorization,
-            [roles.Backup, roles.Execution, roles.Provenance, roles.FinalEvidence],
-            "cleanup_authorization_signing_key_untrusted", "authorization_key_role_reuse");
+        EnsureTrustMatchesRole(authorizationTrust, roles.Authorization, "cleanup_authorization_trust_mismatch");
+        CloudNativePgTargetObservation target = await runtimeAttestationFactory.ObserveTargetAsync(
+            LegacyNamespace, LegacyPostgreSqlCluster, cancellationToken).ConfigureAwait(false);
+        var request = new ReviewedCleanupAuthorizationRequest(
+            authorize.IssuedAtUtc, authorize.ExpiresAtUtc, target, authorize.AllowCleanupAuthorization);
         byte[] snapshotKey;
         await using (FileStream stream = OwnerProtectedFilePolicy.OpenRead(snapshotKeyPath, "snapshot_key_unprotected"))
         {
             snapshotKey = SnapshotRootKey.Load(stream);
         }
+        if (File.Exists(authorize.OutputPath))
+        {
+            try
+            {
+                CleanupAuthorizationReceipt existing = await ReadProtectedJsonAsync<CleanupAuthorizationReceipt>(
+                    authorize.OutputPath, "cleanup_authorization_existing_unprotected", cancellationToken).ConfigureAwait(false);
+                ReviewedCleanupAuthorizationProducer.ValidateReusable(
+                    existing, request, execution, snapshot, snapshotKey, executionTrust, authorizationTrust,
+                    TimeProvider.System.GetUtcNow());
+                return;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(snapshotKey);
+            }
+        }
+        using var signer = new P256MigrationEvidenceSigner(authorize.KeyId, await ReadProtectedTextAsync(
+            keyPath, "cleanup_authorization_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        EnsureSignerMatchesRole(signer, roles.Authorization,
+            [roles.Backup, roles.Execution, roles.Provenance, roles.FinalEvidence],
+            "cleanup_authorization_signing_key_untrusted", "authorization_key_role_reuse");
         try
         {
-            CloudNativePgTargetObservation target = await runtimeAttestationFactory.ObserveTargetAsync(
-                LegacyNamespace, LegacyPostgreSqlCluster, cancellationToken).ConfigureAwait(false);
             CleanupAuthorizationReceipt receipt = ReviewedCleanupAuthorizationProducer.Produce(
-                new(authorize.IssuedAtUtc, authorize.ExpiresAtUtc, target, authorize.AllowCleanupAuthorization),
+                request,
                 execution, snapshot, snapshotKey, executionTrust, signer, TimeProvider.System.GetUtcNow());
             await WriteNewJsonAsync(authorize.OutputPath, receipt, cancellationToken).ConfigureAwait(false);
         }

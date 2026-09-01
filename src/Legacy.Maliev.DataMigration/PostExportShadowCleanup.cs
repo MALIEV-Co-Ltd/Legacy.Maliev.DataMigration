@@ -69,7 +69,6 @@ public sealed class PostExportShadowCleanupService(
         {
             cancellationToken.ThrowIfCancellationRequested();
             ValidateAuthorization(authorization, execution.Receipt, snapshot, timeProvider.GetUtcNow());
-            await targetVerifier.VerifyAsync(authorization, cancellationToken).ConfigureAwait(false);
             var shadow = new ShadowDatabase(migrated.ShadowName, execution.Receipt.RunId.ToString("D"), migrated.Database)
             {
                 OwnerAttempt = migrated.OwnerAttempt,
@@ -77,6 +76,7 @@ public sealed class PostExportShadowCleanupService(
             };
             try
             {
+                await targetVerifier.VerifyAsync(authorization, cancellationToken).ConfigureAwait(false);
                 await target.DeleteRunOwnedShadowAsync(shadow, cancellationToken).ConfigureAwait(false);
                 outcomes.Add(new(shadow.Name, true, null)
                 {
@@ -86,11 +86,21 @@ public sealed class PostExportShadowCleanupService(
             }
             catch (Exception exception) when (exception is not OperationCanceledException and not OutOfMemoryException and not AccessViolationException)
             {
-                outcomes.Add(new(shadow.Name, false, exception is MigrationExecutionException migration ? migration.Code : "shadow_delete_failed")
+                string errorCode = exception switch
+                {
+                    MigrationExecutionException migration => migration.Code,
+                    RuntimeAttestationException attestation => attestation.Code,
+                    _ => "shadow_delete_failed",
+                };
+                outcomes.Add(new(shadow.Name, false, errorCode)
                 {
                     OwnerAttempt = shadow.OwnerAttempt,
                     FencingToken = shadow.FencingToken,
                 });
+                if (exception is RuntimeAttestationException)
+                {
+                    break;
+                }
             }
         }
 

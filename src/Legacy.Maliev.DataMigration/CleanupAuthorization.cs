@@ -78,6 +78,53 @@ public static class CleanupContract
 
 public static class ReviewedCleanupAuthorizationProducer
 {
+    public static void ValidateReusable(
+        CleanupAuthorizationReceipt authorization,
+        ReviewedCleanupAuthorizationRequest request,
+        MigrationExecutionResult execution,
+        LocalSnapshotManifest snapshot,
+        ReadOnlySpan<byte> snapshotRootKey,
+        IReceiptAttestationTrustStore executionTrust,
+        IReceiptAttestationTrustStore authorizationTrust,
+        DateTimeOffset nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(authorization);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(execution);
+        ArgumentNullException.ThrowIfNull(executionTrust);
+        ArgumentNullException.ThrowIfNull(authorizationTrust);
+        if (!request.AllowCleanupAuthorization || !authorization.OwnerApproved ||
+            authorization.SchemaVersion != "1.0" || authorization.RunId != execution.Receipt.RunId ||
+            authorization.Mode != "cleanup-run-owned-shadows" ||
+            authorization.IssuedAtUtc != request.IssuedAtUtc || authorization.ExpiresAtUtc != request.ExpiresAtUtc ||
+            authorization.TargetObservation != request.TargetObservation ||
+            !CleanupContract.FixedHash(authorization.ExecutionReceiptSha256, CleanupContract.ExecutionDigest(execution.Receipt)) ||
+            !CleanupContract.FixedHash(authorization.SnapshotManifestDigestSha256, snapshot.ManifestDigestSha256) ||
+            authorization.IssuedAtUtc.Offset != TimeSpan.Zero || authorization.ExpiresAtUtc.Offset != TimeSpan.Zero ||
+            authorization.IssuedAtUtc < execution.Receipt.CompletedAtUtc || authorization.IssuedAtUtc > nowUtc ||
+            authorization.ExpiresAtUtc <= nowUtc || authorization.ExpiresAtUtc <= authorization.IssuedAtUtc ||
+            authorization.ExpiresAtUtc - authorization.IssuedAtUtc > TimeSpan.FromHours(1))
+        {
+            throw new OperatorAttestationException("cleanup_authorization_reuse_invalid", "Existing cleanup authorization does not exactly match the current reviewed request.");
+        }
+        if (execution.Status is not (MigrationExecutionStatus.Completed or MigrationExecutionStatus.AlreadyCompleted) ||
+            execution.Receipt.Databases.Count != DatabaseInventory.ActiveDatabases.Count ||
+            !Verify(execution.Receipt.AttestationKeyId, execution.Receipt.AttestationSignature,
+                MigrationEvidenceAttestation.CreatePayload(execution.Receipt), executionTrust))
+        {
+            throw new OperatorAttestationException("cleanup_authorization_reuse_invalid", "Existing cleanup authorization is not bound to a trusted successful exact-24 execution.");
+        }
+        CleanupContract.ValidateSnapshot(snapshot, execution.Receipt, snapshotRootKey);
+        if (!authorizationTrust.TryGetPublicKeyFingerprintSha256(authorization.AttestationKeyId, out string authorizationFingerprint) ||
+            !executionTrust.TryGetPublicKeyFingerprintSha256(execution.Receipt.AttestationKeyId, out string executionFingerprint) ||
+            string.Equals(authorizationFingerprint, executionFingerprint, StringComparison.OrdinalIgnoreCase) ||
+            !Verify(authorization.AttestationKeyId, authorization.AttestationSignature,
+                CleanupAuthorizationAttestation.CreatePayload(authorization), authorizationTrust))
+        {
+            throw new OperatorAttestationException("cleanup_authorization_reuse_invalid", "Existing cleanup authorization signature or signing role is invalid.");
+        }
+    }
+
     public static CleanupAuthorizationReceipt Produce(
         ReviewedCleanupAuthorizationRequest request,
         MigrationExecutionResult execution,

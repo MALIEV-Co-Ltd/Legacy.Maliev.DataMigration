@@ -128,17 +128,24 @@ public sealed class PostExportShadowCleanupTests
     }
 
     [Fact]
-    public async Task CleanupAsync_TargetDriftBeforeLaterDeleteStopsWithoutDeletingThatOrSubsequentShadows()
+    public async Task CleanupAsync_TargetDriftAfterPartialDeletesProducesSignedFailureAndRetryCanFinish()
     {
         Fixture fixture = CreateFixture(failVerificationAt: 4);
 
-        RuntimeAttestationException failure = await Assert.ThrowsAsync<RuntimeAttestationException>(() => fixture.Service.CleanupAsync(
+        PostExportShadowCleanupReceipt failure = await fixture.Service.CleanupAsync(
             fixture.Execution, fixture.Backup, fixture.Plan, fixture.Authorization,
-            fixture.Snapshot, fixture.Key, CancellationToken.None));
+            fixture.Snapshot, fixture.Key, CancellationToken.None);
+        PostExportShadowCleanupReceipt retry = await fixture.Service.CleanupAsync(
+            fixture.Execution, fixture.Backup, fixture.Plan, fixture.Authorization,
+            fixture.Snapshot, fixture.Key, CancellationToken.None);
 
-        Assert.Equal("cleanup_target_drift", failure.Code);
-        Assert.Equal(3, fixture.Target.Deleted.Count);
-        Assert.Equal(4, fixture.Verifier.CallCount);
+        Assert.False(failure.IsComplete);
+        ShadowCleanupOutcome drift = Assert.Single(failure.Cleanup, item => !item.Deleted);
+        Assert.Equal("cleanup_target_drift", drift.ErrorCode);
+        Assert.True(PostExportShadowCleanupAttestation.Verify(failure, new AcceptingTrust()));
+        Assert.True(retry.IsComplete);
+        Assert.Equal(27, fixture.Target.Deleted.Count);
+        Assert.Equal(28, fixture.Verifier.CallCount);
     }
 
     [Fact]
