@@ -132,6 +132,46 @@ public sealed class OperatorSigningConsoleTests : IDisposable
     }
 
     [Fact]
+    public async Task AuthorizeCleanup_RetryReusesExactValidReceiptWithoutOverwritingIt()
+    {
+        CleanupAuthorizationFixture fixture = await CreateCleanupAuthorizationFixtureAsync();
+
+        using var firstError = new StringWriter();
+        int firstExit = await RunCleanupAuthorizationAsync(fixture, TextWriter.Null, firstError);
+        Assert.True(firstExit == 0, firstError.ToString());
+        byte[] firstBytes = await File.ReadAllBytesAsync(fixture.OutputPath);
+        DateTime firstWrite = File.GetLastWriteTimeUtc(fixture.OutputPath);
+        using var retryOutput = new StringWriter();
+        using var retryError = new StringWriter();
+        int secondExit = await RunCleanupAuthorizationAsync(fixture, retryOutput, retryError);
+
+        Assert.Equal(0, firstExit);
+        Assert.True(secondExit == 0, retryError.ToString());
+        Assert.Equal("authorize_cleanup_complete" + Environment.NewLine, retryOutput.ToString());
+        Assert.Equal(string.Empty, retryError.ToString());
+        Assert.Equal(firstBytes, await File.ReadAllBytesAsync(fixture.OutputPath));
+        Assert.Equal(firstWrite, File.GetLastWriteTimeUtc(fixture.OutputPath));
+    }
+
+    [Fact]
+    public async Task AuthorizeCleanup_ExistingReceiptWithChangedReviewedBindingFailsClosed()
+    {
+        CleanupAuthorizationFixture fixture = await CreateCleanupAuthorizationFixtureAsync();
+        using var firstError = new StringWriter();
+        int firstExit = await RunCleanupAuthorizationAsync(fixture, TextWriter.Null, firstError);
+        Assert.True(firstExit == 0, firstError.ToString());
+        CleanupAuthorizationReceipt receipt = JsonSerializer.Deserialize<CleanupAuthorizationReceipt>(
+            await File.ReadAllTextAsync(fixture.OutputPath), JsonOptions)!;
+        await WriteProtectedJsonAsync(fixture.OutputPath, receipt with { OwnerApproved = false });
+        using var error = new StringWriter();
+
+        int retryExit = await RunCleanupAuthorizationAsync(fixture, TextWriter.Null, error);
+
+        Assert.Equal(65, retryExit);
+        Assert.Equal("cleanup_authorization_reuse_invalid" + Environment.NewLine, error.ToString());
+    }
+
+    [Fact]
     public async Task SignProvenance_WithoutExplicitFinalizationApprovalStopsBeforeReadingArtifactsOrKey()
     {
         string configPath = Path.Combine(_root, "provenance-config.json");
@@ -210,6 +250,22 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         return (exitCode, error.ToString().Trim());
     }
 
+    private static Task<int> RunCleanupAuthorizationAsync(
+        CleanupAuthorizationFixture fixture,
+        TextWriter output,
+        TextWriter error)
+    {
+        return MigrationConsole.RunAuthorizationForTestsAsync(
+            ["authorize-cleanup", "--config", fixture.ConfigPath], output, error,
+            name => name switch
+            {
+                "LEGACY_DEPLOY_ENABLED" => "false",
+                "LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE" => fixture.AuthorizationKeyPath,
+                "LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE" => fixture.SnapshotKeyPath,
+                _ => null,
+            }, new StubRuntimeAttestationFactory(), CancellationToken.None);
+    }
+
     private async Task<SigningFixture> CreateAuthorizationFixtureAsync(
         bool allow,
         string? reviewedPlanSha256 = null,
@@ -272,6 +328,82 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         return new(configPath, outputPath, keyPath, planSha256, backup.ManifestSha256!);
     }
 
+    private async Task<CleanupAuthorizationFixture> CreateCleanupAuthorizationFixtureAsync()
+    {
+        Guid runId = Guid.NewGuid();
+        IReadOnlyList<MigratedShadowDatabase> migrated = [.. DatabaseInventory.ActiveDatabases.Select((database, index) =>
+            new MigratedShadowDatabase(database, GuardedShadowMigrationRunner.CreateShadowName(database, runId), index, Hash($"content:{database}"))
+            {
+                OwnerAttempt = 1,
+                FencingToken = Guid.NewGuid(),
+            })];
+        var unsignedExecution = new MigrationExecutionReceipt(
+            runId, SourceCommit, Hash("plan"), Hash("backup"), Hash("runner"), "7", Now.AddMinutes(-2),
+            migrated, [], "execution-key", null);
+        MigrationExecutionReceipt execution = unsignedExecution with
+        {
+            AttestationSignature = Convert.ToBase64String(_executionKey.SignData(
+                MigrationEvidenceAttestation.CreatePayload(unsignedExecution), HashAlgorithmName.SHA256)),
+        };
+        var result = new MigrationExecutionResult(MigrationExecutionStatus.Completed, execution);
+        byte[] snapshotKey = RandomNumberGenerator.GetBytes(32);
+        IReadOnlyList<LocalSnapshotDatabase> snapshotDatabases = [.. migrated.Select(item => new LocalSnapshotDatabase(
+            item.Database, item.ShadowName, $"{item.Database}.dump.aes256", 1, Hash($"plain:{item.Database}"), 2, Hash($"encrypted:{item.Database}")))];
+        string snapshotDigest = SnapshotManifestAuthentication.ComputeSemanticDigest(runId.ToString("D"), snapshotDatabases);
+        var unsignedSnapshot = new LocalSnapshotManifest(
+            2, "MLVSNP02", "AES-256-GCM-chunked-v2", runId.ToString("D"), snapshotDigest, string.Empty, snapshotDatabases);
+        LocalSnapshotManifest snapshot = unsignedSnapshot with
+        {
+            ManifestMacSha256 = SnapshotManifestAuthentication.ComputeMac(unsignedSnapshot, snapshotKey),
+        };
+        string executionPath = Path.Combine(_root, $"cleanup-execution-{Guid.NewGuid():N}.json");
+        string snapshotPath = Path.Combine(_root, $"cleanup-snapshot-{Guid.NewGuid():N}.json");
+        string outputPath = Path.Combine(_root, $"cleanup-authorization-{Guid.NewGuid():N}.json");
+        string configPath = Path.Combine(_root, $"cleanup-config-{Guid.NewGuid():N}.json");
+        string keyPath = Path.Combine(_root, $"cleanup-authorization-{Guid.NewGuid():N}.pem");
+        string snapshotKeyPath = Path.Combine(_root, $"cleanup-snapshot-{Guid.NewGuid():N}.key");
+        string backupTrustPath = Path.Combine(_root, $"cleanup-backup-{Guid.NewGuid():N}.spki");
+        string authorizationTrustPath = Path.Combine(_root, $"cleanup-authorization-{Guid.NewGuid():N}.spki");
+        string executionTrustPath = Path.Combine(_root, $"cleanup-execution-{Guid.NewGuid():N}.spki");
+        string provenanceTrustPath = Path.Combine(_root, $"cleanup-provenance-{Guid.NewGuid():N}.spki");
+        string finalEvidenceTrustPath = Path.Combine(_root, $"cleanup-final-{Guid.NewGuid():N}.spki");
+        await WriteProtectedJsonAsync(executionPath, result);
+        await WriteProtectedJsonAsync(snapshotPath, snapshot);
+        await WriteProtectedTextAsync(keyPath, _authorizationKey.ExportECPrivateKeyPem());
+        await WriteProtectedTextAsync(snapshotKeyPath, Convert.ToBase64String(snapshotKey));
+        await WriteProtectedTextAsync(backupTrustPath, Convert.ToBase64String(_backupKey.ExportSubjectPublicKeyInfo()));
+        await WriteProtectedTextAsync(authorizationTrustPath, Convert.ToBase64String(_authorizationKey.ExportSubjectPublicKeyInfo()));
+        await WriteProtectedTextAsync(executionTrustPath, Convert.ToBase64String(_executionKey.ExportSubjectPublicKeyInfo()));
+        await WriteProtectedTextAsync(provenanceTrustPath, Convert.ToBase64String(_provenanceKey.ExportSubjectPublicKeyInfo()));
+        await WriteProtectedTextAsync(finalEvidenceTrustPath, Convert.ToBase64String(_finalEvidenceKey.ExportSubjectPublicKeyInfo()));
+        await WriteProtectedJsonAsync(configPath, new
+        {
+            signingRoles = new
+            {
+                backup = new { keyId = "backup-key", subjectPublicKeyInfoPath = backupTrustPath },
+                authorization = new { keyId = "authorization-key", subjectPublicKeyInfoPath = authorizationTrustPath },
+                execution = new { keyId = "execution-key", subjectPublicKeyInfoPath = executionTrustPath },
+                provenance = new { keyId = "provenance-key", subjectPublicKeyInfoPath = provenanceTrustPath },
+                finalEvidence = new { keyId = "final-evidence-key", subjectPublicKeyInfoPath = finalEvidenceTrustPath },
+            },
+            authorizeCleanup = new
+            {
+                executionResultPath = executionPath,
+                snapshotManifestPath = snapshotPath,
+                outputPath,
+                issuedAtUtc = Now.AddMinutes(-1),
+                expiresAtUtc = Now.AddMinutes(30),
+                keyId = "authorization-key",
+                allowCleanupAuthorization = true,
+            },
+            authorizeShadow = new { keyId = "authorization-key" },
+            executeShadow = new { evidenceKeyId = "execution-key" },
+            signProvenance = new { keyId = "provenance-key" },
+            evidence = new { evidenceKeyId = "final-evidence-key" },
+        });
+        return new(configPath, outputPath, keyPath, snapshotKeyPath);
+    }
+
     private async Task<ProvenanceFixture> CreateProvenanceFixtureAsync(RestoreCleanupDisposition cleanup)
     {
         FreshSchemaPlan plan = CreatePlan();
@@ -302,6 +434,15 @@ public sealed class OperatorSigningConsoleTests : IDisposable
                 MigrationEvidenceAttestation.CreatePayload(unsignedExecution), HashAlgorithmName.SHA256)),
         };
         var result = new MigrationExecutionResult(MigrationExecutionStatus.Completed, execution);
+        var unsignedCleanup = new PostExportShadowCleanupReceipt(
+            "1.0", execution.RunId, CleanupContract.ExecutionDigest(execution), Hash("snapshot-manifest"),
+            Now.AddMinutes(-2), [.. migrated.Select(item => new ShadowCleanupOutcome(item.ShadowName, true, null))],
+            "execution-key", null);
+        PostExportShadowCleanupReceipt shadowCleanup = unsignedCleanup with
+        {
+            AttestationSignature = Convert.ToBase64String(_executionKey.SignData(
+                MigrationEvidenceAttestation.CreatePayload(unsignedCleanup), HashAlgorithmName.SHA256)),
+        };
 
         const string digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         var unsignedRestore = new VerifiedRestoreReceipt(
@@ -326,6 +467,7 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         string authorizationPath = Path.Combine(_root, $"provenance-authorization-{Guid.NewGuid():N}.json");
         string executionPath = Path.Combine(_root, $"provenance-execution-{Guid.NewGuid():N}.json");
         string restorePath = Path.Combine(_root, $"provenance-restore-{Guid.NewGuid():N}.json");
+        string cleanupPath = Path.Combine(_root, $"provenance-shadow-cleanup-{Guid.NewGuid():N}.json");
         string outputPath = Path.Combine(_root, $"provenance-output-{Guid.NewGuid():N}.json");
         string configPath = Path.Combine(_root, $"provenance-config-{Guid.NewGuid():N}.json");
         string provenanceKeyPath = Path.Combine(_root, $"provenance-key-{Guid.NewGuid():N}.pem");
@@ -338,6 +480,7 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         await WriteProtectedJsonAsync(authorizationPath, authorization);
         await WriteProtectedJsonAsync(executionPath, result);
         await WriteProtectedJsonAsync(restorePath, restore);
+        await WriteProtectedJsonAsync(cleanupPath, shadowCleanup);
         await WriteProtectedTextAsync(provenanceKeyPath, _provenanceKey.ExportECPrivateKeyPem());
         await WriteProtectedTextAsync(backupTrustPath, Convert.ToBase64String(_backupKey.ExportSubjectPublicKeyInfo()));
         await WriteProtectedTextAsync(authorizationTrustPath, Convert.ToBase64String(_authorizationKey.ExportSubjectPublicKeyInfo()));
@@ -380,6 +523,7 @@ public sealed class OperatorSigningConsoleTests : IDisposable
                 receiptPath,
                 planPath,
                 authorizationPath,
+                cleanupReceiptPath = cleanupPath,
                 publicationDirectory = Path.Combine(_root, $"evidence-{Guid.NewGuid():N}"),
                 sourceSnapshotId = authorization.RunId.ToString("D"),
                 backupUri = "gs://maliev.com/database/full/2026-08-30/run-1/",
@@ -488,6 +632,12 @@ public sealed class OperatorSigningConsoleTests : IDisposable
         string AuthorizationKeyPath,
         string PlanSha256,
         string BackupManifestSha256);
+
+    private sealed record CleanupAuthorizationFixture(
+        string ConfigPath,
+        string OutputPath,
+        string AuthorizationKeyPath,
+        string SnapshotKeyPath);
 
     private sealed record ProvenanceFixture(string ConfigPath, string OutputPath, string ProvenanceKeyPath);
 

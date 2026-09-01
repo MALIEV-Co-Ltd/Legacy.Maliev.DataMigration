@@ -108,7 +108,7 @@ No executable migration logic was copied from those files.
 ## Receipt and execution contracts
 
 The .NET 10 executable host exposes only `backup-full`, `restore-backups`, `plan`, `plan-digest`,
-`authorize-shadow`, `execute-shadow`, `export-local-snapshot`, `cleanup-restore`,
+`authorize-shadow`, `execute-shadow`, `export-local-snapshot`, `authorize-cleanup`, `cleanup-shadows`, `cleanup-restore`,
 `sign-provenance`, `sign-quotation-schema-baseline`, `sign-quotation-postgres-snapshot`, and `evidence`. Command lines may carry a protected
 configuration-file reference only; connection strings, passwords, tokens,
 credentials, and private keys are rejected as command-line arguments so they
@@ -226,7 +226,8 @@ could regenerate a plan and cross the owner-review boundary in one invocation.
 The replacements are deliberately separate: `prepare-shadow-migration.ps1`
 stops after backup, restore, and plan; `execute-approved-shadow-migration.ps1`
 requires the exact reviewed plan digest and explicit allow flag before signing
-and executing; and `finalize-shadow-migration.ps1` exports the snapshot, removes
+and executing; and `finalize-shadow-migration.ps1` exports the snapshot, emits a
+signed fenced cleanup receipt while deleting only its run-owned shadows, removes
 the disposable restore, signs provenance, and only then produces evidence. Every
 phase requires `LEGACY_DEPLOY_ENABLED=false`. See
 [`docs/shadow-migration-runbook.md`](docs/shadow-migration-runbook.md).
@@ -309,6 +310,35 @@ changes automatically. Replay, fencing, lease expiry, crash cleanup,
 and wrong-target checks remain enforced by the guarded runner. The command writes
 a new signed execution receipt and has no canonical-target or deployment mode.
 
+`deploy/exact24-shadow-runner.Dockerfile` and
+`deploy/exact24-shadow-runner-job.template.yaml` define the dormant in-cluster
+execution contract. The build script rejects tag-only SDK or runtime bases; both
+must be complete `@sha256:` references. The Job template is never applied by this
+repository. An owner-reviewed renderer must replace every `__...__` token, and the
+runner image itself must also be referenced by digest. The Job uses the dedicated
+shadow-provisioner service account with automatic token mounting disabled and
+projects a ten-minute bound token plus `kube-root-ca.crt` at the exact fixed paths
+used by runtime attestation. Run artifacts live on an owner-prepared RWO PVC so
+only the fixed non-root UID/GID `65532:65532` may write them. The Pod uses that
+group for the PVC and group-readable `0440` projections; authorization and
+execution receive separate single-key projections from the signing Secret.
+This lets the create-new authorization and execution result survive the Job. Connection
+strings come only from `SecretKeyRef`; private signing files come only from a
+group-readable, non-writable `0440` Secret projection. No Secret object or value is embedded in the
+template.
+
+Build a candidate locally without applying it:
+
+```powershell
+.\scripts\build-exact24-shadow-runner.ps1 `
+  -DotNetSdkImage '<reviewed-sdk-registry-reference>@sha256:<64-lowercase-hex>' `
+  -DotNetRuntimeImage '<reviewed-runtime-registry-reference>@sha256:<64-lowercase-hex>' `
+  -LocalImageTag 'legacy-maliev-data-migration:exact24-review'
+```
+
+Publishing an image, provisioning the artifacts PVC or Secrets, rendering or
+applying the Job, and running either phase remain separately authorized writes.
+
 `PreflightService.Validate` accepts an in-memory `BackupReceipt` and
 `MigrationPlan`. A valid receipt must:
 
@@ -317,7 +347,7 @@ a new signed execution receipt and has no canonical-target or deployment mode.
   and SHA-256 evidence;
 - be no older than the caller-supplied positive maximum age and not be future-dated;
 - match the immutable database-disposition inventory SHA-256;
-- contain exactly one full `.bak` artifact for each of the 25 active databases;
+- contain exactly one full `.bak` artifact for each of the 24 active databases;
 - provide positive byte counts and well-formed declared and independently
   observed SHA-256 values;
 - have matching declared and observed artifact hashes; and

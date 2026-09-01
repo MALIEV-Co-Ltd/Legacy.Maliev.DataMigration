@@ -1,0 +1,144 @@
+# Dormant post-export template only. It may be rendered after the authenticated
+# exact-24 snapshot manifest exists. Applying it remains a separately authorized action.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: legacy-exact24-cleanup-__RUN_ID__
+  namespace: maliev-legacy
+  labels:
+    app.kubernetes.io/name: legacy-exact24-shadow-cleanup
+    app.kubernetes.io/managed-by: legacy-maliev-data-migration
+    maliev.com/database-purpose: legacy-shadow
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: legacy-exact24-shadow-cleanup
+        app.kubernetes.io/managed-by: legacy-maliev-data-migration
+    spec:
+      serviceAccountName: legacy-data-migration-shadow-provisioner
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: authorize-reviewed-cleanup
+          image: __RUNNER_IMAGE_DIGEST__
+          imagePullPolicy: IfNotPresent
+          args: ["authorize-cleanup", "--config", "/run/legacy-migration/run-config.json"]
+          env:
+            - name: LEGACY_DEPLOY_ENABLED
+              value: "false"
+            - name: LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE
+              value: /run/legacy-migration/signing/authorization-private.pem
+            - name: LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE
+              value: /run/legacy-migration/snapshot/snapshot-root.key
+          securityContext: &cleanupSecurityContext
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+          resources: &cleanupResources
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: run-artifacts
+              mountPath: /run/legacy-migration
+            - name: authorization-signing-material
+              mountPath: /run/legacy-migration/signing
+              readOnly: true
+            - name: snapshot-material
+              mountPath: /run/legacy-migration/snapshot
+              readOnly: true
+            - name: kubernetes-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      containers:
+        - name: delete-exported-run-owned-shadows
+          image: __RUNNER_IMAGE_DIGEST__
+          imagePullPolicy: IfNotPresent
+          args: ["cleanup-shadows", "--config", "/run/legacy-migration/run-config.json"]
+          env:
+            - name: LEGACY_DEPLOY_ENABLED
+              value: "false"
+            - name: LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION
+              valueFrom:
+                secretKeyRef:
+                  name: __RUNTIME_SECRET_NAME__
+                  key: postgres-shadow-connection
+            - name: LEGACY_MIGRATION_EXECUTION_SIGNING_KEY_FILE
+              value: /run/legacy-migration/signing/execution-private.pem
+            - name: LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE
+              value: /run/legacy-migration/snapshot/snapshot-root.key
+          securityContext: *cleanupSecurityContext
+          resources: *cleanupResources
+          volumeMounts:
+            - name: run-artifacts
+              mountPath: /run/legacy-migration
+            - name: execution-signing-material
+              mountPath: /run/legacy-migration/signing
+              readOnly: true
+            - name: snapshot-material
+              mountPath: /run/legacy-migration/snapshot
+              readOnly: true
+            - name: kubernetes-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: run-artifacts
+          persistentVolumeClaim:
+            claimName: __RUN_ARTIFACTS_PVC_NAME__
+        - name: authorization-signing-material
+          secret:
+            secretName: __SIGNING_SECRET_NAME__
+            defaultMode: 288
+            items:
+              - key: authorization-private.pem
+                path: authorization-private.pem
+                mode: 288
+        - name: execution-signing-material
+          secret:
+            secretName: __SIGNING_SECRET_NAME__
+            defaultMode: 288
+            items:
+              - key: execution-private.pem
+                path: execution-private.pem
+                mode: 288
+        - name: snapshot-material
+          secret:
+            secretName: __SNAPSHOT_SECRET_NAME__
+            defaultMode: 288
+            items:
+              - key: snapshot-root.key
+                path: snapshot-root.key
+                mode: 288
+        - name: kubernetes-api-access
+          projected:
+            defaultMode: 288
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 600
+                  audience: https://kubernetes.default.svc
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+                      mode: 288

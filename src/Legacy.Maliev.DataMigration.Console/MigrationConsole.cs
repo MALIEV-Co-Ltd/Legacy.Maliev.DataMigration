@@ -133,6 +133,10 @@ public static class MigrationConsole
                     await ExportLocalSnapshotAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("export_local_snapshot_complete").ConfigureAwait(false);
                     return 0;
+                case "cleanup-shadows":
+                    await CleanupShadowsAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("shadow_cleanup_complete").ConfigureAwait(false);
+                    return 0;
                 case "backup-full":
                     await ProduceFullBackupAsync(
                         invocation.ConfigPath,
@@ -153,6 +157,10 @@ public static class MigrationConsole
                 case "authorize-shadow":
                     await AuthorizeShadowAsync(invocation.ConfigPath, getEnvironmentVariable, runtimeAttestationFactory, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("authorize_shadow_complete").ConfigureAwait(false);
+                    return 0;
+                case "authorize-cleanup":
+                    await AuthorizeCleanupAsync(invocation.ConfigPath, getEnvironmentVariable, runtimeAttestationFactory, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync("authorize_cleanup_complete").ConfigureAwait(false);
                     return 0;
                 case "sign-provenance":
                     await SignProvenanceAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
@@ -424,6 +432,87 @@ public static class MigrationConsole
         }
     }
 
+    private static async Task AuthorizeCleanupAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        IAuthorizationRuntimeAttestationFactory runtimeAttestationFactory,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new OperatorAttestationException("cleanup_authorization_deploy_gate_invalid", "Legacy deployment must remain disabled while cleanup authorization is minted.");
+        }
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "cleanup_authorization_config_unprotected", cancellationToken).ConfigureAwait(false);
+        AuthorizeCleanupCommandConfiguration authorize = configuration.AuthorizeCleanup ??
+            throw new OperatorAttestationException("cleanup_authorization_configuration_missing", "Reviewed cleanup authorization configuration is required.");
+        if (!authorize.AllowCleanupAuthorization)
+        {
+            throw new OperatorAttestationException("cleanup_authorization_owner_review_required", "Explicit owner review is required before cleanup authorization can be signed.");
+        }
+        string keyPath = getEnvironmentVariable(AuthorizationSigningKeyEnvironmentVariable) ??
+            throw new OperatorAttestationException("cleanup_authorization_signing_key_missing", "The protected authorization signing key is required.");
+        string snapshotKeyPath = getEnvironmentVariable(SnapshotKeyEnvironmentVariable) ??
+            throw new OperatorAttestationException("cleanup_authorization_snapshot_key_missing", "The protected snapshot root key is required.");
+        SigningRoleTrustBundle roles = await ReadSigningRolesAsync(configuration.SigningRoles, cancellationToken).ConfigureAwait(false);
+        BindConfiguredSigningRoles(configuration, roles);
+        if (!string.Equals(authorize.KeyId, roles.Authorization.KeyId, StringComparison.Ordinal))
+        {
+            throw new OperatorAttestationException("cleanup_authorization_signing_role_invalid", "Cleanup authorization must use the reviewed authorization role.");
+        }
+        MigrationExecutionResult execution = await ReadProtectedJsonAsync<MigrationExecutionResult>(
+            authorize.ExecutionResultPath, "cleanup_authorization_execution_unprotected", cancellationToken).ConfigureAwait(false);
+        LocalSnapshotManifest snapshot = await ReadProtectedJsonAsync<LocalSnapshotManifest>(
+            authorize.SnapshotManifestPath, "cleanup_authorization_snapshot_unprotected", cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(
+            [configuration.SigningRoles!.Execution], cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(
+            [configuration.SigningRoles.Authorization], cancellationToken).ConfigureAwait(false);
+        EnsureTrustMatchesRole(executionTrust, roles.Execution, "cleanup_authorization_execution_trust_mismatch");
+        EnsureTrustMatchesRole(authorizationTrust, roles.Authorization, "cleanup_authorization_trust_mismatch");
+        CloudNativePgTargetObservation target = await runtimeAttestationFactory.ObserveTargetAsync(
+            LegacyNamespace, LegacyPostgreSqlCluster, cancellationToken).ConfigureAwait(false);
+        var request = new ReviewedCleanupAuthorizationRequest(
+            authorize.IssuedAtUtc, authorize.ExpiresAtUtc, target, authorize.AllowCleanupAuthorization);
+        byte[] snapshotKey;
+        await using (FileStream stream = OwnerProtectedFilePolicy.OpenRead(snapshotKeyPath, "snapshot_key_unprotected"))
+        {
+            snapshotKey = SnapshotRootKey.Load(stream);
+        }
+        if (File.Exists(authorize.OutputPath))
+        {
+            try
+            {
+                CleanupAuthorizationReceipt existing = await ReadProtectedJsonAsync<CleanupAuthorizationReceipt>(
+                    authorize.OutputPath, "cleanup_authorization_existing_unprotected", cancellationToken).ConfigureAwait(false);
+                ReviewedCleanupAuthorizationProducer.ValidateReusable(
+                    existing, request, execution, snapshot, snapshotKey, executionTrust, authorizationTrust,
+                    TimeProvider.System.GetUtcNow());
+                return;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(snapshotKey);
+            }
+        }
+        using var signer = new P256MigrationEvidenceSigner(authorize.KeyId, await ReadProtectedTextAsync(
+            keyPath, "cleanup_authorization_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        EnsureSignerMatchesRole(signer, roles.Authorization,
+            [roles.Backup, roles.Execution, roles.Provenance, roles.FinalEvidence],
+            "cleanup_authorization_signing_key_untrusted", "authorization_key_role_reuse");
+        try
+        {
+            CleanupAuthorizationReceipt receipt = ReviewedCleanupAuthorizationProducer.Produce(
+                request,
+                execution, snapshot, snapshotKey, executionTrust, signer, TimeProvider.System.GetUtcNow());
+            await WriteNewJsonAsync(authorize.OutputPath, receipt, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(snapshotKey);
+        }
+    }
+
     private static async Task SignProvenanceAsync(
         string configPath,
         Func<string, string?> getEnvironmentVariable,
@@ -444,9 +533,10 @@ public static class MigrationConsole
         EvidenceCommandConfiguration evidence = configuration.Evidence ??
             throw new OperatorAttestationException("provenance_evidence_configuration_missing", "Final evidence configuration is required for provenance binding.");
         if (!string.Equals(Path.GetFullPath(sign.OutputPath), Path.GetFullPath(evidence.ProvenancePath), StringComparison.OrdinalIgnoreCase) ||
-            string.IsNullOrWhiteSpace(evidence.VerifiedRestoreReceiptPath))
+            string.IsNullOrWhiteSpace(evidence.VerifiedRestoreReceiptPath) ||
+            string.IsNullOrWhiteSpace(evidence.CleanupReceiptPath))
         {
-            throw new OperatorAttestationException("provenance_output_binding_invalid", "Provenance output and final evidence references must match.");
+            throw new OperatorAttestationException("provenance_output_binding_invalid", "Provenance output and required cleanup evidence references must match.");
         }
         string keyPath = getEnvironmentVariable(ProvenanceSigningKeyEnvironmentVariable) ??
             throw new OperatorAttestationException("provenance_signing_key_missing", "The protected provenance signing key is required.");
@@ -460,6 +550,8 @@ public static class MigrationConsole
             evidence.AuthorizationPath, "provenance_authorization_unprotected", cancellationToken).ConfigureAwait(false);
         VerifiedRestoreReceipt verifiedRestore = await ReadProtectedJsonAsync<VerifiedRestoreReceipt>(
             evidence.VerifiedRestoreReceiptPath, "provenance_cleanup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
+        PostExportShadowCleanupReceipt cleanupReceipt = await ReadProtectedJsonAsync<PostExportShadowCleanupReceipt>(
+            evidence.CleanupReceiptPath, "provenance_shadow_cleanup_unprotected", cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore backupTrust = await ReadTrustStoreAsync(evidence.BackupTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(evidence.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(evidence.ExecutionTrustedKeys, cancellationToken).ConfigureAwait(false);
@@ -485,6 +577,7 @@ public static class MigrationConsole
             plan,
             authorization,
             verifiedRestore,
+            cleanupReceipt,
             backupTrust,
             authorizationTrust,
             executionTrust,
@@ -573,6 +666,10 @@ public static class MigrationConsole
             configPath, "evidence_config_unprotected", cancellationToken).ConfigureAwait(false);
         EvidenceCommandConfiguration evidence = configuration.Evidence ??
             throw new MigrationConsoleException("evidence_configuration_missing", "Evidence configuration is required.");
+        if (string.IsNullOrWhiteSpace(evidence.CleanupReceiptPath))
+        {
+            throw new MigrationConsoleException("evidence_shadow_cleanup_missing", "Final evidence requires the complete signed shadow cleanup receipt path.");
+        }
         string? keyPath = getEnvironmentVariable(FinalEvidenceSigningKeyEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(keyPath))
         {
@@ -595,6 +692,8 @@ public static class MigrationConsole
             evidence.PlanPath, "evidence_plan_unprotected", cancellationToken).ConfigureAwait(false);
         ExecutionAuthorizationReceipt authorization = await ReadProtectedJsonAsync<ExecutionAuthorizationReceipt>(
             evidence.AuthorizationPath, "evidence_authorization_unprotected", cancellationToken).ConfigureAwait(false);
+        PostExportShadowCleanupReceipt cleanupReceipt = await ReadProtectedJsonAsync<PostExportShadowCleanupReceipt>(
+            evidence.CleanupReceiptPath, "evidence_shadow_cleanup_unprotected", cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore backupTrust = await ReadTrustStoreAsync(evidence.BackupTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(evidence.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
         ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(evidence.ExecutionTrustedKeys, cancellationToken).ConfigureAwait(false);
@@ -615,6 +714,7 @@ public static class MigrationConsole
             new AppHostMigrationEvidenceV2Request(result, receipt, plan, authorization, producerConfiguration, provenance)
             {
                 VerifiedRestoreReceipt = verifiedRestore,
+                CleanupReceipt = cleanupReceipt,
             },
             backupTrust,
             authorizationTrust,
@@ -690,6 +790,88 @@ public static class MigrationConsole
         finally
         {
             CryptographicOperations.ZeroMemory(key);
+        }
+    }
+
+    private static async Task CleanupShadowsAsync(
+        string configPath,
+        Func<string, string?> getEnvironmentVariable,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new MigrationConsoleException("cleanup_deploy_gate_invalid", "Legacy deployment must remain disabled during shadow cleanup.");
+        }
+        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
+            configPath, "cleanup_config_unprotected", cancellationToken).ConfigureAwait(false);
+        CleanupShadowsCommandConfiguration cleanup = configuration.CleanupShadows ??
+            throw new MigrationConsoleException("cleanup_configuration_missing", "Reviewed post-export cleanup configuration is required.");
+        string? targetConnection = getEnvironmentVariable(PostgreSqlConnectionEnvironmentVariable);
+        string? evidenceKeyPath = getEnvironmentVariable(ExecutionSigningKeyEnvironmentVariable);
+        string? snapshotKeyPath = getEnvironmentVariable(SnapshotKeyEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(targetConnection) || string.IsNullOrWhiteSpace(evidenceKeyPath) ||
+            string.IsNullOrWhiteSpace(snapshotKeyPath))
+        {
+            throw new MigrationConsoleException("cleanup_runtime_reference_missing", "Cleanup runtime references are required.");
+        }
+
+        SigningRoleTrustBundle signingRoles = await ReadSigningRolesAsync(configuration.SigningRoles, cancellationToken).ConfigureAwait(false);
+        MigrationExecutionResult execution = await ReadProtectedJsonAsync<MigrationExecutionResult>(
+            cleanup.ExecutionResultPath, "cleanup_execution_unprotected", cancellationToken).ConfigureAwait(false);
+        BackupReceipt backup = await ReadProtectedJsonAsync<BackupReceipt>(
+            cleanup.ReceiptPath, "cleanup_backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
+        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
+            cleanup.PlanPath, "cleanup_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        CleanupAuthorizationReceipt authorization = await ReadProtectedJsonAsync<CleanupAuthorizationReceipt>(
+            cleanup.CleanupAuthorizationPath, "cleanup_authorization_unprotected", cancellationToken).ConfigureAwait(false);
+        LocalSnapshotManifest snapshot = await ReadProtectedJsonAsync<LocalSnapshotManifest>(
+            cleanup.SnapshotManifestPath, "cleanup_snapshot_unprotected", cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore backupTrust = await ReadTrustStoreAsync(cleanup.ReceiptTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(cleanup.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(
+            [configuration.SigningRoles!.Execution], cancellationToken).ConfigureAwait(false);
+        EnsureTrustMatchesRole(backupTrust, signingRoles.Backup, "cleanup_backup_trust_mismatch");
+        EnsureTrustMatchesRole(authorizationTrust, signingRoles.Authorization, "cleanup_authorization_trust_mismatch");
+        EnsureTrustMatchesRole(executionTrust, signingRoles.Execution, "cleanup_execution_trust_mismatch");
+
+        using var signer = new P256MigrationEvidenceSigner(cleanup.EvidenceKeyId, await ReadProtectedTextAsync(
+            evidenceKeyPath, "cleanup_signing_key_unprotected", cancellationToken).ConfigureAwait(false));
+        EnsureSignerMatchesRole(signer, signingRoles.Execution,
+            [signingRoles.Backup, signingRoles.Authorization, signingRoles.Provenance, signingRoles.FinalEvidence],
+            "cleanup_signing_key_untrusted", "signing_role_key_reuse");
+        byte[] snapshotKey;
+        await using (FileStream keyStream = OwnerProtectedFilePolicy.OpenRead(snapshotKeyPath, "snapshot_key_unprotected"))
+        {
+            snapshotKey = SnapshotRootKey.Load(keyStream);
+        }
+        try
+        {
+            using var provisioner = new CloudNativePgShadowDatabaseProvisioner(new(
+                new Uri(KubernetesApiServer, UriKind.Absolute), LegacyNamespace, LegacyPostgreSqlCluster,
+                cleanup.ExpectedShadowAdminRole, KubernetesServiceAccountTokenFile,
+                KubernetesServiceAccountCaFile, TimeSpan.FromMinutes(5)));
+            using var observer = new CloudNativePgTargetObserver(new(
+                new Uri(KubernetesApiServer, UriKind.Absolute), KubernetesServiceAccountTokenFile,
+                KubernetesServiceAccountCaFile));
+            var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(targetConnection, provisioner));
+            var service = new PostExportShadowCleanupService(
+                target, backupTrust, executionTrust, authorizationTrust, signer,
+                new CleanupTargetVerifier(observer, LegacyNamespace, LegacyPostgreSqlCluster), TimeProvider.System);
+            PostExportShadowCleanupReceipt result = await service.CleanupAsync(
+                execution, backup, plan, authorization, snapshot, snapshotKey, cancellationToken).ConfigureAwait(false);
+            if (!result.IsComplete)
+            {
+                string failurePath = Path.Combine(
+                    cleanup.FailurePublicationDirectory,
+                    $"{result.RunId:D}-{result.CleanedAtUtc:yyyyMMddTHHmmssfffffffZ}-{Guid.NewGuid():N}.cleanup-failure.json");
+                await WriteNewJsonAsync(failurePath, result, cancellationToken).ConfigureAwait(false);
+                throw new MigrationConsoleException("shadow_cleanup_incomplete", "One or more run-owned shadows could not be deleted.");
+            }
+            await WriteNewJsonAsync(cleanup.OutputPath, result, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(snapshotKey);
         }
     }
 
@@ -1152,6 +1334,10 @@ public static class MigrationConsole
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(temporaryPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
             File.Move(temporaryPath, fullPath, overwrite: false);
         }
         catch (Exception exception)
@@ -1194,9 +1380,11 @@ public static class MigrationConsole
         ExecuteShadowCommandConfiguration? ExecuteShadow = null,
         EvidenceCommandConfiguration? Evidence = null,
         ExportLocalSnapshotCommandConfiguration? ExportLocalSnapshot = null,
+        CleanupShadowsCommandConfiguration? CleanupShadows = null,
         FullBackupCommandConfiguration? FullBackup = null,
         RestoreBackupsCommandConfiguration? RestoreBackups = null,
         AuthorizeShadowCommandConfiguration? AuthorizeShadow = null,
+        AuthorizeCleanupCommandConfiguration? AuthorizeCleanup = null,
         SignProvenanceCommandConfiguration? SignProvenance = null,
         QuotationSchemaBaselineCommandConfiguration? QuotationSchemaBaseline = null,
         QuotationPostgreSqlSnapshotCommandConfiguration? QuotationPostgreSqlSnapshot = null,
@@ -1291,6 +1479,15 @@ public static class MigrationConsole
         string KeyId,
         bool AllowProvenanceSigning);
 
+    private sealed record AuthorizeCleanupCommandConfiguration(
+        string ExecutionResultPath,
+        string SnapshotManifestPath,
+        string OutputPath,
+        DateTimeOffset IssuedAtUtc,
+        DateTimeOffset ExpiresAtUtc,
+        string KeyId,
+        bool AllowCleanupAuthorization);
+
     private sealed record RestoreBackupsCommandConfiguration(
         string ReceiptPath,
         string RecoveryDirectory,
@@ -1328,6 +1525,7 @@ public static class MigrationConsole
         string ReceiptPath,
         string PlanPath,
         string AuthorizationPath,
+        string CleanupReceiptPath,
         string PublicationDirectory,
         string SourceSnapshotId,
         string BackupUri,
@@ -1348,6 +1546,19 @@ public static class MigrationConsole
         string ExecutionResultPath,
         string OutputDirectory,
         string PgDumpPath);
+
+    private sealed record CleanupShadowsCommandConfiguration(
+        string ExecutionResultPath,
+        string ReceiptPath,
+        string PlanPath,
+        string CleanupAuthorizationPath,
+        string SnapshotManifestPath,
+        string OutputPath,
+        string FailurePublicationDirectory,
+        IReadOnlyList<TrustedKeyReference> ReceiptTrustedKeys,
+        IReadOnlyList<TrustedKeyReference> AuthorizationTrustedKeys,
+        string EvidenceKeyId,
+        string ExpectedShadowAdminRole);
 
     private sealed class DisabledExternalCommandExecutor : IExternalCommandExecutor
     {

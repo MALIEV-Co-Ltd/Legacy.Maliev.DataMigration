@@ -246,6 +246,7 @@ public sealed class MigrationConsoleTests : IDisposable
                 receiptPath = "receipt.json",
                 planPath = "plan.json",
                 authorizationPath = "authorization.json",
+                cleanupReceiptPath = "shadow-cleanup.json",
                 publicationDirectory = "publication",
                 sourceSnapshotId = "source-current",
                 backupUri = "gs://maliev.com/database/full/2026-08-30/",
@@ -297,6 +298,40 @@ public sealed class MigrationConsoleTests : IDisposable
 
         Assert.Equal(65, exitCode);
         Assert.Equal("snapshot_runtime_reference_missing" + Environment.NewLine, error.ToString());
+        Assert.Equal(string.Empty, output.ToString());
+    }
+
+    [Fact]
+    public async Task RunAsync_CleanupShadows_RequiresDeploymentDisabledBeforeReadingArtifacts()
+    {
+        OwnerProtectedDirectory.CreateNew(_root);
+        string configPath = Path.Combine(_root, "config.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+        {
+            cleanupShadows = new
+            {
+                executionResultPath = "execution.json",
+                receiptPath = "receipt.json",
+                planPath = "plan.json",
+                cleanupAuthorizationPath = "cleanup-authorization.json",
+                snapshotManifestPath = "manifest.json",
+                outputPath = "cleanup.json",
+                failurePublicationDirectory = "cleanup-failures",
+                receiptTrustedKeys = Array.Empty<object>(),
+                authorizationTrustedKeys = Array.Empty<object>(),
+                evidenceKeyId = "execution-key",
+                expectedShadowAdminRole = "legacy_migration_shadow",
+            },
+        }, JsonOptions));
+        ProtectFileOnUnix(configPath);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["cleanup-shadows", "--config", configPath], output, error, _ => null, CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal("cleanup_deploy_gate_invalid" + Environment.NewLine, error.ToString());
         Assert.Equal(string.Empty, output.ToString());
     }
 
@@ -492,7 +527,7 @@ public sealed class MigrationConsoleTests : IDisposable
     [Fact]
     public async Task CreateOnlyJsonPublication_IsAtomicCleansFailedTemporaryFileAndCanRetry()
     {
-        _ = Directory.CreateDirectory(_root);
+        OwnerProtectedDirectory.CreateNew(_root);
         string path = Path.Combine(_root, "receipt.json");
         await File.WriteAllTextAsync(path, "existing");
 
@@ -514,6 +549,7 @@ public sealed class MigrationConsoleTests : IDisposable
         using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
         Assert.Equal("complete", document.RootElement.GetProperty("state").GetString());
         Assert.Equal(24, document.RootElement.GetProperty("count").GetInt32());
+        Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(path));
         Assert.Empty(Directory.EnumerateFiles(_root, ".receipt.json.*.tmp"));
     }
 

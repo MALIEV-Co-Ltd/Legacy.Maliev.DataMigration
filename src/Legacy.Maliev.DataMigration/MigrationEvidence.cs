@@ -16,6 +16,11 @@ public static class MigrationEvidenceAttestation
         return Create("legacy-maliev-migration-failure-v1", receipt with { AttestationSignature = null });
     }
 
+    public static byte[] CreatePayload(PostExportShadowCleanupReceipt receipt)
+    {
+        return Create("legacy-maliev-post-export-shadow-cleanup-v1", receipt with { AttestationSignature = null });
+    }
+
     private static byte[] Create<T>(string domain, T value)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(value);

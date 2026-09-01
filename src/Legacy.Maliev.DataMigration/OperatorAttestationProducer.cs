@@ -156,6 +156,7 @@ public static partial class ReviewedMigrationProvenanceProducer
         FreshSchemaPlan plan,
         ExecutionAuthorizationReceipt authorization,
         VerifiedRestoreReceipt verifiedRestore,
+        PostExportShadowCleanupReceipt cleanupReceipt,
         IReceiptAttestationTrustStore backupTrust,
         IReceiptAttestationTrustStore authorizationTrust,
         IReceiptAttestationTrustStore executionTrust,
@@ -172,6 +173,7 @@ public static partial class ReviewedMigrationProvenanceProducer
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(authorization);
         ArgumentNullException.ThrowIfNull(verifiedRestore);
+        ArgumentNullException.ThrowIfNull(cleanupReceipt);
         ArgumentNullException.ThrowIfNull(backupTrust);
         ArgumentNullException.ThrowIfNull(authorizationTrust);
         ArgumentNullException.ThrowIfNull(executionTrust);
@@ -229,6 +231,12 @@ public static partial class ReviewedMigrationProvenanceProducer
         {
             throw Error("provenance_binding_invalid", "Execution, authorization, plan, and backup bindings do not match.");
         }
+        if (!cleanupReceipt.IsComplete || cleanupReceipt.RunId != execution.RunId ||
+            !PostExportShadowCleanupAttestation.Verify(cleanupReceipt, executionTrust) ||
+            request.IssuedAtUtc < cleanupReceipt.CleanedAtUtc)
+        {
+            throw Error("provenance_shadow_cleanup_invalid", "Complete signed post-export shadow cleanup is required before provenance signing.");
+        }
         EnsureDistinctRole(provenanceSigner, backupReceipt.AttestationKeyId, backupTrust);
         EnsureDistinctRole(provenanceSigner, authorization.AttestationKeyId, authorizationTrust);
         EnsureDistinctRole(provenanceSigner, execution.AttestationKeyId, executionTrust);
@@ -252,7 +260,10 @@ public static partial class ReviewedMigrationProvenanceProducer
             execution.TargetGeneration,
             request.IssuedAtUtc,
             provenanceSigner.KeyId,
-            null);
+            null)
+        {
+            CleanupReceiptSha256 = PostExportShadowCleanupAttestation.Digest(cleanupReceipt),
+        };
         if (!MigrationEvidenceProvenanceAttestation.TryCreatePayload(unsigned, out byte[] payload))
         {
             throw Error("provenance_contract_invalid", "The migration provenance cannot be canonicalized.");

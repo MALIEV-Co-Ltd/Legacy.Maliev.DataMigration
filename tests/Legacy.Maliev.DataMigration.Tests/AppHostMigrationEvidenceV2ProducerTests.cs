@@ -20,6 +20,20 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"legacy-evidence-v2-{Guid.NewGuid():N}");
 
     [Fact]
+    public void Produce_MissingShadowCleanupReceiptFailsBeforeFinalSigning()
+    {
+        EvidenceFixture fixture = CreateFixture();
+
+        MigrationEvidenceProductionException failure = Assert.Throws<MigrationEvidenceProductionException>(() =>
+            AppHostMigrationEvidenceV2Producer.Produce(
+                fixture.Request with { CleanupReceipt = null }, fixture.BackupTrust, fixture.AuthorizationTrust,
+                fixture.ExecutionTrust, fixture.ProvenanceTrust, new P256MigrationEvidenceSigner(
+                    "evidence-key", _evidenceKey.ExportECPrivateKeyPem()), new FixedTimeProvider(_now)));
+
+        Assert.Equal("shadow_cleanup_receipt_invalid", failure.Code);
+    }
+
+    [Fact]
     public void Produce_EmitsExactSignedAppHostSchemaV2WithoutEqualizingEngineSchemaHashes()
     {
         EvidenceFixture fixture = CreateFixture();
@@ -230,6 +244,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         string receiptPath = await WriteJsonAsync("receipt.json", fixture.Request.BackupReceipt);
         string planPath = await WriteJsonAsync("plan.json", fixture.Request.SchemaPlan);
         string authorizationPath = await WriteJsonAsync("authorization.json", fixture.Request.Authorization);
+        string cleanupReceiptPath = await WriteJsonAsync("shadow-cleanup.json", fixture.Request.CleanupReceipt);
         string backupKeyPath = await WriteTextAsync("backup-public.txt", Convert.ToBase64String(_backupKey.ExportSubjectPublicKeyInfo()));
         string authorizationKeyPath = await WriteTextAsync("authorization-public.txt", Convert.ToBase64String(_authorizationKey.ExportSubjectPublicKeyInfo()));
         string executionKeyPath = await WriteTextAsync("execution-public.txt", Convert.ToBase64String(_executionKey.ExportSubjectPublicKeyInfo()));
@@ -250,6 +265,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
                 receiptPath,
                 planPath,
                 authorizationPath,
+                cleanupReceiptPath,
                 publicationDirectory,
                 sourceSnapshotId = producer.SourceSnapshotId,
                 backupUri = producer.BackupUri,
@@ -521,6 +537,10 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             Guid.Parse("33333333-3333-4333-8333-333333333333"),
             _now.AddMinutes(-14),
             _now.AddMinutes(20));
+        PostExportShadowCleanupReceipt cleanupReceipt = SignCleanup(new(
+            "1.0", executionReceipt.RunId, CleanupContract.ExecutionDigest(executionReceipt), Hash("snapshot"),
+            _now.AddMinutes(-4), [.. migrated.Select(item => new ShadowCleanupOutcome(item.ShadowName, true, null))],
+            "execution-key", null));
         MigrationEvidenceProvenanceReceipt provenance = SignProvenance(new(
             "1.0",
             configuration.SourceSnapshotId,
@@ -537,9 +557,12 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
             manifestHash,
             runnerDigest,
             authorization.TargetGeneration!,
-            _now.AddMinutes(-10),
+            _now.AddMinutes(-3),
             "provenance-key",
-            null));
+            null)
+        {
+            CleanupReceiptSha256 = PostExportShadowCleanupAttestation.Digest(cleanupReceipt),
+        });
         const string digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         VerifiedRestoreReceipt verifiedRestore = VerifiedRestoreReceiptAttestation.Sign(new(
             "1.0",
@@ -569,6 +592,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         var request = new AppHostMigrationEvidenceV2Request(result, backup, plan, authorization, configuration, provenance)
         {
             VerifiedRestoreReceipt = verifiedRestore,
+            CleanupReceipt = cleanupReceipt,
         };
         return new(
             request,
@@ -624,6 +648,15 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
     {
         Assert.True(MigrationEvidenceProvenanceAttestation.TryCreatePayload(receipt, out byte[] payload));
         return receipt with { AttestationSignature = Convert.ToBase64String(_provenanceKey.SignData(payload, HashAlgorithmName.SHA256)) };
+    }
+
+    private PostExportShadowCleanupReceipt SignCleanup(PostExportShadowCleanupReceipt receipt)
+    {
+        return receipt with
+        {
+            AttestationSignature = Convert.ToBase64String(_executionKey.SignData(
+                MigrationEvidenceAttestation.CreatePayload(receipt), HashAlgorithmName.SHA256)),
+        };
     }
 
     private async Task<string> WriteTextAsync(string name, string value)

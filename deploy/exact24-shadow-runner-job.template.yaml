@@ -1,0 +1,136 @@
+# Dormant template only. Replace every __...__ token in an owner-reviewed manifest,
+# validate the rendered file, then apply it through the separately authorized lane.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: legacy-exact24-shadow-__RUN_ID__
+  namespace: maliev-legacy
+  labels:
+    app.kubernetes.io/name: legacy-exact24-shadow-runner
+    app.kubernetes.io/managed-by: legacy-maliev-data-migration
+    maliev.com/database-purpose: legacy-shadow
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 21600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: legacy-exact24-shadow-runner
+        app.kubernetes.io/managed-by: legacy-maliev-data-migration
+    spec:
+      serviceAccountName: legacy-data-migration-shadow-provisioner
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: authorize-reviewed-plan
+          image: __RUNNER_IMAGE_DIGEST__
+          imagePullPolicy: IfNotPresent
+          args: ["authorize-shadow", "--config", "/run/legacy-migration/run-config.json"]
+          env:
+            - name: LEGACY_DEPLOY_ENABLED
+              value: "false"
+            - name: LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE
+              value: /run/legacy-migration/signing/authorization-private.pem
+          securityContext: &runnerSecurityContext
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+          resources: &runnerResources
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: run-artifacts
+              mountPath: /run/legacy-migration
+            - name: authorization-signing-material
+              mountPath: /run/legacy-migration/signing
+              readOnly: true
+            - name: kubernetes-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      containers:
+        - name: execute-approved-shadow
+          image: __RUNNER_IMAGE_DIGEST__
+          imagePullPolicy: IfNotPresent
+          args: ["execute-shadow", "--config", "/run/legacy-migration/run-config.json"]
+          env:
+            - name: LEGACY_DEPLOY_ENABLED
+              value: "false"
+            - name: LEGACY_MIGRATION_SQLSERVER_CONNECTION
+              valueFrom:
+                secretKeyRef:
+                  name: __RUNTIME_SECRET_NAME__
+                  key: sqlserver-source-connection
+            - name: LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION
+              valueFrom:
+                secretKeyRef:
+                  name: __RUNTIME_SECRET_NAME__
+                  key: postgres-shadow-connection
+            - name: LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION
+              valueFrom:
+                secretKeyRef:
+                  name: __RUNTIME_SECRET_NAME__
+                  key: postgres-control-connection
+            - name: LEGACY_MIGRATION_EXECUTION_SIGNING_KEY_FILE
+              value: /run/legacy-migration/signing/execution-private.pem
+          securityContext: *runnerSecurityContext
+          resources: *runnerResources
+          volumeMounts:
+            - name: run-artifacts
+              mountPath: /run/legacy-migration
+            - name: execution-signing-material
+              mountPath: /run/legacy-migration/signing
+              readOnly: true
+            - name: kubernetes-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: run-artifacts
+          persistentVolumeClaim:
+            claimName: __RUN_ARTIFACTS_PVC_NAME__
+        - name: authorization-signing-material
+          secret:
+            secretName: __SIGNING_SECRET_NAME__
+            defaultMode: 288
+            items:
+              - key: authorization-private.pem
+                path: authorization-private.pem
+                mode: 288
+        - name: execution-signing-material
+          secret:
+            secretName: __SIGNING_SECRET_NAME__
+            defaultMode: 288
+            items:
+              - key: execution-private.pem
+                path: execution-private.pem
+                mode: 288
+        - name: kubernetes-api-access
+          projected:
+            defaultMode: 288
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 600
+                  audience: https://kubernetes.default.svc
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+                      mode: 288
