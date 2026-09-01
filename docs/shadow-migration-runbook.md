@@ -94,6 +94,40 @@ cannot produce provenance.
 
 ## Commands and mandatory stop
 
+Create each run from a new owner-only directory with fresh, pairwise-distinct
+P-256 roles and a fresh 32-byte snapshot root key. The bootstrap accepts only
+reviewed non-secret source identities, immutable image references, and local
+paths. It never accepts or writes a SQL credential, connection string, token,
+or runtime Secret:
+
+```powershell
+$Repository = 'B:\maliev-legacy\Legacy.Maliev.DataMigration'
+& "$Repository\scripts\new-exact24-run-config.ps1" `
+  -OutputRoot '<new-or-owner-only-absolute-root>' `
+  -SourceNamespace '<reviewed-source-namespace>' `
+  -ExpectedPodName '<freshly-observed-pod-name>' `
+  -ExpectedPodUid '<freshly-observed-pod-uid>' `
+  -ContainerName '<freshly-observed-container-name>' `
+  -ReviewedSourceCommitSha '<40-lowercase-hex-source-commit>' `
+  -GcsBucket '<existing-immutable-backup-bucket>' `
+  -StagingImage '<image>@sha256:<digest>' `
+  -SqlServerImage '<image>@sha256:<digest>' `
+  -SqlServerImageId 'sha256:<observed-image-id>' `
+  -PgDumpPath '<absolute-pg-dump-path>'
+```
+
+The JSON printed to stdout identifies the new run directory, config, snapshot
+key, and five private-key paths for protected runtime injection. Private keys
+are never referenced from `run-config.json`; only their base64 SPKI public keys
+are. Backup receipt, snapshot, and final-evidence publication directories are
+intentionally absent because those producers require create-new destinations.
+Every write/authorization flag starts `false`, approval timestamps start
+expired, and reviewed plan/evidence values contain `REVIEW_REQUIRED` sentinels.
+Generation therefore cannot authorize a source backup or any shadow write.
+Update those fields only at the corresponding review gate, and inject
+credentials/connection strings exclusively through the documented runtime
+environment variables.
+
 ```powershell
 $Repository = 'B:\maliev-legacy\Legacy.Maliev.DataMigration'
 $Config = '<owner-only-absolute-path>\run-config.json'
