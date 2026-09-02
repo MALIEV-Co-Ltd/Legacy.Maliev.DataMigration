@@ -70,6 +70,130 @@ public sealed class RemotePostgreSqlHostFixture : IAsyncLifetime
 public sealed class RemotePostgreSqlHostBoundaryTests(RemotePostgreSqlHostFixture fixture) : IClassFixture<RemotePostgreSqlHostFixture>
 {
     [Theory]
+    [InlineData("create")]
+    [InlineData("write")]
+    [InlineData("cancel")]
+    public async Task HostDump_DestinationFailureSurvivesAwaitedNativeCleanup(string fault)
+    {
+        string name = HostKubernetesBoundaryTests.Shadow().Name;
+        string app = $"dump_destination_{Guid.NewGuid():N}";
+        string blockedPath = Path.Combine(fixture.Tls.Root, $"blocked-{Guid.NewGuid():N}");
+        _ = Directory.CreateDirectory(blockedPath);
+        await using var admin = new NpgsqlConnection(fixture.AdminConnection); await admin.OpenAsync();
+        await using var create = new NpgsqlCommand($"CREATE DATABASE {name} OWNER host_restricted", admin); _ = await create.ExecuteNonQueryAsync();
+        try
+        {
+            await using var holder = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Database = name }.ConnectionString); await holder.OpenAsync();
+            await using var table = new NpgsqlCommand("CREATE TABLE public.blocked(id integer)", holder); _ = await table.ExecuteNonQueryAsync();
+            await using NpgsqlTransaction transaction = await holder.BeginTransactionAsync();
+            await using var locked = new NpgsqlCommand("LOCK TABLE public.blocked IN ACCESS EXCLUSIVE MODE", holder, transaction); _ = await locked.ExecuteNonQueryAsync();
+            using var observer = fixture.Observer();
+            var boundary = new RemotePostgreSqlHostBoundary(new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { ApplicationName = app }.ConnectionString, fixture.Target, observer);
+            Stream native = await PgDumpSource.CreateForHost(DumpPath, boundary).OpenDumpAsync("Order", name, default);
+            var dump = new ObservedDumpDisposal(native);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await using var waiting = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock')", admin);
+            _ = waiting.Parameters.AddWithValue(app);
+            while (!true.Equals(await waiting.ExecuteScalarAsync(deadline.Token))) { await Task.Delay(25, deadline.Token); }
+            using var cancellation = new CancellationTokenSource();
+            var writeFailure = new IOException("controlled destination write failure");
+            Exception? primary = null;
+            Task<SnapshotEncryptionResult> consuming = IncrementalLocalSnapshotStore.ConsumeDumpAsync(dump, async source =>
+            {
+                try
+                {
+                    using Stream destination = fault == "create"
+                        ? new FileStream(blockedPath, FileMode.CreateNew, FileAccess.Write)
+                        : new FailedEncryptedDestination(writeFailure, fault == "cancel" ? cancellation : null);
+                    return await SnapshotEncryption.EncryptStagingAsync(source, destination, new byte[32],
+                        SnapshotArchiveContext.Create("destination-test", "Order", new string('a', 64)), cancellation.Token);
+                }
+                catch (Exception failure) { primary = failure; throw; }
+            });
+            await dump.DisposalStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            bool returnedBeforeCleanup = consuming.IsCompleted;
+            dump.ReleaseDisposal.SetResult();
+            Exception observed = await Record.ExceptionAsync(() => consuming.WaitAsync(TimeSpan.FromSeconds(15)));
+            Assert.False(returnedBeforeCleanup);
+            Assert.True(dump.DisposalCompleted);
+            Assert.Same(primary, observed);
+            Assert.Equal(nameof(MigrationExecutionException), observed.Data["snapshot_dump_cleanup_failure"]);
+            if (fault == "write") { Assert.Same(writeFailure, observed); }
+            if (fault == "create") { _ = Assert.IsType<UnauthorizedAccessException>(observed); }
+            if (fault == "cancel") { Assert.Equal(cancellation.Token, Assert.IsType<OperationCanceledException>(observed, exactMatch: false).CancellationToken); }
+            await transaction.RollbackAsync();
+            using var settled = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await using var remaining = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name=$1)", admin);
+            _ = remaining.Parameters.AddWithValue(app);
+            while (true.Equals(await remaining.ExecuteScalarAsync(settled.Token))) { await Task.Delay(25, settled.Token); }
+        }
+        finally
+        {
+            Directory.Delete(blockedPath);
+            await using var drop = new NpgsqlCommand($"DROP DATABASE {name} WITH (FORCE)", admin); _ = await drop.ExecuteNonQueryAsync();
+        }
+    }
+
+    private sealed class FailedEncryptedDestination(Exception failure, CancellationTokenSource? cancellation) : MemoryStream
+    {
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (cancellation is null) { return ValueTask.FromException(failure); }
+            cancellation.Cancel();
+            return ValueTask.FromCanceled(cancellation.Token);
+        }
+    }
+
+    private sealed class ObservedDumpDisposal(Stream inner) : Stream
+    {
+        public TaskCompletionSource DisposalStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseDisposal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool DisposalCompleted { get; private set; }
+        public override async ValueTask DisposeAsync()
+        {
+            _ = DisposalStarted.TrySetResult();
+            await ReleaseDisposal.Task;
+            try { await inner.DisposeAsync(); }
+            finally { DisposalCompleted = true; await base.DisposeAsync(); }
+            GC.SuppressFinalize(this);
+        }
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            return inner.ReadAsync(buffer, cancellationToken);
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            return inner.Read(buffer, offset, count);
+        }
+
+        public override bool CanRead => inner.CanRead;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush()
+        {
+            throw new NotSupportedException();
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    [Theory]
     [InlineData("SSL Mode", "Require")]
     [InlineData("Host", "localhost,other.example")]
     [InlineData("Search Path", "untrusted")]

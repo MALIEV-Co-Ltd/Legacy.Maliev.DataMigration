@@ -59,14 +59,15 @@ public sealed partial class IncrementalLocalSnapshotStore : IDatabaseCheckpointD
         // Failed/crashed private pending directories are retained; never delete the shared staging root.
         string path = Path.Combine(pending, ArchiveName);
         string checkpointHash = HashText(checkpointJson);
-        SnapshotEncryptionResult result;
-        await using (Stream dump = await _dumpSource.OpenDumpAsync(frozen.Database.Database, frozen.Shadow.Name, cancellationToken).ConfigureAwait(false))
-        await using (FileStream encrypted = CreateFile(path))
+        Stream dump = await _dumpSource.OpenDumpAsync(frozen.Database.Database, frozen.Shadow.Name, cancellationToken).ConfigureAwait(false);
+        SnapshotEncryptionResult result = await ConsumeDumpAsync(dump, async source =>
         {
-            result = await SnapshotEncryption.EncryptStagingAsync(dump, encrypted, _key,
+            await using FileStream encrypted = CreateFile(path);
+            SnapshotEncryptionResult encryptedResult = await SnapshotEncryption.EncryptStagingAsync(source, encrypted, _key,
                 Context(frozen.Database.Database, checkpointHash), cancellationToken).ConfigureAwait(false);
             await FlushDurablyAsync(encrypted, cancellationToken).ConfigureAwait(false);
-        } // PgDumpSource disposal observes process exit; no metadata/publication/restore before success.
+            return encryptedResult;
+        }).ConfigureAwait(false); // No metadata/publication/restore before consumption and native completion succeed.
 
         long encryptedLength;
         string encryptedHash;
@@ -98,6 +99,23 @@ public sealed partial class IncrementalLocalSnapshotStore : IDatabaseCheckpointD
         _ = await ReadArtifactAsync(destination, checkpointJson, cancellationToken).ConfigureAwait(false);
         await using FileStream published = OpenArchive(destination);
         await AuthenticateArchiveAsync(published, artifact, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task<SnapshotEncryptionResult> ConsumeDumpAsync(Stream dump, Func<Stream, Task<SnapshotEncryptionResult>> consume)
+    {
+        Exception? primary = null;
+        try { return await consume(dump).ConfigureAwait(false); }
+        catch (Exception failure) { primary = failure; throw; }
+        finally
+        {
+            // A destination failure aborts delivery, but must not be replaced by the
+            // source's incomplete-export rejection. Always observe native completion.
+            try { await dump.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception secondary) when (primary is not null)
+            {
+                if (!ReferenceEquals(primary, secondary)) { primary.Data["snapshot_dump_cleanup_failure"] = secondary.GetType().Name; }
+            }
+        }
     }
 
     /// <summary>Authenticates local evidence for recovery after remote completion. Does not redump or restore.</summary>

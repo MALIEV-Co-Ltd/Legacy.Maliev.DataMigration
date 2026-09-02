@@ -72,6 +72,40 @@ public sealed class IncrementalLocalSnapshotStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Deliver_DestinationCreationFailureSurvivesDumpCleanup_WithoutPublication()
+    {
+        using var store = CreateStore();
+        _source.FailDispose = true;
+        _source.OnOpen = () => Directory.CreateDirectory(Path.Combine(
+            Assert.Single(Directory.EnumerateDirectories(Staging, ".pending-*")), "archive.aes256"));
+
+        Exception failure = await Record.ExceptionAsync(() => store.DeliverAndVerifyAsync(_data.Checkpoints[0], default));
+
+        _ = Assert.IsType<UnauthorizedAccessException>(failure);
+        Assert.Equal(nameof(IOException), failure.Data["snapshot_dump_cleanup_failure"]);
+        Assert.False(Directory.Exists(Path.GetDirectoryName(Archive(_data.Checkpoints[0]))));
+        Assert.Empty(Directory.EnumerateFiles(Staging, "artifact.json", SearchOption.AllDirectories));
+        Assert.Equal(0, _verifier.Calls);
+    }
+
+    [Fact]
+    public async Task Deliver_DestinationCancellationSurvivesDumpCleanup_WithoutPublication()
+    {
+        using var store = CreateStore();
+        using var cancellation = new CancellationTokenSource();
+        _source.FailDispose = true;
+        _source.OnOpen = cancellation.Cancel;
+
+        Exception failure = await Record.ExceptionAsync(() => store.DeliverAndVerifyAsync(_data.Checkpoints[0], cancellation.Token));
+
+        Assert.Equal(cancellation.Token, Assert.IsType<OperationCanceledException>(failure, exactMatch: false).CancellationToken);
+        Assert.Equal(nameof(IOException), failure.Data["snapshot_dump_cleanup_failure"]);
+        Assert.False(Directory.Exists(Path.GetDirectoryName(Archive(_data.Checkpoints[0]))));
+        Assert.Empty(Directory.EnumerateFiles(Staging, "artifact.json", SearchOption.AllDirectories));
+        Assert.Equal(0, _verifier.Calls);
+    }
+
+    [Fact]
     public async Task Deliver_DumpDisposeFails_DoesNotPublishOrRestore()
     {
         using var store = CreateStore();
