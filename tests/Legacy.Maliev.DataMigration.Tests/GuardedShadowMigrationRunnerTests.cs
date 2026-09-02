@@ -1250,6 +1250,16 @@ public sealed class GuardedShadowMigrationRunnerTests
 
     private sealed class InMemoryJournal : IMigrationRunJournal
     {
+        public Task RecordCheckpointAsync(MigrationRunLease lease, DatabaseMigrationCheckpoint checkpoint, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<IReadOnlyList<DatabaseMigrationCheckpoint>> GetCheckpointsAsync(MigrationRunLease lease, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public int TryBeginCount { get; private set; }
         public List<MigrationExecutionReceipt> Completed { get; } = [];
         public List<MigrationFailureReceipt> Failed { get; } = [];

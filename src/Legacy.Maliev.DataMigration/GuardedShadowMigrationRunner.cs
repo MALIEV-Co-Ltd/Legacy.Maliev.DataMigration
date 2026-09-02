@@ -265,6 +265,10 @@ public interface IPostgreSqlWholeDatabaseTransaction : IAsyncDisposable
 
 public interface IMigrationRunJournal
 {
+    Task RecordCheckpointAsync(MigrationRunLease lease, DatabaseMigrationCheckpoint checkpoint, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<DatabaseMigrationCheckpoint>> GetCheckpointsAsync(MigrationRunLease lease, CancellationToken cancellationToken);
+
     Task<MigrationRunStartResult> TryBeginAsync(
         MigrationRunIdentity identity,
         CancellationToken cancellationToken);

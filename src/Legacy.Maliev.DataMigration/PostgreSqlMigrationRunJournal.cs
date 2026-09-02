@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Npgsql;
@@ -11,16 +12,124 @@ public sealed record PostgreSqlMigrationRunJournalOptions(
     string? LeaseOwner = null,
     TimeSpan? LeaseDuration = null,
     TimeProvider? TimeProvider = null,
-    string? ExpectedControlRole = null);
+    string? ExpectedControlRole = null,
+    DatabaseMigrationCheckpointVerificationOptions? CheckpointVerification = null);
 
 public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
 {
+    public async Task RecordCheckpointAsync(MigrationRunLease lease, DatabaseMigrationCheckpoint checkpoint, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        DatabaseMigrationCheckpointVerifier verifier = CheckpointVerifier();
+        await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
+        await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await AssertLiveOwnedLeaseAsync(connection, transaction, lease, cancellationToken).ConfigureAwait(false);
+        AssertCheckpointIdentity(lease.Identity);
+        IReadOnlyList<ShadowDatabase> inventory = await ReadPendingShadowsAsync(connection, transaction, lease.Identity.RunId, cancellationToken).ConfigureAwait(false);
+        // IReadOnly collections may still be caller-mutable. Validate a detached snapshot of the exact bytes persisted.
+        string json = Encoding.UTF8.GetString(MigrationEvidenceAttestation.SerializeCheckpoint(checkpoint));
+        checkpoint = JsonSerializer.Deserialize<DatabaseMigrationCheckpoint>(json)!;
+        verifier.Validate(checkpoint, RegisteredCheckpointShadow(checkpoint, inventory));
+        await using (var insert = new NpgsqlCommand($"""
+            INSERT INTO {_checkpointTable} (run_id, source_database, checkpoint_json)
+            VALUES ($1, $2, $3) ON CONFLICT (run_id, source_database) DO NOTHING;
+            """, connection, transaction))
+        {
+            _ = insert.Parameters.AddWithValue(lease.Identity.RunId);
+            _ = insert.Parameters.AddWithValue(checkpoint.Database.Database);
+            _ = insert.Parameters.AddWithValue(json);
+            _ = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await using var read = new NpgsqlCommand($"""
+            SELECT checkpoint_json FROM {_checkpointTable} WHERE run_id = $1 AND source_database = $2;
+            """, connection, transaction);
+        _ = read.Parameters.AddWithValue(lease.Identity.RunId);
+        _ = read.Parameters.AddWithValue(checkpoint.Database.Database);
+        if (!string.Equals((string?)await read.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), json, StringComparison.Ordinal))
+        {
+            throw new MigrationExecutionException("checkpoint_conflict", "A different checkpoint already exists for this immutable run database.");
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<DatabaseMigrationCheckpoint>> GetCheckpointsAsync(MigrationRunLease lease, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        DatabaseMigrationCheckpointVerifier verifier = CheckpointVerifier();
+        await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
+        await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await AssertLiveOwnedLeaseAsync(connection, transaction, lease, cancellationToken).ConfigureAwait(false);
+        AssertCheckpointIdentity(lease.Identity);
+        IReadOnlyList<ShadowDatabase> inventory = await ReadPendingShadowsAsync(connection, transaction, lease.Identity.RunId, cancellationToken).ConfigureAwait(false);
+        List<DatabaseMigrationCheckpoint> checkpoints = [];
+        await using (var command = new NpgsqlCommand($"""
+            SELECT source_database, checkpoint_json FROM {_checkpointTable} WHERE run_id = $1 ORDER BY source_database;
+            """, connection, transaction))
+        {
+            _ = command.Parameters.AddWithValue(lease.Identity.RunId);
+            await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                string json = reader.GetString(1);
+                DatabaseMigrationCheckpoint checkpoint;
+                try
+                {
+                    checkpoint = JsonSerializer.Deserialize<DatabaseMigrationCheckpoint>(json) ??
+                        throw new JsonException("The checkpoint is null.");
+                    if (!string.Equals(Encoding.UTF8.GetString(MigrationEvidenceAttestation.SerializeCheckpoint(checkpoint)), json, StringComparison.Ordinal))
+                    {
+                        throw new JsonException("The stored checkpoint is not canonical.");
+                    }
+                }
+                catch (JsonException exception)
+                {
+                    throw new MigrationExecutionException("checkpoint_invalid", "Stored checkpoint bytes are malformed or noncanonical.", exception);
+                }
+                verifier.Validate(checkpoint, RegisteredCheckpointShadow(checkpoint, inventory));
+                if (!string.Equals(reader.GetString(0), checkpoint.Database.Database, StringComparison.Ordinal))
+                {
+                    throw new MigrationExecutionException("checkpoint_invalid", "Stored checkpoint database index does not match its signed payload.");
+                }
+                checkpoints.Add(checkpoint);
+            }
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return checkpoints;
+    }
+
+    private DatabaseMigrationCheckpointVerifier CheckpointVerifier()
+    {
+        return _checkpointVerifier ??
+        throw new MigrationExecutionException("checkpoint_verifier_required", "Original identity, schema plan, and trusted checkpoint keys must be configured.");
+    }
+
+    private void AssertCheckpointIdentity(MigrationRunIdentity identity)
+    {
+        if (identity != _checkpointIdentity)
+        {
+            throw new MigrationExecutionException("checkpoint_invalid", "The lease does not match the configured checkpoint identity.");
+        }
+    }
+
+    private static ShadowDatabase RegisteredCheckpointShadow(DatabaseMigrationCheckpoint checkpoint, IReadOnlyList<ShadowDatabase> inventory)
+    {
+        ShadowDatabase[] matches = [.. inventory.Where(shadow => shadow.Name == checkpoint.Shadow?.Name && shadow.Database == checkpoint.Database?.Database)];
+        return matches.Length == 1 ? matches[0] :
+            throw new MigrationExecutionException("checkpoint_inventory_invalid", "The original checkpoint shadow is absent from the retained inventory.");
+    }
+
     private static readonly TimeSpan DefaultLeaseDuration = TimeSpan.FromMinutes(5);
     private static readonly SemaphoreSlim SchemaGate = new(1, 1);
     private readonly string _connectionString;
     private readonly string _schema;
     private readonly string _table;
     private readonly string _shadowTable;
+    private readonly string _checkpointTable;
+    private readonly DatabaseMigrationCheckpointVerifier? _checkpointVerifier;
+    private readonly MigrationRunIdentity? _checkpointIdentity;
     private readonly string _leaseOwner;
     private readonly TimeSpan _leaseDuration;
     private readonly TimeProvider _timeProvider;
@@ -53,6 +162,9 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         _schema = PostgreSqlShadowTarget.QuoteIdentifier(options.Schema);
         _table = $"{_schema}.{PostgreSqlShadowTarget.QuoteIdentifier("migration_runs")}";
         _shadowTable = $"{_schema}.{PostgreSqlShadowTarget.QuoteIdentifier("migration_run_shadows")}";
+        _checkpointTable = $"{_schema}.{PostgreSqlShadowTarget.QuoteIdentifier("migration_database_checkpoints")}";
+        _checkpointIdentity = options.CheckpointVerification?.Identity;
+        _checkpointVerifier = options.CheckpointVerification is null ? null : new(options.CheckpointVerification);
         _leaseOwner = owner;
         _leaseDuration = duration;
         _timeProvider = options.TimeProvider ?? TimeProvider.System;
@@ -63,13 +175,13 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
     public async Task<MigrationRunStartResult> TryBeginAsync(MigrationRunIdentity identity, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(identity);
-        DateTimeOffset now = _timeProvider.GetUtcNow();
-        DateTimeOffset expires = now.Add(_leaseDuration);
         Guid fencingToken = Guid.NewGuid();
         await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
         await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
             System.Data.IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
+        DateTimeOffset now = await ReadServerTimeAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        DateTimeOffset expires = now.Add(_leaseDuration);
         await using (var insert = new NpgsqlCommand($"""
             INSERT INTO {_table} (
                 run_id, source_commit_sha, schema_plan_sha256, backup_manifest_sha256,
@@ -93,6 +205,9 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         }
 
         JournalRow observed = await ReadForUpdateAsync(connection, transaction, identity.RunId, cancellationToken).ConfigureAwait(false);
+        // Read time after acquiring the row lock; a wait must not retain a stale admission timestamp.
+        now = await ReadServerTimeAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        expires = now.Add(_leaseDuration);
         if (observed.Identity != identity)
         {
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -144,16 +259,18 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
     public async Task<MigrationRunLease> HeartbeatAsync(MigrationRunLease lease, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
-        DateTimeOffset now = _timeProvider.GetUtcNow();
-        DateTimeOffset expires = now.Add(_leaseDuration);
         await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
         await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
+        await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await AssertLiveOwnedLeaseAsync(connection, transaction, lease, cancellationToken).ConfigureAwait(false);
+        DateTimeOffset now = await ReadServerTimeAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        DateTimeOffset expires = now.Add(_leaseDuration);
         await using var command = new NpgsqlCommand($"""
             UPDATE {_table}
             SET heartbeat_at_utc = $4, lease_expires_at_utc = $5, updated_at_utc = $4
             WHERE run_id = $1 AND lease_owner = $2 AND lease_attempt = $3 AND fencing_token = $6
-              AND status = 'in_progress' AND lease_expires_at_utc > $4;
-            """, connection);
+              AND status = 'in_progress' AND lease_expires_at_utc > clock_timestamp();
+            """, connection, transaction);
         _ = command.Parameters.AddWithValue(lease.Identity.RunId);
         _ = command.Parameters.AddWithValue(lease.Owner);
         _ = command.Parameters.AddWithValue(lease.Attempt);
@@ -166,6 +283,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         }
 
         MigrationRunLease renewed = lease with { ExpiresAtUtc = expires };
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         _leases[lease.Identity.RunId] = renewed;
         return renewed;
     }
@@ -300,7 +418,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
             WHERE run_id = $1 AND source_commit_sha = $2 AND schema_plan_sha256 = $3
               AND backup_manifest_sha256 = $4 AND runner_digest_sha256 = $5
               AND target_generation = $6 AND lease_owner = $7 AND lease_attempt = $8
-              AND fencing_token = $12 AND status = 'in_progress' AND lease_expires_at_utc > $11;
+              AND fencing_token = $12 AND status = 'in_progress' AND lease_expires_at_utc > clock_timestamp();
             """, connection, transaction);
         AddIdentityParameters(command, identity);
         _ = command.Parameters.AddWithValue(lease.Owner);
@@ -391,6 +509,12 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         );
         ALTER TABLE {_shadowTable} ADD COLUMN IF NOT EXISTS owner_attempt integer NULL;
         ALTER TABLE {_shadowTable} ADD COLUMN IF NOT EXISTS fencing_token uuid NULL;
+        CREATE TABLE IF NOT EXISTS {_checkpointTable} (
+            run_id uuid NOT NULL REFERENCES {_table}(run_id),
+            source_database text NOT NULL,
+            checkpoint_json text NOT NULL,
+            PRIMARY KEY (run_id, source_database)
+        );
         """;
     }
 
@@ -399,7 +523,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         await using var command = new NpgsqlCommand($"""
             SELECT source_commit_sha, schema_plan_sha256, backup_manifest_sha256,
                    runner_digest_sha256, target_generation, status, receipt_json::text,
-                   lease_attempt, lease_expires_at_utc
+                   lease_attempt, lease_expires_at_utc, lease_owner, fencing_token
             FROM {_table} WHERE run_id = $1 FOR UPDATE;
             """, connection, transaction);
         _ = command.Parameters.AddWithValue(runId);
@@ -414,25 +538,33 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         MigrationExecutionReceipt? receipt = reader.IsDBNull(6) || !string.Equals(status, "completed", StringComparison.Ordinal)
             ? null
             : JsonSerializer.Deserialize<MigrationExecutionReceipt>(reader.GetString(6));
-        return new(identity, status, receipt, reader.GetInt32(7), reader.IsDBNull(8) ? null : reader.GetFieldValue<DateTimeOffset>(8));
+        return new(identity, status, receipt, reader.GetInt32(7), reader.IsDBNull(8) ? null : reader.GetFieldValue<DateTimeOffset>(8),
+            reader.IsDBNull(9) ? null : reader.GetString(9), reader.IsDBNull(10) ? null : reader.GetGuid(10));
     }
 
     private async Task AssertLiveOwnedLeaseAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, MigrationRunLease lease, CancellationToken cancellationToken)
     {
-        await using var command = new NpgsqlCommand($"""
-            SELECT 1 FROM {_table}
-            WHERE run_id = $1 AND lease_owner = $2 AND lease_attempt = $3 AND fencing_token = $5
-              AND status = 'in_progress' AND lease_expires_at_utc > $4 FOR UPDATE;
-            """, connection, transaction);
-        _ = command.Parameters.AddWithValue(lease.Identity.RunId);
-        _ = command.Parameters.AddWithValue(lease.Owner);
-        _ = command.Parameters.AddWithValue(lease.Attempt);
-        _ = command.Parameters.AddWithValue(_timeProvider.GetUtcNow());
-        _ = command.Parameters.AddWithValue(lease.FencingToken);
-        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+        JournalRow row;
+        try
+        {
+            row = await ReadForUpdateAsync(connection, transaction, lease.Identity.RunId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (MigrationExecutionException exception) when (exception.Code == "run_journal_invalid")
         {
             throw LeaseLost();
         }
+        DateTimeOffset now = await ReadServerTimeAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (row.Identity != lease.Identity || row.LeaseOwner != lease.Owner || row.LeaseAttempt != lease.Attempt ||
+            row.FencingToken != lease.FencingToken || row.Status != "in_progress" || row.LeaseExpiresAtUtc is null || row.LeaseExpiresAtUtc <= now)
+        {
+            throw LeaseLost();
+        }
+    }
+
+    private static async Task<DateTimeOffset> ReadServerTimeAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("SELECT clock_timestamp();", connection, transaction);
+        return new DateTimeOffset((DateTime)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!);
     }
 
     private async Task<IReadOnlyList<ShadowDatabase>> ReadPendingShadowsAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid runId, CancellationToken cancellationToken)
@@ -496,5 +628,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         string Status,
         MigrationExecutionReceipt? Receipt,
         int LeaseAttempt,
-        DateTimeOffset? LeaseExpiresAtUtc);
+        DateTimeOffset? LeaseExpiresAtUtc,
+        string? LeaseOwner,
+        Guid? FencingToken);
 }

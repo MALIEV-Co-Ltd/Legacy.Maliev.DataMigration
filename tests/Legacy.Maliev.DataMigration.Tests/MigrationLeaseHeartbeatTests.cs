@@ -29,6 +29,16 @@ public sealed class MigrationLeaseHeartbeatTests
 
     private sealed class HeartbeatJournal : IMigrationRunJournal
     {
+        public Task RecordCheckpointAsync(MigrationRunLease lease, DatabaseMigrationCheckpoint checkpoint, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<IReadOnlyList<DatabaseMigrationCheckpoint>> GetCheckpointsAsync(MigrationRunLease lease, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public int HeartbeatCount { get; private set; }
 
         public Task<MigrationRunLease> HeartbeatAsync(MigrationRunLease lease, CancellationToken cancellationToken)

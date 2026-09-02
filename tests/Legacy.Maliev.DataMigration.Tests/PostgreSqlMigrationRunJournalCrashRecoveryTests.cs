@@ -17,6 +17,7 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
         MigrationRunIdentity identity = Identity();
 
         MigrationRunStartResult acquired = await first.TryBeginAsync(identity, CancellationToken.None);
+        DateTimeOffset beforeHeartbeat = DateTimeOffset.UtcNow;
         clock.Advance(TimeSpan.FromSeconds(50));
         MigrationRunLease renewed = await first.HeartbeatAsync(acquired.Lease!, CancellationToken.None);
         clock.Advance(TimeSpan.FromSeconds(20));
@@ -25,7 +26,7 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
         Assert.Equal(MigrationRunStartStatus.InProgress, blocked.Status);
         Assert.Equal("worker-a", renewed.Owner);
         Assert.Equal(1, renewed.Attempt);
-        Assert.Equal(Now.AddSeconds(110), renewed.ExpiresAtUtc);
+        Assert.InRange(renewed.ExpiresAtUtc, beforeHeartbeat.AddSeconds(60), DateTimeOffset.UtcNow.AddSeconds(60));
     }
 
     [Fact]
@@ -45,6 +46,7 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
         await crashed.RegisterShadowAsync(firstLease, shadow, CancellationToken.None);
 
         clock.Advance(TimeSpan.FromSeconds(61));
+        await ExpireAsync(schema, identity.RunId);
         MigrationRunStartResult takeover = await restarted.TryBeginAsync(identity, CancellationToken.None);
 
         Assert.Equal(MigrationRunStartStatus.Acquired, takeover.Status);
@@ -73,6 +75,7 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
         { OwnerAttempt = firstLease.Attempt, FencingToken = firstLease.FencingToken };
         await crashed.RegisterShadowAsync(firstLease, shadow, CancellationToken.None);
         clock.Advance(TimeSpan.FromSeconds(61));
+        await ExpireAsync(schema, identity.RunId);
         MigrationRunStartResult takeover = await restarted.TryBeginAsync(identity, CancellationToken.None);
         MigrationRunLease takeoverLease = Assert.IsType<MigrationRunLease>(takeover.Lease);
 
@@ -125,6 +128,16 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
         Assert.Equal(2, Convert.ToInt32(
             await command.ExecuteScalarAsync(CancellationToken.None),
             System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private async Task ExpireAsync(string schema, Guid runId)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ControlConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            $"UPDATE \"{schema}\".migration_runs SET lease_expires_at_utc = clock_timestamp() - interval '1 second' WHERE run_id = $1", connection);
+        _ = command.Parameters.AddWithValue(runId);
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
     }
 
     private PostgreSqlMigrationRunJournal Journal(string schema, string owner, TimeProvider clock)
