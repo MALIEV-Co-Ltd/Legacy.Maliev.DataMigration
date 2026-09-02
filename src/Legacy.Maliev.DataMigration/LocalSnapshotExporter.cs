@@ -161,7 +161,7 @@ public static partial class LocalSnapshotExporter
         return Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)).ToLowerInvariant();
     }
 
-    private static FileStreamOptions CreateSecureOptions(FileAccess access, FileOptions options)
+    internal static FileStreamOptions CreateSecureOptions(FileAccess access, FileOptions options)
     {
         var result = new FileStreamOptions
         {

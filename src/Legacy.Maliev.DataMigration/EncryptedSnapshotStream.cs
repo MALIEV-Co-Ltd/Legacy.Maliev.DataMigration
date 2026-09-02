@@ -168,6 +168,15 @@ public static class SnapshotEncryption
         finally { CryptographicOperations.ZeroMemory(encryptionKey); }
     }
 
+    internal static async Task DecryptStagingAsync(Stream encrypted, Stream plaintext, ReadOnlyMemory<byte> rootKey,
+        SnapshotArchiveContext context, CancellationToken cancellationToken)
+    {
+        ValidateArguments(encrypted, plaintext, rootKey, context);
+        byte[] key = SnapshotKeyDerivation.DeriveProvisionalStagingKey(rootKey.Span);
+        try { await DecryptWithKeyAsync(encrypted, plaintext, key, context, cancellationToken).ConfigureAwait(false); }
+        finally { CryptographicOperations.ZeroMemory(key); }
+    }
+
     private static async Task DecryptWithKeyAsync(Stream encrypted, Stream plaintext, byte[] encryptionKey,
         SnapshotArchiveContext context, CancellationToken cancellationToken)
     {
