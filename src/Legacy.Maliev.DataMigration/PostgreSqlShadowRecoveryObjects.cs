@@ -13,7 +13,7 @@ internal static class PostgreSqlShadowRecoveryObjects
             WITH user_namespaces AS (
                 SELECT oid FROM pg_namespace
                 WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-                  AND nspname NOT LIKE 'pg_temp_%' AND nspname NOT LIKE 'pg_toast_temp_%')
+                  AND nspname NOT LIKE 'pg!_temp!_%' ESCAPE '!' AND nspname NOT LIKE 'pg!_toast!_temp!_%' ESCAPE '!')
             SELECT
                 EXISTS (SELECT 1 FROM pg_class c JOIN user_namespaces n ON n.oid=c.relnamespace
                     WHERE c.relkind NOT IN ('r', 'i', 'S') OR c.relrowsecurity OR c.relforcerowsecurity
@@ -52,7 +52,7 @@ internal static class PostgreSqlShadowRecoveryObjects
         const string schemasSql = """
             SELECT nspname FROM pg_namespace
             WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-                AND nspname NOT LIKE 'pg_temp_%' AND nspname NOT LIKE 'pg_toast_temp_%';
+                AND nspname NOT LIKE 'pg!_temp!_%' ESCAPE '!' AND nspname NOT LIKE 'pg!_toast!_temp!_%' ESCAPE '!';
             """;
         await using (var command = new NpgsqlCommand(schemasSql, connection, transaction))
         await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
@@ -70,7 +70,8 @@ internal static class PostgreSqlShadowRecoveryObjects
                 item => (item.Table.TargetSchema, item.Table.TargetTable, item.Identity.Column));
         HashSet<(string, string, string)> observedIdentities = [];
         const string relationsSql = """
-            SELECT c.relkind, owner_ns.nspname, owner_table.relname, a.attname, s.seqstart, s.seqincrement
+            SELECT c.relkind, owner_ns.nspname, owner_table.relname, a.attname, s.seqstart, s.seqincrement,
+                pg_catalog.format_type(s.seqtypid, NULL), s.seqmin, s.seqmax, s.seqcycle, s.seqcache
             FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
             LEFT JOIN pg_sequence s ON s.seqrelid=c.oid
             LEFT JOIN pg_depend d ON d.classid='pg_class'::regclass AND d.objid=c.oid AND d.objsubid=0
@@ -79,7 +80,7 @@ internal static class PostgreSqlShadowRecoveryObjects
             LEFT JOIN pg_namespace owner_ns ON owner_ns.oid=owner_table.relnamespace
             LEFT JOIN pg_attribute a ON a.attrelid=d.refobjid AND a.attnum=d.refobjsubid
             WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-                AND n.nspname NOT LIKE 'pg_temp_%' AND n.nspname NOT LIKE 'pg_toast_temp_%';
+                AND n.nspname NOT LIKE 'pg!_temp!_%' ESCAPE '!' AND n.nspname NOT LIKE 'pg!_toast!_temp!_%' ESCAPE '!';
             """;
         bool hasRelations = false;
         await using (var command = new NpgsqlCommand(relationsSql, connection, transaction))
@@ -92,7 +93,8 @@ internal static class PostgreSqlShadowRecoveryObjects
                 if (reader.IsDBNull(1) || reader.IsDBNull(2) || reader.IsDBNull(3)) { throw InvalidObjects(); }
                 var key = (reader.GetString(1), reader.GetString(2), reader.GetString(3));
                 if (!identities.TryGetValue(key, out var expected) || !observedIdentities.Add(key) ||
-                    reader.GetInt64(4) != expected.Identity.SeedValue || reader.GetInt64(5) != expected.Identity.IncrementValue)
+                    reader.GetInt64(4) != expected.Identity.SeedValue || reader.GetInt64(5) != expected.Identity.IncrementValue ||
+                    !HasSupportedSequenceConfiguration(reader, expected.Table, expected.Identity))
                 {
                     throw InvalidObjects();
                 }
@@ -101,6 +103,24 @@ internal static class PostgreSqlShadowRecoveryObjects
         return !hasRelations && observedSchemas.Any(schema => !string.Equals(schema, "public", StringComparison.Ordinal))
             ? throw InvalidObjects()
             : !hasRelations;
+    }
+
+    private static bool HasSupportedSequenceConfiguration(NpgsqlDataReader reader, TableCopyPlan table, IdentityCopyPlan identity)
+    {
+        string type = table.ColumnTypes[identity.Column];
+        (long minimum, long maximum) = type switch
+        {
+            "smallint" => (short.MinValue, short.MaxValue),
+            "integer" => (int.MinValue, int.MaxValue),
+            "bigint" => (long.MinValue, long.MaxValue),
+            _ => throw InvalidObjects(),
+        };
+        // ApplySchema specifies only START/INCREMENT. Require the same type-dependent
+        // default limits, NO CYCLE and CACHE 1 so the reused last_value inspector is sound.
+        return string.Equals(reader.GetString(6), type, StringComparison.Ordinal) &&
+            reader.GetInt64(7) == (identity.IncrementValue > 0 ? 1 : minimum) &&
+            reader.GetInt64(8) == (identity.IncrementValue > 0 ? maximum : -1) &&
+            !reader.GetBoolean(9) && reader.GetInt64(10) == 1;
     }
 
     private static MigrationExecutionException InvalidObjects()

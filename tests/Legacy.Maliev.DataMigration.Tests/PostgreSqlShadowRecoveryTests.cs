@@ -235,7 +235,76 @@ public sealed class PostgreSqlShadowRecoveryTests(PostgreSqlAdapterFixture fixtu
         { "CREATE FUNCTION sales.extra() RETURNS integer LANGUAGE sql AS 'SELECT 1';", true },
         { "CREATE TYPE sales.extra AS ENUM ('x');", true },
         { "CREATE SCHEMA extra;", true },
+        { "CREATE SCHEMA pgxtempy; CREATE VIEW pgxtempy.extra AS SELECT 1 AS value;", false },
+        { "CREATE SCHEMA pgxtempy; CREATE VIEW pgxtempy.extra AS SELECT 1 AS value;", true },
+        { "CREATE SCHEMA pgxtoastxtempy; CREATE VIEW pgxtoastxtempy.extra AS SELECT 1 AS value;", false },
+        { "CREATE SCHEMA pgxtoastxtempy; CREATE VIEW pgxtoastxtempy.extra AS SELECT 1 AS value;", true },
     };
+
+    [Theory]
+    [InlineData("MAXVALUE 2 CYCLE")]
+    [InlineData("MAXVALUE 2 NO CYCLE")]
+    [InlineData("MINVALUE 0")]
+    [InlineData("CYCLE")]
+    [InlineData("CACHE 2")]
+    public async Task Recovery_RejectsUnsupportedIdentitySequenceConfigurationWithoutMutation(string configuration)
+    {
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
+        ShadowDatabase shadow = await CreateShadowAsync(target);
+        try
+        {
+            await using (IPostgreSqlWholeDatabaseTransaction writer = await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None))
+            {
+                await PopulateAsync(writer, Plan());
+                await writer.CommitAsync(CancellationToken.None);
+            }
+            await ExecuteAsync(shadow, $"ALTER SEQUENCE sales.\"orders_Id_seq\" {configuration};");
+            object? before = await ScalarAsync(shadow, SequenceStateSql);
+            await using IPostgreSqlShadowRecoverySession recovery = await target.BeginReadOnlyRecoveryAsync(shadow, CancellationToken.None);
+            MigrationExecutionException error = await Assert.ThrowsAsync<MigrationExecutionException>(() => recovery.InspectAsync(Plan(), CancellationToken.None));
+            Assert.Equal("shadow_recovery_objects_invalid", error.Code);
+            Assert.Equal(before, await ScalarAsync(shadow, SequenceStateSql));
+        }
+        finally { await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None); }
+    }
+
+    [Theory]
+    [InlineData("smallint", 1, 3L)]
+    [InlineData("integer", 1, 3L)]
+    [InlineData("bigint", 1, 3L)]
+    [InlineData("smallint", -1, -3L)]
+    [InlineData("integer", -1, -3L)]
+    [InlineData("bigint", -1, -3L)]
+    public async Task Recovery_AcceptsGeneratedSequenceDefaultsForEveryIdentityTypeAndDirection(string type, int increment, long expectedNext)
+    {
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
+        ShadowDatabase shadow = await CreateShadowAsync(target);
+        try
+        {
+            DatabaseSchemaPlan draft = Plan();
+            TableCopyPlan table = draft.Tables[0] with
+            {
+                ColumnTypes = new Dictionary<string, string> { ["Id"] = type, ["Name"] = "text" },
+                Identities = [new("Id", increment, increment, 2 * increment, true)],
+            };
+            draft = draft with { Tables = [table] };
+            DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+            await using (IPostgreSqlWholeDatabaseTransaction writer = await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None))
+            {
+                await writer.ApplySchemaAsync(plan, CancellationToken.None);
+                await writer.FinalizeSchemaAsync(plan, CancellationToken.None);
+                _ = await writer.InspectSchemaAsync(plan, CancellationToken.None);
+                _ = await writer.InspectTableAsync(table, CancellationToken.None);
+                await writer.CommitAsync(CancellationToken.None);
+            }
+            object? before = await ScalarAsync(shadow, SequenceStateSql);
+            await using IPostgreSqlShadowRecoverySession recovery = await target.BeginReadOnlyRecoveryAsync(shadow, CancellationToken.None);
+            PostgreSqlShadowRecoveryInspection observed = await recovery.InspectAsync(plan, CancellationToken.None);
+            Assert.Equal(expectedNext, observed.SequenceNextValues["sales.orders.Id"]);
+            Assert.Equal(before, await ScalarAsync(shadow, SequenceStateSql));
+        }
+        finally { await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None); }
+    }
 
     [Theory]
     [MemberData(nameof(UnexpectedObjects))]
@@ -393,6 +462,12 @@ public sealed class PostgreSqlShadowRecoveryTests(PostgreSqlAdapterFixture fixtu
             (SELECT json_build_array(s.last_value, s.is_called) FROM sales."orders_Id_seq" s),
             (SELECT row_to_json(d) FROM pg_database d WHERE datname=current_database()),
             (SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname=current_database()))::text;
+        """;
+
+    private const string SequenceStateSql = """
+        SELECT json_build_array(
+            (SELECT json_build_array(s.last_value, s.is_called) FROM sales."orders_Id_seq" s),
+            (SELECT row_to_json(s) FROM pg_sequence s WHERE seqrelid='sales."orders_Id_seq"'::regclass))::text;
         """;
 
     private const string CatalogSql = """
