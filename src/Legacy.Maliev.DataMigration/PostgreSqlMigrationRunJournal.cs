@@ -231,7 +231,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         int nextAttempt = checked(observed.LeaseAttempt + 1);
         await using (var retry = new NpgsqlCommand($"""
             UPDATE {_table}
-            SET status = 'in_progress', receipt_json = NULL, lease_owner = $2,
+            SET status = 'in_progress', receipt_json = NULL, receipt_signed_json = NULL, lease_owner = $2,
                 lease_attempt = $3, heartbeat_at_utc = $4, lease_expires_at_utc = $5,
                 fencing_token = $6, updated_at_utc = $4
             WHERE run_id = $1 AND status IN ('failed', 'in_progress');
@@ -411,7 +411,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = new NpgsqlCommand($"""
             UPDATE {_table}
-            SET status = $9, receipt_json = $10::jsonb,
+            SET status = $9, receipt_json = $10::jsonb, receipt_signed_json = $10,
                 failure_receipts = CASE WHEN $9 = 'failed'
                     THEN failure_receipts || jsonb_build_array($10::jsonb) ELSE failure_receipts END,
                 lease_expires_at_utc = $11, updated_at_utc = $11
@@ -489,6 +489,9 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
             updated_at_utc timestamp with time zone NOT NULL
         );
         ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS failure_receipts jsonb NOT NULL DEFAULT '[]'::jsonb;
+        -- Historical signatures bind serialized dictionary order; JSONB is not a signed-byte store.
+        -- Keep legacy rows untouched. Only newly written receipts have the exact serialized document.
+        ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS receipt_signed_json text NULL;
         ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS lease_owner text NULL;
         ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS lease_attempt integer NOT NULL DEFAULT 0;
         ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS fencing_token uuid NULL;
@@ -522,7 +525,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
     {
         await using var command = new NpgsqlCommand($"""
             SELECT source_commit_sha, schema_plan_sha256, backup_manifest_sha256,
-                   runner_digest_sha256, target_generation, status, receipt_json::text,
+                   runner_digest_sha256, target_generation, status, COALESCE(receipt_signed_json, receipt_json::text),
                    lease_attempt, lease_expires_at_utc, lease_owner, fencing_token
             FROM {_table} WHERE run_id = $1 FOR UPDATE;
             """, connection, transaction);

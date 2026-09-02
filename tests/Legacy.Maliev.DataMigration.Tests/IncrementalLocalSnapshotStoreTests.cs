@@ -174,7 +174,14 @@ public sealed class IncrementalLocalSnapshotStoreTests : IDisposable
         _verifier.Fail = !returnEarly;
         _verifier.ReturnEarly = returnEarly;
         Task delivery = store.DeliverAndVerifyAsync(_data.Checkpoints[0], default);
-        _ = await Assert.ThrowsAnyAsync<Exception>(() => delivery.WaitAsync(TimeSpan.FromSeconds(10)));
+        if (returnEarly)
+        {
+            _ = await Assert.ThrowsAsync<InvalidDataException>(() => delivery).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        else
+        {
+            _ = await Assert.ThrowsAsync<IOException>(() => delivery).WaitAsync(TimeSpan.FromSeconds(10));
+        }
         Assert.False(Directory.Exists(Path.GetDirectoryName(Archive(_data.Checkpoints[0]))));
     }
 
