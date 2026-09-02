@@ -187,6 +187,8 @@ public sealed record MigrationRunLease(
 public sealed class MigrationExecutionException(string code, string message, Exception? innerException = null) : Exception(message, innerException)
 {
     public string Code { get; } = code;
+
+    public ReconciliationDiagnostic? Reconciliation { get; init; }
 }
 
 public interface IReadOnlySqlServerMigrationSource
@@ -603,10 +605,18 @@ public sealed partial class GuardedShadowMigrationRunner
                     await _source.CompleteDatabaseSnapshotAsync(databasePlan.Database, executionToken)
                         .ConfigureAwait(false);
                 }
-                catch
+                catch (Exception exception)
                 {
-                    await _source.RollbackDatabaseSnapshotAsync(databasePlan.Database, CancellationToken.None)
-                        .ConfigureAwait(false);
+                    try
+                    {
+                        await _source.RollbackDatabaseSnapshotAsync(databasePlan.Database, CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Retain the primary error, without exposing provider messages or connection details.
+                        exception.Data["source_rollback_failed"] = true;
+                    }
                     throw;
                 }
             }
@@ -684,9 +694,10 @@ public sealed partial class GuardedShadowMigrationRunner
         List<DatabaseReconciliationEvidence> evidence,
         CancellationToken cancellationToken)
     {
-        await using IPostgreSqlWholeDatabaseTransaction transaction = await _target
+        IPostgreSqlWholeDatabaseTransaction transaction = await _target
             .BeginWholeDatabaseTransactionAsync(shadow, cancellationToken)
             .ConfigureAwait(false);
+        Exception? primaryFailure = null;
         try
         {
             await transaction.ApplySchemaAsync(databasePlan, cancellationToken).ConfigureAwait(false);
@@ -732,12 +743,7 @@ public sealed partial class GuardedShadowMigrationRunner
 
             string targetSchema = await transaction.InspectSchemaAsync(databasePlan, cancellationToken)
                 .ConfigureAwait(false);
-            if (!string.Equals(targetSchema, databasePlan.TargetSchemaSha256, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new MigrationExecutionException(
-                    "shadow_reconciliation_failed",
-                    $"{databasePlan.Database} failed shadow reconciliation.");
-            }
+            ReconciliationDiagnostics.CompareSchema(databasePlan.Database, databasePlan.TargetSchemaSha256, targetSchema);
 
             List<TableReconciliationEvidence> targetTables = [];
             foreach (TableCopyPlan table in databasePlan.Tables)
@@ -747,12 +753,7 @@ public sealed partial class GuardedShadowMigrationRunner
                     .ConfigureAwait(false);
                 TableReconciliationEvidence sourceEvidence = sourceTables.Single(item =>
                     string.Equals(item.Table, targetEvidence.Table, StringComparison.Ordinal));
-                if (!EvidenceEquals(sourceEvidence, targetEvidence))
-                {
-                    throw new MigrationExecutionException(
-                        "shadow_reconciliation_failed",
-                        $"{databasePlan.Database} failed shadow reconciliation.");
-                }
+                ReconciliationDiagnostics.CompareTable(databasePlan.Database, sourceEvidence, targetEvidence);
 
                 targetTables.Add(targetEvidence);
             }
@@ -760,14 +761,9 @@ public sealed partial class GuardedShadowMigrationRunner
             IReadOnlyDictionary<string, long> targetSequences = await transaction
                 .InspectSequenceNextValuesAsync(databasePlan, cancellationToken)
                 .ConfigureAwait(false);
-            if (!sourceSequences.OrderBy(item => item.Key, StringComparer.Ordinal)
-                .SequenceEqual(targetSequences.OrderBy(item => item.Key, StringComparer.Ordinal)))
-            {
-                throw new MigrationExecutionException(
-                    "shadow_reconciliation_failed",
-                    $"{databasePlan.Database} failed sequence reconciliation.");
-            }
+            ReconciliationDiagnostics.CompareSequences(databasePlan, sourceSequences, targetSequences);
 
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             evidence.Add(new DatabaseReconciliationEvidence(
                 databasePlan.Database,
                 databasePlan.SourceSchemaSha256,
@@ -777,7 +773,6 @@ public sealed partial class GuardedShadowMigrationRunner
                 SequenceNextValues = targetSequences,
             });
 
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return new MigratedShadowDatabase(
                 databasePlan.Database,
                 shadow.Name,
@@ -790,7 +785,16 @@ public sealed partial class GuardedShadowMigrationRunner
         }
         catch (Exception exception)
         {
-            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            primaryFailure = exception;
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Rollback is best effort; run-owned shadow cleanup still executes in the outer handler.
+                exception.Data["shadow_rollback_failed"] = true;
+            }
             if (exception is OperationCanceledException or MigrationExecutionException)
             {
                 throw;
@@ -800,6 +804,18 @@ public sealed partial class GuardedShadowMigrationRunner
                 "shadow_copy_failed",
                 $"{databasePlan.Database} failed inside its whole-database transaction.",
                 exception);
+        }
+        finally
+        {
+            try
+            {
+                await transaction.DisposeAsync().ConfigureAwait(false);
+            }
+            catch when (primaryFailure is not null)
+            {
+                // Disposal can retry a failed provider rollback; it must not replace the failure.
+                primaryFailure.Data["shadow_dispose_failed"] = true;
+            }
         }
     }
 
@@ -908,19 +924,6 @@ public sealed partial class GuardedShadowMigrationRunner
         }
 
         return new ReadOnlyCollection<ShadowCleanupOutcome>(outcomes);
-    }
-
-    private static bool EvidenceEquals(TableReconciliationEvidence source, TableReconciliationEvidence target)
-    {
-        return source.RowCount == target.RowCount &&
-        string.Equals(source.ContentSha256, target.ContentSha256, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(source.AggregateSha256, target.AggregateSha256, StringComparison.OrdinalIgnoreCase) &&
-        source.NullCounts.OrderBy(item => item.Key, StringComparer.Ordinal)
-            .SequenceEqual(target.NullCounts.OrderBy(item => item.Key, StringComparer.Ordinal)) &&
-        source.ForeignKeyOrphanCounts.OrderBy(item => item.Key, StringComparer.Ordinal)
-            .SequenceEqual(target.ForeignKeyOrphanCounts.OrderBy(item => item.Key, StringComparer.Ordinal)) &&
-        source.ForeignKeyRelationshipCounts.OrderBy(item => item.Key, StringComparer.Ordinal)
-            .SequenceEqual(target.ForeignKeyRelationshipCounts.OrderBy(item => item.Key, StringComparer.Ordinal));
     }
 
     private static string HashEvidence(IEnumerable<TableReconciliationEvidence> tables)

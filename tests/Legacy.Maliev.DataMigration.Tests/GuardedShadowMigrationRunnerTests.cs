@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -523,6 +524,153 @@ public sealed class GuardedShadowMigrationRunnerTests
             HashAlgorithmName.SHA256));
     }
 
+    [Theory]
+    [InlineData("schema", null, null)]
+    [InlineData("row-count", "public.Primary", null)]
+    [InlineData("ordered-content", "public.Primary", null)]
+    [InlineData("aggregate", "public.Primary", null)]
+    [InlineData("null-count", "public.Primary", "Value")]
+    [InlineData("orphan", "public.Primary", "FK_Primary_Self")]
+    [InlineData("relationship", "public.Primary", "FK_Primary_Self")]
+    [InlineData("sequence", "public.Primary", "public.Primary.ID")]
+    [InlineData("null-count-missing", "public.Primary", "Value")]
+    [InlineData("orphan-missing", "public.Primary", "FK_Primary_Self")]
+    [InlineData("relationship-missing", "public.Primary", "FK_Primary_Self")]
+    [InlineData("sequence-missing", "public.Primary", "public.Primary.ID")]
+    [InlineData("null-count-extra", "public.Primary", "Unexpected")]
+    [InlineData("orphan-extra", "public.Primary", "Unexpected")]
+    [InlineData("relationship-extra", "public.Primary", "Unexpected")]
+    [InlineData("sequence-extra", null, "Unexpected")]
+    public async Task ExecuteAsync_IndependentReconciliationMismatch_ReportsNonRowEvidence(
+        string corruption, string? table, string? field)
+    {
+        Harness harness = CreateHarness();
+        harness.Target.CorruptDatabase = "Order";
+        harness.Target.Corruption = corruption;
+        harness.Source.ValueFactory = _ => "private-row-value;Password=must-not-appear";
+        FreshSchemaPlan plan = WithOrderRelationshipsAndIdentity();
+
+        MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(plan), CancellationToken.None));
+
+        Assert.Equal("shadow_reconciliation_failed", failure.Code);
+        ReconciliationDiagnostic? diagnostic = failure.Reconciliation;
+        Assert.NotNull(diagnostic);
+        JsonElement details = JsonSerializer.SerializeToElement(diagnostic);
+        Assert.Equal("Order", details.GetProperty("Database").GetString());
+        Assert.Equal(table, details.GetProperty("Table").GetString());
+        Assert.Equal(corruption.Replace("-missing", string.Empty, StringComparison.Ordinal)
+            .Replace("-extra", string.Empty, StringComparison.Ordinal), details.GetProperty("Check").GetString());
+        Assert.Equal(field, details.GetProperty("Field").GetString());
+        Assert.NotEqual(details.GetProperty("Expected").ToString(), details.GetProperty("Observed").ToString());
+        if (corruption.EndsWith("-missing", StringComparison.Ordinal))
+        {
+            Assert.Equal(JsonValueKind.Null, details.GetProperty("Observed").ValueKind);
+        }
+        else if (corruption.EndsWith("-extra", StringComparison.Ordinal))
+        {
+            Assert.Null(diagnostic.Expected);
+            Assert.Equal("0", diagnostic.Observed);
+        }
+        else if (corruption is "schema" or "ordered-content" or "aggregate")
+        {
+            Assert.Matches("^[0-9a-f]{64}$", diagnostic.Expected);
+            Assert.Matches("^[0-9a-f]{64}$", diagnostic.Observed);
+        }
+        else
+        {
+            Assert.Equal(corruption switch { "row-count" or "relationship" => "1", "sequence" => "2", _ => "0" }, diagnostic.Expected);
+            Assert.Equal(corruption switch { "row-count" or "relationship" => "2", "sequence" => "3", _ => "1" }, diagnostic.Observed);
+        }
+        string rendered = details.GetRawText() + failure.Message;
+        Assert.DoesNotContain("private-row-value", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("Password=", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain(Assert.Single(harness.Journal.Failed).Reconciliation, item => item.Database == "Order");
+        Assert.Equal(harness.Target.Created.Select(item => item.Name).Order(), harness.Target.Deleted.Order());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CommitFails_ExcludesUnconfirmedDatabaseFromSignedEvidence()
+    {
+        Harness harness = CreateHarness();
+        harness.Target.FailCommitForDatabase = "Order";
+
+        MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
+
+        Assert.Equal("shadow_copy_failed", failure.Code);
+        MigrationFailureReceipt receipt = Assert.Single(harness.Journal.Failed);
+        Assert.DoesNotContain(receipt.Reconciliation, item => item.Database == "Order");
+        Assert.Equal(harness.Target.Transactions.Count(item => item.Committed), receipt.Reconciliation.Count);
+        Assert.True(ExecutionSigningKey.VerifyData(MigrationEvidenceAttestation.CreatePayload(receipt),
+            Convert.FromBase64String(receipt.AttestationSignature!), HashAlgorithmName.SHA256));
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task ExecuteAsync_RollbackAlsoFails_PreservesPrimaryReconciliationCode(
+        bool sourceRollbackFails, bool targetRollbackFails)
+    {
+        Harness harness = CreateHarness();
+        harness.Target.CorruptDatabase = "Order";
+        harness.Target.Corruption = "schema";
+        harness.Source.FailRollback = sourceRollbackFails;
+        harness.Target.FailRollback = targetRollbackFails;
+
+        MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
+
+        Assert.Equal("shadow_reconciliation_failed", failure.Code);
+        Assert.Equal("Order", failure.Reconciliation?.Database);
+        if (sourceRollbackFails)
+        {
+            Assert.Equal(true, failure.Data["source_rollback_failed"]);
+        }
+        if (targetRollbackFails)
+        {
+            Assert.Equal(true, failure.Data["shadow_rollback_failed"]);
+        }
+        Assert.Equal("shadow_reconciliation_failed", Assert.Single(harness.Journal.Failed).FailureCode);
+        Assert.Equal(harness.Target.Created.Select(item => item.Name).Order(), harness.Target.Deleted.Order());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RollbackAndDisposeFail_PreservesPrimaryReconciliationCode()
+    {
+        Harness harness = CreateHarness();
+        harness.Target.CorruptDatabase = "Order";
+        harness.Target.Corruption = "schema";
+        harness.Target.FailRollback = true;
+        harness.Target.FailDisposeAfterRollback = true;
+
+        MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
+
+        Assert.Equal("shadow_reconciliation_failed", failure.Code);
+        Assert.Equal("Order", failure.Reconciliation?.Database);
+        Assert.Equal(true, failure.Data["shadow_dispose_failed"]);
+    }
+
+    private static FreshSchemaPlan WithOrderRelationshipsAndIdentity()
+    {
+        return MutateDatabasePlan(CreateSchemaPlan(), "Order", item => item with
+        {
+            Tables = [item.Tables[0] with
+            {
+                IdentityColumns = ["ID"],
+                Identities = [new IdentityCopyPlan("ID", 1, 1, 1, true)],
+                ForeignKeys = [new ForeignKeyCopyPlan("FK_Primary_Self", ["ID"], "public", "Primary", ["ID"])
+                {
+                    SourceReferencedSchema = "dbo",
+                    SourceReferencedTable = "Primary",
+                    SourceReferencedColumns = ["ID"],
+                }],
+            }],
+        });
+    }
+
     private static Harness CreateHarness(IRuntimeAttestationVerifier? runtimeAttestationVerifier = null)
     {
         TrustedAttestationKey trustedKey = new(KeyId, SigningKey.ExportSubjectPublicKeyInfo());
@@ -741,6 +889,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         public int RowsPerTable { get; set; } = 1;
         public int RowsYielded { get; private set; }
         public string? InventoryDrift { get; set; }
+        public bool FailRollback { get; set; }
         public Func<string, object?> ValueFactory { get; set; } = database => database;
 
         public Task BeginDatabaseSnapshotAsync(string database, CancellationToken cancellationToken)
@@ -840,7 +989,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         public Task RollbackDatabaseSnapshotAsync(string database, CancellationToken cancellationToken)
         {
             SnapshotsRolledBack.Add(database);
-            return Task.CompletedTask;
+            return FailRollback ? throw new InvalidOperationException("simulated source rollback failure") : Task.CompletedTask;
         }
 
         public void Reset()
@@ -865,6 +1014,9 @@ public sealed class GuardedShadowMigrationRunnerTests
         public string? Corruption { get; set; }
         public bool ReturnMalformedLease { get; set; }
         public bool FailDelete { get; set; }
+        public bool FailRollback { get; set; }
+        public string? FailCommitForDatabase { get; set; }
+        public bool FailDisposeAfterRollback { get; set; }
         public Func<ShadowDatabase, bool>? IsRegistered { get; set; }
         public Action? BeforeDelete { get; set; }
 
@@ -892,7 +1044,10 @@ public sealed class GuardedShadowMigrationRunnerTests
             var transaction = new FakeTransaction(
                 string.Equals(shadow.Database, FailCopyForDatabase, StringComparison.Ordinal),
                 string.Equals(shadow.Database, CancelCopyForDatabase, StringComparison.Ordinal),
-                string.Equals(shadow.Database, CorruptDatabase, StringComparison.Ordinal) ? Corruption : null);
+                string.Equals(shadow.Database, CorruptDatabase, StringComparison.Ordinal) ? Corruption : null,
+                string.Equals(shadow.Database, FailCommitForDatabase, StringComparison.Ordinal),
+                FailRollback,
+                FailDisposeAfterRollback);
             Transactions.Add(transaction);
             return Task.FromResult<IPostgreSqlWholeDatabaseTransaction>(transaction);
         }
@@ -917,7 +1072,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         }
     }
 
-    private sealed class FakeTransaction(bool failCopy, bool cancelCopy, string? corruption)
+    private sealed class FakeTransaction(bool failCopy, bool cancelCopy, string? corruption, bool failCommit, bool failRollback, bool failDisposeAfterRollback)
         : IPostgreSqlWholeDatabaseTransaction
     {
         public bool Committed { get; private set; }
@@ -964,7 +1119,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         public Task<string> InspectSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
         {
             _verified = true;
-            return Task.FromResult(plan.TargetSchemaSha256);
+            return Task.FromResult(corruption == "schema" ? Hash("schema-drift") : plan.TargetSchemaSha256);
         }
 
         public Task<TableReconciliationEvidence> InspectTableAsync(
@@ -995,11 +1150,27 @@ public sealed class GuardedShadowMigrationRunnerTests
             }
 
             TableReconciliationEvidence evidence = collector.Finish();
-            return Task.FromResult(evidence with
+            evidence = evidence with
             {
                 ForeignKeyRelationshipCounts = new Dictionary<string, long>(
                     table.ForeignKeys.ToDictionary(item => item.Name, _ => (long)observed.Count, StringComparer.Ordinal),
                     StringComparer.Ordinal),
+            };
+            return Task.FromResult(corruption switch
+            {
+                "row-count" => evidence with { RowCount = evidence.RowCount + 1 },
+                "ordered-content" => evidence with { ContentSha256 = Hash("ordered-drift") },
+                "aggregate" => evidence with { AggregateSha256 = Hash("aggregate-drift") },
+                "null-count" => evidence with { NullCounts = ChangeCount(evidence.NullCounts, "Value", false) },
+                "null-count-missing" => evidence with { NullCounts = ChangeCount(evidence.NullCounts, "Value", true) },
+                "null-count-extra" => evidence with { NullCounts = AddUnexpectedCount(evidence.NullCounts) },
+                "orphan" => evidence with { ForeignKeyOrphanCounts = ChangeCount(evidence.ForeignKeyOrphanCounts, "FK_Primary_Self", false) },
+                "orphan-missing" => evidence with { ForeignKeyOrphanCounts = ChangeCount(evidence.ForeignKeyOrphanCounts, "FK_Primary_Self", true) },
+                "orphan-extra" => evidence with { ForeignKeyOrphanCounts = AddUnexpectedCount(evidence.ForeignKeyOrphanCounts) },
+                "relationship" => evidence with { ForeignKeyRelationshipCounts = ChangeCount(evidence.ForeignKeyRelationshipCounts, "FK_Primary_Self", false) },
+                "relationship-missing" => evidence with { ForeignKeyRelationshipCounts = ChangeCount(evidence.ForeignKeyRelationshipCounts, "FK_Primary_Self", true) },
+                "relationship-extra" => evidence with { ForeignKeyRelationshipCounts = AddUnexpectedCount(evidence.ForeignKeyRelationshipCounts) },
+                _ => evidence,
             });
         }
 
@@ -1012,12 +1183,18 @@ public sealed class GuardedShadowMigrationRunnerTests
                         $"{table.TargetSchema}.{table.TargetTable}.{identity.Column}",
                         identity.IsCalled ? identity.CurrentValue + identity.IncrementValue : identity.CurrentValue)))
                 .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
-            return Task.FromResult(result);
+            return Task.FromResult(corruption is "sequence" or "sequence-missing"
+                ? ChangeCount(result, "public.Primary.ID", corruption == "sequence-missing")
+                : corruption == "sequence-extra" ? AddUnexpectedCount(result) : result);
         }
 
         public Task CommitAsync(CancellationToken cancellationToken)
         {
             VerifiedBeforeCommit = _verified;
+            if (failCommit)
+            {
+                throw new InvalidOperationException("simulated commit failure");
+            }
             Committed = true;
             return Task.CompletedTask;
         }
@@ -1025,12 +1202,33 @@ public sealed class GuardedShadowMigrationRunnerTests
         public Task RollbackAsync(CancellationToken cancellationToken)
         {
             RolledBack = true;
-            return Task.CompletedTask;
+            return failRollback ? throw new InvalidOperationException("simulated target rollback failure") : Task.CompletedTask;
+        }
+
+        private static Dictionary<string, long> ChangeCount(IReadOnlyDictionary<string, long> values, string key, bool remove)
+        {
+            var result = new Dictionary<string, long>(values, StringComparer.Ordinal);
+            if (remove)
+            {
+                _ = result.Remove(key);
+            }
+            else
+            {
+                result[key] = result.GetValueOrDefault(key) + 1;
+            }
+            return result;
+        }
+
+        private static Dictionary<string, long> AddUnexpectedCount(IReadOnlyDictionary<string, long> values)
+        {
+            return new Dictionary<string, long>(values, StringComparer.Ordinal) { ["Unexpected"] = 0 };
         }
 
         public ValueTask DisposeAsync()
         {
-            return ValueTask.CompletedTask;
+            return RolledBack && failDisposeAfterRollback
+                ? throw new InvalidOperationException("simulated disposal rollback failure")
+                : ValueTask.CompletedTask;
         }
     }
 

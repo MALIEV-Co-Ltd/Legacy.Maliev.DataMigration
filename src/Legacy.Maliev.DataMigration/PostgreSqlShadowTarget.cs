@@ -647,7 +647,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     PostgreSqlTypePolicy.Validate(reader.GetString(4)),
                     reader.GetBoolean(5),
                     reader.GetBoolean(6),
-                    NormalizeExpression(reader.GetString(7)),
+                    reader.GetString(7),
                     NormalizeExpression(reader.GetString(8)),
                     reader.GetString(9)));
             }
@@ -1179,7 +1179,9 @@ internal static class PostgreSqlSchemaFingerprint
                 PostgreSqlTypePolicy.Validate(table.ColumnTypes[column]),
                 table.NullableColumns.Contains(column, StringComparer.Ordinal),
                 table.Identities.Any(identity => string.Equals(identity.Column, column, StringComparison.Ordinal)),
-                table.DefaultExpressions.GetValueOrDefault(column, string.Empty),
+                PostgreSqlDefaultExpressionCanonicalizer.Expected(
+                    table.DefaultExpressions.GetValueOrDefault(column, string.Empty),
+                    PostgreSqlTypePolicy.Validate(table.ColumnTypes[column])),
                 table.GeneratedColumns.SingleOrDefault(item => string.Equals(item.Column, column, StringComparison.Ordinal))?.Expression ?? string.Empty,
                 table.Collations.GetValueOrDefault(column, string.Empty))))];
         List<ConstraintShape> constraints = [.. plan.Tables.SelectMany(table =>
@@ -1269,7 +1271,7 @@ internal static class PostgreSqlSchemaFingerprint
                 Write(writer, column.Type);
                 writer.Write(column.Nullable);
                 writer.Write(column.Identity);
-                Write(writer, NormalizeExpression(column.DefaultExpression));
+                Write(writer, PostgreSqlDefaultExpressionCanonicalizer.Canonicalize(column.DefaultExpression));
                 Write(writer, NormalizeExpression(column.GeneratedExpression));
                 Write(writer, column.Collation);
             }
@@ -1364,7 +1366,7 @@ internal static class SchemaExpressionCanonicalizer
         return normalized;
     }
 
-    private static bool HasSingleEnclosingParenthesisPair(string value)
+    internal static bool HasSingleEnclosingParenthesisPair(string value)
     {
         if (value.Length < 2 || value[0] != '(' || value[^1] != ')')
         {
