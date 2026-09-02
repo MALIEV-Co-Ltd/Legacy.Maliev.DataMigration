@@ -10,7 +10,11 @@ namespace Legacy.Maliev.DataMigration;
 public sealed record PostgreSqlShadowTargetOptions(
     string AdministrativeConnectionString,
     IPostgreSqlShadowDatabaseProvisioner Provisioner,
-    string? ExpectedRuntimeRole = null);
+    string? ExpectedRuntimeRole = null)
+{
+    // Bounds the same-connection session-to-transaction settlement handoff, not COPY/inspection.
+    public TimeSpan SettlementTimeout { get; init; } = TimeSpan.FromSeconds(30);
+}
 
 public interface IPostgreSqlShadowDatabaseProvisioner
 {
@@ -27,6 +31,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
     private readonly string _administrativeConnectionString;
     private readonly IPostgreSqlShadowDatabaseProvisioner _provisioner;
     private readonly string _expectedRuntimeRole;
+    private readonly TimeSpan _settlementTimeout;
 
     public PostgreSqlShadowTarget(PostgreSqlShadowTargetOptions options)
     {
@@ -37,6 +42,11 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         }
 
         ArgumentNullException.ThrowIfNull(options.Provisioner);
+        if (options.SettlementTimeout <= TimeSpan.Zero || options.SettlementTimeout > TimeSpan.FromMinutes(5))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Settlement timeout must be positive and no greater than five minutes.");
+        }
+        _settlementTimeout = options.SettlementTimeout;
 
         var builder = new NpgsqlConnectionStringBuilder(options.AdministrativeConnectionString);
         if (string.IsNullOrWhiteSpace(builder.Database))
@@ -146,12 +156,8 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         ShadowDatabase shadow,
         CancellationToken cancellationToken)
     {
-        _ = await AssertOwnershipAsync(shadow, cancellationToken).ConfigureAwait(false);
-        NpgsqlConnection connection = CreateShadowConnection(shadow.Name);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken).ConfigureAwait(false);
+        (NpgsqlConnection connection, NpgsqlTransaction transaction) =
+            await BeginSettledShadowAsync(shadow, readOnly: false, cancellationToken).ConfigureAwait(false);
         return new PostgreSqlWholeDatabaseTransaction(connection, transaction);
     }
 
@@ -286,6 +292,8 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         {
             Database = database,
             Pooling = false,
+            // The settlement gate must start in autocommit, never an ambient transaction.
+            Enlist = false,
         };
         return new NpgsqlConnection(builder.ConnectionString);
     }

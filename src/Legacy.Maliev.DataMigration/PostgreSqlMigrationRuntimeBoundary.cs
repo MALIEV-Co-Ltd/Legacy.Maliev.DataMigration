@@ -95,6 +95,31 @@ public static partial class PostgreSqlMigrationRuntimeBoundaryValidator
         _ = await ValidateShadowConnectionAsync(connection, expectedRole, cancellationToken).ConfigureAwait(false);
     }
 
+    internal static async Task ValidateOwnedShadowConnectionAsync(
+        NpgsqlConnection connection,
+        string expectedRole,
+        string expectedDatabase,
+        string administrativeDatabase,
+        CancellationToken cancellationToken)
+    {
+        RoleObservation shadow = await ObserveAsync(connection, cancellationToken).ConfigureAwait(false);
+        Require(string.Equals(shadow.Database, expectedDatabase, StringComparison.Ordinal) && ShadowDatabaseName().IsMatch(shadow.Database),
+            "migration_shadow_database_invalid", "Recovery and COPY must use the exact owned shadow database.");
+        Require(string.Equals(shadow.Role, expectedRole, StringComparison.Ordinal),
+            "migration_shadow_role_invalid", "The actual target role does not match the reviewed configuration.");
+        // Unlike the administrative database, the exact-owned target necessarily grants
+        // CREATE to its owner. Keep the administrative/control validators unchanged.
+        Require(!shadow.Superuser && !shadow.CreateRole && !shadow.CreateDatabase && !shadow.Replication && !shadow.BypassRowLevelSecurity &&
+            shadow.CanConnectCurrentDatabase && shadow.CanCreateInCurrentDatabase && !shadow.CanConnectControlDatabase,
+            "migration_shadow_role_overprivileged", "The actual target role does not match the reviewed owner boundary.");
+        Require(!shadow.HasDangerousInheritedRole, "migration_shadow_privileged_membership", "The actual target role inherits a privileged PostgreSQL role.");
+        Require(shadow.PubliclyConnectableDatabases.Count == 0, "migration_database_public_connect_invalid", "PUBLIC can connect inside the migration boundary.");
+        Require(shadow.ConnectableDatabases.All(database =>
+                string.Equals(database.Database, administrativeDatabase, StringComparison.Ordinal) ||
+                (ShadowDatabaseName().IsMatch(database.Database) && string.Equals(database.Owner, expectedRole, StringComparison.Ordinal))),
+            "migration_shadow_database_access_invalid", "The actual target role can connect to an unexpected or non-owned database.");
+    }
+
     private static async Task<RoleObservation> ValidateControlConnectionAsync(
         NpgsqlConnection connection,
         string expectedRole,
