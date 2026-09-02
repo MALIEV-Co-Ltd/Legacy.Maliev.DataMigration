@@ -21,6 +21,33 @@ public sealed class IncrementalLocalSnapshotStoreTests : IDisposable
     private string Staging => Path.Combine(_root, "staging");
     private string Output => Path.Combine(_root, "final");
 
+    [WindowsLocalRunFact]
+    public async Task DeliveryAndReadback_HeldRunAuthority_AllowOnlySafeReservedLock()
+    {
+        using WindowsLocalRunAuthority authority = WindowsLocalRunAuthority.AcquireFresh(Staging);
+        using var store = CreateStore();
+        await store.DeliverAndVerifyAsync(_data.Checkpoints[0], default);
+        _ = Assert.Single(await store.ReadVerifiedCheckpointsAsync(default));
+        authority.ValidateHeld();
+        await File.WriteAllTextAsync(Path.Combine(Staging, ".run.lock.extra"), "unrecognized");
+        _ = await Assert.ThrowsAsync<InvalidDataException>(() => store.ReadVerifiedCheckpointsAsync(default));
+    }
+
+    [WindowsLocalRunTheory]
+    [InlineData("directory")]
+    [InlineData("nonempty")]
+    [InlineData("link")]
+    public async Task Readback_UnsafeReservedRunLock_Rejects(string kind)
+    {
+        using var store = CreateStore();
+        await store.DeliverAndVerifyAsync(_data.Checkpoints[0], default);
+        string path = Path.Combine(Staging, WindowsLocalRunAuthority.RunLockRelativeName);
+        if (kind == "directory") { _ = Directory.CreateDirectory(path); }
+        else if (kind == "link") { _ = File.CreateSymbolicLink(path, Path.Combine(Staging, ".store.lock")); }
+        else { await File.WriteAllTextAsync(path, "not a lock"); }
+        _ = await Assert.ThrowsAsync<UnauthorizedAccessException>(() => store.ReadVerifiedCheckpointsAsync(default));
+    }
+
     [Fact]
     public async Task Deliver_SecondDumpFails_RetryPreservesFirstBytesAndDoesNotRedownload()
     {

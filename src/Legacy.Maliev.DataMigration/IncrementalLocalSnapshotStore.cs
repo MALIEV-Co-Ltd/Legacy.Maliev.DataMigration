@@ -239,6 +239,11 @@ public sealed partial class IncrementalLocalSnapshotStore : IDatabaseCheckpointD
         {
             string name = Path.GetFileName(path);
             if (name == ".store.lock" || PendingName().IsMatch(name)) { continue; }
+            if (name == WindowsLocalRunAuthority.RunLockRelativeName)
+            {
+                WindowsLocalRunAuthority.ValidateReservedEntry(path);
+                continue;
+            }
             if (!DatabaseInventory.ActiveDatabases.Contains(name, StringComparer.Ordinal)) { throw new InvalidDataException("Unknown local artifact entry."); }
             LocalDatabaseArtifact artifact = await ReadArtifactAsync(path, null, token).ConfigureAwait(false);
             if (artifact.Archive.Database != name) { throw new InvalidDataException("Artifact directory does not match its database."); }
