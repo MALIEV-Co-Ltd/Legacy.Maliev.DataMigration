@@ -1,9 +1,31 @@
 using System.Diagnostics;
+using Npgsql;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class LocalPgRestoreProcessTests
 {
+    [Theory]
+    [InlineData(SslMode.Disable, "disable")]
+    [InlineData(SslMode.Allow, "allow")]
+    [InlineData(SslMode.Prefer, "prefer")]
+    [InlineData(SslMode.Require, "require")]
+    [InlineData(SslMode.VerifyCA, "verify-ca")]
+    [InlineData(SslMode.VerifyFull, "verify-full")]
+    public void BuildStartInfo_SslMode_UsesLibpqWireValue(SslMode mode, string expected)
+    {
+        var target = new NpgsqlConnectionStringBuilder
+        {
+            Host = "127.0.0.1",
+            Port = 5432,
+            Username = "local_restore",
+            Database = "local_archive_verify_test",
+            SslMode = mode
+        };
+        ProcessStartInfo start = LocalPostgreSqlArchiveVerifier.BuildStartInfo("pg_restore", target);
+        Assert.Equal(expected, start.Environment["PGSSLMODE"]);
+    }
+
     [Fact]
     public async Task Restore_NonzeroExit_DrainsWithoutDisclosingOutput()
     {

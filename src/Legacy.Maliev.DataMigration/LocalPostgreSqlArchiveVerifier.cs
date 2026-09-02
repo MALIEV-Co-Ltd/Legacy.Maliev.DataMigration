@@ -173,7 +173,16 @@ public sealed class LocalPostgreSqlArchiveVerifier : ILocalDatabaseArchiveVerifi
         start.Environment["PGPORT"] = target.Port.ToString(CultureInfo.InvariantCulture);
         start.Environment["PGUSER"] = target.Username;
         start.Environment["PGPASSWORD"] = target.Password;
-        start.Environment["PGSSLMODE"] = target.SslMode.ToString().ToLowerInvariant();
+        start.Environment["PGSSLMODE"] = target.SslMode switch
+        {
+            SslMode.Disable => "disable",
+            SslMode.Allow => "allow",
+            SslMode.Prefer => "prefer",
+            SslMode.Require => "require",
+            SslMode.VerifyCA => "verify-ca",
+            SslMode.VerifyFull => "verify-full",
+            _ => throw new ArgumentOutOfRangeException(nameof(target), "Unsupported PostgreSQL SSL mode."),
+        };
         return start;
     }
 
