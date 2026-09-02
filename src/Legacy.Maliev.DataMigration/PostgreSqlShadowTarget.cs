@@ -66,58 +66,69 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
     {
         ArgumentNullException.ThrowIfNull(plannedShadow);
         ValidateShadowIdentity(plannedShadow);
-        await using var connection = new NpgsqlConnection(_administrativeConnectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
-            connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
-        await AcquireShadowLockAsync(connection, plannedShadow.Name, cancellationToken).ConfigureAwait(false);
+        var connection = new NpgsqlConnection(_administrativeConnectionString);
+        bool locked = false;
+        Exception? primaryFailure = null;
         try
         {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
+                connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
+            await AcquireShadowLockAsync(connection, plannedShadow.Name, cancellationToken).ConfigureAwait(false);
+            locked = true;
             string quotedName = QuoteIdentifier(plannedShadow.Name);
             string ownerRole = await ObserveCurrentRoleAsync(connection, cancellationToken).ConfigureAwait(false);
-            try
+            await _provisioner.ProvisionWithConnectionsDisabledAsync(plannedShadow, ownerRole, cancellationToken).ConfigureAwait(false);
+            await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
+                connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
+            await using (var revokePublic = new NpgsqlCommand(
+                $"REVOKE CONNECT ON DATABASE {quotedName} FROM PUBLIC;",
+                connection))
             {
-                await _provisioner.ProvisionWithConnectionsDisabledAsync(plannedShadow, ownerRole, cancellationToken).ConfigureAwait(false);
-                await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
-                    connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
-                await using (var revokePublic = new NpgsqlCommand(
-                    $"REVOKE CONNECT ON DATABASE {quotedName} FROM PUBLIC;",
-                    connection))
-                {
-                    _ = await revokePublic.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-
-                string ownership = OwnershipValue(plannedShadow);
-                await using var comment = new NpgsqlCommand(
-                    $"COMMENT ON DATABASE {quotedName} IS {QuoteLiteral(ownership)};",
-                    connection);
-                _ = await comment.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
-                    connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
-                await _provisioner.EnableConnectionsAsync(plannedShadow, cancellationToken).ConfigureAwait(false);
-                await AssertDatabaseBoundaryAsync(connection, plannedShadow.Name, ownerRole, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception primary)
-            {
-                try
-                {
-                    await CleanupProvisioningFailureAsync(connection, plannedShadow).ConfigureAwait(false);
-                }
-                catch (Exception cleanup)
-                {
-                    throw new AggregateException("Shadow provisioning failed and exact cleanup could not be proven.", primary, cleanup);
-                }
-
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primary).Throw();
-                throw;
+                _ = await revokePublic.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            return plannedShadow;
+            string ownership = OwnershipValue(plannedShadow);
+            await using var comment = new NpgsqlCommand(
+                $"COMMENT ON DATABASE {quotedName} IS {QuoteLiteral(ownership)};",
+                connection);
+            _ = await comment.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
+                connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
+            await _provisioner.EnableConnectionsAsync(plannedShadow, cancellationToken).ConfigureAwait(false);
+            await AssertDatabaseBoundaryAsync(connection, plannedShadow.Name, ownerRole, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception primary)
+        {
+            // Preserve even an uncommitted candidate; cleanup requires separate authority.
+            primaryFailure = primary;
         }
         finally
         {
-            await ReleaseShadowLockAsync(connection, plannedShadow.Name).ConfigureAwait(false);
+            try
+            {
+                if (locked)
+                {
+                    try { await ReleaseShadowLockAsync(connection, plannedShadow.Name).ConfigureAwait(false); }
+                    catch (Exception secondary)
+                    {
+                        if (primaryFailure is not null) { primaryFailure.Data["shadow_lock_release_failure"] = secondary.GetType().Name; }
+                        else { primaryFailure = secondary; }
+                    }
+                }
+            }
+            finally
+            {
+                try { await connection.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception secondary)
+                {
+                    if (primaryFailure is not null) { primaryFailure.Data["shadow_connection_dispose_failure"] = secondary.GetType().Name; }
+                    else { primaryFailure = secondary; }
+                }
+            }
         }
+        if (primaryFailure is not null) { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primaryFailure).Throw(); }
+        return plannedShadow;
     }
 
     public Task<ShadowDatabase> CreateUniqueEmptyShadowAsync(
@@ -188,14 +199,6 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         {
             await ReleaseShadowLockAsync(connection, shadow.Name).ConfigureAwait(false);
         }
-    }
-
-    private async Task CleanupProvisioningFailureAsync(NpgsqlConnection connection, ShadowDatabase shadow)
-    {
-        await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
-            connection, _expectedRuntimeRole, CancellationToken.None).ConfigureAwait(false);
-        await _provisioner.DeleteAsync(shadow, CancellationToken.None).ConfigureAwait(false);
-        await AssertDatabaseAbsentAsync(connection, shadow.Name, CancellationToken.None).ConfigureAwait(false);
     }
 
     private static async Task AssertDatabaseAbsentAsync(

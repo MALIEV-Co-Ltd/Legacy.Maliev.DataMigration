@@ -55,7 +55,20 @@ public sealed class LocalPgRestoreProcessTests
         string pidPath = Path.Combine(root, "pid");
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var input = new WaitingInput();
-        ProcessStartInfo start = Start("[System.IO.File]::WriteAllText($env:MALIEV_RESTORE_PID_PATH, [string]$PID); Start-Sleep -Seconds 30");
+        // Keep the writer open long enough to exercise publication readiness. Only
+        // the same-directory move after close may make File.Exists mean readable.
+        ProcessStartInfo start = Start("""
+            $pending = $env:MALIEV_RESTORE_PID_PATH + '.pending';
+            $file = [System.IO.File]::Open($pending, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None);
+            try {
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$PID);
+                $file.Write($bytes, 0, $bytes.Length);
+                $file.Flush();
+                Start-Sleep -Milliseconds 250;
+            } finally { $file.Dispose(); }
+            [System.IO.File]::Move($pending, $env:MALIEV_RESTORE_PID_PATH);
+            Start-Sleep -Seconds 30;
+            """);
         start.Environment["MALIEV_RESTORE_PID_PATH"] = pidPath;
         Task running = LocalPgRestoreProcess.RestoreAsync(start, input, cancellation.Token);
         try

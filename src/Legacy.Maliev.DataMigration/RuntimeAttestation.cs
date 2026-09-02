@@ -512,6 +512,13 @@ public sealed record CloudNativePgTargetObserverOptions(Uri ApiServer, string Se
 
 public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, IDisposable
 {
+    public static CloudNativePgTargetObserver CreateForHost(CloudNativePgTargetObserverOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        HttpMessageHandler handler = HostRuntimeTrust.CreateKubernetesHandler(options.ApiServer, options.ServiceAccountTokenFile, options.ServiceAccountCaFile);
+        return new(new HttpClient(handler) { BaseAddress = options.ApiServer }, options.ServiceAccountTokenFile, Task.Delay) { _protectedHost = true };
+    }
+    private bool _protectedHost;
     private static readonly TimeSpan StableReadDelay = TimeSpan.FromSeconds(2);
     private readonly HttpClient _client;
     private readonly string _tokenFile;
@@ -606,7 +613,8 @@ public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, 
         string cluster,
         CancellationToken cancellationToken)
     {
-        string token = (await File.ReadAllTextAsync(_tokenFile, cancellationToken).ConfigureAwait(false)).Trim();
+        string token = (_protectedHost ? HostRuntimeTrust.ReadText(_tokenFile) :
+            await File.ReadAllTextAsync(_tokenFile, cancellationToken).ConfigureAwait(false)).Trim();
         if (!IsValidBoundToken(token))
         {
             throw new RuntimeAttestationException("runtime_target_token_invalid", "The projected Kubernetes bound token is empty or invalid.");

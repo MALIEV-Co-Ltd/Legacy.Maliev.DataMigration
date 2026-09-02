@@ -1031,7 +1031,7 @@ public sealed class PostgreSqlMigrationRunJournalIntegrationTests(PostgreSqlAdap
     }
 
     [Fact]
-    public async Task CreateShadow_EnableFailure_RemovesDisabledPartialDatabase()
+    public async Task CreateShadow_EnableFailure_PreservesDisabledPartialDatabase()
     {
         var provisioner = new BoundaryObservingProvisioner(fixture.ConnectionString, failEnable: true);
         var target = new PostgreSqlShadowTarget(new(
@@ -1043,10 +1043,10 @@ public sealed class PostgreSqlMigrationRunJournalIntegrationTests(PostgreSqlAdap
         _ = await Assert.ThrowsAsync<InvalidOperationException>(() => target.CreateUniqueEmptyShadowAsync(
             "Order", shadowName, Guid.NewGuid().ToString("D"), CancellationToken.None));
 
-        Assert.True(provisioner.DeleteCalled);
+        Assert.False(provisioner.DeleteCalled);
         await using var connection = new NpgsqlConnection(fixture.ConnectionString);
         await connection.OpenAsync(CancellationToken.None);
-        await using var command = new NpgsqlCommand("SELECT NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1);", connection);
+        await using var command = new NpgsqlCommand("SELECT NOT datallowconn FROM pg_database WHERE datname = $1;", connection);
         _ = command.Parameters.AddWithValue(shadowName);
         Assert.True((bool)(await command.ExecuteScalarAsync(CancellationToken.None))!);
     }
