@@ -13,9 +13,10 @@ public sealed record PostgreSqlMigrationRunJournalOptions(
     TimeSpan? LeaseDuration = null,
     TimeProvider? TimeProvider = null,
     string? ExpectedControlRole = null,
-    DatabaseMigrationCheckpointVerificationOptions? CheckpointVerification = null);
+    DatabaseMigrationCheckpointVerificationOptions? CheckpointVerification = null,
+    RecoveryAuthorityVerificationOptions? RecoveryVerification = null);
 
-public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
+public sealed partial class PostgreSqlMigrationRunJournal : IAdmittedMigrationRunJournal
 {
     public async Task RecordCheckpointAsync(MigrationRunLease lease, DatabaseMigrationCheckpoint checkpoint, CancellationToken cancellationToken)
     {
@@ -51,6 +52,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         {
             throw new MigrationExecutionException("checkpoint_conflict", "A different checkpoint already exists for this immutable run database.");
         }
+        await ValidateAdmittedStateAsync(connection, transaction, lease.Identity.RunId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -96,6 +98,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
                 checkpoints.Add(checkpoint);
             }
         }
+        await ValidateAdmittedStateAsync(connection, transaction, lease.Identity.RunId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return checkpoints;
     }
@@ -128,6 +131,9 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
     private readonly string _table;
     private readonly string _shadowTable;
     private readonly string _checkpointTable;
+    private readonly string _resumeTable;
+    private readonly RecoveryAuthorityVerifier? _recoveryVerifier;
+    private readonly RecoveryAuthorityVerificationOptions? _recoveryOptions;
     private readonly DatabaseMigrationCheckpointVerifier? _checkpointVerifier;
     private readonly MigrationRunIdentity? _checkpointIdentity;
     private readonly string _leaseOwner;
@@ -135,6 +141,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
     private readonly TimeProvider _timeProvider;
     private readonly string _expectedControlRole;
     private readonly ConcurrentDictionary<Guid, MigrationRunLease> _leases = new();
+    private bool _schemaPrepared;
 
     public PostgreSqlMigrationRunJournal(PostgreSqlMigrationRunJournalOptions options)
     {
@@ -163,6 +170,9 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         _table = $"{_schema}.{PostgreSqlShadowTarget.QuoteIdentifier("migration_runs")}";
         _shadowTable = $"{_schema}.{PostgreSqlShadowTarget.QuoteIdentifier("migration_run_shadows")}";
         _checkpointTable = $"{_schema}.{PostgreSqlShadowTarget.QuoteIdentifier("migration_database_checkpoints")}";
+        _resumeTable = $"{_schema}.{PostgreSqlShadowTarget.QuoteIdentifier("migration_resume_authorizations")}";
+        _recoveryOptions = options.RecoveryVerification;
+        _recoveryVerifier = options.RecoveryVerification is null ? null : new(options.RecoveryVerification);
         _checkpointIdentity = options.CheckpointVerification?.Identity;
         _checkpointVerifier = options.CheckpointVerification is null ? null : new(options.CheckpointVerification);
         _leaseOwner = owner;
@@ -205,6 +215,10 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         }
 
         JournalRow observed = await ReadForUpdateAsync(connection, transaction, identity.RunId, cancellationToken).ConfigureAwait(false);
+        if (observed.AdmissionJson is not null)
+        {
+            throw new MigrationExecutionException("resume_authority_required", "Admitted runs require authenticated planning and explicit resume authority.");
+        }
         // Read time after acquiring the row lock; a wait must not retain a stale admission timestamp.
         now = await ReadServerTimeAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         expires = now.Add(_leaseDuration);
@@ -302,6 +316,21 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await AssertLiveOwnedLeaseAsync(connection, transaction, lease, cancellationToken).ConfigureAwait(false);
+        JournalRow registrationRow = await ReadForUpdateAsync(connection, transaction, lease.Identity.RunId, cancellationToken).ConfigureAwait(false);
+        if (registrationRow.AdmissionJson is not null)
+        {
+            RecoveryJournalSnapshot snapshot = await ReadRecoveryStateAsync(connection, transaction, lease.Identity.RunId, cancellationToken).ConfigureAwait(false);
+            ValidateRecoverySnapshot(snapshot);
+            RecoveryShadowState? existing = snapshot.Baseline.Shadows.SingleOrDefault(item => item.Shadow.Name == shadow.Name);
+            if (existing is not null)
+            {
+                if (existing.Shadow != shadow) { throw new MigrationExecutionException("shadow_ownership_invalid", "Admitted shadow ownership is immutable."); }
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            _ = RecoveryVerifier().GetPermittedOperations(snapshot.Admission,
+                snapshot.Baseline with { Shadows = snapshot.Baseline.Shadows.Add(new(shadow, "pending", 0, null)) }, snapshot.ObservedAtUtc);
+        }
         await using var command = new NpgsqlCommand($"""
             INSERT INTO {_shadowTable} (
                 run_id, shadow_name, owner_run_id, source_database, cleanup_status,
@@ -405,10 +434,17 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
             throw LeaseLost();
         }
 
-        DateTimeOffset now = _timeProvider.GetUtcNow();
         await using NpgsqlConnection connection = await OpenValidatedConnectionAsync(cancellationToken).ConfigureAwait(false);
         await EnsureSchemaWithoutTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await AssertLiveOwnedLeaseAsync(connection, transaction, lease, cancellationToken).ConfigureAwait(false);
+        DateTimeOffset now = await ReadServerTimeAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        JournalRow terminalRow = await ReadForUpdateAsync(connection, transaction, identity.RunId, cancellationToken).ConfigureAwait(false);
+        if (status == "completed" && terminalRow.AdmissionJson is not null)
+        {
+            RecoveryJournalSnapshot snapshot = await ReadRecoveryStateAsync(connection, transaction, identity.RunId, cancellationToken).ConfigureAwait(false);
+            ValidateAdmittedCompletion(snapshot, receiptJson);
+        }
         await using var command = new NpgsqlCommand($"""
             UPDATE {_table}
             SET status = $9, receipt_json = $10::jsonb, receipt_signed_json = $10,
@@ -441,8 +477,10 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         await SchemaGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (_schemaPrepared) { return; }
             await using var command = new NpgsqlCommand(BuildSchemaSql(), connection);
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            _schemaPrepared = true;
         }
         finally
         {
@@ -492,6 +530,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         -- Historical signatures bind serialized dictionary order; JSONB is not a signed-byte store.
         -- Keep legacy rows untouched. Only newly written receipts have the exact serialized document.
         ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS receipt_signed_json text NULL;
+        ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS admission_signed_json text NULL;
         ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS lease_owner text NULL;
         ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS lease_attempt integer NOT NULL DEFAULT 0;
         ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS fencing_token uuid NULL;
@@ -518,6 +557,15 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
             checkpoint_json text NOT NULL,
             PRIMARY KEY (run_id, source_database)
         );
+        CREATE TABLE IF NOT EXISTS {_resumeTable} (
+            run_id uuid NOT NULL REFERENCES {_table}(run_id),
+            nonce uuid NOT NULL,
+            authorization_signed_json text NOT NULL,
+            continuity_signed_json text NOT NULL,
+            baseline_sha256 text NOT NULL,
+            consumed_at_utc timestamp with time zone NOT NULL,
+            PRIMARY KEY (run_id, nonce)
+        );
         """;
     }
 
@@ -526,7 +574,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         await using var command = new NpgsqlCommand($"""
             SELECT source_commit_sha, schema_plan_sha256, backup_manifest_sha256,
                    runner_digest_sha256, target_generation, status, COALESCE(receipt_signed_json, receipt_json::text),
-                   lease_attempt, lease_expires_at_utc, lease_owner, fencing_token
+                   lease_attempt, lease_expires_at_utc, lease_owner, fencing_token, admission_signed_json
             FROM {_table} WHERE run_id = $1 FOR UPDATE;
             """, connection, transaction);
         _ = command.Parameters.AddWithValue(runId);
@@ -542,7 +590,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
             ? null
             : JsonSerializer.Deserialize<MigrationExecutionReceipt>(reader.GetString(6));
         return new(identity, status, receipt, reader.GetInt32(7), reader.IsDBNull(8) ? null : reader.GetFieldValue<DateTimeOffset>(8),
-            reader.IsDBNull(9) ? null : reader.GetString(9), reader.IsDBNull(10) ? null : reader.GetGuid(10));
+            reader.IsDBNull(9) ? null : reader.GetString(9), reader.IsDBNull(10) ? null : reader.GetGuid(10), reader.IsDBNull(11) ? null : reader.GetString(11));
     }
 
     private async Task AssertLiveOwnedLeaseAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, MigrationRunLease lease, CancellationToken cancellationToken)
@@ -633,5 +681,6 @@ public sealed partial class PostgreSqlMigrationRunJournal : IMigrationRunJournal
         int LeaseAttempt,
         DateTimeOffset? LeaseExpiresAtUtc,
         string? LeaseOwner,
-        Guid? FencingToken);
+        Guid? FencingToken,
+        string? AdmissionJson);
 }

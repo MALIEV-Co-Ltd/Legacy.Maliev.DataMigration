@@ -7,7 +7,7 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 internal sealed class RecoveryAuthorityTestData : IDisposable
 {
-    internal readonly DateTimeOffset AdmittedAt = DateTimeOffset.Parse("2026-09-02T00:01:00Z", CultureInfo.InvariantCulture);
+    internal DateTimeOffset AdmittedAt = DateTimeOffset.Parse("2026-09-02T00:01:00Z", CultureInfo.InvariantCulture);
     internal readonly P256MigrationEvidenceSigner[] Signers = [.. new[] { "backup", "authorization", "execution", "provenance", "final" }.Select(CreateSigner)];
     internal RecoveryAuthorityVerifier Verifier = null!;
     internal ReceiptAttestationTrustStore Trust = null!;
@@ -24,9 +24,10 @@ internal sealed class RecoveryAuthorityTestData : IDisposable
     internal LocalExecutionBinding Binding = new(1, "windows-host", "ntfs-volume", "C:\\ARTIFACTS\\RUN", "root-id", ".run.lock", "lock-id", 1);
     internal static RecoveryAuthorityRoles Roles => new("backup", "authorization", "execution", "provenance", "final");
 
-    internal static async Task<RecoveryAuthorityTestData> CreateAsync(bool prepare = true, TimeSpan? resumeDelay = null)
+    internal static async Task<RecoveryAuthorityTestData> CreateAsync(bool prepare = true, TimeSpan? resumeDelay = null, DateTimeOffset? admittedAt = null)
     {
         var data = new RecoveryAuthorityTestData();
+        data.AdmittedAt = admittedAt ?? data.AdmittedAt;
         data._resumeDelay = resumeDelay ?? data._resumeDelay;
         using var source = new SourceObservationFixture();
         RestoredSourceObservation measured = await source.ObserveAsync();
@@ -72,10 +73,16 @@ internal sealed class RecoveryAuthorityTestData : IDisposable
         { TargetObservation = target };
         Assert.True(ExecutionAuthorizationAttestation.TryCreatePayload(authorization, out byte[] authorizationBytes));
         authorization = authorization with { AttestationSignature = Convert.ToBase64String(data.Signers[1].Sign(authorizationBytes)) };
-        VerifiedRestoreReceipt restore = source.Receipt with { AttestationKeyId = "provenance", BackupManifestSha256 = manifest, AttestationSignature = null };
+        VerifiedRestoreReceipt restore = source.Receipt with
+        {
+            AttestationKeyId = "provenance",
+            BackupManifestSha256 = manifest,
+            AttestationSignature = null,
+            RestoredAtUtc = data.AdmittedAt.AddSeconds(-30)
+        };
         Assert.True(VerifiedRestoreReceiptAttestation.TryCreatePayload(restore, out byte[] restoreBytes));
         restore = restore with { AttestationSignature = Convert.ToBase64String(data.Signers[3].Sign(restoreBytes)) };
-        measured = measured with { State = measured.State with { VerifiedRestoreSha256 = Hash(restoreBytes), SchemaPlanSha256 = authorization.SchemaPlanSha256! } };
+        measured = measured with { ObservedAtUtc = data.AdmittedAt.AddSeconds(-10), State = measured.State with { VerifiedRestoreSha256 = Hash(restoreBytes), SchemaPlanSha256 = authorization.SchemaPlanSha256! } };
         data.AdmissionPayload = new(MigrationRunIdentity.FromRequest(new(backup, plan, authorization)), DatabaseInventory.InventorySha256,
             " \n" + JsonSerializer.Serialize(backup), JsonSerializer.Serialize(plan), JsonSerializer.Serialize(authorization), JsonSerializer.Serialize(restore),
             Hash(authorizationBytes), Hash(restoreBytes), measured, data.Binding, data.AdmittedAt, RecoveryAuthorityVerifier.ValidationPolicyVersion,
