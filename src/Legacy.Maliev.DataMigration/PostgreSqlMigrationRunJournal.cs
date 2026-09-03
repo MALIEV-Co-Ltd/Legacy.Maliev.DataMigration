@@ -14,7 +14,10 @@ public sealed record PostgreSqlMigrationRunJournalOptions(
     TimeProvider? TimeProvider = null,
     string? ExpectedControlRole = null,
     DatabaseMigrationCheckpointVerificationOptions? CheckpointVerification = null,
-    RecoveryAuthorityVerificationOptions? RecoveryVerification = null);
+    RecoveryAuthorityVerificationOptions? RecoveryVerification = null)
+{
+    public RemotePostgreSqlHostBoundary? HostBoundary { get; init; }
+}
 
 public sealed partial class PostgreSqlMigrationRunJournal : IAdmittedMigrationRunJournal
 {
@@ -127,6 +130,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IAdmittedMigrationRu
     private static readonly TimeSpan DefaultLeaseDuration = TimeSpan.FromMinutes(5);
     private static readonly SemaphoreSlim SchemaGate = new(1, 1);
     private readonly string _connectionString;
+    private readonly RemotePostgreSqlHostBoundary? _hostBoundary;
     private readonly string _schema;
     private readonly string _table;
     private readonly string _shadowTable;
@@ -166,6 +170,7 @@ public sealed partial class PostgreSqlMigrationRunJournal : IAdmittedMigrationRu
         }
 
         _connectionString = options.ConnectionString;
+        _hostBoundary = options.HostBoundary;
         _schema = PostgreSqlShadowTarget.QuoteIdentifier(options.Schema);
         _table = $"{_schema}.{PostgreSqlShadowTarget.QuoteIdentifier("migration_runs")}";
         _shadowTable = $"{_schema}.{PostgreSqlShadowTarget.QuoteIdentifier("migration_run_shadows")}";
@@ -494,13 +499,15 @@ public sealed partial class PostgreSqlMigrationRunJournal : IAdmittedMigrationRu
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            if (_hostBoundary is not null) { await _hostBoundary.VerifyOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false); }
             await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalControlConnectionAsync(
                 connection, _expectedControlRole, cancellationToken).ConfigureAwait(false);
             return connection;
         }
-        catch
+        catch (Exception primary)
         {
-            await connection.DisposeAsync().ConfigureAwait(false);
+            try { await connection.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception secondary) { primary.Data["journal_connection_dispose_failure"] = secondary.GetType().Name; }
             throw;
         }
     }

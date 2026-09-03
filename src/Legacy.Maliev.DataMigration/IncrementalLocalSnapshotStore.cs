@@ -13,22 +13,52 @@ public sealed partial class IncrementalLocalSnapshotStore : IDatabaseCheckpointD
     private readonly string _root, _snapshotId;
     private readonly byte[] _key;
     private readonly DatabaseMigrationCheckpointVerifier _checkpointVerifier;
-    private readonly IPostgreSqlDumpSource _dumpSource;
-    private readonly ILocalDatabaseArchiveVerifier _localVerifier;
+    private readonly IPostgreSqlDumpSource? _dumpSource;
+    private readonly ILocalDatabaseArchiveVerifier? _localVerifier;
     private readonly Func<CancellationToken, Task> _publicationAuthorityGuard;
     private bool _disposed;
+
+    internal static CompletedLocalView OpenCompleted(string root, string snapshotId, ReadOnlyMemory<byte> rootKey,
+        DatabaseMigrationCheckpointVerifier checkpoints, Func<CancellationToken, Task> publicationGuard)
+    {
+        return new(new(root, snapshotId, rootKey, checkpoints, null, null, publicationGuard, true));
+    }
+
+    internal sealed class CompletedLocalView(IncrementalLocalSnapshotStore store) : IDisposable
+    {
+        internal Task<IReadOnlyList<DatabaseMigrationCheckpoint>> ReadVerifiedCheckpointsAsync(CancellationToken token)
+        {
+            return store.ReadVerifiedCheckpointsAsync(token);
+        }
+
+        internal Task<LocalSnapshotManifest> FinalizeAsync(string output, IReadOnlyList<DatabaseMigrationCheckpoint> checkpoints, CancellationToken token)
+        {
+            return store.FinalizeAsync(output, checkpoints, token);
+        }
+
+        public void Dispose()
+        {
+            store.Dispose();
+        }
+    }
 
     public IncrementalLocalSnapshotStore(string root, string snapshotId, ReadOnlyMemory<byte> rootKey,
         DatabaseMigrationCheckpointVerifier checkpointVerifier, IPostgreSqlDumpSource dumpSource,
         ILocalDatabaseArchiveVerifier localVerifier, Func<CancellationToken, Task> publicationAuthorityGuard)
+        : this(root, snapshotId, rootKey, checkpointVerifier, dumpSource, localVerifier, publicationAuthorityGuard, false) { }
+
+    private IncrementalLocalSnapshotStore(string root, string snapshotId, ReadOnlyMemory<byte> rootKey,
+        DatabaseMigrationCheckpointVerifier checkpointVerifier, IPostgreSqlDumpSource? dumpSource,
+        ILocalDatabaseArchiveVerifier? localVerifier, Func<CancellationToken, Task> publicationAuthorityGuard, bool completedOnly)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentException.ThrowIfNullOrWhiteSpace(snapshotId);
         if (!SnapshotIdentity().IsMatch(snapshotId)) { throw new ArgumentException("Invalid snapshot identity.", nameof(snapshotId)); }
         if (rootKey.Length != 32) { throw new ArgumentException("A 256-bit external root key is required.", nameof(rootKey)); }
         _checkpointVerifier = checkpointVerifier ?? throw new ArgumentNullException(nameof(checkpointVerifier));
-        _dumpSource = dumpSource ?? throw new ArgumentNullException(nameof(dumpSource));
-        _localVerifier = localVerifier ?? throw new ArgumentNullException(nameof(localVerifier));
+        _dumpSource = dumpSource;
+        _localVerifier = localVerifier;
+        if (!completedOnly) { ArgumentNullException.ThrowIfNull(dumpSource); ArgumentNullException.ThrowIfNull(localVerifier); }
         _publicationAuthorityGuard = publicationAuthorityGuard ?? throw new ArgumentNullException(nameof(publicationAuthorityGuard));
         _root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
         if (Path.GetDirectoryName(_root) is null) { throw new ArgumentException("A dedicated local artifact directory is required.", nameof(root)); }
@@ -39,6 +69,13 @@ public sealed partial class IncrementalLocalSnapshotStore : IDatabaseCheckpointD
 
     public async Task DeliverAndVerifyAsync(DatabaseMigrationCheckpoint checkpoint, CancellationToken cancellationToken)
     {
+        await DeliverWithProgressAsync(checkpoint, null, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task DeliverWithProgressAsync(DatabaseMigrationCheckpoint checkpoint, Action<bool>? phase,
+        CancellationToken cancellationToken)
+    {
+        if (_dumpSource is null || _localVerifier is null) { throw new InvalidOperationException("Completed-only local storage cannot execute delivery or restore."); }
         // Freeze the exact signed bytes before calling asynchronous or caller-provided code.
         string checkpointJson = Encoding.UTF8.GetString(MigrationEvidenceAttestation.SerializeCheckpoint(checkpoint));
         DatabaseMigrationCheckpoint frozen = ValidateCheckpoint(checkpointJson);
@@ -51,6 +88,7 @@ public sealed partial class IncrementalLocalSnapshotStore : IDatabaseCheckpointD
             await using FileStream archive = OpenArchive(destination);
             await AuthenticateArchiveAsync(archive, existing, cancellationToken).ConfigureAwait(false);
             await VerifyRestoreAsync(archive, existing, cancellationToken).ConfigureAwait(false);
+            phase?.Invoke(true);
             return;
         }
 
@@ -68,6 +106,7 @@ public sealed partial class IncrementalLocalSnapshotStore : IDatabaseCheckpointD
             await FlushDurablyAsync(encrypted, cancellationToken).ConfigureAwait(false);
             return encryptedResult;
         }).ConfigureAwait(false); // No metadata/publication/restore before consumption and native completion succeed.
+        phase?.Invoke(false);
 
         long encryptedLength;
         string encryptedHash;
@@ -99,6 +138,7 @@ public sealed partial class IncrementalLocalSnapshotStore : IDatabaseCheckpointD
         _ = await ReadArtifactAsync(destination, checkpointJson, cancellationToken).ConfigureAwait(false);
         await using FileStream published = OpenArchive(destination);
         await AuthenticateArchiveAsync(published, artifact, cancellationToken).ConfigureAwait(false);
+        phase?.Invoke(true);
     }
 
     internal static async Task<SnapshotEncryptionResult> ConsumeDumpAsync(Stream dump, Func<Stream, Task<SnapshotEncryptionResult>> consume)
@@ -322,7 +362,7 @@ public sealed partial class IncrementalLocalSnapshotStore : IDatabaseCheckpointD
         using var counted = new CountingReader(reader);
         try
         {
-            await _localVerifier.VerifyAsync(counted, ValidateCheckpoint(artifact.CheckpointJson), cancellation.Token).ConfigureAwait(false);
+            await _localVerifier!.VerifyAsync(counted, ValidateCheckpoint(artifact.CheckpointJson), cancellation.Token).ConfigureAwait(false);
             if (counted.Count != artifact.Archive.PlaintextByteLength) { throw new InvalidDataException("Local verifier did not consume the entire authenticated archive."); }
             await producer.ConfigureAwait(false);
         }

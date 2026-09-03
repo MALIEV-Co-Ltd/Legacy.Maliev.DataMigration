@@ -38,7 +38,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowRecoveryTa
         ValidateShadowIdentity(shadow);
         NpgsqlConnection connection = CreateShadowConnection(shadow.Name);
         NpgsqlTransaction transaction = await PostgreSqlShadowTransactionGate.BeginAsync(
-            connection, shadow.Name, readOnly, _settlementTimeout, cancellationToken).ConfigureAwait(false);
+            connection, shadow.Name, readOnly, _settlementTimeout, cancellationToken, _hostBoundary).ConfigureAwait(false);
         try
         {
             // All observations are on the locked actual target, after prior settlement.

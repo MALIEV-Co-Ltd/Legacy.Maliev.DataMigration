@@ -12,7 +12,8 @@ internal static class PostgreSqlShadowTransactionGate
         string shadowName,
         bool readOnly,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RemotePostgreSqlHostBoundary? hostBoundary = null)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
@@ -20,6 +21,7 @@ internal static class PostgreSqlShadowTransactionGate
         try
         {
             await connection.OpenAsync(deadline.Token).ConfigureAwait(false);
+            if (hostBoundary is not null) { await hostBoundary.VerifyOpenConnectionAsync(connection, deadline.Token).ConfigureAwait(false); }
             await ExecuteAsync("SELECT pg_catalog.pg_advisory_lock(pg_catalog.hashtextextended($1, 0));").ConfigureAwait(false);
             // A lock SELECT inside Serializable would fix its snapshot BEFORE waiting.
             // Hold the session gate on this connection before creating the snapshot instead.

@@ -527,7 +527,6 @@ public sealed partial class GuardedShadowMigrationRunner
         heartbeat.Start();
         CancellationToken executionToken = heartbeat.ExecutionToken;
 
-        List<ShadowDatabase> createdShadows = [];
         List<MigratedShadowDatabase> migrated = [];
         List<DatabaseReconciliationEvidence> evidence = [];
         try
@@ -536,14 +535,8 @@ public sealed partial class GuardedShadowMigrationRunner
                 await _journal.GetPendingShadowsAsync(lease, executionToken).ConfigureAwait(false);
             if (pendingShadows.Count > 0)
             {
-                IReadOnlyList<ShadowCleanupOutcome> recoveredCleanup = await DeleteCreatedShadowsAsync(lease, pendingShadows)
-                    .ConfigureAwait(false);
-                if (recoveredCleanup.Any(outcome => !outcome.Deleted))
-                {
-                    throw new MigrationExecutionException(
-                        "shadow_cleanup_failed",
-                        "A stale run-owned shadow could not be removed before retry.");
-                }
+                throw new MigrationExecutionException("resume_authority_required",
+                    "Existing shadows are preserved; recovery requires signed admission and explicit resume authority.");
             }
 
             foreach (DatabaseSchemaPlan databasePlan in request.SchemaPlan.Databases
@@ -582,14 +575,12 @@ public sealed partial class GuardedShadowMigrationRunner
                         FencingToken = lease.FencingToken,
                     };
                     await _journal.RegisterShadowAsync(lease, plannedShadow, executionToken).ConfigureAwait(false);
-                    createdShadows.Add(plannedShadow);
                     ShadowDatabase shadow = await _target
                         .CreateUniqueEmptyShadowAsync(plannedShadow, executionToken)
                         .ConfigureAwait(false);
                     if (shadow != plannedShadow)
                     {
                         await _journal.RegisterShadowAsync(lease, shadow, executionToken).ConfigureAwait(false);
-                        createdShadows.Add(shadow);
                     }
 
                     ValidateShadowLease(shadow, shadowName, databasePlan.Database, request.Authorization.RunId, lease);
@@ -601,6 +592,7 @@ public sealed partial class GuardedShadowMigrationRunner
                     }
 
                     MigratedShadowDatabase result = await CopyWholeDatabaseAsync(
+                        _source, _target,
                         shadow,
                         databasePlan,
                         evidence,
@@ -647,12 +639,11 @@ public sealed partial class GuardedShadowMigrationRunner
         catch (Exception exception)
         {
             lease = heartbeat.CurrentLease;
-            Exception actualException = heartbeat.Failure ?? exception;
-            IReadOnlyList<ShadowCleanupOutcome> cleanup = await DeleteCreatedShadowsAsync(lease, createdShadows)
-                .ConfigureAwait(false);
-            await heartbeat.StopAsync().ConfigureAwait(false);
+            Exception actualException = exception;
+            try { await heartbeat.StopAsync().ConfigureAwait(false); }
+            catch (Exception secondary) { actualException.Data["heartbeat_stop_failure"] = secondary.GetType().Name; }
             lease = heartbeat.CurrentLease;
-            actualException = heartbeat.Failure ?? actualException;
+            if (heartbeat.Failure is { } heartbeatFailure) { actualException.Data["heartbeat_failure"] = heartbeatFailure.GetType().Name; }
             string failureCode = actualException is MigrationExecutionException migrationException
                 ? migrationException.Code
                 : actualException is OperationCanceledException ? "operation_cancelled" : "shadow_execution_failed";
@@ -666,19 +657,11 @@ public sealed partial class GuardedShadowMigrationRunner
                 _timeProvider.GetUtcNow(),
                 failureCode,
                 new ReadOnlyCollection<DatabaseReconciliationEvidence>(evidence),
-                cleanup,
+                [],
                 _evidenceSigner.KeyId,
                 null);
-            await _journal.RecordFailedAsync(lease, SignAndVerify(unsignedFailure), CancellationToken.None)
-                .ConfigureAwait(false);
-
-            if (cleanup.Any(outcome => !outcome.Deleted))
-            {
-                throw new MigrationExecutionException(
-                    "shadow_cleanup_failed",
-                    "One or more run-owned shadow databases could not be removed.",
-                    actualException);
-            }
+            try { await _journal.RecordFailedAsync(lease, SignAndVerify(unsignedFailure), CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception secondary) { actualException.Data["journal_failure_reporting_failure"] = secondary.GetType().Name; }
 
             if (actualException is OperationCanceledException or MigrationExecutionException)
             {
@@ -687,18 +670,21 @@ public sealed partial class GuardedShadowMigrationRunner
 
             throw new MigrationExecutionException(
                 "shadow_execution_failed",
-                "The guarded shadow migration failed and all run-owned shadows were removed.",
+                "The guarded shadow migration failed; remote shadows were preserved.",
                 actualException);
         }
     }
 
-    private async Task<MigratedShadowDatabase> CopyWholeDatabaseAsync(
+    internal static async Task<MigratedShadowDatabase> CopyWholeDatabaseAsync(
+        IReadOnlySqlServerMigrationSource source,
+        IPostgreSqlShadowTarget target,
         ShadowDatabase shadow,
         DatabaseSchemaPlan databasePlan,
         List<DatabaseReconciliationEvidence> evidence,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? committed = null)
     {
-        IPostgreSqlWholeDatabaseTransaction transaction = await _target
+        IPostgreSqlWholeDatabaseTransaction transaction = await target
             .BeginWholeDatabaseTransactionAsync(shadow, cancellationToken)
             .ConfigureAwait(false);
         Exception? primaryFailure = null;
@@ -709,7 +695,7 @@ public sealed partial class GuardedShadowMigrationRunner
             foreach (TableCopyPlan table in databasePlan.Tables)
             {
                 using var collector = new TableEvidenceCollector(table);
-                long count = await CopySourceTableAsync(transaction, databasePlan.Database, table, collector, cancellationToken)
+                long count = await CopySourceTableAsync(source, transaction, databasePlan.Database, table, collector, cancellationToken)
                     .ConfigureAwait(false);
                 if (table.SourceKnownEmpty && count != 0)
                 {
@@ -718,10 +704,10 @@ public sealed partial class GuardedShadowMigrationRunner
                         $"{databasePlan.Database}.{table.SourceTable} was no longer empty at execution time.");
                 }
                 TableReconciliationEvidence sourceEvidence = collector.Finish();
-                IReadOnlyDictionary<string, long> sourceOrphans = await _source
+                IReadOnlyDictionary<string, long> sourceOrphans = await source
                     .InspectForeignKeyOrphansAsync(databasePlan.Database, table, cancellationToken)
                     .ConfigureAwait(false);
-                IReadOnlyDictionary<string, long> sourceRelationships = await _source
+                IReadOnlyDictionary<string, long> sourceRelationships = await source
                     .InspectForeignKeyRelationshipsAsync(databasePlan.Database, table, cancellationToken)
                     .ConfigureAwait(false);
                 sourceEvidence = sourceEvidence with
@@ -739,7 +725,7 @@ public sealed partial class GuardedShadowMigrationRunner
                 sourceTables.Add(sourceEvidence);
             }
 
-            IReadOnlyDictionary<string, long> sourceSequences = await _source
+            IReadOnlyDictionary<string, long> sourceSequences = await source
                 .InspectSequenceNextValuesAsync(databasePlan.Database, databasePlan, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -768,6 +754,7 @@ public sealed partial class GuardedShadowMigrationRunner
             ReconciliationDiagnostics.CompareSequences(databasePlan, sourceSequences, targetSequences);
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            committed?.Invoke();
             evidence.Add(new DatabaseReconciliationEvidence(
                 databasePlan.Database,
                 databasePlan.SourceSchemaSha256,
@@ -796,7 +783,7 @@ public sealed partial class GuardedShadowMigrationRunner
             }
             catch
             {
-                // Rollback is best effort; run-owned shadow cleanup still executes in the outer handler.
+                // Rollback is best effort; the remote candidate is preserved.
                 exception.Data["shadow_rollback_failed"] = true;
             }
             if (exception is OperationCanceledException or MigrationExecutionException)
@@ -890,47 +877,7 @@ public sealed partial class GuardedShadowMigrationRunner
         }
     }
 
-    private async Task<IReadOnlyList<ShadowCleanupOutcome>> DeleteCreatedShadowsAsync(
-        MigrationRunLease lease,
-        IEnumerable<ShadowDatabase> shadows)
-    {
-        List<ShadowCleanupOutcome> outcomes = [];
-        foreach (ShadowDatabase shadow in shadows.Reverse())
-        {
-            try
-            {
-                await _target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None).ConfigureAwait(false);
-                var outcome = new ShadowCleanupOutcome(shadow.Name, true, null)
-                {
-                    OwnerAttempt = shadow.OwnerAttempt,
-                    FencingToken = shadow.FencingToken,
-                };
-                outcomes.Add(outcome);
-                await _journal.RecordShadowCleanupAsync(lease, outcome, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch
-            {
-                var outcome = new ShadowCleanupOutcome(shadow.Name, false, "shadow_delete_failed")
-                {
-                    OwnerAttempt = shadow.OwnerAttempt,
-                    FencingToken = shadow.FencingToken,
-                };
-                outcomes.Add(outcome);
-                try
-                {
-                    await _journal.RecordShadowCleanupAsync(lease, outcome, CancellationToken.None).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // The durable lease may have expired. A later owner will retry the still-pending inventory.
-                }
-            }
-        }
-
-        return new ReadOnlyCollection<ShadowCleanupOutcome>(outcomes);
-    }
-
-    private static string HashEvidence(IEnumerable<TableReconciliationEvidence> tables)
+    internal static string HashEvidence(IEnumerable<TableReconciliationEvidence> tables)
     {
         string canonical = string.Join('\n', tables.OrderBy(item => item.Table, StringComparer.Ordinal)
             .Select(item => $"{item.Table}|{item.RowCount}|{item.ContentSha256}|{item.AggregateSha256}"));
@@ -938,7 +885,8 @@ public sealed partial class GuardedShadowMigrationRunner
             Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
-    private async Task<long> CopySourceTableAsync(
+    private static async Task<long> CopySourceTableAsync(
+        IReadOnlySqlServerMigrationSource source,
         IPostgreSqlWholeDatabaseTransaction transaction,
         string database,
         TableCopyPlan table,
@@ -948,7 +896,7 @@ public sealed partial class GuardedShadowMigrationRunner
         List<MigrationRow> batch = new(GuardedRunnerPolicy.CopyBatchSize);
         long batchBytes = 0;
         long copied = 0;
-        await foreach (MigrationRow row in _source.ReadTableAsync(database, table, cancellationToken)
+        await foreach (MigrationRow row in source.ReadTableAsync(database, table, cancellationToken)
             .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             long rowBytes = MigrationRowSizeEstimator.Estimate(row);
@@ -1005,7 +953,7 @@ public sealed partial class GuardedShadowMigrationRunner
         return copied;
     }
 
-    private static bool SourceInventoryMatches(
+    internal static bool SourceInventoryMatches(
         DatabaseSchemaPlan plan,
         IReadOnlyList<SourceTableInventory> observed)
     {

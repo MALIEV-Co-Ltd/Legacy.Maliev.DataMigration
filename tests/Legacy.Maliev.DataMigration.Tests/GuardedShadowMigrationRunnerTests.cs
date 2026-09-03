@@ -109,7 +109,7 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_TargetCopyFails_RollsBackCurrentTransactionAndDeletesEveryRunOwnedShadow()
+    public async Task ExecuteAsync_TargetCopyFails_RollsBackCurrentTransactionAndPreservesEveryRunOwnedShadow()
     {
         Harness harness = CreateHarness();
         harness.Target.FailCopyForDatabase = DatabaseInventory.ActiveDatabases[1];
@@ -120,15 +120,13 @@ public sealed class GuardedShadowMigrationRunnerTests
         Assert.Equal("shadow_copy_failed", exception.Code);
         Assert.Contains(harness.Target.Transactions, transaction => transaction.RolledBack);
         Assert.Contains(DatabaseInventory.ActiveDatabases[1], harness.Source.SnapshotsRolledBack);
-        Assert.Equal(harness.Target.Created.Select(shadow => shadow.Name).Order(), harness.Target.Deleted.Order());
+        Assert.Empty(harness.Target.Deleted);
         Assert.Empty(harness.Journal.Completed);
-        Assert.Equal(
-            harness.Target.Created.Select(shadow => shadow.Name).Order(),
-            harness.Journal.Cleanup.Select(outcome => outcome.ShadowName).Order());
+        Assert.Empty(harness.Journal.Cleanup);
     }
 
     [Fact]
-    public async Task ExecuteAsync_RecoveredPendingShadow_IsDeletedBeforeNewSourceSnapshotStarts()
+    public async Task ExecuteAsync_RecoveredPendingShadow_RequiresAdmittedRecoveryAndPreservesBeforeSnapshot()
     {
         Harness harness = CreateHarness();
         GuardedMigrationRequest request = CreateRequest();
@@ -140,11 +138,13 @@ public sealed class GuardedShadowMigrationRunnerTests
         harness.Journal.SeedPendingShadow(identity, abandoned);
         harness.Target.BeforeDelete = () => Assert.Empty(harness.Source.SnapshotsStarted);
 
-        MigrationExecutionResult result = await harness.Runner.ExecuteAsync(request, CancellationToken.None);
+        MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            harness.Runner.ExecuteAsync(request, CancellationToken.None));
 
-        Assert.Equal(MigrationExecutionStatus.Completed, result.Status);
-        Assert.Contains(abandoned.Name, harness.Target.Deleted);
-        Assert.Contains(harness.Journal.Cleanup, outcome => outcome.ShadowName == abandoned.Name && outcome.Deleted);
+        Assert.Equal("resume_authority_required", failure.Code);
+        Assert.Empty(harness.Target.Deleted);
+        Assert.Empty(harness.Journal.Cleanup);
+        Assert.Empty(harness.Source.SnapshotsStarted);
     }
 
     [Fact]
@@ -297,7 +297,7 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_ObservedSourceSchemaDoesNotMatchPlan_CleansCreatedShadowsAndFailsClosed()
+    public async Task ExecuteAsync_ObservedSourceSchemaDoesNotMatchPlan_PreservesCreatedShadowsAndFailsClosed()
     {
         Harness harness = CreateHarness();
         harness.Source.SchemaOverrides[DatabaseInventory.ActiveDatabases[1]] = Hash("unexpected-live-schema");
@@ -306,7 +306,7 @@ public sealed class GuardedShadowMigrationRunnerTests
             harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
 
         Assert.Equal("source_schema_drift", exception.Code);
-        Assert.Equal(harness.Target.Created.Select(shadow => shadow.Name).Order(), harness.Target.Deleted.Order());
+        Assert.Empty(harness.Target.Deleted);
         Assert.Empty(harness.Journal.Completed);
     }
 
@@ -324,7 +324,7 @@ public sealed class GuardedShadowMigrationRunnerTests
             harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
 
         Assert.Equal("source_inventory_drift", exception.Code);
-        Assert.Equal(harness.Target.Created.Select(shadow => shadow.Name).Order(), harness.Target.Deleted.Order());
+        Assert.Empty(harness.Target.Deleted);
         Assert.Empty(harness.Journal.Completed);
     }
 
@@ -364,7 +364,7 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_ShadowReportedNonEmpty_DeletesRunOwnedShadowAndStops()
+    public async Task ExecuteAsync_ShadowReportedNonEmpty_PreservesRunOwnedShadowAndStops()
     {
         Harness harness = CreateHarness();
         harness.Target.NonEmptyDatabase = DatabaseInventory.ActiveDatabases[0];
@@ -373,7 +373,7 @@ public sealed class GuardedShadowMigrationRunnerTests
             harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
 
         Assert.Equal("shadow_database_not_empty", exception.Code);
-        Assert.Equal(harness.Target.Created.Select(shadow => shadow.Name), harness.Target.Deleted);
+        Assert.Empty(harness.Target.Deleted);
         Assert.Empty(harness.Target.Transactions);
     }
 
@@ -412,7 +412,7 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_CancelledCopy_RollsBackAndDeletesEveryRunOwnedShadow()
+    public async Task ExecuteAsync_CancelledCopy_RollsBackAndPreservesEveryRunOwnedShadow()
     {
         Harness harness = CreateHarness();
         harness.Target.CancelCopyForDatabase = DatabaseInventory.ActiveDatabases[1];
@@ -421,7 +421,7 @@ public sealed class GuardedShadowMigrationRunnerTests
             harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
 
         Assert.Contains(harness.Target.Transactions, transaction => transaction.RolledBack);
-        Assert.Equal(harness.Target.Created.Select(shadow => shadow.Name).Order(), harness.Target.Deleted.Order());
+        Assert.Empty(harness.Target.Deleted);
         Assert.Empty(harness.Journal.Completed);
     }
 
@@ -429,7 +429,7 @@ public sealed class GuardedShadowMigrationRunnerTests
     [InlineData("drop")]
     [InlineData("duplicate")]
     [InlineData("transform")]
-    public async Task ExecuteAsync_TargetRowsDifferFromSnapshot_RollsBackAndDeletesShadows(string corruption)
+    public async Task ExecuteAsync_TargetRowsDifferFromSnapshot_RollsBackAndPreservesShadows(string corruption)
     {
         Harness harness = CreateHarness();
         harness.Target.CorruptDatabase = DatabaseInventory.ActiveDatabases[0];
@@ -440,7 +440,7 @@ public sealed class GuardedShadowMigrationRunnerTests
 
         Assert.Equal("shadow_reconciliation_failed", exception.Code);
         Assert.True(Assert.Single(harness.Target.Transactions).RolledBack);
-        Assert.Equal(harness.Target.Created.Select(item => item.Name), harness.Target.Deleted);
+        Assert.Empty(harness.Target.Deleted);
         MigrationFailureReceipt failure = Assert.Single(harness.Journal.Failed);
         Assert.False(string.IsNullOrWhiteSpace(failure.AttestationSignature));
     }
@@ -485,11 +485,11 @@ public sealed class GuardedShadowMigrationRunnerTests
 
         Assert.Equal("source_row_exceeds_batch_byte_limit", exception.Code);
         Assert.All(harness.Target.Transactions, transaction => Assert.Equal(0, transaction.MaximumBatchSize));
-        Assert.Equal(harness.Target.Created.Select(shadow => shadow.Name).Order(), harness.Target.Deleted.Order());
+        Assert.Empty(harness.Target.Deleted);
     }
 
     [Fact]
-    public async Task ExecuteAsync_MalformedLease_IsStillDurablyTrackedForCleanup()
+    public async Task ExecuteAsync_MalformedLease_IsPreservedAndFailsClosed()
     {
         Harness harness = CreateHarness();
         harness.Target.ReturnMalformedLease = true;
@@ -498,14 +498,13 @@ public sealed class GuardedShadowMigrationRunnerTests
             harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
 
         Assert.Equal("shadow_ownership_invalid", exception.Code);
-        ShadowDatabase created = Assert.Single(harness.Target.Created);
-        Assert.Contains(created.Name, harness.Target.Deleted);
-        Assert.Contains(Assert.Single(harness.Journal.Failed).Cleanup,
-            outcome => outcome.ShadowName == created.Name && outcome.Deleted);
+        _ = Assert.Single(harness.Target.Created);
+        Assert.Empty(harness.Target.Deleted);
+        Assert.Empty(Assert.Single(harness.Journal.Failed).Cleanup);
     }
 
     [Fact]
-    public async Task ExecuteAsync_CleanupFails_RecordsSignedFailureAndFailsClosed()
+    public async Task ExecuteAsync_DeleteWouldFail_NeverDeletesAndRecordsPrimaryFailure()
     {
         Harness harness = CreateHarness();
         harness.Target.NonEmptyDatabase = DatabaseInventory.ActiveDatabases[0];
@@ -514,10 +513,11 @@ public sealed class GuardedShadowMigrationRunnerTests
         MigrationExecutionException exception = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
             harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None));
 
-        Assert.Equal("shadow_cleanup_failed", exception.Code);
+        Assert.Equal("shadow_database_not_empty", exception.Code);
         MigrationFailureReceipt receipt = Assert.Single(harness.Journal.Failed);
         Assert.Equal("shadow_database_not_empty", receipt.FailureCode);
-        Assert.Contains(receipt.Cleanup, outcome => !outcome.Deleted && outcome.ErrorCode == "shadow_delete_failed");
+        Assert.Empty(receipt.Cleanup);
+        Assert.Empty(harness.Target.Deleted);
         Assert.True(ExecutionSigningKey.VerifyData(
             MigrationEvidenceAttestation.CreatePayload(receipt),
             Convert.FromBase64String(receipt.AttestationSignature!),
@@ -586,7 +586,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         Assert.DoesNotContain("private-row-value", rendered, StringComparison.Ordinal);
         Assert.DoesNotContain("Password=", rendered, StringComparison.Ordinal);
         Assert.DoesNotContain(Assert.Single(harness.Journal.Failed).Reconciliation, item => item.Database == "Order");
-        Assert.Equal(harness.Target.Created.Select(item => item.Name).Order(), harness.Target.Deleted.Order());
+        Assert.Empty(harness.Target.Deleted);
     }
 
     [Fact]
@@ -633,7 +633,7 @@ public sealed class GuardedShadowMigrationRunnerTests
             Assert.Equal(true, failure.Data["shadow_rollback_failed"]);
         }
         Assert.Equal("shadow_reconciliation_failed", Assert.Single(harness.Journal.Failed).FailureCode);
-        Assert.Equal(harness.Target.Created.Select(item => item.Name).Order(), harness.Target.Deleted.Order());
+        Assert.Empty(harness.Target.Deleted);
     }
 
     [Fact]

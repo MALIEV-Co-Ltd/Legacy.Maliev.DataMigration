@@ -14,6 +14,7 @@ public sealed record PostgreSqlShadowTargetOptions(
 {
     // Bounds the same-connection session-to-transaction settlement handoff, not COPY/inspection.
     public TimeSpan SettlementTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public RemotePostgreSqlHostBoundary? HostBoundary { get; init; }
 }
 
 public interface IPostgreSqlShadowDatabaseProvisioner
@@ -29,6 +30,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
 {
     private const string OwnershipPrefix = "legacy-maliev-shadow:";
     private readonly string _administrativeConnectionString;
+    private readonly RemotePostgreSqlHostBoundary? _hostBoundary;
     private readonly IPostgreSqlShadowDatabaseProvisioner _provisioner;
     private readonly string _expectedRuntimeRole;
     private readonly TimeSpan _settlementTimeout;
@@ -55,6 +57,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         }
 
         _administrativeConnectionString = builder.ConnectionString;
+        _hostBoundary = options.HostBoundary;
         _provisioner = options.Provisioner;
         _expectedRuntimeRole = options.ExpectedRuntimeRole ?? builder.Username ??
             throw new ArgumentException("The expected PostgreSQL runtime role is required.", nameof(options));
@@ -72,6 +75,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            if (_hostBoundary is not null) { await _hostBoundary.VerifyOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false); }
             await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
                 connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
             await AcquireShadowLockAsync(connection, plannedShadow.Name, cancellationToken).ConfigureAwait(false);
@@ -150,6 +154,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         _ = await AssertOwnershipAsync(shadow, cancellationToken).ConfigureAwait(false);
         await using NpgsqlConnection connection = CreateShadowConnection(shadow.Name);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        if (_hostBoundary is not null) { await _hostBoundary.VerifyOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false); }
         const string sql = """
             SELECT NOT EXISTS (
                 SELECT 1
@@ -176,6 +181,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
     {
         await using var connection = new NpgsqlConnection(_administrativeConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        if (_hostBoundary is not null) { await _hostBoundary.VerifyOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false); }
         await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
             connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
         await AcquireShadowLockAsync(connection, shadow.Name, cancellationToken).ConfigureAwait(false);
@@ -263,6 +269,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         ValidateShadowIdentity(shadow);
         await using var connection = new NpgsqlConnection(_administrativeConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        if (_hostBoundary is not null) { await _hostBoundary.VerifyOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false); }
         return await AssertOwnershipAsync(connection, shadow, allowMissing, cancellationToken).ConfigureAwait(false);
     }
 
