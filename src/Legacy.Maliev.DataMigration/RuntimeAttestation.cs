@@ -79,7 +79,11 @@ public static class RunnerArtifactManifestMeasurer
                     throw Error("runtime_runner_manifest_invalid", "A published runner artifact is not a regular file.");
                 }
 
-                FileStream stream = SecureLocalFile.OpenRead(path);
+                // Windows retains a read handle to the running entry assembly. Share reads
+                // with that handle, but continue to deny writes and deletion during measurement.
+                FileStream stream = OperatingSystem.IsWindows()
+                    ? SecureLocalFile.OpenReadShared(path)
+                    : SecureLocalFile.OpenRead(path);
                 try
                 {
                     string sha = await SecureLocalFile.ComputeSha256Async(stream, cancellationToken).ConfigureAwait(false);
