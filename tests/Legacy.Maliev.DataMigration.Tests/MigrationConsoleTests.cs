@@ -135,7 +135,7 @@ public sealed class MigrationConsoleTests : IDisposable
     }
 
     [Fact]
-    public async Task RunAsync_ExecuteShadow_MissingRuntimeReferencesFailsClosed()
+    public async Task RunAsync_ExecuteShadow_LegacyConfigurationWithoutRuntimeReferencesCannotBypassAdmission()
     {
         OwnerProtectedDirectory.CreateNew(_root);
         string configPath = Path.Combine(_root, "config.json");
@@ -163,7 +163,7 @@ public sealed class MigrationConsoleTests : IDisposable
             name => name == "LEGACY_DEPLOY_ENABLED" ? "false" : null, CancellationToken.None);
 
         Assert.Equal(65, exitCode);
-        Assert.Equal("shadow_runtime_reference_missing" + Environment.NewLine, error.ToString());
+        Assert.Equal("incremental_configuration_missing" + Environment.NewLine, error.ToString());
         Assert.Equal(string.Empty, output.ToString());
     }
 
@@ -182,12 +182,12 @@ public sealed class MigrationConsoleTests : IDisposable
             CancellationToken.None);
 
         Assert.Equal(65, exitCode);
-        Assert.Equal("shadow_deploy_gate_invalid" + Environment.NewLine, error.ToString());
+        Assert.Equal("incremental_deploy_gate_invalid" + Environment.NewLine, error.ToString());
         Assert.Equal(string.Empty, output.ToString());
     }
 
     [Fact]
-    public async Task RunAsync_ExecuteShadow_SamePostgreSqlRoleBoundaryFailsBeforeReadingArtifacts()
+    public async Task RunAsync_ExecuteShadow_LegacyCredentialsCannotBypassAdmission()
     {
         OwnerProtectedDirectory.CreateNew(_root);
         string configPath = Path.Combine(_root, "config.json");
@@ -227,8 +227,8 @@ public sealed class MigrationConsoleTests : IDisposable
             },
             CancellationToken.None);
 
-        Assert.Equal(70, exitCode);
-        Assert.Equal("migration_postgres_role_boundary_invalid" + Environment.NewLine, error.ToString());
+        Assert.Equal(65, exitCode);
+        Assert.Equal("incremental_configuration_missing" + Environment.NewLine, error.ToString());
         Assert.Equal(string.Empty, output.ToString());
     }
 

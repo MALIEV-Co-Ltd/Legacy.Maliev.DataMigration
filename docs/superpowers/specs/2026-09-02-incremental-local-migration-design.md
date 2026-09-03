@@ -1,6 +1,6 @@
 # Incremental migration with durable local database delivery
 
-Status: owner approved the recovery direction in chat; written specification awaiting review.
+Status: owner-approved recovery design; adapter, admission/journal and coordinator slices reviewed. Protected console integration is implemented for review; exact-23 consumers and final acceptance remain separate gates. No live execution is authorized.
 
 ## Outcome and authorization
 
@@ -15,18 +15,23 @@ deployment, publishing, or deletion of previously verified artifacts. Existing
 approvals for the failed exact-24 execution must not be replayed for this new
 inventory or runner. No background retry is permitted.
 
-## Observed defects
+## Historical defects and current repair evidence
 
 The failed run completed reconciliation for 15 databases and failed while
 reconciling Order. Its journal records automatic deletion of all 16 shadows.
-The Order exception does not distinguish schema mismatch from table evidence
-mismatch. Its exact failing table/check remains unknown; do not label it fixed.
+The original generic Order exception did not distinguish schema from table evidence.
+Disposable reproduction established a deterministic default-expression fingerprint
+mismatch: `Order.Name DEFAULT ('unnamed')` was observed as `'unnamed'::character varying`.
+The reviewed Task 1 repair handles that representation and adds structured diagnostics.
+This defect was sufficient to cause the historical failure; the deleted historical
+target cannot be inspected, and this is not proof that all later real-data checks pass.
 
-`GuardedShadowMigrationRunner.ExecuteAsync` deletes all registered shadows after
-failure and deletes pending shadows before retry. Evidence is held in memory until
-terminal receipt publication. `CopyWholeDatabaseAsync` adds evidence before its
-commit succeeds, so durable checkpoint publication must be moved after confirmed
-commit rather than copying this ordering.
+Before repair, `GuardedShadowMigrationRunner.ExecuteAsync` deleted all registered shadows after
+failure and deleted pending shadows before retry. Evidence was held in memory until
+terminal receipt publication. `CopyWholeDatabaseAsync` added evidence before its
+commit succeeded. Reviewed repairs now retain evidence only after confirmed commit,
+persist signed checkpoints and preserve remote shadows automatically. See the
+[current operator console guide](../../incremental-operator-console.md).
 
 `LocalSnapshotExporter.ExportAsync` requires the full inventory before any export,
 refuses an existing output directory, and recursively deletes its output directory

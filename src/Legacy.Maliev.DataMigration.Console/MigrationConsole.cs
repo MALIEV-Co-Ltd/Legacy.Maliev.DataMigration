@@ -10,12 +10,11 @@ using System.Text.Json.Serialization;
 
 namespace Legacy.Maliev.DataMigration.Console;
 
-public static class MigrationConsole
+public static partial class MigrationConsole
 {
     private const string SigningKeyEnvironmentVariable = "LEGACY_MIGRATION_RECEIPT_SIGNING_KEY_FILE";
     private const string SqlServerConnectionEnvironmentVariable = "LEGACY_MIGRATION_SQLSERVER_CONNECTION";
     private const string PostgreSqlConnectionEnvironmentVariable = "LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION";
-    private const string PostgreSqlControlConnectionEnvironmentVariable = "LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION";
     private const string ExecutionSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_EXECUTION_SIGNING_KEY_FILE";
     private const string FinalEvidenceSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_FINAL_EVIDENCE_SIGNING_KEY_FILE";
     private const string SnapshotKeyEnvironmentVariable = "LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE";
@@ -100,7 +99,8 @@ public static class MigrationConsole
         IExact25BackupRuntimeFactory backupRuntimeFactory,
         IAuthorizationRuntimeAttestationFactory runtimeAttestationFactory,
         IQuotationSnapshotRuntimeFactory quotationSnapshotRuntimeFactory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IIncrementalConsoleRuntime? incrementalRuntime = null)
     {
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentNullException.ThrowIfNull(output);
@@ -122,9 +122,13 @@ public static class MigrationConsole
                     await output.WriteLineAsync($"schema_plan_sha256={planDigest}").ConfigureAwait(false);
                     return 0;
                 case "execute-shadow":
-                    await ExecuteShadowAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
-                    await output.WriteLineAsync("execute_shadow_complete").ConfigureAwait(false);
-                    return 0;
+                case "plan-incremental":
+                case "plan-resume":
+                case "authorize-resume":
+                case "resume-shadow":
+                case "finalize-local":
+                    return await RunIncrementalBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable, output, error,
+                        incrementalRuntime ?? new DefaultIncrementalConsoleRuntime(), cancellationToken).ConfigureAwait(false);
                 case "evidence":
                     await ProduceEvidenceAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("evidence_complete").ConfigureAwait(false);
@@ -386,7 +390,9 @@ public static class MigrationConsole
         }
         SigningRoleTrustBundle signingRoles = await ReadSigningRolesAsync(
             configuration.SigningRoles, cancellationToken).ConfigureAwait(false);
-        BindConfiguredSigningRoles(configuration, signingRoles);
+        if (configuration.Incremental is null) { BindConfiguredSigningRoles(configuration, signingRoles); }
+        else if (authorize.KeyId != signingRoles.Authorization.KeyId)
+        { throw new OperatorAttestationException("signing_role_binding_invalid", "The authorization role must match the trusted role."); }
         string keyPath = getEnvironmentVariable(AuthorizationSigningKeyEnvironmentVariable) ??
             throw new OperatorAttestationException("authorization_signing_key_missing", "The protected authorization signing key is required.");
         BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
@@ -405,8 +411,17 @@ public static class MigrationConsole
             [signingRoles.Backup, signingRoles.Execution, signingRoles.Provenance, signingRoles.FinalEvidence],
             "authorization_signing_key_untrusted", "authorization_key_role_reuse");
         RunnerArtifactManifest runnerManifest = await runtimeAttestationFactory.MeasureRunnerAsync(cancellationToken).ConfigureAwait(false);
-        CloudNativePgTargetObservation targetObservation = await runtimeAttestationFactory.ObserveTargetAsync(
-            LegacyNamespace, LegacyPostgreSqlCluster, cancellationToken).ConfigureAwait(false);
+        CloudNativePgTargetObservation targetObservation;
+        if (configuration.Incremental is not null)
+        {
+            IncrementalRuntimeConfiguration host = configuration.Incremental.Runtime ?? throw Invalid("incremental_runtime_required");
+            targetObservation = await runtimeAttestationFactory.ObserveHostTargetAsync(new(host.KubernetesApiServer, host.KubernetesTokenFile, host.KubernetesCaFile),
+                LegacyNamespace, LegacyPostgreSqlCluster, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            targetObservation = await runtimeAttestationFactory.ObserveTargetAsync(LegacyNamespace, LegacyPostgreSqlCluster, cancellationToken).ConfigureAwait(false);
+        }
         ExecutionAuthorizationReceipt signed = ReviewedExecutionAuthorizationProducer.Produce(
             new(
                 authorize.ExpectedSourceCommitSha,
@@ -875,101 +890,6 @@ public static class MigrationConsole
         }
     }
 
-    private static async Task ExecuteShadowAsync(
-        string configPath,
-        Func<string, string?> getEnvironmentVariable,
-        CancellationToken cancellationToken)
-    {
-        if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new MigrationConsoleException("shadow_deploy_gate_invalid", "Legacy deployment must remain disabled during shadow execution.");
-        }
-        MigrationConsoleConfiguration configuration = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
-            configPath, "shadow_config_unprotected", cancellationToken).ConfigureAwait(false);
-        ExecuteShadowCommandConfiguration execute = configuration.ExecuteShadow ??
-            throw new MigrationConsoleException("shadow_configuration_missing", "Shadow execution configuration is required.");
-        string? sourceConnection = getEnvironmentVariable(SqlServerConnectionEnvironmentVariable);
-        string? targetConnection = getEnvironmentVariable(PostgreSqlConnectionEnvironmentVariable);
-        string? controlConnection = getEnvironmentVariable(PostgreSqlControlConnectionEnvironmentVariable);
-        string? evidenceKeyPath = getEnvironmentVariable(ExecutionSigningKeyEnvironmentVariable);
-        if (string.IsNullOrWhiteSpace(sourceConnection) || string.IsNullOrWhiteSpace(targetConnection) ||
-            string.IsNullOrWhiteSpace(controlConnection) || string.IsNullOrWhiteSpace(evidenceKeyPath))
-        {
-            throw new MigrationConsoleException("shadow_runtime_reference_missing", "Shadow runtime references are required.");
-        }
-
-        _ = await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateAsync(
-            controlConnection,
-            targetConnection,
-            execute.ExpectedControlRole,
-            execute.ExpectedShadowAdminRole,
-            cancellationToken).ConfigureAwait(false);
-
-        SigningRoleTrustBundle signingRoles = await ReadSigningRolesAsync(
-            configuration.SigningRoles, cancellationToken).ConfigureAwait(false);
-        BindConfiguredSigningRoles(configuration, signingRoles);
-        BackupReceipt receipt = await ReadProtectedJsonAsync<BackupReceipt>(
-            execute.ReceiptPath, "shadow_backup_receipt_unprotected", cancellationToken).ConfigureAwait(false);
-        FreshSchemaPlan plan = await ReadProtectedJsonAsync<FreshSchemaPlan>(
-            execute.PlanPath, "shadow_plan_unprotected", cancellationToken).ConfigureAwait(false);
-        ExecutionAuthorizationReceipt authorization = await ReadProtectedJsonAsync<ExecutionAuthorizationReceipt>(
-            execute.AuthorizationPath, "shadow_authorization_unprotected", cancellationToken).ConfigureAwait(false);
-        ReceiptAttestationTrustStore receiptTrust = await ReadTrustStoreAsync(execute.ReceiptTrustedKeys, cancellationToken).ConfigureAwait(false);
-        ReceiptAttestationTrustStore authorizationTrust = await ReadTrustStoreAsync(execute.AuthorizationTrustedKeys, cancellationToken).ConfigureAwait(false);
-        ReceiptAttestationTrustStore executionTrust = await ReadTrustStoreAsync(
-            [configuration.SigningRoles!.Execution], cancellationToken).ConfigureAwait(false);
-        EnsureTrustMatchesRole(receiptTrust, signingRoles.Backup, "shadow_backup_trust_mismatch");
-        EnsureTrustMatchesRole(authorizationTrust, signingRoles.Authorization, "shadow_authorization_trust_mismatch");
-        EnsureTrustMatchesRole(executionTrust, signingRoles.Execution, "shadow_execution_trust_mismatch");
-        string privateKeyPem = await ReadProtectedTextAsync(
-            evidenceKeyPath, "shadow_signing_key_unprotected", cancellationToken).ConfigureAwait(false);
-        using var evidenceSigner = new P256MigrationEvidenceSigner(execute.EvidenceKeyId, privateKeyPem);
-        EnsureSignerMatchesRole(
-            evidenceSigner,
-            signingRoles.Execution,
-            [signingRoles.Backup, signingRoles.Authorization, signingRoles.Provenance, signingRoles.FinalEvidence],
-            "shadow_signing_key_untrusted",
-            "signing_role_key_reuse");
-        RunnerArtifactManifest runnerManifest = await RunnerArtifactManifestMeasurer.MeasureAsync(
-            AppContext.BaseDirectory, cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(receipt.AttestationKeyId, signingRoles.Backup.KeyId, StringComparison.Ordinal) ||
-            !string.Equals(authorization.AttestationKeyId, signingRoles.Authorization.KeyId, StringComparison.Ordinal))
-        {
-            throw new OperatorAttestationException("signing_role_binding_invalid", "Signed input artifacts do not match the reviewed signing-role configuration.");
-        }
-        await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(sourceConnection));
-        using var provisioner = new CloudNativePgShadowDatabaseProvisioner(new(
-            new Uri(KubernetesApiServer, UriKind.Absolute),
-            LegacyNamespace,
-            LegacyPostgreSqlCluster,
-            execute.ExpectedShadowAdminRole,
-            KubernetesServiceAccountTokenFile,
-            KubernetesServiceAccountCaFile,
-            TimeSpan.FromMinutes(5)));
-        using var targetObserver = new CloudNativePgTargetObserver(new(
-            new Uri(KubernetesApiServer, UriKind.Absolute), KubernetesServiceAccountTokenFile, KubernetesServiceAccountCaFile));
-        var runtimeVerifier = new RuntimeAttestationVerifier(
-            AppContext.BaseDirectory, targetObserver, LegacyNamespace, LegacyPostgreSqlCluster);
-        var target = new PostgreSqlShadowTarget(new PostgreSqlShadowTargetOptions(targetConnection, provisioner));
-        var journal = new PostgreSqlMigrationRunJournal(new PostgreSqlMigrationRunJournalOptions(
-            controlConnection,
-            ExpectedControlRole: execute.ExpectedControlRole));
-        var runner = new GuardedShadowMigrationRunner(
-            new PreflightService(new DisabledExternalCommandExecutor(), receiptTrust),
-            authorizationTrust,
-            executionTrust,
-            source,
-            target,
-            journal,
-            evidenceSigner,
-            TimeProvider.System,
-            new GuardedRunnerPolicy(plan.SourceCommitSha, runnerManifest.ManifestSha256),
-            runtimeVerifier);
-        MigrationExecutionResult result = await runner.ExecuteAsync(
-            new GuardedMigrationRequest(receipt, plan, authorization),
-            cancellationToken).ConfigureAwait(false);
-        await WriteNewJsonAsync(execute.OutputPath, result, cancellationToken).ConfigureAwait(false);
-    }
 
     private static async Task<ReceiptAttestationTrustStore> ReadTrustStoreAsync(
         IReadOnlyList<TrustedKeyReference> references,
@@ -1311,7 +1231,12 @@ public static class MigrationConsole
         return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task WriteNewJsonAsync<T>(string path, T value, CancellationToken cancellationToken)
+    private static Task WriteNewJsonAsync<T>(string path, T value, CancellationToken cancellationToken)
+    {
+        return WriteNewContentAsync(path, stream => JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken), cancellationToken);
+    }
+
+    private static async Task WriteNewContentAsync(string path, Func<FileStream, Task> write, CancellationToken cancellationToken)
     {
         string fullPath = Path.GetFullPath(path);
         string directory = Path.GetDirectoryName(fullPath)!;
@@ -1330,7 +1255,7 @@ public static class MigrationConsole
                 64 * 1024,
                 FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
-                await JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken).ConfigureAwait(false);
+                await write(stream).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }
@@ -1388,7 +1313,8 @@ public static class MigrationConsole
         SignProvenanceCommandConfiguration? SignProvenance = null,
         QuotationSchemaBaselineCommandConfiguration? QuotationSchemaBaseline = null,
         QuotationPostgreSqlSnapshotCommandConfiguration? QuotationPostgreSqlSnapshot = null,
-        SigningRolesCommandConfiguration? SigningRoles = null);
+        SigningRolesCommandConfiguration? SigningRoles = null,
+        IncrementalCommandConfiguration? Incremental = null);
 
     private sealed record QuotationSchemaBaselineCommandConfiguration(
         string PlanPath,
@@ -1580,6 +1506,13 @@ internal interface IExact25BackupRuntimeFactory
 
 internal interface IAuthorizationRuntimeAttestationFactory
 {
+    async Task<CloudNativePgTargetObservation> ObserveHostTargetAsync(CloudNativePgTargetObserverOptions options,
+        string namespaceName, string cluster, CancellationToken cancellationToken)
+    {
+        using CloudNativePgTargetObserver observer = CloudNativePgTargetObserver.CreateForHost(options);
+        return await observer.ObserveAsync(namespaceName, cluster, cancellationToken).ConfigureAwait(false);
+    }
+
     Task<RunnerArtifactManifest> MeasureRunnerAsync(CancellationToken cancellationToken);
 
     Task<CloudNativePgTargetObservation> ObserveTargetAsync(

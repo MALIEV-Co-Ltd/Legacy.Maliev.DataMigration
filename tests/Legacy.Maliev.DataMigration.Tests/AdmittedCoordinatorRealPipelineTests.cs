@@ -1,5 +1,7 @@
 using Microsoft.Data.SqlClient;
 using Testcontainers.MsSql;
+using System.Text.Json;
+using Legacy.Maliev.DataMigration.Console;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -15,6 +17,7 @@ public sealed class AdmittedRealPipelineFactAttribute : FactAttribute
 [Collection(LocalSnapshotIoTestGroup.Name)]
 public sealed class AdmittedCoordinatorRealPipelineTests
 {
+    private static readonly JsonSerializerOptions ConsoleJson = new(JsonSerializerDefaults.Web);
     [AdmittedRealPipelineFact]
     public async Task RealSqlPgNative_LaterFailureAndNewCoordinator_RevalidatesAndPreservesWithoutRecopyOrRedump()
     {
@@ -104,6 +107,54 @@ public sealed class AdmittedCoordinatorRealPipelineTests
             Assert.Contains(harness.Progress, value => value.Database == first && value.LocalVerified == 1 && value.Downloaded == 0);
             Assert.Equal(2, harness.Progress[^1].RemoteCommitted); Assert.Equal(2, harness.Progress[^1].LocalVerified);
             Assert.Equal(1, harness.Progress[^1].Downloaded);
+
+            // Complete the entire real source/target/native pipeline, then retry final assembly through
+            // the real console without any remote configuration, native paths or execution signer.
+            var (finalContinuity, finalAuthorization) = harness.ResumeAuthority(after.Baseline);
+            starts.Clear();
+            IncrementalMigrationResult completed = await Coordinator(string.Empty).ResumeAsync(finalContinuity, finalAuthorization, default);
+            Assert.Equal(DatabaseInventory.ActiveDatabases.Count, completed.Receipt.Databases.Count);
+            Assert.Equal(DatabaseInventory.ActiveDatabases.Count - 2, completed.Progress.Downloaded);
+            RecoveryJournalSnapshot terminal = await Journal().ReadRecoverySnapshotAsync(harness.Data.AdmissionPayload.Identity, default);
+            Assert.Equal("completed", terminal.Baseline.Status);
+            string saved = Path.Combine(harness.Root, "completed.json"), keyPath = Path.Combine(harness.Root, "root.key"), configPath = Path.Combine(harness.Root, "console.json");
+            await File.WriteAllTextAsync(saved, JsonSerializer.Serialize(CompletedSnapshotDocument.FromSnapshot(terminal), ConsoleJson));
+            await File.WriteAllTextAsync(keyPath, Convert.ToBase64String(harness.RootKey.Span));
+            var roles = new Dictionary<string, object>();
+            string[] names = ["backup", "authorization", "execution", "provenance", "finalEvidence"];
+            for (int index = 0; index < names.Length; index++)
+            {
+                string publicPath = Path.Combine(harness.Root, names[index] + ".public");
+                await File.WriteAllTextAsync(publicPath, Convert.ToBase64String(harness.Data.Signers[index].ExportSubjectPublicKeyInfo()));
+                roles.Add(names[index], new { keyId = harness.Data.Signers[index].KeyId, subjectPublicKeyInfoPath = publicPath });
+            }
+            string resultPath = Path.Combine(harness.Root, "console-result.json");
+            await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+            {
+                signingRoles = roles,
+                incremental = new IncrementalCommandConfiguration(harness.Staging, harness.Output, "coordinator-real", resultPath,
+                    plan.SourceCommitSha, harness.Data.AdmissionPayload.Identity.RunnerDigestSha256, CompletedSnapshotPath: saved)
+            }, ConsoleJson));
+            for (int replay = 0; replay < 2; replay++)
+            {
+                using var error = new StringWriter();
+                using var output = new StringWriter();
+                int exit = await MigrationConsole.RunAsync(["finalize-local", "--config", configPath], output, error, variable => variable switch
+                {
+                    "LEGACY_DEPLOY_ENABLED" => "false",
+                    "LEGACY_MIGRATION_SNAPSHOT_ENCRYPTION_KEY_FILE" => keyPath,
+                    _ => throw new InvalidOperationException("Completed-local must not request remote credentials or execution signer"),
+                }, CancellationToken.None);
+                Assert.True(exit == 0, error.ToString());
+                Assert.Contains("\"downloaded\":0", output.ToString());
+            }
+            MigrationExecutionResult wire = JsonSerializer.Deserialize<MigrationExecutionResult>(await File.ReadAllTextAsync(resultPath), ConsoleJson)!;
+            Assert.Equal(MigrationExecutionStatus.Completed, wire.Status);
+            Assert.Equal(terminal.Baseline.TerminalReceiptSignedJson, JsonSerializer.Serialize(wire.Receipt));
+            Assert.Equal(archive, await File.ReadAllBytesAsync(harness.Archive(first)));
+            Assert.Equal(metadata, await File.ReadAllBytesAsync(Path.Combine(harness.Staging, first, "artifact.json")));
+            Assert.Equal(timestamp, File.GetLastWriteTimeUtc(harness.Archive(first)));
+            Assert.Equal(1, target.Copied[first]); Assert.Equal(1, dump.Counts[first]);
         }
         finally { await local.DisposeAsync(); await postgres.DisposeAsync(); }
     }

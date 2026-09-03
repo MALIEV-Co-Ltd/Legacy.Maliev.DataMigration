@@ -7,8 +7,14 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 internal sealed class RecoveryAuthorityTestData : IDisposable
 {
+    private static readonly string[] KeyIds = ["backup", "authorization", "execution", "provenance", "final"];
     internal DateTimeOffset AdmittedAt = DateTimeOffset.Parse("2026-09-02T00:01:00Z", CultureInfo.InvariantCulture);
-    internal readonly P256MigrationEvidenceSigner[] Signers = [.. new[] { "backup", "authorization", "execution", "provenance", "final" }.Select(CreateSigner)];
+    internal readonly string[] PrivateKeyPems = [.. Enumerable.Range(0, 5).Select(_ => CreatePrivateKey())];
+    internal readonly P256MigrationEvidenceSigner[] Signers;
+    private RecoveryAuthorityTestData()
+    {
+        Signers = [.. KeyIds.Select((id, index) => new P256MigrationEvidenceSigner(id, PrivateKeyPems[index]))];
+    }
     internal RecoveryAuthorityVerifier Verifier = null!;
     internal ReceiptAttestationTrustStore Trust = null!;
     internal InitialMigrationAdmissionPayload AdmissionPayload = null!;
@@ -132,10 +138,10 @@ internal sealed class RecoveryAuthorityTestData : IDisposable
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 
-    private static P256MigrationEvidenceSigner CreateSigner(string id)
+    private static string CreatePrivateKey()
     {
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        return new(id, key.ExportPkcs8PrivateKeyPem());
+        return key.ExportPkcs8PrivateKeyPem();
     }
     public void Dispose() { foreach (P256MigrationEvidenceSigner signer in Signers) { signer.Dispose(); } }
 }

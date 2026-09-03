@@ -82,6 +82,13 @@ public sealed class RecoveryAuthorityVerifier
         return signed;
     }
 
+    /// <summary>Pure pre-lock original-input validation. Does not observe runtime, sign, create local state or grant execution authority.</summary>
+    public void ValidateOriginalInputs(string backupJson, string planJson, string authorizationJson, string restoreJson, DateTimeOffset nowUtc)
+    {
+        ValidateTrust();
+        _ = ValidateOriginalDocuments(backupJson, planJson, authorizationJson, restoreJson, nowUtc);
+    }
+
     private void ValidateAdmissionPayload(InitialMigrationAdmissionPayload value, DateTimeOffset nowUtc)
     {
         Require(Utc(nowUtc) && Utc(value.AdmittedAtUtc) && value.AdmittedAtUtc <= nowUtc &&
@@ -89,30 +96,15 @@ public sealed class RecoveryAuthorityVerifier
             "Admission time, validation policy, freshness limit or acceptance statement is invalid.");
         ValidateIdentity(value.Identity);
         Require(value.InventorySha256 == DatabaseInventory.InventorySha256, "Admission must bind the exact approved inventory.");
-        BackupReceipt backup = Parse<BackupReceipt>(value.OriginalBackupReceiptJson);
-        FreshSchemaPlan plan = Parse<FreshSchemaPlan>(value.OriginalSchemaPlanJson);
-        ExecutionAuthorizationReceipt authorization = Parse<ExecutionAuthorizationReceipt>(value.OriginalAuthorizationJson);
-        VerifiedRestoreReceipt restore = Parse<VerifiedRestoreReceipt>(value.OriginalVerifiedRestoreReceiptJson);
-        Require(backup.AttestationKeyId == _roles.BackupKeyId && authorization.AttestationKeyId == _roles.AuthorizationKeyId && restore.AttestationKeyId == _roles.ProvenanceKeyId,
-            "The retained original documents do not use their configured signing roles.");
-        try { VerifiedBackupRestorer.ValidateReceipt(backup, _trust, value.AdmittedAtUtc, GuardedRunnerPolicy.MaximumBackupReceiptAge); }
-        catch (Exact25FullBackupException exception) { throw Invalid("Original backup freshness or attestation failed at admission time.", exception); }
-        Require(Utc(plan.CapturedAtUtc) && SchemaPlanCanonicalizer.Validate(plan, _runnerPolicy, value.AdmittedAtUtc, GuardedRunnerPolicy.MaximumSchemaPlanAge).Count == 0,
-            "The original plan did not pass the unchanged fresh-plan gates at admission.");
-        Require(authorization.SchemaVersion == "2.1" && Utc(authorization.IssuedAtUtc) && Utc(authorization.ExpiresAtUtc) &&
-            ExecutionAuthorizationValidator.Validate(authorization, plan, backup, _runnerPolicy, value.AdmittedAtUtc, _trust).Count == 0,
-            "The original authorization did not pass the unchanged approval gates at admission.");
+        (BackupReceipt backup, FreshSchemaPlan plan, ExecutionAuthorizationReceipt authorization, VerifiedRestoreReceipt restore) =
+            ValidateOriginalDocuments(value.OriginalBackupReceiptJson, value.OriginalSchemaPlanJson, value.OriginalAuthorizationJson,
+                value.OriginalVerifiedRestoreReceiptJson, value.AdmittedAtUtc);
         Require(value.Identity == MigrationRunIdentity.FromRequest(new(backup, plan, authorization)), "Admission identity does not match all original inputs.");
         Require(ExecutionAuthorizationAttestation.TryCreatePayload(authorization, out byte[] authorizationBytes) &&
             value.OriginalAuthorizationSha256 == Hash(authorizationBytes), "Original authorization digest is mismatched.");
-        Require(VerifiedRestoreReceiptAttestation.Verify(restore, _trust) && restore.CleanupDisposition == RestoreCleanupDisposition.Pending &&
-            restore.BackupManifestSha256 == backup.ManifestSha256 && restore.DatabaseInventorySha256 == value.InventorySha256 &&
-            Utc(restore.RestoredAtUtc) && restore.RestoredAtUtc >= backup.CapturedAtUtc && restore.RestoredAtUtc <= value.SourceObservation.ObservedAtUtc,
-            "The original verified restore is not bound to the admitted backup and source.");
+        Require(restore.RestoredAtUtc <= value.SourceObservation.ObservedAtUtc, "The restore postdates the admitted source observation.");
         Require(VerifiedRestoreReceiptAttestation.TryCreatePayload(restore, out byte[] restoreBytes) && value.VerifiedRestoreSha256 == Hash(restoreBytes),
             "Verified restore payload digest is mismatched.");
-        Require(restore.Artifacts.All(item => backup.Artifacts!.Any(original => original!.Database == item.Database && original.ByteLength == item.RetainedByteLength &&
-            string.Equals(original.Sha256, item.RetainedSha256, StringComparison.OrdinalIgnoreCase))), "Restore artifacts differ from the signed backup artifacts.");
         ValidateLocalBinding(value.LocalBinding);
         ValidateSource(value.SourceObservation, value, value.AdmittedAtUtc);
         VerifiedRestoreResourceEvidence resources = restore.Resources;
@@ -122,6 +114,32 @@ public sealed class RecoveryAuthorityVerifier
                 mount.Name == resources.VolumeName && mount.Volume.Name == resources.VolumeId && mount.Volume.RunBinding == resources.RunBinding &&
                 mount.Volume.VolumeBinding == resources.VolumeBinding && mount.Volume.Fingerprint == resources.VolumeFingerprint),
             "The admission observation differs from the signed restore resource binding.");
+    }
+
+    private (BackupReceipt, FreshSchemaPlan, ExecutionAuthorizationReceipt, VerifiedRestoreReceipt) ValidateOriginalDocuments(
+        string backupJson, string planJson, string authorizationJson, string restoreJson, DateTimeOffset nowUtc)
+    {
+        Require(Utc(nowUtc), "Original-input validation requires a current UTC clock.");
+        BackupReceipt backup = Parse<BackupReceipt>(backupJson);
+        FreshSchemaPlan plan = Parse<FreshSchemaPlan>(planJson);
+        ExecutionAuthorizationReceipt authorization = Parse<ExecutionAuthorizationReceipt>(authorizationJson);
+        VerifiedRestoreReceipt restore = Parse<VerifiedRestoreReceipt>(restoreJson);
+        Require(backup.AttestationKeyId == _roles.BackupKeyId && authorization.AttestationKeyId == _roles.AuthorizationKeyId && restore.AttestationKeyId == _roles.ProvenanceKeyId,
+            "The retained original documents do not use their configured signing roles.");
+        try { VerifiedBackupRestorer.ValidateReceipt(backup, _trust, nowUtc, GuardedRunnerPolicy.MaximumBackupReceiptAge); }
+        catch (Exact25FullBackupException exception) { throw Invalid("Original backup freshness or attestation failed at admission time.", exception); }
+        Require(Utc(plan.CapturedAtUtc) && SchemaPlanCanonicalizer.Validate(plan, _runnerPolicy, nowUtc, GuardedRunnerPolicy.MaximumSchemaPlanAge).Count == 0,
+            "The original plan did not pass the unchanged fresh-plan gates at admission.");
+        Require(authorization.SchemaVersion == "2.1" && Utc(authorization.IssuedAtUtc) && Utc(authorization.ExpiresAtUtc) &&
+            ExecutionAuthorizationValidator.Validate(authorization, plan, backup, _runnerPolicy, nowUtc, _trust).Count == 0,
+            "The original authorization did not pass the unchanged approval gates at admission.");
+        Require(VerifiedRestoreReceiptAttestation.Verify(restore, _trust) && restore.CleanupDisposition == RestoreCleanupDisposition.Pending &&
+            restore.BackupManifestSha256 == backup.ManifestSha256 && restore.DatabaseInventorySha256 == DatabaseInventory.InventorySha256 &&
+            Utc(restore.RestoredAtUtc) && restore.RestoredAtUtc >= backup.CapturedAtUtc && restore.RestoredAtUtc <= nowUtc,
+            "The original verified restore is not bound to the admitted backup and source.");
+        Require(restore.Artifacts.All(item => backup.Artifacts!.Any(original => original!.Database == item.Database && original.ByteLength == item.RetainedByteLength &&
+            string.Equals(original.Sha256, item.RetainedSha256, StringComparison.OrdinalIgnoreCase))), "Restore artifacts differ from the signed backup artifacts.");
+        return (backup, plan, authorization, restore);
     }
 
     public void ValidateContinuity(InitialMigrationAdmission admission, SourceContinuityAttestation continuity, RestoredSourceObservation independentlyObservedSource, DateTimeOffset nowUtc)

@@ -9,7 +9,8 @@ namespace Legacy.Maliev.DataMigration.Tests;
 internal sealed class AdmittedCoordinatorTestHarness : IDisposable
 {
     internal readonly string Root = Path.Combine(Path.GetTempPath(), "admitted-coordinator-" + Guid.NewGuid().ToString("N"));
-    internal string Staging => Path.Combine(Root, "staging");
+    internal string Staging => StagingOverride ?? Path.Combine(Root, "staging");
+    internal string? StagingOverride { get; set; }
     internal string Output => OutputOverride ?? Path.Combine(Root, "final");
     internal string? OutputOverride { get; set; }
     internal RecoveryAuthorityTestData Data = null!;
@@ -49,7 +50,7 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
         return value;
     }
 
-    internal AdmittedSequentialMigrationCoordinator Coordinator()
+    internal AdmittedSequentialMigrationCoordinator Coordinator(Action<IncrementalMigrationProgress>? progress = null)
     {
         var runtime = new AdmittedCoordinatorRuntime(Source, Target, Target, RunJournal, Dump, Local,
             _ => { ReadinessCalls++; return FailReadiness ? Task.FromException(new IOException("readiness failure")) : Task.CompletedTask; },
@@ -64,7 +65,7 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
             (shadow, _) => FailSettlement ? Task.FromException<CloudNativePgShadowSettlement>(new IOException("unsettled")) : Task.FromResult(new CloudNativePgShadowSettlement(shadow, "uid", "1", 1, true)),
             () => Cleanup());
         return new(Data.Admission, new(new(Plan.SourceCommitSha, Data.AdmissionPayload.Identity.RunnerDigestSha256), RecoveryAuthorityTestData.Roles, Data.Trust),
-            Data.Signers[2], runtime, "coordinator-test", _key, Output, Progress.Add);
+            Data.Signers[2], runtime, "coordinator-test", _key, Output, value => { Progress.Add(value); progress?.Invoke(value); });
     }
 
     internal (SourceContinuityAttestation, ResumeAuthorizationReceipt) ResumeAuthority(RecoveryJournalBaseline? baseline = null)

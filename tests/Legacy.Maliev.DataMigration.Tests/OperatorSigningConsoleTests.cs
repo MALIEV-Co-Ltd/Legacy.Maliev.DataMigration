@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Legacy.Maliev.DataMigration.Console;
 
 namespace Legacy.Maliev.DataMigration.Tests;
@@ -20,6 +21,27 @@ public sealed class OperatorSigningConsoleTests : IDisposable
     {
         _root = Path.Combine(Path.GetTempPath(), $"legacy-operator-signing-{Guid.NewGuid():N}");
         OwnerProtectedDirectory.CreateNew(_root);
+    }
+
+    [Fact]
+    public async Task AuthorizeShadow_ProtectedHostConfigurationDoesNotRequireUnrelatedExecutionOrEvidenceCommands()
+    {
+        SigningFixture fixture = await CreateAuthorizationFixtureAsync(allow: true);
+        JsonObject config = JsonNode.Parse(await File.ReadAllTextAsync(fixture.ConfigPath))!.AsObject();
+        _ = config.Remove("executeShadow"); _ = config.Remove("signProvenance"); _ = config.Remove("evidence");
+        config["incremental"] = JsonSerializer.SerializeToNode(new IncrementalCommandConfiguration(_root, _root, "s", _root, SourceCommit, Hash("runner"),
+            Runtime: new("source", "control", "shadow", "local", "restore", "control", "shadow", "dump", "restore", "container", "image", "system",
+                new Uri("https://kube.example.test"), "protected-token", "protected-ca")), JsonOptions);
+        await File.WriteAllTextAsync(fixture.ConfigPath, config.ToJsonString());
+        using var error = new StringWriter();
+        var runtime = new StubRuntimeAttestationFactory();
+        int exit = await MigrationConsole.RunAuthorizationForTestsAsync(["authorize-shadow", "--config", fixture.ConfigPath], TextWriter.Null, error,
+            name => name switch { "LEGACY_DEPLOY_ENABLED" => "false", "LEGACY_MIGRATION_AUTHORIZATION_SIGNING_KEY_FILE" => fixture.AuthorizationKeyPath, _ => null }, runtime, CancellationToken.None);
+        Assert.True(exit == 0, error.ToString());
+        Assert.True(runtime.HostObserved);
+        ExecutionAuthorizationReceipt receipt = JsonSerializer.Deserialize<ExecutionAuthorizationReceipt>(await File.ReadAllTextAsync(fixture.OutputPath), JsonOptions)!;
+        Assert.Equal("uid-a", receipt.TargetObservation!.Uid);
+        Assert.Equal(Hash("runner"), receipt.RunnerDigestSha256);
     }
 
     [Fact]
@@ -643,6 +665,16 @@ public sealed class OperatorSigningConsoleTests : IDisposable
 
     private sealed class StubRuntimeAttestationFactory : IAuthorizationRuntimeAttestationFactory
     {
+        internal bool HostObserved;
+        public Task<CloudNativePgTargetObservation> ObserveHostTargetAsync(CloudNativePgTargetObserverOptions options,
+            string namespaceName, string cluster, CancellationToken cancellationToken)
+        {
+            Assert.Equal("https://kube.example.test/", options.ApiServer.AbsoluteUri);
+            Assert.Equal("protected-token", options.ServiceAccountTokenFile);
+            Assert.Equal("protected-ca", options.ServiceAccountCaFile);
+            HostObserved = true;
+            return ObserveTargetAsync(namespaceName, cluster, cancellationToken);
+        }
         public Task<RunnerArtifactManifest> MeasureRunnerAsync(CancellationToken cancellationToken)
         {
             return Task.FromResult(new RunnerArtifactManifest(Hash("runner"), [new("runner.dll", 1, Hash("runner-file"))]));
