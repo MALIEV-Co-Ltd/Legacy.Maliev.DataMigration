@@ -8,7 +8,7 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class RestoredSourceObserverTests
 {
     [Fact]
-    public async Task Observe_All48FilesTwice_ChecksEveryPathInBothPassesWithBoundedProcesses()
+    public async Task Observe_All46FilesTwice_ChecksEveryPathInBothPassesWithBoundedProcesses()
     {
         using var fixture = new SourceObservationFixture();
         fixture.Sql = fixture.Sql with
@@ -20,7 +20,7 @@ public sealed class RestoredSourceObserverTests
         RestoredSourceObservation second = await fixture.ObserveAsync();
         string[] paths = fixture.Sql.Files.Select(file => file.PhysicalName).ToArray();
         IReadOnlyList<string>[] commands = fixture.Docker.Commands.Where(command => command.Contains("exec") && command.Any(paths.Contains)).ToArray();
-        Assert.Equal(48, paths.Length);
+        Assert.Equal(46, paths.Length);
         foreach (string path in paths)
         {
             Assert.Equal(4, commands.Count(command => command.Contains("readlink") && command.Contains(path)));

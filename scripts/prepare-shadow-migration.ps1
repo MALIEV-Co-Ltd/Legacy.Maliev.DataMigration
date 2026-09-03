@@ -16,7 +16,7 @@ $repository = Join-Path $PSScriptRoot '..'
 $project = Join-Path $repository 'src\Legacy.Maliev.DataMigration.Console\Legacy.Maliev.DataMigration.Console.csproj'
 
 & dotnet run --project $project --configuration $Configuration --no-build -- backup-full --config $config
-if ($LASTEXITCODE -ne 0) { throw 'Exact-24 full backup preparation failed.' }
+if ($LASTEXITCODE -ne 0) { throw 'Exact-23 full backup preparation failed.' }
 
 & (Join-Path $PSScriptRoot 'restore-verified-sqlserver-backups.ps1') `
     -ProtectedConfigPath $config -RepositoryRoot $repository -Configuration $Configuration

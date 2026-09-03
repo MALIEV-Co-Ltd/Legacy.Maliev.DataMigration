@@ -21,7 +21,7 @@ public static class DatabaseInventory
                 ["Hangfire"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.Excluded),
                 ["Invoice"] = Migrate("Legacy.Maliev.AccountingService"),
                 ["JobOffers"] = Migrate("Legacy.Maliev.CareerService"),
-                ["Log"] = Migrate("Legacy.Maliev.CompatibilityContracts"),
+                ["Log"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.Excluded),
                 ["MachineLearning"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.Excluded),
                 ["MachineLearningData"] = new("Legacy.Maliev.CompatibilityContracts", DatabaseDisposition.Excluded),
                 ["Material"] = Migrate("Legacy.Maliev.CatalogService"),

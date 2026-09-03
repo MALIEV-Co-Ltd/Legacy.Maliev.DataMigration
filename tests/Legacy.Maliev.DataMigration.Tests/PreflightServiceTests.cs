@@ -11,13 +11,22 @@ public sealed class PreflightServiceTests
     private const string ProducerKeyId = "backup-producer-1";
 
     [Fact]
-    public void Inventory_ApprovedContract_PreservesEverySelectedProductionDatabase()
+    public void Inventory_ApprovedContract_PreservesTheExactTwentyThreeActiveDatabases()
     {
         Assert.Equal(27, DatabaseInventory.Entries.Count);
-        Assert.Equal(24, DatabaseInventory.ActiveDatabases.Count);
+        string[] expected =
+        [
+            "ContactRequest", "Country", "Currency", "Customer", "CustomerIdentity", "DataProtectionKeys",
+            "DataProtectionKeysEmployee", "Employee", "EmployeeIdentity", "Invoice", "JobOffers", "LocationData",
+            "Material", "Message", "Order", "OrderStatus", "Payment", "PurchaseOrder", "Quotation",
+            "QuotationRequest", "Receipt", "Supplier", "Upload",
+        ];
+
+        Assert.Equal(expected, DatabaseInventory.ActiveDatabases);
         Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["Hangfire"].Disposition);
         Assert.DoesNotContain("Hangfire", DatabaseInventory.ActiveDatabases);
-        Assert.Equal(DatabaseDisposition.Migrate, DatabaseInventory.Entries["Log"].Disposition);
+        Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["Log"].Disposition);
+        Assert.DoesNotContain("Log", DatabaseInventory.ActiveDatabases);
         Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["MachineLearning"].Disposition);
         Assert.Equal(DatabaseDisposition.Excluded, DatabaseInventory.Entries["MachineLearningData"].Disposition);
         Assert.Equal(
@@ -47,7 +56,9 @@ public sealed class PreflightServiceTests
                 StringComparer.Ordinal);
 
         Assert.Equal(DatabaseInventory.Entries.OrderBy(item => item.Key), artifact.OrderBy(item => item.Key));
-        Assert.Equal(24, root.GetProperty("selectedDatabaseCount").GetInt32());
+        Assert.Equal(23, root.GetProperty("selectedDatabaseCount").GetInt32());
+        Assert.Equal("d836f2bc5615daf02746ba54d9b9a8e767cbbb7e9a4f690838bdaafd584e2a4b",
+            root.GetProperty("inventorySha256").GetString());
         Assert.Equal("BackupReceipt.DatabaseInventorySha256", root.GetProperty("signatureBinding").GetString());
     }
 

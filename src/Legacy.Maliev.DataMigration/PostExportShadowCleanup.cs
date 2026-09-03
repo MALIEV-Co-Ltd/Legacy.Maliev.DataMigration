@@ -145,7 +145,7 @@ public sealed class PostExportShadowCleanupService(
             receipt.Databases.Any(item => item.OwnerAttempt <= 0 || item.FencingToken == Guid.Empty ||
                 !string.Equals(item.ShadowName, GuardedShadowMigrationRunner.CreateShadowName(item.Database, receipt.RunId), StringComparison.Ordinal)))
         {
-            throw new MigrationExecutionException("cleanup_execution_receipt_invalid", "Cleanup requires the signed, fenced exact-24 successful execution receipt.");
+            throw new MigrationExecutionException("cleanup_execution_receipt_invalid", "Cleanup requires the signed, fenced exact-23 successful execution receipt.");
         }
 
         byte[] signature = DecodeSignature(receipt.AttestationSignature, "cleanup_execution_receipt_invalid");

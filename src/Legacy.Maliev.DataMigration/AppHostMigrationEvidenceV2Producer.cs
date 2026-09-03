@@ -265,7 +265,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
             request.CleanupReceipt.RunId != execution.RunId ||
             !PostExportShadowCleanupAttestation.Verify(request.CleanupReceipt, executionTrust))
         {
-            throw Error("shadow_cleanup_receipt_invalid", "Signed evidence requires complete exact-24 post-export shadow cleanup.");
+            throw Error("shadow_cleanup_receipt_invalid", "Signed evidence requires complete exact-23 post-export shadow cleanup.");
         }
         VerifyProvenance(request.Provenance, provenanceTrust);
         if (request.VerifiedRestoreReceipt is null ||
@@ -274,7 +274,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
             !FixedHashEquals(request.VerifiedRestoreReceipt.BackupManifestSha256, request.BackupReceipt.ManifestSha256) ||
             !ExactNames(request.VerifiedRestoreReceipt.Artifacts.Select(item => item.Database), DatabaseInventory.ActiveDatabases))
         {
-            throw Error("verified_restore_receipt_invalid", "Signed evidence requires the completed exact-24 verified restore receipt.");
+            throw Error("verified_restore_receipt_invalid", "Signed evidence requires the completed exact-23 verified restore receipt.");
         }
         ValidateDistinctAttestationRoles(request, backupTrust, authorizationTrust, executionTrust, provenanceTrust, evidenceSigner);
 
@@ -320,7 +320,7 @@ public static partial class AppHostMigrationEvidenceV2Producer
             !ExactNames(execution.Databases.Select(item => item.Database), expected) ||
             !ExactNames(execution.Reconciliation.Select(item => item.Database), expected))
         {
-            throw Error("database_inventory_invalid", "Evidence must cover the exact 24 migrated databases.");
+            throw Error("database_inventory_invalid", "Evidence must cover the exact 23 migrated databases.");
         }
 
         if (request.BackupReceipt.CapturedAtUtc > execution.CompletedAtUtc ||

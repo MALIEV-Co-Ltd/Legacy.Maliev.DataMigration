@@ -65,7 +65,7 @@ public static class CleanupContract
             snapshot.Databases.Any(item => execution.Databases.All(migrated =>
                 migrated.Database != item.Database || migrated.ShadowName != item.ShadowDatabase)))
         {
-            throw new MigrationExecutionException("cleanup_snapshot_invalid", "Cleanup requires the authenticated exact-24 snapshot exported from this execution.");
+            throw new MigrationExecutionException("cleanup_snapshot_invalid", "Cleanup requires the authenticated exact-23 snapshot exported from this execution.");
         }
     }
 
@@ -112,7 +112,7 @@ public static class ReviewedCleanupAuthorizationProducer
             !Verify(execution.Receipt.AttestationKeyId, execution.Receipt.AttestationSignature,
                 MigrationEvidenceAttestation.CreatePayload(execution.Receipt), executionTrust))
         {
-            throw new OperatorAttestationException("cleanup_authorization_reuse_invalid", "Existing cleanup authorization is not bound to a trusted successful exact-24 execution.");
+            throw new OperatorAttestationException("cleanup_authorization_reuse_invalid", "Existing cleanup authorization is not bound to a trusted successful exact-23 execution.");
         }
         CleanupContract.ValidateSnapshot(snapshot, execution.Receipt, snapshotRootKey);
         if (!authorizationTrust.TryGetPublicKeyFingerprintSha256(authorization.AttestationKeyId, out string authorizationFingerprint) ||
@@ -154,7 +154,7 @@ public static class ReviewedCleanupAuthorizationProducer
             !Verify(receipt.AttestationKeyId, receipt.AttestationSignature,
                 MigrationEvidenceAttestation.CreatePayload(receipt), executionTrust))
         {
-            throw new OperatorAttestationException("cleanup_authorization_execution_invalid", "A trusted successful exact-24 execution is required.");
+            throw new OperatorAttestationException("cleanup_authorization_execution_invalid", "A trusted successful exact-23 execution is required.");
         }
         if (request.IssuedAtUtc < receipt.CompletedAtUtc)
         {

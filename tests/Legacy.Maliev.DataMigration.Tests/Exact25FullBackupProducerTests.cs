@@ -10,12 +10,12 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
     private readonly ECDsa _signingKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
     [Fact]
-    public void ActiveBackupInventory_IsTheApprovedExact24Contract()
+    public void ActiveBackupInventory_IsTheApprovedExact23Contract()
     {
         string[] expected = [
             "ContactRequest", "Country", "Currency", "Customer", "CustomerIdentity", "DataProtectionKeys",
             "DataProtectionKeysEmployee", "Employee", "EmployeeIdentity", "Invoice", "JobOffers",
-            "LocationData", "Log", "Material", "Message", "Order", "OrderStatus", "Payment", "PurchaseOrder",
+            "LocationData", "Material", "Message", "Order", "OrderStatus", "Payment", "PurchaseOrder",
             "Quotation", "QuotationRequest", "Receipt", "Supplier", "Upload",
         ];
 
@@ -33,11 +33,11 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         BackupReceipt receipt = await Exact25FullBackupProducer.ProduceAsync(
             request, Credential(), process, storage, publisher, "backup-key", _signingKey, CancellationToken.None);
 
-        Assert.Equal(24, receipt.Artifacts!.Count);
+        Assert.Equal(23, receipt.Artifacts!.Count);
         Assert.Equal(DatabaseInventory.ActiveDatabases, process.Created);
         Assert.Equal(DatabaseInventory.ActiveDatabases, process.Verified);
         Assert.Equal(DatabaseInventory.ActiveDatabases, process.Copied);
-        Assert.Equal(24, storage.Uploads.Count);
+        Assert.Equal(23, storage.Uploads.Count);
         Assert.Same(receipt, publisher.Published);
         Assert.Equal("1.1", receipt.SchemaVersion);
         Assert.True(ReceiptAttestation.TryCreatePayload(receipt, out byte[] payload));
@@ -250,7 +250,7 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
         _ = await Exact25FullBackupProducer.ProduceAsync(
             Request(), Credential(), process, new FakeStorage(), new FakePublisher(), "backup-key", _signingKey, CancellationToken.None);
 
-        Assert.Equal(26, process.CopyAttempts);
+        Assert.Equal(25, process.CopyAttempts);
     }
 
     [Fact]
@@ -379,7 +379,7 @@ public sealed class Exact25FullBackupProducerTests : IDisposable
             Request(), Credential(), new FakeProcess(), new FakeStorage(), publisher,
             "backup-key", _signingKey, CancellationToken.None));
 
-        Assert.Equal(24, Directory.EnumerateFiles(_root, "*.bak", SearchOption.AllDirectories).Count());
+        Assert.Equal(23, Directory.EnumerateFiles(_root, "*.bak", SearchOption.AllDirectories).Count());
     }
 
     [Fact]

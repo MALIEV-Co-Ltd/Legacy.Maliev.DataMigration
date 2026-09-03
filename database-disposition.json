@@ -1,8 +1,8 @@
 {
   "schemaVersion": "1.0",
-  "inventorySha256": "5e6061790b86e816624e0a6e318a12c1c294e4d4fc165bc8a93c2af40b5a37f6",
+  "inventorySha256": "d836f2bc5615daf02746ba54d9b9a8e767cbbb7e9a4f690838bdaafd584e2a4b",
   "signatureBinding": "BackupReceipt.DatabaseInventorySha256",
-  "selectedDatabaseCount": 24,
+  "selectedDatabaseCount": 23,
   "databases": [
     { "database": "ContactRequest", "owner": "Legacy.Maliev.ContactService", "disposition": "Migrate" },
     { "database": "Country", "owner": "Legacy.Maliev.CatalogService", "disposition": "Migrate" },
@@ -17,7 +17,7 @@
     { "database": "Invoice", "owner": "Legacy.Maliev.AccountingService", "disposition": "Migrate" },
     { "database": "JobOffers", "owner": "Legacy.Maliev.CareerService", "disposition": "Migrate" },
     { "database": "LocationData", "owner": "Legacy.Maliev.CatalogService", "disposition": "Migrate" },
-    { "database": "Log", "owner": "Legacy.Maliev.CompatibilityContracts", "disposition": "Migrate" },
+    { "database": "Log", "owner": "Legacy.Maliev.CompatibilityContracts", "disposition": "Excluded" },
     { "database": "MachineLearning", "owner": "Legacy.Maliev.CompatibilityContracts", "disposition": "Excluded" },
     { "database": "MachineLearningData", "owner": "Legacy.Maliev.CompatibilityContracts", "disposition": "Excluded" },
     { "database": "Material", "owner": "Legacy.Maliev.CatalogService", "disposition": "Migrate" },

@@ -14,8 +14,8 @@ public sealed class PostExportShadowCleanupTests
             fixture.Snapshot, fixture.Key, CancellationToken.None);
 
         Assert.True(receipt.IsComplete);
-        Assert.Equal(24, fixture.Target.Deleted.Count);
-        Assert.Equal(24, fixture.Verifier.CallCount);
+        Assert.Equal(23, fixture.Target.Deleted.Count);
+        Assert.Equal(23, fixture.Verifier.CallCount);
         Assert.Equal(fixture.Execution.Receipt.RunId, receipt.RunId);
         Assert.Equal(CleanupContract.ExecutionDigest(fixture.Execution.Receipt), receipt.ExecutionReceiptSha256);
         Assert.True(PostExportShadowCleanupAttestation.Verify(receipt, new AcceptingTrust()));
@@ -37,7 +37,7 @@ public sealed class PostExportShadowCleanupTests
         Assert.False(first.IsComplete);
         _ = Assert.Single(first.Cleanup, item => !item.Deleted);
         Assert.True(retry.IsComplete);
-        Assert.Equal(48, fixture.Verifier.CallCount);
+        Assert.Equal(46, fixture.Verifier.CallCount);
     }
 
     [Fact]
@@ -144,8 +144,8 @@ public sealed class PostExportShadowCleanupTests
         Assert.Equal("cleanup_target_drift", drift.ErrorCode);
         Assert.True(PostExportShadowCleanupAttestation.Verify(failure, new AcceptingTrust()));
         Assert.True(retry.IsComplete);
-        Assert.Equal(27, fixture.Target.Deleted.Count);
-        Assert.Equal(28, fixture.Verifier.CallCount);
+        Assert.Equal(26, fixture.Target.Deleted.Count);
+        Assert.Equal(27, fixture.Verifier.CallCount);
     }
 
     [Fact]
