@@ -5,7 +5,7 @@ public sealed class PostExportShadowCleanupTests
     private static readonly DateTimeOffset Now = new(2026, 9, 1, 2, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public async Task CleanupAsync_ValidExact24DeletesEveryFencedShadowAndSignsCompleteReceipt()
+    public async Task CleanupAsync_ValidExact23DeletesEveryFencedShadowAndSignsCompleteReceipt()
     {
         Fixture fixture = CreateFixture();
 

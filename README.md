@@ -1,6 +1,6 @@
 # Legacy.Maliev.DataMigration
 
-Current operator-host execution uses the [protected incremental console](docs/incremental-operator-console.md): signed admission, one held Windows run lock, immediate encrypted per-database delivery/local verification, explicit signed resume, and preserve-first failures. `execute-shadow` no longer accepts legacy execution-only configuration. This software repair authorizes no live run; exact-23/Log exclusion remains the separate inventory-consumer slice.
+Current operator-host execution uses the [protected incremental console](docs/incremental-operator-console.md): signed admission, one held Windows run lock, immediate encrypted per-database delivery/local verification, explicit signed resume, and preserve-first failures. `execute-shadow` no longer accepts legacy execution-only configuration. Migration and AppHost consumers now enforce the same exact-23 inventory, excluding Log. This software repair authorizes no live run or reuse of historical exact-24 approvals.
 
 The snapshot-export description below describes the original full-export compatibility API; incremental staging/recovery has separate authenticated checkpoint semantics in the operator guide.
 

@@ -70,7 +70,7 @@ public sealed partial class AdmittedSequentialMigrationCoordinator
     private void ValidateRuntime(FreshRunnerObservation runner, FreshTargetObservation target)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        ExecutionAuthorizationReceipt original = JsonSerializer.Deserialize<ExecutionAuthorizationReceipt>(_admission.Payload.OriginalAuthorizationJson)!;
+        ExecutionAuthorizationReceipt original = OriginalMigrationDocumentReader.Read<ExecutionAuthorizationReceipt>(_admission.Payload.OriginalAuthorizationJson);
         Require(runner.ObservedAtUtc >= _admission.Payload.AdmittedAtUtc && runner.ObservedAtUtc <= now && runner.ObservedAtUtc.Offset == TimeSpan.Zero &&
             now - runner.ObservedAtUtc <= _admission.Payload.MaximumObservationAge && runner.RunnerDigestSha256 == _admission.Payload.Identity.RunnerDigestSha256,
             "runtime_runner_drift");

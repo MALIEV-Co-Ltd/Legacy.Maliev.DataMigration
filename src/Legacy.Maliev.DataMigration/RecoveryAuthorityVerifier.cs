@@ -120,10 +120,10 @@ public sealed class RecoveryAuthorityVerifier
         string backupJson, string planJson, string authorizationJson, string restoreJson, DateTimeOffset nowUtc)
     {
         Require(Utc(nowUtc), "Original-input validation requires a current UTC clock.");
-        BackupReceipt backup = Parse<BackupReceipt>(backupJson);
-        FreshSchemaPlan plan = Parse<FreshSchemaPlan>(planJson);
-        ExecutionAuthorizationReceipt authorization = Parse<ExecutionAuthorizationReceipt>(authorizationJson);
-        VerifiedRestoreReceipt restore = Parse<VerifiedRestoreReceipt>(restoreJson);
+        BackupReceipt backup = OriginalMigrationDocumentReader.Read<BackupReceipt>(backupJson);
+        FreshSchemaPlan plan = OriginalMigrationDocumentReader.Read<FreshSchemaPlan>(planJson);
+        ExecutionAuthorizationReceipt authorization = OriginalMigrationDocumentReader.Read<ExecutionAuthorizationReceipt>(authorizationJson);
+        VerifiedRestoreReceipt restore = OriginalMigrationDocumentReader.Read<VerifiedRestoreReceipt>(restoreJson);
         Require(backup.AttestationKeyId == _roles.BackupKeyId && authorization.AttestationKeyId == _roles.AuthorizationKeyId && restore.AttestationKeyId == _roles.ProvenanceKeyId,
             "The retained original documents do not use their configured signing roles.");
         try { VerifiedBackupRestorer.ValidateReceipt(backup, _trust, nowUtc, GuardedRunnerPolicy.MaximumBackupReceiptAge); }
@@ -188,7 +188,7 @@ public sealed class RecoveryAuthorityVerifier
                 shadow.OwnerAttempt <= baseline.LeaseAttempt && shadow.FencingToken != Guid.Empty && item.CleanupStatus is "pending" or "failed" && item.CleanupAttempts >= 0,
                 "Recovery requires retained original owned shadows; deleted, relabeled or conflicting state cannot be adopted.");
         }
-        var verifier = new DatabaseMigrationCheckpointVerifier(new(baseline.Identity, Parse<FreshSchemaPlan>(admission.Payload.OriginalSchemaPlanJson), _trust));
+        var verifier = new DatabaseMigrationCheckpointVerifier(new(baseline.Identity, OriginalMigrationDocumentReader.Read<FreshSchemaPlan>(admission.Payload.OriginalSchemaPlanJson), _trust));
         foreach (RecoveryCheckpointState item in baseline.Checkpoints)
         {
             DatabaseMigrationCheckpoint checkpoint = Parse<DatabaseMigrationCheckpoint>(item.SignedCheckpointJson);
@@ -247,7 +247,7 @@ public sealed class RecoveryAuthorityVerifier
             runner.ObservedAtUtc >= original.AdmittedAtUtc && target.ObservedAtUtc >= original.AdmittedAtUtc &&
             value.Runner.RunnerDigestSha256 == original.Identity.RunnerDigestSha256 && runner.RunnerDigestSha256 == value.Runner.RunnerDigestSha256,
             "Resume requires a newly measured unchanged runner and fresh target observation.");
-        CloudNativePgTargetObservation originalTarget = Parse<ExecutionAuthorizationReceipt>(original.OriginalAuthorizationJson).TargetObservation!;
+        CloudNativePgTargetObservation originalTarget = OriginalMigrationDocumentReader.Read<ExecutionAuthorizationReceipt>(original.OriginalAuthorizationJson).TargetObservation!;
         CloudNativePgTargetObservation signedTarget = value.Target.Target;
         Require(signedTarget.IsHealthy && target.Target == signedTarget && signedTarget.Namespace == originalTarget.Namespace && signedTarget.Cluster == originalTarget.Cluster &&
             signedTarget.Uid == originalTarget.Uid && signedTarget.Generation == originalTarget.Generation && signedTarget.SystemId == originalTarget.SystemId,

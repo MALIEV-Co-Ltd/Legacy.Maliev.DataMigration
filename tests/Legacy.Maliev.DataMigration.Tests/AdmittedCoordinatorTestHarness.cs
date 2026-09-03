@@ -40,11 +40,11 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
     {
         var value = new AdmittedCoordinatorTestHarness();
         value.Authority = WindowsLocalRunAuthority.AcquireFresh(value.Staging);
-        value.Data = await RecoveryAuthorityTestData.CreateAsync(prepare: false, resumeDelay: TimeSpan.Zero, admittedAt: DateTimeOffset.UtcNow.AddSeconds(-1));
+        value.Data = await RecoveryAuthorityTestData.CreateAsync(prepare: false, resumeDelay: TimeSpan.Zero, admittedAt: DateTimeOffset.UtcNow.AddSeconds(-1), webOriginals: true);
         value.Data.Binding = value.Authority.Binding;
         value.Data.AdmissionPayload = value.Data.AdmissionPayload with { LocalBinding = value.Data.Binding };
         value.Data.Admission = value.Data.Verifier.PrepareAdmission(value.Data.AdmissionPayload, value.Data.Signers[2], value.Data.AdmittedAt);
-        value.Plan = JsonSerializer.Deserialize<FreshSchemaPlan>(value.Data.AdmissionPayload.OriginalSchemaPlanJson)!;
+        value.Plan = JsonSerializer.Deserialize<FreshSchemaPlan>(value.Data.AdmissionPayload.OriginalSchemaPlanJson, RecoveryAuthorityTestData.ProducerJson)!;
         value.RunJournal = new(value);
         value.Source = new(value);
         value.Target = new(value);
@@ -86,7 +86,7 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
     internal void BindPlan(FreshSchemaPlan plan)
     {
         Plan = plan;
-        ExecutionAuthorizationReceipt original = JsonSerializer.Deserialize<ExecutionAuthorizationReceipt>(Data.AdmissionPayload.OriginalAuthorizationJson)!;
+        ExecutionAuthorizationReceipt original = JsonSerializer.Deserialize<ExecutionAuthorizationReceipt>(Data.AdmissionPayload.OriginalAuthorizationJson, RecoveryAuthorityTestData.ProducerJson)!;
         ExecutionAuthorizationReceipt authorization = original with { SchemaPlanSha256 = SchemaPlanCanonicalizer.ComputeSha256(plan), AttestationSignature = null };
         Assert.True(ExecutionAuthorizationAttestation.TryCreatePayload(authorization, out byte[] payload));
         authorization = authorization with { AttestationSignature = Convert.ToBase64String(Data.Signers[1].Sign(payload)) };
@@ -94,8 +94,8 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
         Data.AdmissionPayload = Data.AdmissionPayload with
         {
             Identity = Data.AdmissionPayload.Identity with { SchemaPlanSha256 = authorization.SchemaPlanSha256! },
-            OriginalSchemaPlanJson = JsonSerializer.Serialize(plan),
-            OriginalAuthorizationJson = JsonSerializer.Serialize(authorization),
+            OriginalSchemaPlanJson = JsonSerializer.Serialize(plan, RecoveryAuthorityTestData.ProducerJson),
+            OriginalAuthorizationJson = JsonSerializer.Serialize(authorization, RecoveryAuthorityTestData.ProducerJson),
             OriginalAuthorizationSha256 = RecoveryAuthorityTestData.Hash(payload),
             SourceObservation = Data.Source with { ObservedAtUtc = Data.AdmissionPayload.SourceObservation.ObservedAtUtc },
         };

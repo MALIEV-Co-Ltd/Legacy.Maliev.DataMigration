@@ -4,6 +4,24 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class AdmittedSequentialMigrationCoordinatorTests
 {
     [WindowsLocalRunFact]
+    public async Task HostFactory_ProducerOriginalsReachTargetBindingGuardBeforeExternalAccess()
+    {
+        using AdmittedCoordinatorTestHarness harness = await AdmittedCoordinatorTestHarness.CreateAsync();
+        string existingExecutable = Environment.ProcessPath!;
+        var options = new AdmittedCoordinatorHostOptions(harness.Data.Admission,
+            new(new(harness.Plan.SourceCommitSha, harness.Data.AdmissionPayload.Identity.RunnerDigestSha256), RecoveryAuthorityTestData.Roles, harness.Data.Trust),
+            harness.Data.Signers[2], "unused", new("unused"), "unused",
+            new(new Uri("https://unused.test"), "wrong-namespace", "wrong-cluster", "unused", "unused", "unused", TimeSpan.FromSeconds(1)),
+            new(new Uri("https://unused.test"), "unused", "unused"),
+            new("unused", "unused", "unused", "unused", "unused", existingExecutable),
+            existingExecutable, harness.Root, "test", new byte[32], harness.Output);
+        MigrationExecutionException failure = Assert.Throws<MigrationExecutionException>(() => AdmittedSequentialMigrationCoordinator.CreateForHost(options));
+        Assert.Equal("host_target_configuration_mismatch", failure.Code);
+        Assert.Equal(0, harness.RunJournal.InitialCalls);
+        Assert.Empty(harness.Target.Created);
+    }
+
+    [WindowsLocalRunFact]
     public async Task HostFactory_MissingNativeRuntime_RejectsBeforeCreatingOrMutatingRemoteState()
     {
         using AdmittedCoordinatorTestHarness harness = await AdmittedCoordinatorTestHarness.CreateAsync();

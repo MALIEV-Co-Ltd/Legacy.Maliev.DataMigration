@@ -255,7 +255,7 @@ public static partial class MigrationConsole
 
     private static T ParseIncremental<T>(string json)
     {
-        return JsonSerializer.Deserialize<T>(json, JsonOptions) ?? throw Invalid("incremental_original_evidence_invalid");
+        return OriginalMigrationDocumentReader.Read<T>(json);
     }
 
     private static async Task<P256MigrationEvidenceSigner> ReadIncrementalSignerAsync(Func<string, string?> environment, string variable, TrustedKeyReference role, CancellationToken token)

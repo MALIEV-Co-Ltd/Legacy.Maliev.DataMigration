@@ -259,7 +259,7 @@ public sealed class IncrementalConsoleTests : IDisposable
             case "nested-output": command["outputDirectory"] = Path.Combine(fixture.Staging, "nested"); break;
             case "unknown-runtime-directory": command["runnerPublishDirectory"] = _root; break;
             case "expired-authorization":
-                ExecutionAuthorizationReceipt original = JsonSerializer.Deserialize<ExecutionAuthorizationReceipt>(fixture.Data.AdmissionPayload.OriginalAuthorizationJson)!;
+                ExecutionAuthorizationReceipt original = JsonSerializer.Deserialize<ExecutionAuthorizationReceipt>(fixture.Data.AdmissionPayload.OriginalAuthorizationJson, WireOptions)!;
                 await File.WriteAllTextAsync(Path.Combine(_root, "authorization.json"), JsonSerializer.Serialize(original with { ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(-1) }));
                 break;
             default:

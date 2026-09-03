@@ -1,6 +1,5 @@
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
-using System.Text.Json;
 
 namespace Legacy.Maliev.DataMigration;
 
@@ -46,7 +45,7 @@ public sealed partial class AdmittedSequentialMigrationCoordinator : IAsyncDispo
         Require(signer.KeyId == verification.Roles.ExecutionKeyId &&
             verification.TrustStore.Verify(signer.KeyId, [1], signer.Sign([1])), "execution_signer_invalid");
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
-        _plan = JsonSerializer.Deserialize<FreshSchemaPlan>(admission.Payload.OriginalSchemaPlanJson)!;
+        _plan = OriginalMigrationDocumentReader.Read<FreshSchemaPlan>(admission.Payload.OriginalSchemaPlanJson);
         _checkpoints = new(new(admission.Payload.Identity, _plan, verification.TrustStore));
         Require(_plan.Databases.Select(item => item.Database).Order(StringComparer.Ordinal)
             .SequenceEqual(DatabaseInventory.ActiveDatabases.Order(StringComparer.Ordinal), StringComparer.Ordinal), "coordinator_inventory_invalid");

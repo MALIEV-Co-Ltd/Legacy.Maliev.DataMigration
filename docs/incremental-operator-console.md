@@ -3,8 +3,8 @@
 This is a software repair, not authorization for another migration. The repaired
 workflow copies the current exact `DatabaseInventory.ActiveDatabases` sequentially,
 persists each signed checkpoint, and immediately encrypts, downloads and locally
-restores/verifies it before continuing. Literal Log exclusion and exact-23 AppHost
-consumers are still Task 5; do not run against changed inventory using old approvals.
+restores/verifies it before continuing. Migration and AppHost consumers enforce
+the same exact-23 inventory, excluding Log; do not run against changed inventory using old approvals.
 
 The failed historical exact-24 run had no signed local snapshot. Its automatic
 cleanup deleted the PostgreSQL shadows. New checkpoints cannot recover those

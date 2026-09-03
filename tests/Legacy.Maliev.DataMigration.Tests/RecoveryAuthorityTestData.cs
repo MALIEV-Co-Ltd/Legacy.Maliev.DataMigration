@@ -7,6 +7,7 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 internal sealed class RecoveryAuthorityTestData : IDisposable
 {
+    internal static readonly JsonSerializerOptions ProducerJson = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly string[] KeyIds = ["backup", "authorization", "execution", "provenance", "final"];
     internal DateTimeOffset AdmittedAt = DateTimeOffset.Parse("2026-09-02T00:01:00Z", CultureInfo.InvariantCulture);
     internal readonly string[] PrivateKeyPems = [.. Enumerable.Range(0, 5).Select(_ => CreatePrivateKey())];
@@ -30,7 +31,7 @@ internal sealed class RecoveryAuthorityTestData : IDisposable
     internal LocalExecutionBinding Binding = new(1, "windows-host", "ntfs-volume", "C:\\ARTIFACTS\\RUN", "root-id", ".run.lock", "lock-id", 1);
     internal static RecoveryAuthorityRoles Roles => new("backup", "authorization", "execution", "provenance", "final");
 
-    internal static async Task<RecoveryAuthorityTestData> CreateAsync(bool prepare = true, TimeSpan? resumeDelay = null, DateTimeOffset? admittedAt = null)
+    internal static async Task<RecoveryAuthorityTestData> CreateAsync(bool prepare = true, TimeSpan? resumeDelay = null, DateTimeOffset? admittedAt = null, bool webOriginals = false)
     {
         var data = new RecoveryAuthorityTestData();
         data.AdmittedAt = admittedAt ?? data.AdmittedAt;
@@ -89,8 +90,9 @@ internal sealed class RecoveryAuthorityTestData : IDisposable
         Assert.True(VerifiedRestoreReceiptAttestation.TryCreatePayload(restore, out byte[] restoreBytes));
         restore = restore with { AttestationSignature = Convert.ToBase64String(data.Signers[3].Sign(restoreBytes)) };
         measured = measured with { ObservedAtUtc = data.AdmittedAt.AddSeconds(-10), State = measured.State with { VerifiedRestoreSha256 = Hash(restoreBytes), SchemaPlanSha256 = authorization.SchemaPlanSha256! } };
+        JsonSerializerOptions? originalOptions = webOriginals ? ProducerJson : null;
         data.AdmissionPayload = new(MigrationRunIdentity.FromRequest(new(backup, plan, authorization)), DatabaseInventory.InventorySha256,
-            " \n" + JsonSerializer.Serialize(backup), JsonSerializer.Serialize(plan), JsonSerializer.Serialize(authorization), JsonSerializer.Serialize(restore),
+            " \n" + JsonSerializer.Serialize(backup, originalOptions), JsonSerializer.Serialize(plan, originalOptions), JsonSerializer.Serialize(authorization, originalOptions), JsonSerializer.Serialize(restore, originalOptions),
             Hash(authorizationBytes), Hash(restoreBytes), measured, data.Binding, data.AdmittedAt, RecoveryAuthorityVerifier.ValidationPolicyVersion,
             GuardedRunnerPolicy.MaximumAuthorizationLifetime, RecoveryAuthorityVerifier.ValidationStatement);
         data.Trust = new(data.Signers.Select(signer => new TrustedAttestationKey(signer.KeyId, signer.ExportSubjectPublicKeyInfo())));

@@ -1,6 +1,6 @@
 # Incremental migration with durable local database delivery
 
-Status: owner-approved recovery design; adapter, admission/journal and coordinator slices reviewed. Protected console integration is implemented for review; exact-23 consumers and final acceptance remain separate gates. No live execution is authorized.
+Status: owner-approved recovery design; adapter, admission/journal, coordinator, protected console integration and exact-23 migration/AppHost consumers are implemented. Final integrated validation and review of the original-document wire correction remain gates. No live execution is authorized.
 
 ## Outcome and authorization
 

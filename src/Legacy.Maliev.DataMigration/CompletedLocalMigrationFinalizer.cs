@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 namespace Legacy.Maliev.DataMigration;
 
 /// <summary>Authenticated local-only completion with no execution signer, remote adapter or native-tool dependency.</summary>
@@ -12,7 +10,7 @@ public static class CompletedLocalMigrationFinalizer
         ArgumentNullException.ThrowIfNull(snapshot); ArgumentNullException.ThrowIfNull(verification);
         MigrationExecutionReceipt receipt = AdmittedSequentialMigrationCoordinator.ValidateCompletion(snapshot.Admission, verification, snapshot);
         DatabaseMigrationCheckpoint[] checkpoints = AdmittedSequentialMigrationCoordinator.ReadCheckpoints(snapshot.Baseline);
-        FreshSchemaPlan plan = JsonSerializer.Deserialize<FreshSchemaPlan>(snapshot.Admission.Payload.OriginalSchemaPlanJson)!;
+        FreshSchemaPlan plan = OriginalMigrationDocumentReader.Read<FreshSchemaPlan>(snapshot.Admission.Payload.OriginalSchemaPlanJson);
         using WindowsLocalRunAuthority authority = WindowsLocalRunAuthority.AcquireResume(root, snapshot.Admission.Payload.LocalBinding);
         using var store = IncrementalLocalSnapshotStore.OpenCompleted(root, snapshotId, rootKey,
             new(new(snapshot.Admission.Payload.Identity, plan, verification.TrustStore)), GuardAsync);

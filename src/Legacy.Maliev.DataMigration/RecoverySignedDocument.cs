@@ -116,12 +116,17 @@ internal static class RecoveryContractEncoding
 
     internal static T Parse<T>(string json)
     {
+        return Parse<T>(json, Options);
+    }
+
+    internal static T Parse<T>(string json, JsonSerializerOptions options)
+    {
         try
         {
             Require(json is not null && json.Length is > 0 and <= 64 * 1024 * 1024, "The recovery JSON document is missing or too large.");
             using JsonDocument document = JsonDocument.Parse(json!);
             RejectNullArrayItems(document.RootElement);
-            return JsonSerializer.Deserialize<T>(json!, Options) ?? throw Invalid("The recovery JSON document is null.");
+            return JsonSerializer.Deserialize<T>(json!, options) ?? throw Invalid("The recovery JSON document is null.");
         }
         catch (Exception exception) when (exception is JsonException or NotSupportedException or ArgumentException)
         { throw Invalid("The recovery JSON document is malformed or contains unapproved fields.", exception); }

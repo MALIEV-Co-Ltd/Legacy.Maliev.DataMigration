@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 namespace Legacy.Maliev.DataMigration;
 
 /// <summary>Mandatory protected host dependencies for explicitly authorized execution; construction never acquires local run authority.</summary>
@@ -24,9 +22,9 @@ public sealed partial class AdmittedSequentialMigrationCoordinator
         ArgumentNullException.ThrowIfNull(options.LocalVerification);
         Require(Path.IsPathFullyQualified(options.LocalVerification.PgRestorePath) && File.Exists(options.LocalVerification.PgRestorePath) &&
             Path.IsPathFullyQualified(options.RunnerPublishDirectory) && Directory.Exists(options.RunnerPublishDirectory), "host_native_runtime_required");
-        FreshSchemaPlan plan = JsonSerializer.Deserialize<FreshSchemaPlan>(options.Admission.Payload.OriginalSchemaPlanJson)!;
-        ExecutionAuthorizationReceipt authorization = JsonSerializer.Deserialize<ExecutionAuthorizationReceipt>(options.Admission.Payload.OriginalAuthorizationJson)!;
-        VerifiedRestoreReceipt restore = JsonSerializer.Deserialize<VerifiedRestoreReceipt>(options.Admission.Payload.OriginalVerifiedRestoreReceiptJson)!;
+        FreshSchemaPlan plan = OriginalMigrationDocumentReader.Read<FreshSchemaPlan>(options.Admission.Payload.OriginalSchemaPlanJson);
+        ExecutionAuthorizationReceipt authorization = OriginalMigrationDocumentReader.Read<ExecutionAuthorizationReceipt>(options.Admission.Payload.OriginalAuthorizationJson);
+        VerifiedRestoreReceipt restore = OriginalMigrationDocumentReader.Read<VerifiedRestoreReceipt>(options.Admission.Payload.OriginalVerifiedRestoreReceiptJson);
         CloudNativePgTargetObservation expected = authorization.TargetObservation!;
         Require(options.Provisioning.Namespace == expected.Namespace && options.Provisioning.Cluster == expected.Cluster &&
             options.Provisioning.ApiServer == options.TargetObservation.ApiServer &&
