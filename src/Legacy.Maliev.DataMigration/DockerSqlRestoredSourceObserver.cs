@@ -61,13 +61,16 @@ public sealed partial class DockerSqlRestoredSourceObserver
     private async Task<ImmutableArray<SourceFileStorageBinding>> ObserveFilesAsync(LocalDockerResourceState docker, SqlRestoredSourceState sql, CancellationToken token)
     {
         var result = ImmutableArray.CreateBuilder<SourceFileStorageBinding>();
-        foreach (SqlObservedFile file in sql.Files)
+        Require(sql.Files.All(file => IsAbsoluteLinuxPath(file.PhysicalName) && file.Type is 0 or 1), "data_file");
+        ImmutableArray<FileSystemObjectIdentity> identities = await _docker.StatManyAsync(docker.DockerHost, docker.ContainerId,
+            sql.Files.Select(file => file.PhysicalName).ToArray(), token).ConfigureAwait(false);
+        for (int index = 0; index < sql.Files.Length; index++)
         {
-            Require(IsAbsoluteLinuxPath(file.PhysicalName) && file.Type is 0 or 1, "data_file");
+            SqlObservedFile file = sql.Files[index];
             DockerObservedMount? mount = docker.Mounts.Where(mount => file.PhysicalName.StartsWith(mount.Destination + "/", StringComparison.Ordinal))
                 .OrderByDescending(mount => mount.Destination.Length).FirstOrDefault();
             string storage = mount?.Destination ?? "/";
-            FileSystemObjectIdentity identity = await _docker.StatAsync(docker.DockerHost, docker.ContainerId, file.PhysicalName, "regular file", token).ConfigureAwait(false);
+            FileSystemObjectIdentity identity = identities[index];
             Require(identity.Device == (mount?.FileSystemIdentity ?? docker.Root).Device, "data_file_storage");
             result.Add(new(file, storage, identity));
         }

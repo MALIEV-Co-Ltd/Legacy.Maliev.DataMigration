@@ -82,7 +82,7 @@ public static partial class MigrationConsole
         {
             string admissionOutput = Required(command.AdmissionPath);
             ValidateIncrementalLocalPath(admissionOutput);
-            if (Within(admissionOutput, command.ArtifactRoot) || Within(admissionOutput, command.OutputDirectory) || SamePath(admissionOutput, command.OutputPath))
+            if (PathsOverlap(admissionOutput, command.ArtifactRoot) || PathsOverlap(admissionOutput, command.OutputDirectory) || PathsOverlap(admissionOutput, command.OutputPath))
             { throw Invalid("incremental_admission_output_invalid"); }
             OwnerProtectedFilePolicy.ValidatePublicationParent(admissionOutput);
             if (File.Exists(admissionOutput) || Directory.Exists(admissionOutput) || File.Exists(command.OutputPath) || Directory.Exists(command.OutputPath))
@@ -290,12 +290,17 @@ public static partial class MigrationConsole
         return SamePath(child, parent) || Path.GetFullPath(child).StartsWith(Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent)) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool PathsOverlap(string left, string right)
+    {
+        return Within(left, right) || Within(right, left);
+    }
+
     private static void ValidateIncrementalPaths(IncrementalCommandConfiguration command)
     {
         foreach (string path in new[] { command.ArtifactRoot, command.OutputDirectory, command.OutputPath })
         { ValidateIncrementalLocalPath(path); }
-        if (Within(command.OutputDirectory, command.ArtifactRoot) || Within(command.ArtifactRoot, command.OutputDirectory) ||
-            Within(command.OutputPath, command.ArtifactRoot) || Within(command.OutputPath, command.OutputDirectory) ||
+        if (PathsOverlap(command.OutputDirectory, command.ArtifactRoot) ||
+            PathsOverlap(command.OutputPath, command.ArtifactRoot) || PathsOverlap(command.OutputPath, command.OutputDirectory) ||
             string.IsNullOrWhiteSpace(command.SnapshotId)) { throw Invalid("incremental_local_path_invalid"); }
         OwnerProtectedFilePolicy.ValidatePublicationParent(command.OutputPath);
     }

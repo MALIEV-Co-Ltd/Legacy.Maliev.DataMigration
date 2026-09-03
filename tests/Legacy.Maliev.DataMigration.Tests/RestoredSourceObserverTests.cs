@@ -8,6 +8,81 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class RestoredSourceObserverTests
 {
     [Fact]
+    public async Task Observe_All48FilesTwice_ChecksEveryPathInBothPassesWithBoundedProcesses()
+    {
+        using var fixture = new SourceObservationFixture();
+        fixture.Sql = fixture.Sql with
+        {
+            Files = fixture.Sql.Files.SelectMany(file => new[] { file, file with { FileId = 2, Type = 1, PhysicalName = file.PhysicalName + ".ldf" } }).ToImmutableArray()
+        };
+        RestoredSourceObservation first = await fixture.ObserveAsync();
+        fixture.Now = fixture.Now.AddSeconds(1);
+        RestoredSourceObservation second = await fixture.ObserveAsync();
+        string[] paths = fixture.Sql.Files.Select(file => file.PhysicalName).ToArray();
+        IReadOnlyList<string>[] commands = fixture.Docker.Commands.Where(command => command.Contains("exec") && command.Any(paths.Contains)).ToArray();
+        Assert.Equal(48, paths.Length);
+        foreach (string path in paths)
+        {
+            Assert.Equal(4, commands.Count(command => command.Contains("readlink") && command.Contains(path)));
+            Assert.Equal(4, commands.Count(command => command.Contains("stat") && command.Contains(path)));
+        }
+        Assert.Equal(paths, first.State.Files.Select(file => file.File.PhysicalName));
+        Assert.All(first.State.Files, file => Assert.Equal(new FileSystemObjectIdentity("7", "903", "regular file"), file.FileSystemIdentity));
+        var legacyEquivalent = first with { State = first.State with { Files = fixture.Sql.Files.Select(file => new SourceFileStorageBinding(file, "/", new("7", "903", "regular file"))).ToImmutableArray() } };
+        Assert.Equal(legacyEquivalent.ComputeSha256(), first.ComputeSha256());
+        Assert.Equal(first.ComputeStableStateSha256(), second.ComputeStableStateSha256());
+        Assert.NotEqual(first.ComputeSha256(), second.ComputeSha256());
+        Assert.Equal(16, commands.Length);
+    }
+
+    [Theory]
+    [InlineData("device", "source_observation_data_file_storage")]
+    [InlineData("second-pass", "source_observation_changed_files")]
+    public async Task Observe_BatchedFileIdentityViolation_RejectsCompleteObservation(string failure, string code)
+    {
+        using var fixture = new SourceObservationFixture();
+        int statPasses = 0;
+        fixture.Docker.BatchResult = (args, output) =>
+        {
+            if (args.Contains("stat"))
+            {
+                statPasses++;
+                string[] fields = output.Split('\0');
+                if (failure == "device") { fields[1] = "8"; }
+                else if (statPasses == 2) { fields[2] = "904"; }
+                output = string.Join('\0', fields);
+            }
+            return new(0, output, "");
+        };
+        var error = await Assert.ThrowsAsync<MigrationExecutionException>(fixture.ObserveAsync);
+        Assert.Equal(code, error.Code);
+        Assert.Equal(failure == "device" ? 1 : 2, statPasses);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Observe_InvalidLastFile_RejectsBeforeAnySqlFileProcess(bool invalidType)
+    {
+        using var fixture = new SourceObservationFixture();
+        SqlObservedFile last = fixture.Sql.Files[^1];
+        fixture.Sql = fixture.Sql with { Files = fixture.Sql.Files.Add(last with { FileId = 2, Type = invalidType ? 2 : 1, PhysicalName = invalidType ? "/data/invalid" : "/data/../invalid" }) };
+        var error = await Assert.ThrowsAsync<MigrationExecutionException>(fixture.ObserveAsync);
+        Assert.Equal("source_observation_data_file", error.Code);
+        Assert.DoesNotContain(fixture.Docker.Commands, command => command.Any(arg => fixture.Sql.Files.Any(file => file.PhysicalName == arg)));
+    }
+
+    [Fact]
+    public async Task Observe_BatchedFiles_PreservesMountVersusRootBindings()
+    {
+        using var fixture = new SourceObservationFixture();
+        fixture.Sql = fixture.Sql with { Files = fixture.Sql.Files.SetItem(0, fixture.Sql.Files[0] with { PhysicalName = "/backup/data.mdf" }) };
+        RestoredSourceObservation result = await fixture.ObserveAsync();
+        Assert.Equal("/backup", result.State.Files[0].StoragePath);
+        Assert.All(result.State.Files.Skip(1), file => Assert.Equal("/", file.StoragePath));
+    }
+
+    [Fact]
     public async Task Observe_ExactReceiptInventoryAndResources_BindsFreshAndStableDigests()
     {
         using var fixture = new SourceObservationFixture();

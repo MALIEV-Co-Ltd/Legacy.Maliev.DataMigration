@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -121,6 +122,59 @@ public sealed partial class LocalDockerResourceObserver
         return new(fields[0], fields[1], fields[2]);
     }
 
+    // SQL file identities only. Mount/root inspection and both source observation passes stay unchanged.
+    internal async Task<ImmutableArray<FileSystemObjectIdentity>> StatManyAsync(string host, string containerId,
+        IReadOnlyList<string> paths, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        string[] requested = paths.ToArray();
+        Require(IsLocalDockerHost(host) && Hash().IsMatch(containerId) && requested.All(IsAbsoluteLinuxPath) &&
+            requested.Distinct(StringComparer.Ordinal).Count() == requested.Length, "stat_path");
+        string[] readlink = ["--host", host, "exec", containerId, "readlink", "-e", "--zero", "--"];
+        string[] stat = ["--host", host, "exec", containerId, "stat", "--printf=%n\\0%d\\0%i\\0%F\\0", "--"];
+        long overhead = Math.Max(readlink.Sum(ArgumentUnits), stat.Sum(ArgumentUnits));
+        // Validate the entire request before launching its first batch. Bound Windows quoting expansion
+        // and UTF-8 argv bytes, including fixed Docker arguments, without a shell.
+        Require(overhead <= 8192 && requested.All(path => ArgumentUnits(path) <= 8192 - overhead), "stat_arguments");
+        var result = ImmutableArray.CreateBuilder<FileSystemObjectIdentity>(requested.Length);
+        for (int start = 0; start < requested.Length;)
+        {
+            int end = start;
+            long units = overhead;
+            while (end < requested.Length && end - start < 32 && units + ArgumentUnits(requested[end]) <= 8192)
+            {
+                units += ArgumentUnits(requested[end++]);
+            }
+            string[] batch = requested[start..end];
+            string[] resolved = NulFields(await RunRawAsync([.. readlink, .. batch], token).ConfigureAwait(false), batch.Length);
+            Require(batch.SequenceEqual(resolved, StringComparer.Ordinal), "filesystem_path_alias");
+            string[] fields = NulFields(await RunRawAsync([.. stat, .. batch], token).ConfigureAwait(false), batch.Length * 4);
+            for (int index = 0; index < batch.Length; index++)
+            {
+                int offset = index * 4;
+                Require(fields[offset] == batch[index], "filesystem_path_alias");
+                Require(ulong.TryParse(fields[offset + 1], NumberStyles.None, CultureInfo.InvariantCulture, out ulong device) && device > 0 &&
+                    ulong.TryParse(fields[offset + 2], NumberStyles.None, CultureInfo.InvariantCulture, out ulong inode) && inode > 0 &&
+                    fields[offset + 3] == "regular file", "filesystem_identity");
+                result.Add(new(fields[offset + 1], fields[offset + 2], fields[offset + 3]));
+            }
+            start = end;
+        }
+        return result.ToImmutable();
+    }
+
+    private static long ArgumentUnits(string value)
+    {
+        return Math.Max((2L * value.Length) + 3, (long)Encoding.UTF8.GetByteCount(value) + 1);
+    }
+
+    private static string[] NulFields(string output, int count)
+    {
+        string[] fields = output.Split('\0');
+        Require(fields.Length == count + 1 && fields[^1].Length == 0, "filesystem_framing");
+        return fields[..^1];
+    }
+
     internal static bool IsAbsoluteLinuxPath(string path)
     {
         return path.StartsWith('/') && !path.Contains("//", StringComparison.Ordinal) &&
@@ -176,9 +230,14 @@ public sealed partial class LocalDockerResourceObserver
 
     private async Task<string> RunAsync(string[] args, CancellationToken token)
     {
+        return (await RunRawAsync(args, token).ConfigureAwait(false)).Trim();
+    }
+
+    private async Task<string> RunRawAsync(string[] args, CancellationToken token)
+    {
         BackupProcessResult result = await _process.RunAsync(args, token).ConfigureAwait(false);
         Require(result.ExitCode == 0, "docker_process");
-        return result.StandardOutput.Trim();
+        return result.StandardOutput;
     }
     [GeneratedRegex("^[0-9a-f]{64}$", RegexOptions.CultureInvariant)] private static partial Regex Hash();
     [GeneratedRegex("^npipe:/+\\./pipe/[A-Za-z0-9_.-]+$", RegexOptions.CultureInvariant)] private static partial Regex LocalPipe();

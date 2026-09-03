@@ -32,13 +32,14 @@ Publication file parents must already exist with owner-only access (the current
 Windows owner has effective FullControl with no deny rules, or owner-only Unix0700); the console does not
 create or repair these parents for incremental commands. Files are created with
 an explicit owner-only Windows ACL or Unix0600 before any bytes are written.
-`outputPath` must be outside both staging and the final snapshot directory, and
-the two directories must not contain one another. Windows short-name/stream
+`outputPath` must neither be inside nor be an ancestor of staging or the final
+snapshot directory; the two directories must not contain one another. Windows short-name/stream
 notation is refused; normalized casing and dot segments cannot bypass collisions.
 
 Initial `admissionPath` must be a new protected output path outside staging and
-final artifacts, distinct from `outputPath` after canonical comparison. Its
-local copy is not proof that the journal committed. If setup leaves a bare lock/root
+final artifacts, and cannot be their ancestor. Admission and result file paths
+must also be distinct and non-nested after canonical comparison. The local
+admission copy is not proof that the journal committed. If setup leaves a bare lock/root
 or admission file but the journal has no admitted run, stop for explicit setup
 recovery or an approved new root. Do not delete or adopt that state automatically.
 Resume never recreates missing/replaced roots or locks.

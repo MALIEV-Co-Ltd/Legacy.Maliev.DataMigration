@@ -55,6 +55,7 @@ internal sealed class FakeDockerProcess : IReadOnlyDockerProcess
 {
     internal bool ChangeOnRepeat;
     internal string? Failure;
+    internal Func<IReadOnlyList<string>, string, BackupProcessResult>? BatchResult;
     internal readonly List<IReadOnlyList<string>> Commands = [];
     private int _containers;
     public Task<BackupProcessResult> RunAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
@@ -67,6 +68,15 @@ internal sealed class FakeDockerProcess : IReadOnlyDockerProcess
         if (args[0] == "context") { return Result(Failure == "remote-context" ? "ssh://remote" : "npipe:////./pipe/dockerDesktopLinuxEngine"); }
         if (args[0] == "exec")
         {
+            if (args.Contains("--zero") || args.Contains("--printf=%n\\0%d\\0%i\\0%F\\0"))
+            {
+                string[] paths = args[(Array.IndexOf(args, "--") + 1)..];
+                string output = args.Contains("readlink")
+                    ? string.Concat(paths.Select(item => (Failure == "parent-symlink" ? "/redirected" : item) + "\0"))
+                    : string.Concat(paths.Select(item => item + "\0" + "7\0" + (Failure == "stat-inode" ? "0" : "903") + "\0" +
+                        (Failure == "stat-symlink" ? "symbolic link" : "regular file") + "\0"));
+                return Task.FromResult(BatchResult?.Invoke(arguments, output) ?? new BackupProcessResult(0, output, ""));
+            }
             string path = args[^1];
             if (args.Contains("readlink")) { return Result(Failure == "parent-symlink" ? "/redirected" : path); }
             string type = Failure == "stat-symlink" ? "symbolic link" : path is "/" or "/backup" ? "directory" : "regular file";

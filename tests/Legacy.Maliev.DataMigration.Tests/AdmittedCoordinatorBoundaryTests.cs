@@ -1,8 +1,138 @@
+using System.Text;
+using System.Text.Json;
+
 namespace Legacy.Maliev.DataMigration.Tests;
 
 [Collection(LocalSnapshotIoTestGroup.Name)]
 public sealed class AdmittedCoordinatorBoundaryTests
 {
+    [WindowsLocalRunTheory]
+    [InlineData("admission")]
+    [InlineData("identity")]
+    [InlineData("owner")]
+    [InlineData("attempt")]
+    [InlineData("fence")]
+    [InlineData("expired")]
+    [InlineData("stale")]
+    [InlineData("future")]
+    [InlineData("offset")]
+    [InlineData("status")]
+    [InlineData("shadow")]
+    [InlineData("checkpoints")]
+    public async Task SigningSnapshot_InvalidAfterFirstArtifact_RejectsBeforeNewSignatureOrPublication(string fault)
+    {
+        using var harness = await AdmittedCoordinatorTestHarness.CreateAsync();
+        var signer = new CountingSigner(harness.Data.Signers[2]);
+        harness.SignerOverride = signer;
+        string first = DatabaseInventory.ActiveDatabases[0], second = DatabaseInventory.ActiveDatabases[1];
+        byte[]? original = null;
+        harness.Local.OnVerify = (database, _) =>
+        {
+            if (database == first)
+            {
+                harness.RunJournal.SnapshotTransform = snapshot =>
+                {
+                    original = File.ReadAllBytes(harness.Archive(first));
+                    return fault switch
+                    {
+                        "admission" => snapshot with { Admission = InitialMigrationAdmission.Parse(snapshot.Admission.ExactJson + " ") },
+                        "identity" => snapshot with { Baseline = snapshot.Baseline with { Identity = snapshot.Baseline.Identity with { RunId = Guid.NewGuid() } } },
+                        "owner" => snapshot with { Baseline = snapshot.Baseline with { LeaseOwner = "other" } },
+                        "attempt" => snapshot with { Baseline = snapshot.Baseline with { LeaseAttempt = snapshot.Baseline.LeaseAttempt + 1 } },
+                        "fence" => snapshot with { Baseline = snapshot.Baseline with { FencingToken = Guid.NewGuid() } },
+                        "expired" => snapshot with { LeaseExpiresAtUtc = snapshot.ObservedAtUtc },
+                        "stale" => snapshot with { ObservedAtUtc = harness.Data.AdmittedAt.AddMinutes(-1) },
+                        "future" => snapshot with { ObservedAtUtc = DateTimeOffset.UtcNow.AddMinutes(1) },
+                        "offset" => snapshot with { ObservedAtUtc = snapshot.ObservedAtUtc.ToOffset(TimeSpan.FromHours(1)) },
+                        "status" => snapshot with { Baseline = snapshot.Baseline with { Status = "failed" } },
+                        "shadow" => snapshot with { Baseline = snapshot.Baseline with { Shadows = [.. snapshot.Baseline.Shadows.Where(item => item.Shadow.Database != second)] } },
+                        "checkpoints" => snapshot with { Baseline = snapshot.Baseline with { Checkpoints = [] } },
+                        _ => throw new InvalidOperationException(),
+                    };
+                };
+            }
+            return Task.CompletedTask;
+        };
+        _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => harness.Coordinator().ExecuteInitialAsync(harness.Authority, default));
+        Assert.NotNull(original);
+        Assert.Equal(original, await File.ReadAllBytesAsync(harness.Archive(first)));
+        Assert.Equal(1, signer.Checkpoints);
+        Assert.Equal(0, signer.Completions);
+        _ = Assert.Single(harness.RunJournal.Checkpoints);
+        Assert.False(File.Exists(harness.Archive(second)));
+        Assert.False(Directory.Exists(harness.Output));
+    }
+
+    private sealed class CountingSigner(IMigrationEvidenceSigner inner) : IMigrationEvidenceSigner
+    {
+        internal int Checkpoints, Completions;
+        public string KeyId => inner.KeyId;
+        public string PublicKeyFingerprintSha256 => inner.PublicKeyFingerprintSha256;
+        public byte[] Sign(ReadOnlySpan<byte> payload)
+        {
+            if (payload.StartsWith("legacy-maliev-database-checkpoint-v1\0"u8)) { Checkpoints++; }
+            if (payload.StartsWith("legacy-maliev-migration-success-v1\0"u8)) { Completions++; }
+            return inner.Sign(payload);
+        }
+    }
+
+    [WindowsLocalRunFact]
+    public async Task Initial_JournalClockBehindHost_SignsCheckpointInJournalClockDomain()
+    {
+        using var harness = await AdmittedCoordinatorTestHarness.CreateAsync();
+        DateTimeOffset observed = harness.Data.AdmittedAt.AddMilliseconds(500);
+        harness.RunJournal.ObservedAtUtc = observed;
+        DatabaseMigrationCheckpoint? candidate = null;
+        harness.RunJournal.ValidateCheckpoint = checkpoint =>
+        {
+            candidate = checkpoint;
+            RecoveryJournalBaseline baseline = harness.RunJournal.Baseline();
+            string json = Encoding.UTF8.GetString(MigrationEvidenceAttestation.SerializeCheckpoint(checkpoint));
+            _ = harness.Data.Verifier.GetPermittedOperations(harness.Data.Admission,
+                baseline with { Checkpoints = baseline.Checkpoints.Add(new(checkpoint.Database.Database, json)) }, observed);
+        };
+        Exception? failure = await Record.ExceptionAsync(() => harness.Coordinator().ExecuteInitialAsync(harness.Authority, default));
+        Assert.NotNull(candidate);
+        // All other terms of the production checkpoint gate hold; only the clock-domain upper bound can reject.
+        Assert.Equal(RecoveryAuthorityTestData.Roles.ExecutionKeyId, candidate.AttestationKeyId);
+        Assert.True(candidate.CommittedAtUtc >= harness.Data.AdmittedAt);
+        new DatabaseMigrationCheckpointVerifier(new(harness.Data.AdmissionPayload.Identity, harness.Plan, harness.Data.Trust))
+            .Validate(candidate, harness.RunJournal.Shadows[candidate.Database.Database]);
+        Assert.True(failure is null, $"checkpoint={candidate.CommittedAtUtc:O}; journal={observed:O}; failure={failure}");
+        Assert.All(harness.RunJournal.Checkpoints.Values, checkpoint => Assert.Equal(observed, checkpoint.CommittedAtUtc));
+    }
+
+    [WindowsLocalRunFact]
+    public async Task Completion_JournalClockBehindHost_SignsAfterFullCheckpointSetInJournalClockDomain()
+    {
+        using var harness = await AdmittedCoordinatorTestHarness.CreateAsync();
+        DateTimeOffset observed = default;
+        harness.Local.OnVerify = (database, _) =>
+        {
+            if (database == DatabaseInventory.ActiveDatabases[^1])
+            {
+                observed = harness.RunJournal.Checkpoints.Values.Max(checkpoint => checkpoint.CommittedAtUtc).AddTicks(1);
+                harness.RunJournal.ObservedAtUtc = observed;
+            }
+            return Task.CompletedTask;
+        };
+        MigrationExecutionReceipt? candidate = null;
+        harness.RunJournal.ValidateCompletion = receipt =>
+        {
+            candidate = receipt;
+            RecoveryJournalBaseline baseline = harness.RunJournal.Baseline() with
+            { Status = "completed", TerminalReceiptSignedJson = JsonSerializer.Serialize(receipt) };
+            _ = AdmittedSequentialMigrationCoordinator.ValidateCompletion(harness.Data.Admission,
+                new(new(harness.Plan.SourceCommitSha, harness.Data.AdmissionPayload.Identity.RunnerDigestSha256), RecoveryAuthorityTestData.Roles, harness.Data.Trust),
+                new(harness.Data.Admission, baseline, observed, harness.RunJournal.Lease!.ExpiresAtUtc));
+        };
+        Exception? failure = await Record.ExceptionAsync(() => harness.Coordinator().ExecuteInitialAsync(harness.Authority, default));
+        Assert.NotNull(candidate);
+        Assert.All(harness.RunJournal.Checkpoints.Values, checkpoint => Assert.True(checkpoint.CommittedAtUtc <= observed));
+        Assert.True(failure is null, $"completion={candidate.CompletedAtUtc:O}; journal={observed:O}; failure={failure}");
+        Assert.Equal(observed, candidate.CompletedAtUtc);
+    }
+
     [WindowsLocalRunTheory]
     [InlineData("publication")]
     [InlineData("authentication")]
@@ -66,7 +196,7 @@ public sealed class AdmittedCoordinatorBoundaryTests
     }
 
     private sealed class CorruptingDump(string database, Action disposed)
-        : MemoryStream(System.Text.Encoding.UTF8.GetBytes("synthetic:" + database))
+        : MemoryStream(Encoding.UTF8.GetBytes("synthetic:" + database))
     {
         public override ValueTask DisposeAsync() { disposed(); return base.DisposeAsync(); }
     }

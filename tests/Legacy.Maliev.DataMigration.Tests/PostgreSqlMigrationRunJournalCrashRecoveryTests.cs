@@ -168,16 +168,21 @@ public sealed class PostgreSqlMigrationRunJournalCrashRecoveryTests(PostgreSqlAd
         MigrationRunIdentity identity = Identity();
 
         MigrationRunStartResult acquired = await first.TryBeginAsync(identity, CancellationToken.None);
-        DateTimeOffset beforeHeartbeat = DateTimeOffset.UtcNow;
+        await using var observer = new NpgsqlConnection(fixture.ControlConnectionString);
+        await observer.OpenAsync();
+        await using var serverTime = new NpgsqlCommand("SELECT clock_timestamp()", observer);
+        DateTimeOffset beforeHeartbeat = new((DateTime)(await serverTime.ExecuteScalarAsync())!);
         clock.Advance(TimeSpan.FromSeconds(50));
         MigrationRunLease renewed = await first.HeartbeatAsync(acquired.Lease!, CancellationToken.None);
+        DateTimeOffset afterHeartbeat = new((DateTime)(await serverTime.ExecuteScalarAsync())!);
         clock.Advance(TimeSpan.FromSeconds(20));
         MigrationRunStartResult blocked = await second.TryBeginAsync(identity, CancellationToken.None);
 
         Assert.Equal(MigrationRunStartStatus.InProgress, blocked.Status);
         Assert.Equal("worker-a", renewed.Owner);
         Assert.Equal(1, renewed.Attempt);
-        Assert.InRange(renewed.ExpiresAtUtc, beforeHeartbeat.AddSeconds(60), DateTimeOffset.UtcNow.AddSeconds(60));
+        Assert.True(renewed.ExpiresAtUtc > acquired.Lease!.ExpiresAtUtc);
+        Assert.InRange(renewed.ExpiresAtUtc, beforeHeartbeat.AddSeconds(60), afterHeartbeat.AddSeconds(60));
     }
 
     [Fact]

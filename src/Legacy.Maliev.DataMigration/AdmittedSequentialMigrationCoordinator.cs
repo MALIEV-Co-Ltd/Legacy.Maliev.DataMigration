@@ -155,6 +155,7 @@ public sealed partial class AdmittedSequentialMigrationCoordinator : IAsyncDispo
             IReadOnlyList<ShadowDatabase> registered = await _runtime.Journal.GetPendingShadowsAsync(heartbeat.CurrentLease, executionToken).ConfigureAwait(false);
             IReadOnlyList<DatabaseMigrationCheckpoint> persisted = await _runtime.Journal.GetCheckpointsAsync(heartbeat.CurrentLease, executionToken).ConfigureAwait(false);
             ValidateRegisteredState(registered, persisted, snapshot?.Baseline);
+            List<DatabaseMigrationCheckpoint> expectedCheckpoints = [.. persisted];
 
             foreach (DatabaseSchemaPlan plan in _plan.Databases.OrderBy(item => item.Database, StringComparer.Ordinal))
             {
@@ -194,8 +195,10 @@ public sealed partial class AdmittedSequentialMigrationCoordinator : IAsyncDispo
                     if (checkpoint is null)
                     {
                         await GuardAsync(executionToken).ConfigureAwait(false);
-                        checkpoint = SignCheckpoint(shadow, reconciled);
+                        DateTimeOffset committedAt = await ReadSigningTimeAsync(heartbeat.CurrentLease, expectedCheckpoints, shadow, executionToken).ConfigureAwait(false);
+                        checkpoint = SignCheckpoint(shadow, reconciled, committedAt);
                         await _runtime.Journal.RecordCheckpointAsync(heartbeat.CurrentLease, checkpoint, executionToken).ConfigureAwait(false);
+                        expectedCheckpoints.Add(checkpoint);
                     }
                     await GuardAsync(executionToken).ConfigureAwait(false);
                     await store.DeliverWithProgressAsync(checkpoint, localVerified =>
@@ -221,7 +224,8 @@ public sealed partial class AdmittedSequentialMigrationCoordinator : IAsyncDispo
             }
             IReadOnlyList<DatabaseMigrationCheckpoint> full = await _runtime.Journal.GetCheckpointsAsync(heartbeat.CurrentLease, executionToken).ConfigureAwait(false);
             Require(SameCheckpoints(full, verified) && SameCheckpoints(await store.ReadVerifiedCheckpointsAsync(executionToken).ConfigureAwait(false), full), "terminal_checkpoint_divergence");
-            MigrationExecutionReceipt receipt = SignCompletion(full);
+            DateTimeOffset completedAt = await ReadSigningTimeAsync(heartbeat.CurrentLease, full, null, executionToken).ConfigureAwait(false);
+            MigrationExecutionReceipt receipt = SignCompletion(full, completedAt);
             await heartbeat.StopAsync().ConfigureAwait(false);
             heartbeat.ThrowIfFailed();
             await GuardAsync(token).ConfigureAwait(false);

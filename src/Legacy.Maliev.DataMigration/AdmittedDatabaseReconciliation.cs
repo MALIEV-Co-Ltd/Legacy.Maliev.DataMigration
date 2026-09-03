@@ -103,24 +103,44 @@ public sealed partial class AdmittedSequentialMigrationCoordinator
         }
     }
 
-    private DatabaseMigrationCheckpoint SignCheckpoint(ShadowDatabase shadow, DatabaseReconciliationEvidence evidence)
+    private async Task<DateTimeOffset> ReadSigningTimeAsync(MigrationRunLease lease, IReadOnlyList<DatabaseMigrationCheckpoint> expected,
+        ShadowDatabase? shadow, CancellationToken token)
+    {
+        // Observe the journal clock after the work being attested, never derive it from a prior lease.
+        // This read grants no write authority; locked journal writes must still validate the live lease.
+        RecoveryJournalSnapshot snapshot = await _runtime.Journal.ReadRecoverySnapshotAsync(_admission.Payload.Identity, token).ConfigureAwait(false);
+        RecoveryJournalBaseline baseline = snapshot.Baseline;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        Require(snapshot.Admission.ExactJson == _admission.ExactJson && baseline.Identity == _admission.Payload.Identity &&
+            lease.Identity == baseline.Identity && baseline.Status == "in_progress" && baseline.LeaseOwner == lease.Owner &&
+            baseline.LeaseAttempt == lease.Attempt && baseline.FencingToken == lease.FencingToken &&
+            snapshot.LeaseExpiresAtUtc > snapshot.ObservedAtUtc, "signing_snapshot_invalid");
+        Require(snapshot.ObservedAtUtc.Offset == TimeSpan.Zero && snapshot.ObservedAtUtc >= _admission.Payload.AdmittedAtUtc &&
+            snapshot.ObservedAtUtc <= now && now - snapshot.ObservedAtUtc <= _admission.Payload.MaximumObservationAge, "signing_snapshot_stale");
+        _ = _authorityVerifier.GetPermittedOperations(_admission, baseline, snapshot.ObservedAtUtc);
+        Require(SameCheckpoints(ReadCheckpoints(baseline), expected) &&
+            (shadow is null || baseline.Shadows.Count(item => item.Shadow == shadow) == 1), "signing_snapshot_divergence");
+        return snapshot.ObservedAtUtc;
+    }
+
+    private DatabaseMigrationCheckpoint SignCheckpoint(ShadowDatabase shadow, DatabaseReconciliationEvidence evidence, DateTimeOffset committedAt)
     {
         var database = new MigratedShadowDatabase(shadow.Database, shadow.Name, evidence.Tables.Sum(item => item.RowCount), GuardedShadowMigrationRunner.HashEvidence(evidence.Tables))
         { OwnerAttempt = shadow.OwnerAttempt, FencingToken = shadow.FencingToken };
-        var unsigned = new DatabaseMigrationCheckpoint(_admission.Payload.Identity, shadow, database, evidence, DateTimeOffset.UtcNow, _signer.KeyId, null);
+        var unsigned = new DatabaseMigrationCheckpoint(_admission.Payload.Identity, shadow, database, evidence, committedAt, _signer.KeyId, null);
         var signed = unsigned with { AttestationSignature = Convert.ToBase64String(_signer.Sign(MigrationEvidenceAttestation.CreatePayload(unsigned))) };
         _checkpoints.Validate(signed, shadow);
         return signed;
     }
 
-    private MigrationExecutionReceipt SignCompletion(IReadOnlyList<DatabaseMigrationCheckpoint> checkpoints)
+    private MigrationExecutionReceipt SignCompletion(IReadOnlyList<DatabaseMigrationCheckpoint> checkpoints, DateTimeOffset completedAt)
     {
         Require(checkpoints.Select(item => item.Database.Database).Order(StringComparer.Ordinal).SequenceEqual(DatabaseInventory.ActiveDatabases.Order(StringComparer.Ordinal)),
             "terminal_checkpoint_inventory_incomplete");
         MigrationRunIdentity identity = _admission.Payload.Identity;
         DatabaseMigrationCheckpoint[] sorted = [.. checkpoints.OrderBy(item => item.Database.Database, StringComparer.Ordinal)];
         var unsigned = new MigrationExecutionReceipt(identity.RunId, identity.SourceCommitSha, identity.SchemaPlanSha256, identity.BackupManifestSha256,
-            identity.RunnerDigestSha256, identity.TargetGeneration, DateTimeOffset.UtcNow, sorted.Select(item => item.Database).ToArray(),
+            identity.RunnerDigestSha256, identity.TargetGeneration, completedAt, sorted.Select(item => item.Database).ToArray(),
             sorted.Select(item => item.Reconciliation).ToArray(), _signer.KeyId, null);
         byte[] payload = MigrationEvidenceAttestation.CreatePayload(unsigned), signature = _signer.Sign(payload);
         Require(_verification.TrustStore.Verify(_signer.KeyId, payload, signature), "execution_signer_invalid");

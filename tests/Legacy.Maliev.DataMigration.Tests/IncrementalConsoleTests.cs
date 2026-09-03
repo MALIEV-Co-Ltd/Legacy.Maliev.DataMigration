@@ -335,6 +335,31 @@ public sealed class IncrementalConsoleTests : IDisposable
     }
 
     [Theory]
+    [InlineData("outputPath", "artifactRoot")]
+    [InlineData("outputPath", "outputDirectory")]
+    [InlineData("admissionPath", "artifactRoot")]
+    [InlineData("admissionPath", "outputDirectory")]
+    public async Task PublicationDestinations_FileAncestorOfArtifactDirectoryRejectedBeforeFresh(string destination, string nestedDirectory)
+    {
+        using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
+        fixture.Authority.Dispose();
+        string futureFile = Path.Combine(_root, "future-file");
+        fixture.StagingOverride = nestedDirectory == "artifactRoot" ? Path.Combine(futureFile, "staging") : Path.Combine(_root, "new-staging");
+        if (nestedDirectory == "outputDirectory") { fixture.OutputOverride = Path.Combine(futureFile, "final"); }
+        string config = await FixtureAsync(fixture, allowExecution: true);
+        JsonObject json = JsonNode.Parse(await File.ReadAllTextAsync(config))!.AsObject();
+        json["incremental"]![destination] = futureFile.ToUpperInvariant();
+        await File.WriteAllTextAsync(config, json.ToJsonString());
+        var (Code, Output, Error) = await RunAsync("execute-shadow", config, new Runtime(fixture));
+        Assert.False(Directory.Exists(fixture.Staging));
+        Assert.False(Directory.Exists(fixture.Output));
+        Assert.False(Directory.Exists(futureFile));
+        Assert.False(File.Exists(futureFile));
+        Assert.Equal(0, fixture.RunJournal.InitialCalls);
+        Assert.Equal(65, Code);
+    }
+
+    [Theory]
     [InlineData("same")]
     [InlineData("case")]
     [InlineData("dot-segment")]

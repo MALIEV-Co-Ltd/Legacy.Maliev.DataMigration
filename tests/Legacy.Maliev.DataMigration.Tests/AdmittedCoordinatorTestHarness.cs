@@ -32,6 +32,7 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
     internal Exception? CompleteSourceFailure { get; set; }
     internal int SourceRowId { get; set; } = 1;
     internal Func<ValueTask> Cleanup = () => ValueTask.CompletedTask;
+    internal IMigrationEvidenceSigner? SignerOverride { get; set; }
     private readonly byte[] _key = RandomNumberGenerator.GetBytes(32);
     internal ReadOnlyMemory<byte> RootKey => _key;
 
@@ -65,7 +66,7 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
             (shadow, _) => FailSettlement ? Task.FromException<CloudNativePgShadowSettlement>(new IOException("unsettled")) : Task.FromResult(new CloudNativePgShadowSettlement(shadow, "uid", "1", 1, true)),
             () => Cleanup());
         return new(Data.Admission, new(new(Plan.SourceCommitSha, Data.AdmissionPayload.Identity.RunnerDigestSha256), RecoveryAuthorityTestData.Roles, Data.Trust),
-            Data.Signers[2], runtime, "coordinator-test", _key, Output, value => { Progress.Add(value); progress?.Invoke(value); });
+            SignerOverride ?? Data.Signers[2], runtime, "coordinator-test", _key, Output, value => { Progress.Add(value); progress?.Invoke(value); });
     }
 
     internal (SourceContinuityAttestation, ResumeAuthorizationReceipt) ResumeAuthority(RecoveryJournalBaseline? baseline = null)
@@ -127,6 +128,10 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
         internal int InitialCalls, ResumeCalls, LegacyCalls;
         internal int Heartbeats;
         internal Func<Task>? HeartbeatWait { get; set; }
+        internal DateTimeOffset? ObservedAtUtc { get; set; }
+        internal Action<DatabaseMigrationCheckpoint>? ValidateCheckpoint { get; set; }
+        internal Action<MigrationExecutionReceipt>? ValidateCompletion { get; set; }
+        internal Func<RecoveryJournalSnapshot, RecoveryJournalSnapshot>? SnapshotTransform { get; set; }
         internal RecoveryJournalBaseline Baseline()
         {
             return new(owner.Data.AdmissionPayload.Identity, owner.Data.Admission.ComputeSha256(), Status,
@@ -136,7 +141,11 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
         }
 
         public Task<RecoveryJournalSnapshot> ReadRecoverySnapshotAsync(MigrationRunIdentity identity, CancellationToken cancellationToken)
-        { owner.AuthorityBindingHeld(); return Task.FromResult(new RecoveryJournalSnapshot(owner.Data.Admission, Baseline(), DateTimeOffset.UtcNow, Lease?.ExpiresAtUtc)); }
+        {
+            owner.AuthorityBindingHeld();
+            var snapshot = new RecoveryJournalSnapshot(owner.Data.Admission, Baseline(), ObservedAtUtc ?? DateTimeOffset.UtcNow, Lease?.ExpiresAtUtc);
+            return Task.FromResult(SnapshotTransform?.Invoke(snapshot) ?? snapshot);
+        }
         public Task<MigrationRunLease> AcquireInitialAsync(InitialMigrationAdmission admission, RestoredSourceObservation source, LocalExecutionBinding localBinding, CancellationToken cancellationToken)
         {
             owner.AuthorityBindingHeld(); InitialCalls++;
@@ -173,6 +182,7 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
         {
             owner.AuthorityBindingHeld();
             new DatabaseMigrationCheckpointVerifier(new(owner.Data.AdmissionPayload.Identity, owner.Plan, owner.Data.Trust)).Validate(checkpoint, Shadows[checkpoint.Database.Database]);
+            ValidateCheckpoint?.Invoke(checkpoint);
             Checkpoints.Add(checkpoint.Database.Database, checkpoint);
             if (LoseCheckpointAck) { LoseCheckpointAck = false; throw new IOException("checkpoint acknowledgement lost"); }
             return Task.CompletedTask;
@@ -192,6 +202,7 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
         {
             owner.AuthorityBindingHeld(); Assert.Equal(DatabaseInventory.ActiveDatabases.Count, Checkpoints.Count);
             Assert.Equal(DatabaseInventory.ActiveDatabases.Count, Directory.EnumerateDirectories(owner.Staging).Count(path => !Path.GetFileName(path).StartsWith('.')));
+            ValidateCompletion?.Invoke(receipt);
             Receipt = receipt; Status = "completed";
             if (LoseCompletionAck) { LoseCompletionAck = false; throw new IOException("completion acknowledgement lost"); }
             return Task.CompletedTask;
