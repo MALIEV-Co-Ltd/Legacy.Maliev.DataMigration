@@ -1247,21 +1247,11 @@ public static partial class MigrationConsole
         Exception? publicationFailure = null;
         try
         {
-            await using (FileStream stream = new(
-                temporaryPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                64 * 1024,
-                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            await using (FileStream stream = CreateProtectedPublicationFile(temporaryPath))
             {
                 await write(stream).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
-            }
-            if (!OperatingSystem.IsWindows())
-            {
-                File.SetUnixFileMode(temporaryPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
             File.Move(temporaryPath, fullPath, overwrite: false);
         }
@@ -1298,6 +1288,30 @@ public static partial class MigrationConsole
     internal static Task WriteNewJsonForTestsAsync<T>(string path, T value, CancellationToken cancellationToken)
     {
         return WriteNewJsonAsync(path, value, cancellationToken);
+    }
+
+    private static FileStream CreateProtectedPublicationFile(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            using WindowsIdentity current = WindowsIdentity.GetCurrent();
+            SecurityIdentifier owner = current.User ?? throw new UnauthorizedAccessException();
+            var security = new FileSecurity();
+            security.SetOwner(owner);
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            security.AddAccessRule(new FileSystemAccessRule(owner, FileSystemRights.FullControl, AccessControlType.Allow));
+            return new FileInfo(path).Create(FileMode.CreateNew, FileSystemRights.Read | FileSystemRights.Write,
+                FileShare.None, 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough, security);
+        }
+        return new FileStream(path, new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+            BufferSize = 64 * 1024,
+            Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+            UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+        });
     }
 
     private sealed record MigrationConsoleConfiguration(
@@ -1578,6 +1592,41 @@ internal sealed class DefaultExact25BackupRuntimeFactory : IExact25BackupRuntime
 
 internal static class OwnerProtectedFilePolicy
 {
+    internal static void ValidatePublicationParent(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        var parent = new DirectoryInfo(Path.GetDirectoryName(fullPath)!);
+        bool protectedParent = parent.Exists && HasNoLinkAncestors(fullPath);
+        if (protectedParent && OperatingSystem.IsWindows())
+        {
+            protectedParent = IsProtectedWindowsPublicationParent(parent);
+        }
+        else if (protectedParent)
+        {
+            UnixFileMode mode = File.GetUnixFileMode(parent.FullName);
+            const UnixFileMode ownerMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            const UnixFileMode otherMode = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+                UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+            protectedParent = (mode & ownerMode) == ownerMode && (mode & otherMode) == 0 && UnixPathIsOwnedByEffectiveUser(parent.FullName);
+        }
+        if (!protectedParent)
+        { throw new MigrationConsoleException("publication_parent_unprotected", "An existing owner-protected publication parent is required; it is never repaired automatically."); }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static bool IsProtectedWindowsPublicationParent(DirectoryInfo parent)
+    {
+        using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+        SecurityIdentifier? current = identity.User;
+        DirectorySecurity security = parent.GetAccessControl();
+        FileSystemAccessRule[] rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToArray();
+        return current is not null && security.GetOwner(typeof(SecurityIdentifier)) is SecurityIdentifier owner && owner.Equals(current) &&
+            rules.All(rule => rule.AccessControlType == AccessControlType.Allow && rule.IdentityReference.Equals(current)) &&
+            rules.Any(rule => rule.AccessControlType == AccessControlType.Allow && rule.IdentityReference.Equals(current) &&
+                (rule.PropagationFlags & PropagationFlags.InheritOnly) == 0 &&
+                (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl);
+    }
+
     public static FileStream OpenRead(string path, string errorCode)
     {
         string fullPath = Path.GetFullPath(path);

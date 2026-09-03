@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Legacy.Maliev.DataMigration.Console;
 
 namespace Legacy.Maliev.DataMigration.Tests;
@@ -308,6 +310,101 @@ public sealed class IncrementalConsoleTests : IDisposable
     }
 
     [Theory]
+    [InlineData("execute-shadow")]
+    [InlineData("resume-shadow")]
+    [InlineData("plan-incremental")]
+    [InlineData("plan-resume")]
+    [InlineData("authorize-resume")]
+    [InlineData("finalize-local")]
+    public async Task PublicationDestinations_ResultInsideFinalRejectedBeforeRuntime(string mode)
+    {
+        using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
+        fixture.Authority.Dispose(); fixture.StagingOverride = Path.Combine(_root, "new-staging");
+        string config = await FixtureAsync(fixture, allowExecution: true, allowSigning: true);
+        JsonObject json = JsonNode.Parse(await File.ReadAllTextAsync(config))!.AsObject();
+        json["incremental"]!["outputPath"] = Path.Combine(fixture.Output, "result.json");
+        json["incremental"]!["continuityPath"] = "must-not-be-read";
+        await File.WriteAllTextAsync(config, json.ToJsonString());
+        var runtime = new Runtime(fixture) { Forbid = true };
+        var (Code, Output, Error) = await RunAsync(mode, config, runtime);
+        Assert.Equal(65, Code);
+        Assert.Contains("incremental_local_path_invalid", Error);
+        Assert.False(Directory.Exists(fixture.Staging));
+        Assert.False(Directory.Exists(fixture.Output));
+        Assert.Equal(0, fixture.RunJournal.InitialCalls);
+    }
+
+    [Theory]
+    [InlineData("same")]
+    [InlineData("case")]
+    [InlineData("dot-segment")]
+    [InlineData("trailing-dot")]
+    [InlineData("trailing-space")]
+    [InlineData("stream")]
+    [InlineData("short-name")]
+    public async Task PublicationDestinations_AdmissionResultAliasRejectedBeforeFresh(string alias)
+    {
+        using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
+        fixture.Authority.Dispose(); fixture.StagingOverride = Path.Combine(_root, "new-staging");
+        string config = await FixtureAsync(fixture, allowExecution: true);
+        JsonObject json = JsonNode.Parse(await File.ReadAllTextAsync(config))!.AsObject();
+        string admission = json["incremental"]!["admissionPath"]!.GetValue<string>();
+        json["incremental"]!["outputPath"] = alias switch
+        {
+            "case" => admission.ToUpperInvariant(),
+            "dot-segment" => Path.Combine(_root, ".", "new-admission.json"),
+            "trailing-dot" => admission + ".",
+            "trailing-space" => admission + " ",
+            "stream" => admission + ":result",
+            "short-name" => Path.Combine(_root, "NEW-AD~1.JSO"),
+            _ => admission,
+        };
+        await File.WriteAllTextAsync(config, json.ToJsonString());
+        var (Code, Output, Error) = await RunAsync("execute-shadow", config, new Runtime(fixture));
+        Assert.Equal(65, Code);
+        Assert.False(Directory.Exists(fixture.Staging));
+        Assert.False(File.Exists(admission));
+        Assert.Equal(0, fixture.RunJournal.InitialCalls);
+    }
+
+    [Theory]
+    [InlineData("admissionPath")]
+    [InlineData("outputPath")]
+    [InlineData("denied-outputPath")]
+    public async Task PublicationDestinations_InheritedWindowsAclRejectedWithoutParentRepairBeforeFresh(string destination)
+    {
+        if (!OperatingSystem.IsWindows()) { return; }
+        using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
+        fixture.Authority.Dispose(); fixture.StagingOverride = Path.Combine(_root, "new-staging");
+        string config = await FixtureAsync(fixture, allowExecution: true);
+        string unsafeParent = Path.Combine(_root, "unsafe-parent");
+        DirectoryInfo parent = Directory.CreateDirectory(unsafeParent);
+        DirectorySecurity security = parent.GetAccessControl();
+        if (destination == "denied-outputPath")
+        {
+            using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+            security.AddAccessRule(new FileSystemAccessRule(identity.User!, FileSystemRights.WriteData, AccessControlType.Deny));
+        }
+        else
+        {
+            security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+                FileSystemRights.ReadAndExecute, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+        }
+        parent.SetAccessControl(security);
+        byte[] before = parent.GetAccessControl().GetSecurityDescriptorBinaryForm();
+        JsonObject json = JsonNode.Parse(await File.ReadAllTextAsync(config))!.AsObject();
+        json["incremental"]![destination == "admissionPath" ? "admissionPath" : "outputPath"] = Path.Combine(unsafeParent, "output.json");
+        await File.WriteAllTextAsync(config, json.ToJsonString());
+        var (Code, Output, Error) = await RunAsync("execute-shadow", config, new Runtime(fixture));
+        Assert.Equal(65, Code);
+        Assert.Contains("publication_parent_unprotected", Error);
+        Assert.False(Directory.Exists(fixture.Staging));
+        Assert.Equal(0, fixture.RunJournal.InitialCalls);
+        Assert.Empty(Directory.GetFileSystemEntries(unsafeParent));
+        Assert.Equal(before, parent.GetAccessControl().GetSecurityDescriptorBinaryForm());
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Diagnostics_OnlySafeMetadataAndOriginalFailureCode(bool reconciliation)
@@ -361,6 +458,8 @@ public sealed class IncrementalConsoleTests : IDisposable
         fixture.FailingSourceDatabase = null;
         var resumed = await RunAsync("resume-shadow", config, new Runtime(fixture));
         Assert.True(resumed.Code == 0, resumed.Error);
+        string[] finalInventory = Directory.GetFileSystemEntries(fixture.Output, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray();
+        byte[] publishedResult = await File.ReadAllBytesAsync(Path.Combine(_root, "result.json"));
         Assert.Equal(bytes, await File.ReadAllBytesAsync(archive));
         Assert.Equal(1, fixture.Target.Copies[DatabaseInventory.ActiveDatabases[0]]);
         Assert.Equal(1, fixture.Dump.Counts[DatabaseInventory.ActiveDatabases[0]]);
@@ -374,6 +473,8 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.True(final.Code == 0, final.Error);
         Assert.Contains("\"downloaded\":0", final.Output);
         Assert.Equal(bytes, await File.ReadAllBytesAsync(archive));
+        Assert.Equal(finalInventory, Directory.GetFileSystemEntries(fixture.Output, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(publishedResult, await File.ReadAllBytesAsync(Path.Combine(_root, "result.json")));
     }
 
     [Theory]

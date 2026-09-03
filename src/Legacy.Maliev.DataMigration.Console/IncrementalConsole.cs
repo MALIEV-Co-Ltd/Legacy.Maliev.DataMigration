@@ -82,8 +82,9 @@ public static partial class MigrationConsole
         {
             string admissionOutput = Required(command.AdmissionPath);
             ValidateIncrementalLocalPath(admissionOutput);
-            if (Within(admissionOutput, command.ArtifactRoot) || Within(admissionOutput, command.OutputDirectory))
+            if (Within(admissionOutput, command.ArtifactRoot) || Within(admissionOutput, command.OutputDirectory) || SamePath(admissionOutput, command.OutputPath))
             { throw Invalid("incremental_admission_output_invalid"); }
+            OwnerProtectedFilePolicy.ValidatePublicationParent(admissionOutput);
             if (File.Exists(admissionOutput) || Directory.Exists(admissionOutput) || File.Exists(command.OutputPath) || Directory.Exists(command.OutputPath))
             { throw Invalid("incremental_output_exists"); }
         }
@@ -293,13 +294,17 @@ public static partial class MigrationConsole
     {
         foreach (string path in new[] { command.ArtifactRoot, command.OutputDirectory, command.OutputPath })
         { ValidateIncrementalLocalPath(path); }
-        if (Within(command.OutputDirectory, command.ArtifactRoot) || Within(command.OutputPath, command.ArtifactRoot) ||
+        if (Within(command.OutputDirectory, command.ArtifactRoot) || Within(command.ArtifactRoot, command.OutputDirectory) ||
+            Within(command.OutputPath, command.ArtifactRoot) || Within(command.OutputPath, command.OutputDirectory) ||
             string.IsNullOrWhiteSpace(command.SnapshotId)) { throw Invalid("incremental_local_path_invalid"); }
+        OwnerProtectedFilePolicy.ValidatePublicationParent(command.OutputPath);
     }
 
     private static void ValidateIncrementalLocalPath(string path)
     {
         if (!Path.IsPathFullyQualified(path) || path.StartsWith("\\\\", StringComparison.Ordinal) || Path.GetPathRoot(path) == path) { throw Invalid("incremental_local_path_invalid"); }
+        // Stream and short-name notation must not disguise collisions with signed artifact paths.
+        if (OperatingSystem.IsWindows() && (path.AsSpan(2).Contains(':') || path.Contains('~'))) { throw Invalid("incremental_local_path_invalid"); }
         for (DirectoryInfo? current = new(path); current is not null; current = current.Parent)
         { if (current.Exists && (current.Attributes & FileAttributes.ReparsePoint) != 0) { throw Invalid("incremental_local_path_invalid"); } }
     }

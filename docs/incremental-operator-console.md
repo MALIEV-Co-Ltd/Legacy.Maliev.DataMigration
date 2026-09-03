@@ -28,7 +28,16 @@ All modes require `LEGACY_DEPLOY_ENABLED=false`. No command retries in the backg
 | `resume-shadow` | Requires `allowExecution=true`, original admission, external continuity and the reviewed fresh resume authorization. Reacquires only the original root/lock, revalidates independently and resumes through the coordinator. |
 | `finalize-local` | Requires an exported authenticated completed snapshot, original local root/lock, external root key and full local checkpoint inventory. No execution factory, remote connection, Docker, native dump/restore or execution signer is constructed or requested. Matching lost-response publication replays unchanged. |
 
-Initial `admissionPath` must be a new protected output path outside staging. Its
+Publication file parents must already exist with owner-only access (the current
+Windows owner has effective FullControl with no deny rules, or owner-only Unix0700); the console does not
+create or repair these parents for incremental commands. Files are created with
+an explicit owner-only Windows ACL or Unix0600 before any bytes are written.
+`outputPath` must be outside both staging and the final snapshot directory, and
+the two directories must not contain one another. Windows short-name/stream
+notation is refused; normalized casing and dot segments cannot bypass collisions.
+
+Initial `admissionPath` must be a new protected output path outside staging and
+final artifacts, distinct from `outputPath` after canonical comparison. Its
 local copy is not proof that the journal committed. If setup leaves a bare lock/root
 or admission file but the journal has no admitted run, stop for explicit setup
 recovery or an approved new root. Do not delete or adopt that state automatically.

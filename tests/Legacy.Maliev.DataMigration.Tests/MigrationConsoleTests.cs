@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json;
 using Legacy.Maliev.DataMigration.Console;
 
@@ -434,14 +436,14 @@ public sealed class MigrationConsoleTests : IDisposable
         }
         else
         {
-            var security = new System.Security.AccessControl.FileSecurity();
-            System.Security.Principal.SecurityIdentifier owner = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+            var security = new FileSecurity();
+            SecurityIdentifier owner = WindowsIdentity.GetCurrent().User!;
             security.SetOwner(owner);
             security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-            security.AddAccessRule(new(owner, System.Security.AccessControl.FileSystemRights.FullControl,
-                System.Security.AccessControl.AccessControlType.Allow));
-            security.AddAccessRule(new(new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, null),
-                System.Security.AccessControl.FileSystemRights.Read, System.Security.AccessControl.AccessControlType.Allow));
+            security.AddAccessRule(new(owner, FileSystemRights.FullControl,
+                AccessControlType.Allow));
+            security.AddAccessRule(new(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+                FileSystemRights.Read, AccessControlType.Allow));
             new FileInfo(keyPath).SetAccessControl(security);
         }
         var factory = new FakeExact25BackupRuntimeFactory();
@@ -556,6 +558,48 @@ public sealed class MigrationConsoleTests : IDisposable
     private sealed class FailingJsonValue
     {
         public string Value { get => throw new InvalidOperationException(field); } = "deterministic serialization failure";
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateOnlyJsonPublication_ProtectsTemporaryWindowsFileBeforeSerialization(bool inheritedAccess)
+    {
+        if (!OperatingSystem.IsWindows()) { return; }
+        OwnerProtectedDirectory.CreateNew(_root);
+        var parent = new DirectoryInfo(_root);
+        if (inheritedAccess)
+        {
+            DirectorySecurity acl = parent.GetAccessControl();
+            acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+                FileSystemRights.ReadAndExecute, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+            parent.SetAccessControl(acl);
+        }
+        byte[] parentAcl = parent.GetAccessControl().GetSecurityDescriptorBinaryForm();
+        string path = Path.Combine(_root, "receipt.json");
+        var value = new PublicationAclProbe(_root);
+        await MigrationConsole.WriteNewJsonForTestsAsync(path, value, CancellationToken.None);
+        Assert.True(value.ProtectedBeforeSerialization);
+        Assert.True(new FileInfo(path).GetAccessControl().AreAccessRulesProtected);
+        Assert.Equal(parentAcl, parent.GetAccessControl().GetSecurityDescriptorBinaryForm());
+        using FileStream reader = OwnerProtectedFilePolicy.OpenRead(path, "test_output_unprotected");
+        using JsonDocument document = await JsonDocument.ParseAsync(reader);
+        Assert.Equal("synthetic", document.RootElement.GetProperty("value").GetString());
+    }
+
+    private sealed class PublicationAclProbe(string directory)
+    {
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool ProtectedBeforeSerialization { get; private set; }
+        public string Value
+        {
+            get
+            {
+                if (!OperatingSystem.IsWindows()) { throw new PlatformNotSupportedException(); }
+                ProtectedBeforeSerialization = new FileInfo(Directory.GetFiles(directory, "*.tmp").Single()).GetAccessControl().AreAccessRulesProtected;
+                return "synthetic";
+            }
+        }
     }
 
     private static JsonSerializerOptions JsonOptions { get; } = new(JsonSerializerDefaults.Web) { WriteIndented = true };
