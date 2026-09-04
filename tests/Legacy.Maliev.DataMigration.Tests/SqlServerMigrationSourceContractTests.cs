@@ -142,7 +142,8 @@ public sealed class SqlServerMigrationSourceContractTests
         Assert.Equal(
             "SELECT [Id], DATALENGTH([Content]), " +
             "DATALENGTH(CONVERT(varchar(max), [Description] COLLATE Latin1_General_100_BIN2_UTF8)), " +
-            "[Content], [Description] FROM [sales].[InvoiceFile] ORDER BY [Id];",
+            "[Content], CONVERT(varbinary(max), CONVERT(varchar(max), [Description] COLLATE Latin1_General_100_BIN2_UTF8)) " +
+            "FROM [sales].[InvoiceFile] ORDER BY [Id];",
             sql);
     }
 

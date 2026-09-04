@@ -610,7 +610,10 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         string[] lengthProbes = [.. streamed.Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
             ? $"DATALENGTH({QuoteIdentifier(column)})"
             : $"DATALENGTH(CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
-        string select = $"SELECT {string.Join(", ", materialized.Select(QuoteIdentifier).Concat(lengthProbes).Concat(streamed.Select(QuoteIdentifier)))} " +
+        string[] streamedValues = [.. streamed.Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
+            ? QuoteIdentifier(column)
+            : $"CONVERT(varbinary(max), CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
+        string select = $"SELECT {string.Join(", ", materialized.Select(QuoteIdentifier).Concat(lengthProbes).Concat(streamedValues))} " +
             $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)}";
         return table.SourceKnownEmpty
             ? $"{select};"
@@ -626,23 +629,8 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         bool binary = sourceType is "varbinary(max)" or "image";
         return new StreamingLob(binary ? StreamingLobKind.Binary : StreamingLobKind.Text, expectedByteLength, async (destination, cancellationToken) =>
         {
-            if (binary)
-            {
-                await using Stream input = reader.GetStream(ordinal);
-                await input.CopyToAsync(destination, 64 * 1024, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                using TextReader input = reader.GetTextReader(ordinal);
-                await using var writer = new StreamWriter(destination, new UTF8Encoding(false, true), 32 * 1024, leaveOpen: true);
-                char[] buffer = new char[32 * 1024];
-                int read;
-                while ((read = await input.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) != 0)
-                {
-                    await writer.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                }
-                await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
-            }
+            await using Stream input = reader.GetStream(ordinal);
+            await input.CopyToAsync(destination, 64 * 1024, cancellationToken).ConfigureAwait(false);
         });
     }
 

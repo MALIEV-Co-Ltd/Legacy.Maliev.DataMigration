@@ -482,8 +482,16 @@ public sealed class SqlServerMigrationSourceIntegrationTests
             immediateRows.Add(row);
         }
         MigrationRow immediateRow = Assert.Single(immediateRows);
-        Assert.Equal(9L * 1024 * 1024, Assert.IsType<StreamingLob>(immediateRow.Values["LargeText"]).CanonicalByteLength);
-        Assert.Equal(5L * 1024 * 1024, Assert.IsType<StreamingLob>(immediateRow.Values["LargeBinary"]).CanonicalByteLength);
+        StreamingLob immediateText = Assert.IsType<StreamingLob>(immediateRow.Values["LargeText"]);
+        StreamingLob immediateBinary = Assert.IsType<StreamingLob>(immediateRow.Values["LargeBinary"]);
+        Assert.Equal(9L * 1024 * 1024, immediateText.CanonicalByteLength);
+        Assert.Equal(5L * 1024 * 1024, immediateBinary.CanonicalByteLength);
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(new string('ก', 3 * 1024 * 1024)))).ToLowerInvariant(),
+            immediateText.CanonicalSha256);
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(Enumerable.Repeat((byte)0xA5, 5 * 1024 * 1024).ToArray())).ToLowerInvariant(),
+            immediateBinary.CanonicalSha256);
 
         await using (IAsyncEnumerator<MigrationRow> unconsumed = source.ReadTableImmediatelyAsync(database, table, CancellationToken.None).GetAsyncEnumerator())
         {
