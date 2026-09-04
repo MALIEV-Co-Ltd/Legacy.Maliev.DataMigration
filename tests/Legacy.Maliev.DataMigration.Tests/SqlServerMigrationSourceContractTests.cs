@@ -118,6 +118,34 @@ public sealed class SqlServerMigrationSourceContractTests
             sql);
     }
 
+    [Fact]
+    public void BuildImmediateStreamingReadTableCommand_SelectsLargeValuesAfterLengthProbes()
+    {
+        var table = new TableCopyPlan(
+            "sales",
+            "InvoiceFile",
+            "public",
+            "InvoiceFile",
+            ["Id", "Content", "Description"],
+            ["Id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "bigint",
+                ["Content"] = "varbinary(max)",
+                ["Description"] = "nvarchar(max)",
+            },
+        };
+
+        string sql = SqlServerMigrationSource.BuildImmediateStreamingReadTableCommand(table);
+
+        Assert.Equal(
+            "SELECT [Id], DATALENGTH([Content]), " +
+            "DATALENGTH(CONVERT(varchar(max), [Description] COLLATE Latin1_General_100_BIN2_UTF8)), " +
+            "[Content], [Description] FROM [sales].[InvoiceFile] ORDER BY [Id];",
+            sql);
+    }
+
     [Theory]
     [InlineData("(getutcdate())", "(timezone('UTC'::text, CURRENT_TIMESTAMP))")]
     [InlineData("GETUTCDATE()", "timezone('UTC'::text, CURRENT_TIMESTAMP)")]

@@ -202,6 +202,14 @@ public interface IReadOnlySqlServerMigrationSource
         TableCopyPlan table,
         CancellationToken cancellationToken);
 
+    IAsyncEnumerable<MigrationRow> ReadTableImmediatelyAsync(
+        string database,
+        TableCopyPlan table,
+        CancellationToken cancellationToken)
+    {
+        return ReadTableAsync(database, table, cancellationToken);
+    }
+
     Task<IReadOnlyDictionary<string, long>> InspectForeignKeyOrphansAsync(
         string database,
         TableCopyPlan table,
@@ -896,7 +904,7 @@ public sealed partial class GuardedShadowMigrationRunner
         List<MigrationRow> batch = new(GuardedRunnerPolicy.CopyBatchSize);
         long batchBytes = 0;
         long copied = 0;
-        await foreach (MigrationRow row in source.ReadTableAsync(database, table, cancellationToken)
+        await foreach (MigrationRow row in source.ReadTableImmediatelyAsync(database, table, cancellationToken)
             .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             long rowBytes = MigrationRowSizeEstimator.Estimate(row);

@@ -25,7 +25,7 @@ public sealed partial class AdmittedSequentialMigrationCoordinator
             foreach (TableCopyPlan table in plan.Tables)
             {
                 using var collector = new TableEvidenceCollector(table);
-                await foreach (MigrationRow row in _runtime.Source.ReadTableAsync(plan.Database, table, token).WithCancellation(token).ConfigureAwait(false))
+                await foreach (MigrationRow row in _runtime.Source.ReadTableImmediatelyAsync(plan.Database, table, token).WithCancellation(token).ConfigureAwait(false))
                 {
                     foreach (StreamingLob lob in row.Values.Values.OfType<StreamingLob>()) { await lob.ConsumeAsync(Stream.Null, token).ConfigureAwait(false); }
                     collector.Append(row);
