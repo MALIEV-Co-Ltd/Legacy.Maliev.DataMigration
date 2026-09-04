@@ -7,6 +7,7 @@ public sealed class MigrationScriptContractTests
     [InlineData("plan-incremental")]
     [InlineData("plan-resume")]
     [InlineData("authorize-resume")]
+    [InlineData("authorize-compatible-resume")]
     [InlineData("resume-shadow")]
     [InlineData("finalize-local")]
     public async Task IncrementalStages_RejectUnprotectedOperatorConfigurationBeforeRuntime(string command)

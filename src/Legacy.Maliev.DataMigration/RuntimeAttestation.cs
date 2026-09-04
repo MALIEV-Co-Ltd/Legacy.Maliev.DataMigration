@@ -296,6 +296,17 @@ public sealed record CloudNativePgTargetObservation(
 
     public bool IsHealthy => HasHealthyTargetState && HasReconciliationEvidence;
 
+    /// <summary>
+    /// Compares the complete runtime target while excluding only Kubernetes' volatile metadata.resourceVersion.
+    /// The resource version fences writes to a particular API-object revision; it is not part of the database
+    /// cluster's durable identity and can advance after unrelated status reconciliation.
+    /// </summary>
+    public bool SameRuntimeTarget(CloudNativePgTargetObservation other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        return this with { ResourceVersion = string.Empty } == other with { ResourceVersion = string.Empty };
+    }
+
     internal bool HasHealthyTargetState => Generation > 0 && Instances > 0 && StatusInstances == Instances &&
         ReadyInstances == Instances && Count(InstanceNames) == Instances &&
         string.Equals(InstanceNames, HealthyInstances, StringComparison.Ordinal) &&

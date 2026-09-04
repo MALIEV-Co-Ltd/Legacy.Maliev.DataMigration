@@ -33,6 +33,7 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
     internal int SourceRowId { get; set; } = 1;
     internal Func<ValueTask> Cleanup = () => ValueTask.CompletedTask;
     internal IMigrationEvidenceSigner? SignerOverride { get; set; }
+    internal RecoveryAuthorityVerificationOptions? VerificationOverride { get; set; }
     private readonly byte[] _key = RandomNumberGenerator.GetBytes(32);
     internal ReadOnlyMemory<byte> RootKey => _key;
 
@@ -65,7 +66,7 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
             _ => Task.FromResult(Data.Target with { ObservedAtUtc = DateTimeOffset.UtcNow }),
             (shadow, _) => FailSettlement ? Task.FromException<CloudNativePgShadowSettlement>(new IOException("unsettled")) : Task.FromResult(new CloudNativePgShadowSettlement(shadow, "uid", "1", 1, true)),
             () => Cleanup());
-        return new(Data.Admission, new(new(Plan.SourceCommitSha, Data.AdmissionPayload.Identity.RunnerDigestSha256), RecoveryAuthorityTestData.Roles, Data.Trust),
+        return new(Data.Admission, VerificationOverride ?? new(new(Plan.SourceCommitSha, Data.AdmissionPayload.Identity.RunnerDigestSha256), RecoveryAuthorityTestData.Roles, Data.Trust),
             SignerOverride ?? Data.Signers[2], runtime, "coordinator-test", _key, Output, value => { Progress.Add(value); progress?.Invoke(value); });
     }
 

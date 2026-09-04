@@ -17,6 +17,7 @@ public sealed class IncrementalConsoleTests : IDisposable
     [InlineData("plan-incremental")]
     [InlineData("plan-resume")]
     [InlineData("authorize-resume")]
+    [InlineData("authorize-compatible-resume")]
     [InlineData("resume-shadow")]
     [InlineData("finalize-local")]
     [InlineData("execute-shadow")]
@@ -109,6 +110,7 @@ public sealed class IncrementalConsoleTests : IDisposable
     [Theory]
     [InlineData("resume-shadow")]
     [InlineData("authorize-resume")]
+    [InlineData("authorize-compatible-resume")]
     public async Task MissingExternalContinuity_StopsBeforeRuntime(string command)
     {
         using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
@@ -125,6 +127,7 @@ public sealed class IncrementalConsoleTests : IDisposable
     [InlineData("execute-shadow")]
     [InlineData("resume-shadow")]
     [InlineData("authorize-resume")]
+    [InlineData("authorize-compatible-resume")]
     public async Task ExplicitGateRequired_BeforeArtifactsOrRuntime(string command)
     {
         string config = await WriteAsync("config.json", new { incremental = new IncrementalCommandConfiguration(_root, _root, "s", "output", "commit", "digest") });
@@ -225,6 +228,8 @@ public sealed class IncrementalConsoleTests : IDisposable
         public AdmittedSequentialMigrationCoordinator CreateExecution(AdmittedCoordinatorHostOptions options, Action<IncrementalMigrationProgress> progress)
         {
             Assert.False(Forbid); Executions++;
+            fixture.VerificationOverride = options.Verification;
+            fixture.Data.Verifier = new RecoveryAuthorityVerifier(options.Verification);
             Assert.Equal(AppContext.BaseDirectory, options.RunnerPublishDirectory);
             if (options.Admission.ExactJson != fixture.Data.Admission.ExactJson)
             {
@@ -315,6 +320,7 @@ public sealed class IncrementalConsoleTests : IDisposable
     [InlineData("plan-incremental")]
     [InlineData("plan-resume")]
     [InlineData("authorize-resume")]
+    [InlineData("authorize-compatible-resume")]
     [InlineData("finalize-local")]
     public async Task PublicationDestinations_ResultInsideFinalRejectedBeforeRuntime(string mode)
     {
@@ -500,6 +506,50 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Equal(bytes, await File.ReadAllBytesAsync(archive));
         Assert.Equal(finalInventory, Directory.GetFileSystemEntries(fixture.Output, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray());
         Assert.Equal(publishedResult, await File.ReadAllBytesAsync(Path.Combine(_root, "result.json")));
+    }
+
+    [Fact]
+    public async Task CompatibleResume_ExplicitCommandBindsReplacementRunnerAndIgnoresOnlyTargetResourceVersion()
+    {
+        using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
+        fixture.Authority.Dispose(); fixture.StagingOverride = Path.Combine(_root, "compatible-staging");
+        fixture.FailingSourceDatabase = DatabaseInventory.ActiveDatabases[1];
+        string config = await FixtureAsync(fixture, allowExecution: true, allowSigning: true);
+        var (initialCode, _, _) = await RunAsync("execute-shadow", config, new Runtime(fixture));
+        Assert.Equal(70, initialCode);
+        var (continuity, _) = fixture.ResumeAuthority();
+        string continuityPath = await WriteTextAsync("compatible-continuity.json", continuity.ExactJson);
+        string replacementDigest = new('c', 64);
+        fixture.Data.Runner = fixture.Data.Runner with { RunnerDigestSha256 = replacementDigest };
+        fixture.Data.Target = fixture.Data.Target with
+        {
+            Target = fixture.Data.Target.Target with { ResourceVersion = "routine-status-update" }
+        };
+        JsonObject json = JsonNode.Parse(await File.ReadAllTextAsync(config))!.AsObject();
+        JsonObject command = json["incremental"]!.AsObject();
+        command["continuityPath"] = continuityPath;
+        command["recoveryExpectedSourceCommitSha"] = fixture.Plan.SourceCommitSha;
+        command["recoveryExpectedRunnerDigestSha256"] = replacementDigest;
+        command["outputPath"] = Path.Combine(_root, "compatible-resume.json");
+        await File.WriteAllTextAsync(config, json.ToJsonString());
+
+        var (ordinaryCode, _, _) = await RunAsync("authorize-resume", config, new Runtime(fixture));
+        Assert.Equal(65, ordinaryCode);
+        var (signedCode, _, signedError) = await RunAsync("authorize-compatible-resume", config, new Runtime(fixture));
+        Assert.True(signedCode == 0, signedError);
+        ResumeAuthorizationReceipt approval = ResumeAuthorizationReceipt.Parse(
+            await File.ReadAllTextAsync(Path.Combine(_root, "compatible-resume.json")));
+        Assert.Equal(replacementDigest, approval.Payload.RunnerCompatibility!.ReplacementRunnerDigestSha256);
+        Assert.Equal(fixture.Data.AdmissionPayload.Identity.RunnerDigestSha256,
+            approval.Payload.RunnerCompatibility.AdmittedRunnerDigestSha256);
+
+        command["resumeAuthorizationPath"] = Path.Combine(_root, "compatible-resume.json");
+        command["outputPath"] = Path.Combine(_root, "compatible-result.json");
+        await File.WriteAllTextAsync(config, json.ToJsonString());
+        fixture.FailingSourceDatabase = null;
+        var (resumedCode, _, resumedError) = await RunAsync("resume-shadow", config, new Runtime(fixture));
+        Assert.True(resumedCode == 0, resumedError);
+        Assert.Equal(DatabaseInventory.ActiveDatabases.Count, fixture.RunJournal.Checkpoints.Count);
     }
 
     [Theory]

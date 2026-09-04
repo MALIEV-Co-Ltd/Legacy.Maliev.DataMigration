@@ -10,6 +10,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "plan-incremental",
         "plan-resume",
         "authorize-resume",
+        "authorize-compatible-resume",
         "resume-shadow",
         "finalize-local",
         "evidence",

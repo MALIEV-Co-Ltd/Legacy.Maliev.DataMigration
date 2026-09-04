@@ -67,15 +67,17 @@ public sealed partial class AdmittedSequentialMigrationCoordinator
         return observed;
     }
 
-    private void ValidateRuntime(FreshRunnerObservation runner, FreshTargetObservation target)
+    private void ValidateRuntime(FreshRunnerObservation runner, FreshTargetObservation target, ResumeAuthorizationReceipt? resume)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         ExecutionAuthorizationReceipt original = OriginalMigrationDocumentReader.Read<ExecutionAuthorizationReceipt>(_admission.Payload.OriginalAuthorizationJson);
+        string expectedRunnerDigest = resume?.Payload.RunnerCompatibility?.ReplacementRunnerDigestSha256 ?? _admission.Payload.Identity.RunnerDigestSha256;
         Require(runner.ObservedAtUtc >= _admission.Payload.AdmittedAtUtc && runner.ObservedAtUtc <= now && runner.ObservedAtUtc.Offset == TimeSpan.Zero &&
-            now - runner.ObservedAtUtc <= _admission.Payload.MaximumObservationAge && runner.RunnerDigestSha256 == _admission.Payload.Identity.RunnerDigestSha256,
+            now - runner.ObservedAtUtc <= _admission.Payload.MaximumObservationAge && runner.RunnerDigestSha256 == expectedRunnerDigest,
             "runtime_runner_drift");
+        bool sameTarget = resume is null ? target.Target == original.TargetObservation : target.Target.SameRuntimeTarget(original.TargetObservation!);
         Require(target.ObservedAtUtc >= _admission.Payload.AdmittedAtUtc && target.ObservedAtUtc <= now && target.ObservedAtUtc.Offset == TimeSpan.Zero &&
-            now - target.ObservedAtUtc <= _admission.Payload.MaximumObservationAge && target.Target == original.TargetObservation, "runtime_target_drift");
+            now - target.ObservedAtUtc <= _admission.Payload.MaximumObservationAge && sameTarget, "runtime_target_drift");
     }
 
     private void ValidateRegisteredState(IReadOnlyList<ShadowDatabase> shadows, IReadOnlyList<DatabaseMigrationCheckpoint> checkpoints,

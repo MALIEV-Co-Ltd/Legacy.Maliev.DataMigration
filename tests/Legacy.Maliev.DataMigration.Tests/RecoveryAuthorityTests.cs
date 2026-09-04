@@ -6,6 +6,31 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class RecoveryAuthorityTests
 {
     [Fact]
+    public async Task RuntimeTargetCompatibility_ExcludesOnlyResourceVersion()
+    {
+        using var data = await RecoveryAuthorityTestData.CreateAsync();
+        CloudNativePgTargetObservation value = data.Target.Target;
+        Assert.True(value.SameRuntimeTarget(value with { ResourceVersion = "routine-update" }));
+        CloudNativePgTargetObservation[] changed =
+        [
+            value with { Namespace = "changed" }, value with { Cluster = "changed" }, value with { Uid = "changed" },
+            value with { Generation = value.Generation + 1 }, value with { ObservedGeneration = value.ObservedGeneration + 1 },
+            value with { Phase = "changed" }, value with { Instances = value.Instances + 1 },
+            value with { ReadyInstances = value.ReadyInstances + 1 }, value with { CurrentPrimary = "changed" },
+            value with { TargetPrimary = "changed" }, value with { Ready = !value.Ready },
+            value with { ConsistentSystemId = !value.ConsistentSystemId }, value with { ContinuousArchiving = !value.ContinuousArchiving },
+            value with { LastBackupSucceeded = !value.LastBackupSucceeded }, value with { ReconciliationEvidence = "changed" },
+            value with { ObservationReadCount = value.ObservationReadCount + 1 }, value with { StatusInstances = value.StatusInstances + 1 },
+            value with { SystemId = "changed" }, value with { InstanceNames = "changed" }, value with { HealthyInstances = "changed" },
+            value with { PvcCount = value.PvcCount + 1 }, value with { HealthyPvcs = "changed" }, value with { DanglingPvcs = "changed" },
+            value with { InitializingPvcs = "changed" }, value with { ResizingPvcs = "changed" }, value with { UnusablePvcs = "changed" },
+            value with { ReadyReason = "changed" }, value with { ConsistentSystemIdReason = "changed" },
+            value with { ContinuousArchivingReason = "changed" }, value with { LastBackupSucceededReason = "changed" },
+        ];
+        Assert.All(changed, item => Assert.False(value.SameRuntimeTarget(item)));
+    }
+
+    [Fact]
     public async Task FreshResume_AfterOriginalApprovalExpired_RequiresThreeDistinctValidAuthorities()
     {
         using var data = await RecoveryAuthorityTestData.CreateAsync();
@@ -15,6 +40,64 @@ public sealed class RecoveryAuthorityTests
         Assert.Equal(data.AdmissionPayload.OriginalBackupReceiptJson, data.Admission.Payload.OriginalBackupReceiptJson);
         Assert.All(data.Resume.Payload.PermittedOperations, operation => Assert.Equal(RecoveryDatabaseOperation.CreateCopyAndDeliver, operation.Operation));
         Assert.Equal(DatabaseInventory.ActiveDatabases, data.Resume.Payload.PermittedOperations.Select(item => item.Database));
+    }
+
+    [Fact]
+    public async Task FreshResume_ExplicitRecoveryRunnerPolicy_BindsCurrentRunnerWithoutRewritingAdmission()
+    {
+        using var data = await RecoveryAuthorityTestData.CreateAsync();
+        string recoveryDigest = new('c', 64);
+        var verifier = new RecoveryAuthorityVerifier(new(
+            new(data.AdmissionPayload.Identity.SourceCommitSha, data.AdmissionPayload.Identity.RunnerDigestSha256),
+            RecoveryAuthorityTestData.Roles,
+            data.Trust,
+            RecoveryRunnerPolicy: new(data.AdmissionPayload.Identity.SourceCommitSha, recoveryDigest)));
+        FreshRunnerObservation runner = data.Runner with { RunnerDigestSha256 = recoveryDigest };
+
+        _ = Assert.Throws<MigrationExecutionException>(() => verifier.PrepareResume(data.Admission, data.Continuity, data.Baseline,
+            data.Source, data.Binding, runner, data.Target, Guid.NewGuid(), data.Now, data.Now.AddMinutes(30), data.Signers[1], data.Now));
+        ResumeAuthorizationReceipt resume = verifier.PrepareCompatibleResume(data.Admission, data.Continuity, data.Baseline,
+            data.Source, data.Binding, runner, data.Target, Guid.NewGuid(), data.Now, data.Now.AddMinutes(30), data.Signers[1], data.Now);
+
+        verifier.ValidateResume(data.Admission, data.Continuity, resume, data.Baseline,
+            data.Source, data.Binding, runner, data.Target, data.Now);
+        Assert.Equal(recoveryDigest, resume.Payload.Runner.RunnerDigestSha256);
+        Assert.Equal(data.AdmissionPayload.Identity.RunnerDigestSha256, resume.Payload.Identity.RunnerDigestSha256);
+        Assert.Equal(recoveryDigest, resume.Payload.RunnerCompatibility!.ReplacementRunnerDigestSha256);
+    }
+
+    [Theory]
+    [InlineData("policy")]
+    [InlineData("statement")]
+    [InlineData("admitted")]
+    [InlineData("source")]
+    [InlineData("replacement")]
+    public async Task CompatibleResume_ResignedCompatibilityTamperRejects(string failure)
+    {
+        using var data = await RecoveryAuthorityTestData.CreateAsync();
+        string recoveryDigest = new('c', 64);
+        var verifier = new RecoveryAuthorityVerifier(new(
+            new(data.AdmissionPayload.Identity.SourceCommitSha, data.AdmissionPayload.Identity.RunnerDigestSha256),
+            RecoveryAuthorityTestData.Roles, data.Trust,
+            RecoveryRunnerPolicy: new(data.AdmissionPayload.Identity.SourceCommitSha, recoveryDigest)));
+        FreshRunnerObservation runner = data.Runner with { RunnerDigestSha256 = recoveryDigest };
+        ResumeAuthorizationReceipt resume = verifier.PrepareCompatibleResume(data.Admission, data.Continuity, data.Baseline,
+            data.Source, data.Binding, runner, data.Target, Guid.NewGuid(), data.Now, data.Now.AddMinutes(30), data.Signers[1], data.Now);
+        RecoveryRunnerCompatibility compatibility = resume.Payload.RunnerCompatibility!;
+        compatibility = failure switch
+        {
+            "policy" => compatibility with { PolicyVersion = "unknown" },
+            "statement" => compatibility with { Statement = "weakened" },
+            "admitted" => compatibility with { AdmittedRunnerDigestSha256 = new string('d', 64) },
+            "source" => compatibility with { ReplacementSourceCommitSha = new string('d', 40) },
+            "replacement" => compatibility with { ReplacementRunnerDigestSha256 = new string('d', 64) },
+            _ => throw new InvalidOperationException(),
+        };
+        ResumeAuthorizationReceipt changed = ResumeAuthorizationReceipt.Sign(
+            resume.Payload with { RunnerCompatibility = compatibility }, data.Signers[1]);
+
+        _ = Assert.Throws<MigrationExecutionException>(() => verifier.ValidateResume(data.Admission, data.Continuity,
+            changed, data.Baseline, data.Source, data.Binding, runner, data.Target, data.Now));
     }
 
     [Theory]

@@ -137,7 +137,7 @@ public sealed partial class AdmittedSequentialMigrationCoordinator : IAsyncDispo
             RestoredSourceObservation source = await ObserveSourceAsync(token).ConfigureAwait(false);
             FreshRunnerObservation runner = await _runtime.ObserveRunner(token).ConfigureAwait(false);
             FreshTargetObservation target = await _runtime.ObserveTarget(token).ConfigureAwait(false);
-            ValidateRuntime(runner, target);
+            ValidateRuntime(runner, target, authorization);
             if (authorization is null)
             { _authorityVerifier.ValidateInitialAcquisition(_admission, source, authority.Binding, DateTimeOffset.UtcNow); }
             else

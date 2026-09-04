@@ -73,9 +73,10 @@ public static partial class MigrationConsole
         IncrementalCommandConfiguration command = configuration.Incremental ?? throw Invalid("incremental_configuration_missing");
         bool initial = commandName is "execute-shadow" or "plan-incremental";
         bool executing = commandName is "execute-shadow" or "resume-shadow";
-        if ((executing && !command.AllowExecution) || (commandName == "authorize-resume" && !command.AllowSigning))
+        bool authorizingResume = commandName is "authorize-resume" or "authorize-compatible-resume";
+        if ((executing && !command.AllowExecution) || (authorizingResume && !command.AllowSigning))
         { throw Invalid("incremental_owner_approval_required"); }
-        if (commandName is "resume-shadow" or "authorize-resume" && string.IsNullOrWhiteSpace(command.ContinuityPath))
+        if (commandName is "resume-shadow" or "authorize-resume" or "authorize-compatible-resume" && string.IsNullOrWhiteSpace(command.ContinuityPath))
         { throw Invalid("incremental_continuity_required"); }
         ValidateIncrementalPaths(command);
         if (commandName == "execute-shadow")
@@ -91,9 +92,14 @@ public static partial class MigrationConsole
         SigningRolesCommandConfiguration roles = configuration.SigningRoles ?? throw Invalid("signing_role_configuration_missing");
         _ = await ReadSigningRolesAsync(roles, token).ConfigureAwait(false);
         ReceiptAttestationTrustStore trust = await ReadTrustStoreAsync([roles.Backup, roles.Authorization, roles.Execution, roles.Provenance, roles.FinalEvidence], token).ConfigureAwait(false);
+        GuardedRunnerPolicy? recoveryRunnerPolicy = command.RecoveryExpectedSourceCommitSha is null && command.RecoveryExpectedRunnerDigestSha256 is null
+            ? null
+            : new(Required(command.RecoveryExpectedSourceCommitSha), Required(command.RecoveryExpectedRunnerDigestSha256));
+        if ((initial || commandName == "authorize-resume") && recoveryRunnerPolicy is not null) { throw Invalid("incremental_recovery_runner_invalid"); }
+        if (commandName == "authorize-compatible-resume" && recoveryRunnerPolicy is null) { throw Invalid("incremental_recovery_runner_required"); }
         var verification = new RecoveryAuthorityVerificationOptions(new(command.ExpectedSourceCommitSha, command.ExpectedRunnerDigestSha256),
             new(roles.Backup.KeyId, roles.Authorization.KeyId, roles.Execution.KeyId, roles.Provenance.KeyId, roles.FinalEvidence.KeyId), trust,
-            TimeSpan.FromMinutes(command.MaximumObservationAgeMinutes));
+            TimeSpan.FromMinutes(command.MaximumObservationAgeMinutes), recoveryRunnerPolicy);
         var verifier = new RecoveryAuthorityVerifier(verification);
         if (commandName == "finalize-local")
         {
@@ -135,7 +141,8 @@ public static partial class MigrationConsole
         MigrationRunIdentity identity = MigrationRunIdentity.FromRequest(new(backup, plan, authorization));
         IncrementalReadOnlyRequest request = await ReadIncrementalRuntimeAsync(command, plan, restore, identity, authorization, verification, token).ConfigureAwait(false);
         IncrementalReadOnlyObservation observed = await runtime.ObserveAsync(request, token).ConfigureAwait(false);
-        if (observed.Runner.RunnerDigestSha256 != command.ExpectedRunnerDigestSha256 ||
+        string expectedObservedRunnerDigest = recoveryRunnerPolicy?.ExpectedRunnerDigestSha256 ?? command.ExpectedRunnerDigestSha256;
+        if (observed.Runner.RunnerDigestSha256 != expectedObservedRunnerDigest ||
             !observed.Target.Target.IsHealthy || observed.Target.Target.Uid != authorization.TargetObservation!.Uid ||
             observed.Target.Target.Generation != authorization.TargetObservation.Generation || observed.Target.Target.SystemId != authorization.TargetObservation.SystemId)
         { throw Invalid("incremental_runtime_drift"); }
@@ -171,13 +178,16 @@ public static partial class MigrationConsole
             continuity = SourceContinuityAttestation.Parse(await ReadProtectedTextAsync(Required(command.ContinuityPath), "incremental_continuity_unprotected", token).ConfigureAwait(false));
             verifier.ValidateContinuity(admission, continuity, observed.Source, DateTimeOffset.UtcNow);
         }
-        if (commandName == "authorize-resume")
+        if (authorizingResume)
         {
             using P256MigrationEvidenceSigner authorizer = await ReadIncrementalSignerAsync(environment, AuthorizationSigningKeyEnvironmentVariable, roles.Authorization, token).ConfigureAwait(false);
             using WindowsLocalRunAuthority held = WindowsLocalRunAuthority.AcquireResume(command.ArtifactRoot, admission!.Payload.LocalBinding);
             DateTimeOffset now = DateTimeOffset.UtcNow;
-            ResumeAuthorizationReceipt signed = verifier.PrepareResume(admission, continuity!, snapshot!.Baseline, observed.Source, held.Binding,
-                observed.Runner, observed.Target, Guid.NewGuid(), now, command.ResumeExpiresAtUtc ?? throw Invalid("incremental_resume_expiry_required"), authorizer, now);
+            ResumeAuthorizationReceipt signed = commandName == "authorize-compatible-resume"
+                ? verifier.PrepareCompatibleResume(admission, continuity!, snapshot!.Baseline, observed.Source, held.Binding,
+                    observed.Runner, observed.Target, Guid.NewGuid(), now, command.ResumeExpiresAtUtc ?? throw Invalid("incremental_resume_expiry_required"), authorizer, now)
+                : verifier.PrepareResume(admission, continuity!, snapshot!.Baseline, observed.Source, held.Binding,
+                    observed.Runner, observed.Target, Guid.NewGuid(), now, command.ResumeExpiresAtUtc ?? throw Invalid("incremental_resume_expiry_required"), authorizer, now);
             await WriteExactRecoveryAsync(command.OutputPath, signed.ExactJson, token).ConfigureAwait(false);
             await output.WriteLineAsync("authorize_resume_complete").ConfigureAwait(false);
             return;
@@ -369,7 +379,8 @@ internal sealed record IncrementalCommandConfiguration(
     string? VerifiedRestoreReceiptPath = null, string? AdmissionPath = null, string? ContinuityPath = null,
     string? ResumeAuthorizationPath = null, string? CompletedSnapshotPath = null,
     IncrementalRuntimeConfiguration? Runtime = null, bool AllowExecution = false, bool AllowSigning = false,
-    DateTimeOffset? ResumeExpiresAtUtc = null, double MaximumObservationAgeMinutes = 60);
+    DateTimeOffset? ResumeExpiresAtUtc = null, double MaximumObservationAgeMinutes = 60,
+    string? RecoveryExpectedSourceCommitSha = null, string? RecoveryExpectedRunnerDigestSha256 = null);
 
 internal sealed record IncrementalRuntimeConfiguration(string SourceConnectionFile, string ControlConnectionFile,
     string ShadowAdministrativeConnectionFile, string LocalAdministrativeConnectionFile, string LocalRestoreConnectionFile,

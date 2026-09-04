@@ -125,6 +125,7 @@ public static partial class MigrationConsole
                 case "plan-incremental":
                 case "plan-resume":
                 case "authorize-resume":
+                case "authorize-compatible-resume":
                 case "resume-shadow":
                 case "finalize-local":
                     return await RunIncrementalBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable, output, error,

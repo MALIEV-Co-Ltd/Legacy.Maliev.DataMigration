@@ -94,6 +94,27 @@ public sealed class AdmittedSequentialMigrationCoordinatorTests
     }
 
     [WindowsLocalRunFact]
+    public async Task Resume_OnlyTargetResourceVersionChanged_PreservesAndContinues()
+    {
+        using AdmittedCoordinatorTestHarness harness = await AdmittedCoordinatorTestHarness.CreateAsync();
+        string second = DatabaseInventory.ActiveDatabases[1];
+        harness.FailingSourceDatabase = second;
+        _ = await Assert.ThrowsAsync<IOException>(() => harness.Coordinator().ExecuteInitialAsync(harness.Authority, default));
+        harness.FailingSourceDatabase = null;
+        harness.Source.Started.Clear();
+        harness.Data.Target = harness.Data.Target with
+        {
+            Target = harness.Data.Target.Target with { ResourceVersion = "routine-status-update" }
+        };
+        var (continuity, authorization) = harness.ResumeAuthority();
+
+        IncrementalMigrationResult completed = await harness.Coordinator().ResumeAsync(continuity, authorization, default);
+
+        Assert.Equal(DatabaseInventory.ActiveDatabases.Count, completed.Progress.LocalVerified);
+        Assert.Equal(DatabaseInventory.ActiveDatabases, completed.Receipt.Databases.Select(item => item.Database));
+    }
+
+    [WindowsLocalRunFact]
     public async Task Initial_ReadinessFailure_PrecedesJournalAndHoldsAuthorityThroughCleanup()
     {
         using AdmittedCoordinatorTestHarness harness = await AdmittedCoordinatorTestHarness.CreateAsync();

@@ -12,8 +12,11 @@ public sealed class RecoveryAuthorityVerifier
     public const string ValidationStatement = "Original backup, plan and execution authorization passed fresh gates; exact restored source is read-only and bound to the permanent local execution authority.";
     public const string ContinuityStatementVersion = "source-continuity-v1";
     public const string ContinuityStatement = "Throughout the complete admitted interval, data, schema, identity-sequence and restore state remained unchanged; no write-enabled transition, replacement, re-restore, detach-attach or redirection occurred.";
+    public const string RunnerCompatibilityPolicyVersion = "runner-compatibility-v1";
+    public const string RunnerCompatibilityStatement = "This one-run recovery may use only the explicitly measured replacement runner while retaining the immutable admitted run identity, checkpoints, source, target and local binding.";
 
     private readonly GuardedRunnerPolicy _runnerPolicy;
+    private readonly GuardedRunnerPolicy? _recoveryRunnerPolicy;
     private readonly RecoveryAuthorityRoles _roles;
     private readonly IReceiptAttestationTrustStore _trust;
     private readonly ImmutableDictionary<string, string> _fingerprints;
@@ -26,9 +29,15 @@ public sealed class RecoveryAuthorityVerifier
         ArgumentNullException.ThrowIfNull(options.Roles);
         ArgumentNullException.ThrowIfNull(options.TrustStore);
         _runnerPolicy = options.RunnerPolicy;
+        _recoveryRunnerPolicy = options.RecoveryRunnerPolicy;
         _roles = options.Roles;
         _trust = options.TrustStore;
         _observationAge = options.MaximumObservationAge ?? GuardedRunnerPolicy.MaximumAuthorizationLifetime;
+        if (_recoveryRunnerPolicy is not null)
+        {
+            Require(Hex(_recoveryRunnerPolicy.ExpectedSourceCommitSha, 40) && Hex(_recoveryRunnerPolicy.ExpectedRunnerDigestSha256, 64),
+                "The explicitly approved recovery runner policy is malformed.");
+        }
         Require(_observationAge > TimeSpan.Zero && _observationAge <= GuardedRunnerPolicy.MaximumAuthorizationLifetime,
             "Observation freshness must be positive and no longer than the existing authorization lifetime.");
         string[] ids = [_roles.BackupKeyId, _roles.AuthorizationKeyId, _roles.ExecutionKeyId, _roles.ProvenanceKeyId, _roles.FinalEvidenceKeyId];
@@ -209,10 +218,28 @@ public sealed class RecoveryAuthorityVerifier
     /// <summary>Requires external continuity. Signing this document does not consume its nonce or acquire a lease.</summary>
     public ResumeAuthorizationReceipt PrepareResume(InitialMigrationAdmission admission, SourceContinuityAttestation continuity, RecoveryJournalBaseline baseline, RestoredSourceObservation source, LocalExecutionBinding localBinding, FreshRunnerObservation runner, FreshTargetObservation target, Guid nonce, DateTimeOffset issuedAtUtc, DateTimeOffset expiresAtUtc, IMigrationEvidenceSigner signer, DateTimeOffset nowUtc)
     {
+        return PrepareResumeCore(admission, continuity, baseline, source, localBinding, runner, target, nonce, issuedAtUtc, expiresAtUtc, signer, nowUtc, compatibleRunner: false);
+    }
+
+    /// <summary>Signs an explicit old-to-new runner exception for this admitted run; ordinary resume never infers compatibility.</summary>
+    public ResumeAuthorizationReceipt PrepareCompatibleResume(InitialMigrationAdmission admission, SourceContinuityAttestation continuity, RecoveryJournalBaseline baseline, RestoredSourceObservation source, LocalExecutionBinding localBinding, FreshRunnerObservation runner, FreshTargetObservation target, Guid nonce, DateTimeOffset issuedAtUtc, DateTimeOffset expiresAtUtc, IMigrationEvidenceSigner signer, DateTimeOffset nowUtc)
+    {
+        return PrepareResumeCore(admission, continuity, baseline, source, localBinding, runner, target, nonce, issuedAtUtc, expiresAtUtc, signer, nowUtc, compatibleRunner: true);
+    }
+
+    private ResumeAuthorizationReceipt PrepareResumeCore(InitialMigrationAdmission admission, SourceContinuityAttestation continuity, RecoveryJournalBaseline baseline, RestoredSourceObservation source, LocalExecutionBinding localBinding, FreshRunnerObservation runner, FreshTargetObservation target, Guid nonce, DateTimeOffset issuedAtUtc, DateTimeOffset expiresAtUtc, IMigrationEvidenceSigner signer, DateTimeOffset nowUtc, bool compatibleRunner)
+    {
         ArgumentNullException.ThrowIfNull(continuity);
         ValidateSigner(signer, _roles.AuthorizationKeyId);
+        RecoveryRunnerCompatibility? compatibility = compatibleRunner
+            ? _recoveryRunnerPolicy is null
+                ? throw Invalid("Explicit compatible resume requires a reviewed replacement runner policy.")
+                : new(RunnerCompatibilityPolicyVersion, RunnerCompatibilityStatement, admission.Payload.Identity.RunnerDigestSha256,
+                    _recoveryRunnerPolicy.ExpectedSourceCommitSha, _recoveryRunnerPolicy.ExpectedRunnerDigestSha256)
+            : null;
         var payload = new ResumeAuthorizationPayload(admission.Payload.Identity, admission.ComputeSha256(), continuity.ComputeSha256(), baseline.ComputeSha256(),
             localBinding.ComputeSha256(), runner, target, GetPermittedOperations(admission, baseline, nowUtc), nonce, issuedAtUtc, expiresAtUtc);
+        payload = payload with { RunnerCompatibility = compatibility };
         ValidateResumePayload(admission, continuity, payload, baseline, source, localBinding, runner, target, nowUtc);
         ResumeAuthorizationReceipt signed = ResumeAuthorizationReceipt.Sign(payload, signer);
         ValidateResume(admission, continuity, signed, baseline, source, localBinding, runner, target, nowUtc);
@@ -242,15 +269,31 @@ public sealed class RecoveryAuthorityVerifier
         ValidateObservationTime(value.Target.ObservedAtUtc, nowUtc);
         ValidateObservationTime(runner.ObservedAtUtc, nowUtc);
         ValidateObservationTime(target.ObservedAtUtc, nowUtc);
+        RecoveryRunnerCompatibility? compatibility = value.RunnerCompatibility;
+        string expectedRunnerDigest;
+        if (compatibility is null)
+        {
+            expectedRunnerDigest = original.Identity.RunnerDigestSha256;
+        }
+        else
+        {
+            Require(_recoveryRunnerPolicy is not null &&
+                compatibility.PolicyVersion == RunnerCompatibilityPolicyVersion && compatibility.Statement == RunnerCompatibilityStatement &&
+                compatibility.AdmittedRunnerDigestSha256 == original.Identity.RunnerDigestSha256 &&
+                compatibility.ReplacementSourceCommitSha == _recoveryRunnerPolicy.ExpectedSourceCommitSha &&
+                compatibility.ReplacementRunnerDigestSha256 == _recoveryRunnerPolicy.ExpectedRunnerDigestSha256 &&
+                compatibility.ReplacementRunnerDigestSha256 != compatibility.AdmittedRunnerDigestSha256,
+                "The signed compatible recovery runner exception is absent, malformed or mismatched.");
+            expectedRunnerDigest = compatibility.ReplacementRunnerDigestSha256;
+        }
         Require(value.Runner.ObservedAtUtc <= value.IssuedAtUtc && value.Target.ObservedAtUtc <= value.IssuedAtUtc &&
             value.Runner.ObservedAtUtc >= original.AdmittedAtUtc && value.Target.ObservedAtUtc >= original.AdmittedAtUtc &&
             runner.ObservedAtUtc >= original.AdmittedAtUtc && target.ObservedAtUtc >= original.AdmittedAtUtc &&
-            value.Runner.RunnerDigestSha256 == original.Identity.RunnerDigestSha256 && runner.RunnerDigestSha256 == value.Runner.RunnerDigestSha256,
+            value.Runner.RunnerDigestSha256 == expectedRunnerDigest && runner.RunnerDigestSha256 == value.Runner.RunnerDigestSha256,
             "Resume requires a newly measured unchanged runner and fresh target observation.");
         CloudNativePgTargetObservation originalTarget = OriginalMigrationDocumentReader.Read<ExecutionAuthorizationReceipt>(original.OriginalAuthorizationJson).TargetObservation!;
         CloudNativePgTargetObservation signedTarget = value.Target.Target;
-        Require(signedTarget.IsHealthy && target.Target == signedTarget && signedTarget.Namespace == originalTarget.Namespace && signedTarget.Cluster == originalTarget.Cluster &&
-            signedTarget.Uid == originalTarget.Uid && signedTarget.Generation == originalTarget.Generation && signedTarget.SystemId == originalTarget.SystemId,
+        Require(signedTarget.IsHealthy && target.Target.SameRuntimeTarget(signedTarget) && signedTarget.SameRuntimeTarget(originalTarget),
             "The signed and independently observed target do not match the original healthy target identity.");
         ImmutableArray<PermittedDatabaseRecovery> expected = GetPermittedOperations(admission, baseline, nowUtc);
         Require(!value.PermittedOperations.IsDefault && value.PermittedOperations.SequenceEqual(expected),

@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Legacy.Maliev.DataMigration;
 
@@ -80,6 +81,13 @@ public enum RecoveryDatabaseOperation
 
 public sealed record PermittedDatabaseRecovery(string Database, RecoveryDatabaseOperation Operation);
 
+public sealed record RecoveryRunnerCompatibility(
+    string PolicyVersion,
+    string Statement,
+    string AdmittedRunnerDigestSha256,
+    string ReplacementSourceCommitSha,
+    string ReplacementRunnerDigestSha256);
+
 public sealed record ResumeAuthorizationPayload(
     MigrationRunIdentity Identity,
     string AdmissionSha256,
@@ -91,7 +99,11 @@ public sealed record ResumeAuthorizationPayload(
     ImmutableArray<PermittedDatabaseRecovery> PermittedOperations,
     Guid Nonce,
     DateTimeOffset IssuedAtUtc,
-    DateTimeOffset ExpiresAtUtc);
+    DateTimeOffset ExpiresAtUtc)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RecoveryRunnerCompatibility? RunnerCompatibility { get; init; }
+}
 
 public sealed record RecoveryAuthorityRoles(
     string BackupKeyId,
@@ -104,4 +116,5 @@ public sealed record RecoveryAuthorityVerificationOptions(
     GuardedRunnerPolicy RunnerPolicy,
     RecoveryAuthorityRoles Roles,
     IReceiptAttestationTrustStore TrustStore,
-    TimeSpan? MaximumObservationAge = null);
+    TimeSpan? MaximumObservationAge = null,
+    GuardedRunnerPolicy? RecoveryRunnerPolicy = null);
