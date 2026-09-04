@@ -549,9 +549,19 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                 foreach (string column in copyColumns)
                 {
                     object? rawValue = row.Values[column];
+                    if (rawValue is BufferedStreamingLob buffered)
+                    {
+                        ValidateStreamingBound(table, column, buffered.Kind, buffered.CanonicalByteLength);
+                        await using Stream stream = buffered.OpenRead();
+                        await importer.WriteAsync(
+                            stream,
+                            PostgreSqlTypePolicy.Validate(table.ColumnTypes[column]),
+                            cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
                     if (rawValue is StreamingLob lob)
                     {
-                        ValidateStreamingBound(table, column, lob);
+                        ValidateStreamingBound(table, column, lob.Kind, lob.ExpectedByteLength);
                         await using Stream stream = await lob.OpenReadAsync(cancellationToken).ConfigureAwait(false);
                         await importer.WriteAsync(
                             stream,
@@ -584,21 +594,25 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         return count;
     }
 
-    private static void ValidateStreamingBound(TableCopyPlan table, string column, StreamingLob lob)
+    private static void ValidateStreamingBound(
+        TableCopyPlan table,
+        string column,
+        StreamingLobKind kind,
+        long? expectedByteLength)
     {
         long? observedBytes = table.SourceColumns.SingleOrDefault(item => item.Column == column)?.MaxObservedDataLength;
-        long safeSourceLimit = lob.Kind == StreamingLobKind.Binary ? 1_000_000_000L : 500_000_000L;
+        long safeSourceLimit = kind == StreamingLobKind.Binary ? 1_000_000_000L : 500_000_000L;
         if (observedBytes is null || observedBytes < 0 || observedBytes > safeSourceLimit)
         {
             throw new MigrationExecutionException(
                 "streaming_lob_target_limit_invalid",
                 "The signed source maximum cannot be represented safely as one PostgreSQL varlena value.");
         }
-        long expansionLimit = lob.Kind == StreamingLobKind.Binary
+        long expansionLimit = kind == StreamingLobKind.Binary
             ? observedBytes.Value
             : checked(observedBytes.Value * 2);
-        if (lob.ExpectedByteLength is null || lob.ExpectedByteLength < 0 ||
-            lob.ExpectedByteLength > 1_000_000_000L || lob.ExpectedByteLength > expansionLimit)
+        if (expectedByteLength is null || expectedByteLength < 0 ||
+            expectedByteLength > 1_000_000_000L || expectedByteLength > expansionLimit)
         {
             throw new MigrationExecutionException(
                 "streaming_lob_target_limit_invalid",

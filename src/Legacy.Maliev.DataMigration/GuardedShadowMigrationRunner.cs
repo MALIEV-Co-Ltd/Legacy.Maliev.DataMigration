@@ -16,6 +16,8 @@ public sealed record GuardedRunnerPolicy(string ExpectedSourceCommitSha, string 
     public const int CopyBatchSize = 512;
 
     public const long CopyBatchByteLimit = 4 * 1024 * 1024;
+
+    public const long BufferedStreamingLobByteLimit = 64 * 1024;
 }
 
 public sealed record GuardedMigrationRequest(
@@ -410,12 +412,32 @@ internal sealed class MigrationLeaseHeartbeat : IAsyncDisposable
             while (true)
             {
                 await Task.Delay(_interval, _heartbeatStop.Token).ConfigureAwait(false);
-                MigrationRunLease renewed = await _journal
-                    .HeartbeatAsync(CurrentLease, _heartbeatStop.Token)
-                    .ConfigureAwait(false);
-                lock (_gate)
+                while (true)
                 {
-                    CurrentLease = renewed;
+                    try
+                    {
+                        MigrationRunLease renewed = await _journal
+                            .HeartbeatAsync(CurrentLease, _heartbeatStop.Token)
+                            .ConfigureAwait(false);
+                        lock (_gate)
+                        {
+                            CurrentLease = renewed;
+                        }
+                        break;
+                    }
+                    catch (Exception exception) when (IsTransientHeartbeatFailure(exception))
+                    {
+                        TimeSpan remaining = CurrentLease.ExpiresAtUtc - DateTimeOffset.UtcNow;
+                        if (remaining <= TimeSpan.FromMilliseconds(100))
+                        {
+                            throw;
+                        }
+
+                        TimeSpan retryDelay = TimeSpan.FromMilliseconds(Math.Min(
+                            TimeSpan.FromSeconds(5).TotalMilliseconds,
+                            remaining.TotalMilliseconds / 2d));
+                        await Task.Delay(retryDelay, _heartbeatStop.Token).ConfigureAwait(false);
+                    }
                 }
             }
         }
@@ -432,6 +454,13 @@ internal sealed class MigrationLeaseHeartbeat : IAsyncDisposable
 
             await _executionStop.CancelAsync().ConfigureAwait(false);
         }
+    }
+
+    private bool IsTransientHeartbeatFailure(Exception exception)
+    {
+        return !_heartbeatStop.IsCancellationRequested && exception is
+            OperationCanceledException or TimeoutException or IOException or Npgsql.NpgsqlException or
+            PostgreSqlMigrationBoundaryException { Code: "migration_postgres_boundary_unavailable" };
     }
 }
 
@@ -907,8 +936,9 @@ public sealed partial class GuardedShadowMigrationRunner
         await foreach (MigrationRow row in source.ReadTableImmediatelyAsync(database, table, cancellationToken)
             .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
-            long rowBytes = MigrationRowSizeEstimator.Estimate(row);
-            bool hasStreamingValue = row.Values.Values.Any(value => value is StreamingLob);
+            MigrationRow copyRow = await BufferSmallStreamingValuesAsync(row, table, cancellationToken).ConfigureAwait(false);
+            long rowBytes = MigrationRowSizeEstimator.Estimate(copyRow);
+            bool hasStreamingValue = copyRow.Values.Values.Any(value => value is StreamingLob);
             if (!hasStreamingValue && rowBytes > GuardedRunnerPolicy.CopyBatchByteLimit)
             {
                 throw new MigrationExecutionException(
@@ -925,9 +955,9 @@ public sealed partial class GuardedShadowMigrationRunner
                     batch.Clear();
                     batchBytes = 0;
                 }
-                var streamingBatch = new List<MigrationRow> { row };
+                var streamingBatch = new List<MigrationRow> { copyRow };
                 copied += await CopyBatchExactlyAsync(transaction, table, streamingBatch, cancellationToken).ConfigureAwait(false);
-                collector.Append(row);
+                collector.Append(copyRow);
                 continue;
             }
             if (batch.Count > 0 &&
@@ -940,7 +970,7 @@ public sealed partial class GuardedShadowMigrationRunner
                 batchBytes = 0;
             }
 
-            batch.Add(row);
+            batch.Add(copyRow);
             batchBytes = checked(batchBytes + rowBytes);
             if (batch.Count == GuardedRunnerPolicy.CopyBatchSize ||
                 batchBytes >= GuardedRunnerPolicy.CopyBatchByteLimit)
@@ -959,6 +989,37 @@ public sealed partial class GuardedShadowMigrationRunner
         }
 
         return copied;
+    }
+
+    private static async Task<MigrationRow> BufferSmallStreamingValuesAsync(
+        MigrationRow row,
+        TableCopyPlan table,
+        CancellationToken cancellationToken)
+    {
+        StreamingLob[] lobs = [.. table.OrderedColumns
+            .Select(column => row.Values[column])
+            .OfType<StreamingLob>()];
+        if (lobs.Length == 0 || lobs.Any(lob => lob.ExpectedByteLength is null) ||
+            lobs.Sum(lob => lob.ExpectedByteLength!.Value) > GuardedRunnerPolicy.BufferedStreamingLobByteLimit)
+        {
+            return row;
+        }
+
+        var values = new Dictionary<string, object?>(row.Values, StringComparer.Ordinal);
+        foreach (string column in table.OrderedColumns)
+        {
+            if (values[column] is not StreamingLob lob)
+            {
+                continue;
+            }
+
+            int capacity = checked((int)lob.ExpectedByteLength!.Value);
+            using var buffer = new MemoryStream(capacity);
+            await lob.ConsumeAsync(buffer, cancellationToken).ConfigureAwait(false);
+            values[column] = new BufferedStreamingLob(lob.Kind, buffer.ToArray());
+        }
+
+        return new MigrationRow(values);
     }
 
     internal static bool SourceInventoryMatches(

@@ -472,6 +472,67 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
         }
     }
 
+    [Fact]
+    public async Task CopyAndReconcile_BufferedStreamingValues_PreserveEvidenceAcrossBatch()
+    {
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync(
+            "Order", $"legacy_shadow_order_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
+        try
+        {
+            TableCopyPlan table = new TableCopyPlan("dbo", "Order", "public", "orders", ["Id", "Name"], ["Id"])
+            {
+                SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["Id"] = "int",
+                    ["Name"] = "nvarchar(max)",
+                },
+                ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["Id"] = "integer",
+                    ["Name"] = "text",
+                },
+                PrimaryKey = new PrimaryKeyCopyPlan("PK_orders", ["Id"]),
+                SourceColumns =
+                [
+                    new("Id", "int", Hash("Id:int"), null),
+                    new("Name", "nvarchar(max)", Hash("Name:nvarchar(max)"), 64 * 1024),
+                ],
+            };
+            var draft = new DatabaseSchemaPlan("Order", "1.0", Hash("source"), Hash("target"), [table]);
+            DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+            MigrationRow[] rows =
+            [
+                new(new Dictionary<string, object?>
+                {
+                    ["Id"] = 1,
+                    ["Name"] = new BufferedStreamingLob(StreamingLobKind.Text, "first"u8.ToArray()),
+                }),
+                new(new Dictionary<string, object?>
+                {
+                    ["Id"] = 2,
+                    ["Name"] = new BufferedStreamingLob(StreamingLobKind.Text, "second"u8.ToArray()),
+                }),
+            ];
+
+            await using IPostgreSqlWholeDatabaseTransaction transaction =
+                await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
+            await transaction.ApplySchemaAsync(plan, CancellationToken.None);
+            Assert.Equal(2, await transaction.CopyBatchAsync(table, rows, CancellationToken.None));
+            using var expectedCollector = new TableEvidenceCollector(table);
+            foreach (MigrationRow row in rows) { expectedCollector.Append(row); }
+            string expected = expectedCollector.Finish().ContentSha256;
+            _ = await transaction.InspectSchemaAsync(plan, CancellationToken.None);
+            TableReconciliationEvidence evidence = await transaction.InspectTableAsync(table, CancellationToken.None);
+            Assert.Equal(expected, evidence.ContentSha256);
+            await transaction.RollbackAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
     private static TableCopyPlan CyclicTable(string tableName, string referencedTable, string foreignKeyName)
     {
         return new TableCopyPlan("dbo", tableName, "public", tableName.ToLowerInvariant(), ["Id", "OtherId"], ["Id"])

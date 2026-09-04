@@ -475,6 +475,23 @@ public sealed class GuardedShadowMigrationRunnerTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_SmallStreamedRows_AreBufferedAndBatched()
+    {
+        Harness harness = CreateHarness();
+        harness.Source.RowsPerTable = 3;
+        harness.Source.ValueFactory = _ => new StreamingLob(
+            StreamingLobKind.Text,
+            4,
+            async (destination, cancellationToken) =>
+                await destination.WriteAsync("test"u8.ToArray(), cancellationToken));
+
+        MigrationExecutionResult result = await harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None);
+
+        Assert.Equal(MigrationExecutionStatus.Completed, result.Status);
+        Assert.All(harness.Target.Transactions, transaction => Assert.Equal(3, transaction.MaximumBatchSize));
+    }
+
+    [Fact]
     public async Task ExecuteAsync_RowLargerThanByteLimit_FailsClosedInsteadOfCreatingUnboundedBatch()
     {
         Harness harness = CreateHarness();
@@ -1092,7 +1109,7 @@ public sealed class GuardedShadowMigrationRunnerTests
             return Task.CompletedTask;
         }
 
-        public Task<long> CopyBatchAsync(
+        public async Task<long> CopyBatchAsync(
             TableCopyPlan table,
             IReadOnlyList<MigrationRow> rows,
             CancellationToken cancellationToken)
@@ -1107,13 +1124,18 @@ public sealed class GuardedShadowMigrationRunnerTests
                 throw new InvalidOperationException("simulated copy failure");
             }
 
+            foreach (StreamingLob lob in rows.SelectMany(row => row.Values.Values.OfType<StreamingLob>()))
+            {
+                await lob.ConsumeAsync(Stream.Null, cancellationToken);
+            }
+
             MaximumBatchSize = Math.Max(MaximumBatchSize, rows.Count);
             if (corruption != "prefix" || _rows.Count == 0)
             {
                 _rows.AddRange(rows);
             }
 
-            return Task.FromResult<long>(rows.Count);
+            return rows.Count;
         }
 
         public Task<string> InspectSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
