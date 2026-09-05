@@ -9,6 +9,28 @@ public enum StreamingLobKind
     Binary,
 }
 
+internal sealed class BufferedStreamingLob
+{
+    private readonly byte[] _content;
+
+    public BufferedStreamingLob(StreamingLobKind kind, byte[] content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        Kind = kind;
+        _content = content;
+        CanonicalSha256 = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
+    }
+
+    public StreamingLobKind Kind { get; }
+    public long CanonicalByteLength => _content.LongLength;
+    public string CanonicalSha256 { get; }
+
+    public Stream OpenRead()
+    {
+        return new MemoryStream(_content, writable: false);
+    }
+}
+
 /// <summary>A single-use large value exposed through a bounded in-memory producer/consumer pipe.</summary>
 public sealed class StreamingLob
 {

@@ -1,3 +1,5 @@
+using Npgsql;
+
 namespace Legacy.Maliev.DataMigration.Tests;
 
 [Collection(PostgreSqlAdapterTestGroup.Name)]
@@ -45,6 +47,14 @@ public sealed class PostgreSqlShadowTargetCrashRecoveryTests(PostgreSqlAdapterFi
         Assert.Equal(abandoned, createdAbandoned);
 
         clock.Advance(TimeSpan.FromSeconds(61));
+        await using (var connection = new NpgsqlConnection(fixture.ControlConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var expire = new NpgsqlCommand(
+                $"UPDATE \"{schema}\".migration_runs SET lease_expires_at_utc = clock_timestamp() - interval '1 second' WHERE run_id = $1", connection);
+            _ = expire.Parameters.AddWithValue(identity.RunId);
+            Assert.Equal(1, await expire.ExecuteNonQueryAsync());
+        }
         MigrationRunStartResult takeover = await restarted.TryBeginAsync(identity, CancellationToken.None);
         MigrationRunLease restartedLease = Assert.IsType<MigrationRunLease>(takeover.Lease);
         ShadowDatabase pending = Assert.Single(takeover.PendingShadows!);

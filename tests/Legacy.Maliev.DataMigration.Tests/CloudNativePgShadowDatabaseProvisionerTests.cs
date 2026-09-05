@@ -185,7 +185,7 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
     }
 
     [Fact]
-    public async Task AmbiguousCreate_AppearingAfterInitialNotFound_IsConditionallyDeleted()
+    public async Task AmbiguousCreate_AppearingAfterInitialNotFound_IsPreservedWithoutMutation()
     {
         await File.WriteAllTextAsync(_tokenFile, "test-token");
         var handler = new ReconciledDatabaseHandler
@@ -198,12 +198,12 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
         _ = await Assert.ThrowsAsync<HttpRequestException>(() => provisioner.ProvisionWithConnectionsDisabledAsync(
             CreateShadow(), "legacy_migration_shadow_test", CancellationToken.None));
 
-        Assert.True(handler.Deleted);
-        Assert.True(handler.GetCalls >= 4);
+        Assert.False(handler.Deleted);
+        Assert.Equal(0, handler.PatchCalls);
     }
 
     [Fact]
-    public async Task CancelledCreate_WaitsForPostAndDeletesLateExactResource()
+    public async Task CancelledCreate_WaitsForPostAndPreservesLateExactResource()
     {
         await File.WriteAllTextAsync(_tokenFile, "test-token");
         var handler = new ReconciledDatabaseHandler { PostCompletionDelay = TimeSpan.FromMilliseconds(150) };
@@ -214,12 +214,67 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
             CreateShadow(), "legacy_migration_shadow_test", cancellation.Token));
 
         Assert.True(handler.PostCompleted);
-        Assert.True(handler.Deleted);
+        Assert.False(handler.Deleted);
+        Assert.Equal(0, handler.PatchCalls);
     }
 
     public void Dispose()
     {
         File.Delete(_tokenFile);
+    }
+
+    [Fact]
+    public async Task CancelledCreate_LaterPostFailureRetainsPrimaryAndSafeSecondary()
+    {
+        await File.WriteAllTextAsync(_tokenFile, "test-token");
+        var handler = new ReconciledDatabaseHandler { PostCompletionDelay = TimeSpan.FromMilliseconds(150), ThrowAfterPost = true };
+        using var provisioner = Create(handler);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(25));
+        OperationCanceledException primary = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => provisioner.ProvisionWithConnectionsDisabledAsync(
+            CreateShadow(), "legacy_migration_shadow_test", cancellation.Token));
+        Assert.Equal(nameof(HttpRequestException), primary.Data["shadow_post_completion_failure"]);
+        Assert.True(handler.PostCompleted);
+        Assert.False(handler.Deleted);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecoveryObservation_ExactSettledResource_IsReadOnly(bool enabled)
+    {
+        await File.WriteAllTextAsync(_tokenFile, "test-token");
+        var handler = new ReconciledDatabaseHandler();
+        using var creator = Create(handler);
+        ShadowDatabase shadow = CreateShadow();
+        await creator.ProvisionWithConnectionsDisabledAsync(shadow, "legacy_migration_shadow_test", CancellationToken.None);
+        if (enabled) { await creator.EnableConnectionsAsync(shadow, CancellationToken.None); }
+        int before = handler.Requests.Count;
+        CloudNativePgShadowSettlement observed = await creator.ObserveSettlementAsync(shadow, CancellationToken.None);
+        Assert.Equal(shadow, observed.OriginalShadow);
+        Assert.Equal(enabled, observed.AllowConnections);
+        Assert.All(handler.Requests.Skip(before), request => Assert.Equal("GET", request.Method));
+    }
+
+    [Theory]
+    [InlineData("pending")]
+    [InlineData("deleting")]
+    [InlineData("owner")]
+    [InlineData("uid")]
+    public async Task RecoveryObservation_UnsettledOrChangedResource_PreservesAndRejects(string fault)
+    {
+        await File.WriteAllTextAsync(_tokenFile, "test-token");
+        var handler = new ReconciledDatabaseHandler();
+        using var creator = Create(handler);
+        ShadowDatabase shadow = CreateShadow();
+        await creator.ProvisionWithConnectionsDisabledAsync(shadow, "legacy_migration_shadow_test", CancellationToken.None);
+        handler.Pending = fault == "pending";
+        handler.Deleting = fault == "deleting";
+        handler.OverrideOwner = fault == "owner" ? "other" : null;
+        handler.ReplaceUid = fault == "uid";
+        int before = handler.Requests.Count;
+        _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => creator.ObserveSettlementAsync(shadow, CancellationToken.None));
+        Assert.All(handler.Requests.Skip(before), request => Assert.Equal("GET", request.Method));
+        Assert.False(handler.Deleted);
     }
 
     private CloudNativePgShadowDatabaseProvisioner Create(HttpMessageHandler handler)
@@ -250,7 +305,9 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
     {
         private JsonObject? _resource;
 
-        public string? OverrideOwner { get; init; }
+        public string? OverrideOwner { get; set; }
+        public bool Pending { get; set; }
+        public bool Deleting { get; set; }
 
         public bool OmitFirstGetStatus { get; init; }
 
@@ -384,6 +441,7 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
             }
 
             JsonObject response = (JsonObject)_resource.DeepClone();
+            if (Deleting) { response["metadata"]!["deletionTimestamp"] = "2026-09-03T00:00:00Z"; }
             if (ReplaceUid)
             {
                 response["metadata"]!["uid"] = "22222222-aaaa-bbbb-cccc-222222222222";
@@ -412,7 +470,7 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
 
             response["status"] = new JsonObject
             {
-                ["applied"] = true,
+                ["applied"] = !Pending,
                 ["observedGeneration"] = response["metadata"]!["generation"]!.GetValue<int>(),
             };
             return new HttpResponseMessage(HttpStatusCode.OK)

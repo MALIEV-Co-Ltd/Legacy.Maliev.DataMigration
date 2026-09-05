@@ -30,6 +30,28 @@ public sealed class RuntimeAttestationTests : IDisposable
     }
 
     [Fact]
+    public async Task Windows_runner_manifest_allows_runtime_read_handles_but_blocks_writes_and_deletion()
+    {
+        if (!OperatingSystem.IsWindows()) { return; }
+
+        string runnerPath = await CreateSingleFilePublicationAsync();
+        await using var runtimeReader = new FileStream(runnerPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        bool inspected = false;
+        RunnerArtifactManifest manifest = await RunnerArtifactManifestMeasurer.MeasureAsync(_root, cancellationToken =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = Assert.Throws<IOException>(() => File.Open(runnerPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite).Dispose());
+            _ = Assert.Throws<IOException>(() => File.Delete(runnerPath));
+            inspected = true;
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+
+        Assert.True(inspected);
+        Assert.Equal("runner.dll", Assert.Single(manifest.Files).RelativePath);
+        Assert.Equal(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(runnerPath))).ToLowerInvariant(), manifest.Files[0].Sha256);
+    }
+
+    [Fact]
     public async Task Linux_path_identity_matches_the_exclusive_open_handle_without_reopening_the_file()
     {
         if (!OperatingSystem.IsLinux())

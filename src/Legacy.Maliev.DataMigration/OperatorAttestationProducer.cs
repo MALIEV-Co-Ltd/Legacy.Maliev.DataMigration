@@ -67,7 +67,7 @@ public static partial class ReviewedExecutionAuthorizationProducer
         var policy = new GuardedRunnerPolicy(request.ExpectedSourceCommitSha, request.RunnerManifest.ManifestSha256);
         if (SchemaPlanCanonicalizer.Validate(plan, policy, nowUtc, GuardedRunnerPolicy.MaximumSchemaPlanAge).Count > 0)
         {
-            throw Error("authorization_plan_invalid", "The fresh exact-24 schema plan is invalid or stale.");
+            throw Error("authorization_plan_invalid", "The fresh exact-23 schema plan is invalid or stale.");
         }
         try
         {
@@ -76,7 +76,7 @@ public static partial class ReviewedExecutionAuthorizationProducer
         }
         catch (Exact25FullBackupException)
         {
-            throw Error("authorization_backup_receipt_invalid", "The signed exact-24 backup receipt is invalid or stale.");
+            throw Error("authorization_backup_receipt_invalid", "The signed exact-23 backup receipt is invalid or stale.");
         }
 
         if (backupReceipt.AttestationKeyId is null ||
@@ -195,7 +195,7 @@ public static partial class ReviewedMigrationProvenanceProducer
             !ExactNames(result.Receipt.Databases.Select(item => item.Database)) ||
             !ExactNames(result.Receipt.Reconciliation.Select(item => item.Database)))
         {
-            throw Error("provenance_execution_invalid", "A completed exact-24 migration result is required.");
+            throw Error("provenance_execution_invalid", "A completed exact-23 migration result is required.");
         }
         MigrationExecutionReceipt execution = result.Receipt;
         if (!Verify(execution.AttestationKeyId, execution.AttestationSignature,
@@ -209,7 +209,7 @@ public static partial class ReviewedMigrationProvenanceProducer
         }
         catch (Exact25FullBackupException)
         {
-            throw Error("provenance_backup_receipt_invalid", "The signed exact-24 backup receipt is invalid or stale.");
+            throw Error("provenance_backup_receipt_invalid", "The signed exact-23 backup receipt is invalid or stale.");
         }
         var policy = new GuardedRunnerPolicy(execution.SourceCommitSha, execution.RunnerDigestSha256);
         if (ExecutionAuthorizationValidator.Validate(authorization, plan, backupReceipt, policy, nowUtc, authorizationTrust).Count > 0)

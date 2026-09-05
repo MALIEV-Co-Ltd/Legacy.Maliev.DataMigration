@@ -6,6 +6,52 @@ namespace Legacy.Maliev.DataMigration;
 
 public static class MigrationEvidenceAttestation
 {
+    public static byte[] CreatePayload(DatabaseMigrationCheckpoint checkpoint)
+    {
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        return [.. "legacy-maliev-database-checkpoint-v1\0"u8,
+            .. SerializeCheckpoint(checkpoint with { AttestationSignature = null })];
+    }
+
+    internal static byte[] SerializeCheckpoint(DatabaseMigrationCheckpoint checkpoint)
+    {
+        // Unlike historical receipts, checkpoints have canonical object ordering, including dictionaries.
+        JsonElement json = JsonSerializer.SerializeToElement(checkpoint);
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            WriteCanonical(writer, json);
+        }
+        return stream.ToArray();
+    }
+
+    private static void WriteCanonical(Utf8JsonWriter writer, JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            writer.WriteStartObject();
+            foreach (JsonProperty property in element.EnumerateObject().OrderBy(item => item.Name, StringComparer.Ordinal))
+            {
+                writer.WritePropertyName(property.Name);
+                WriteCanonical(writer, property.Value);
+            }
+            writer.WriteEndObject();
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            writer.WriteStartArray();
+            foreach (JsonElement item in element.EnumerateArray())
+            {
+                WriteCanonical(writer, item);
+            }
+            writer.WriteEndArray();
+        }
+        else
+        {
+            element.WriteTo(writer);
+        }
+    }
+
     public static byte[] CreatePayload(MigrationExecutionReceipt receipt)
     {
         return Create("legacy-maliev-migration-success-v1", receipt with { AttestationSignature = null });

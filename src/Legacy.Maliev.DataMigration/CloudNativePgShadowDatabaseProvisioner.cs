@@ -18,9 +18,19 @@ public sealed record CloudNativePgShadowDatabaseProvisionerOptions(
     string ServiceAccountCaFile,
     TimeSpan ReconciliationTimeout);
 
+public sealed record CloudNativePgShadowSettlement(ShadowDatabase OriginalShadow, string ResourceUid,
+    string ResourceVersion, long Generation, bool AllowConnections);
+
 public sealed partial class CloudNativePgShadowDatabaseProvisioner : IPostgreSqlShadowDatabaseProvisioner, IDisposable
 {
-    private static readonly TimeSpan StableTerminalAbsenceWindow = TimeSpan.FromSeconds(1);
+    public static CloudNativePgShadowDatabaseProvisioner CreateForHost(CloudNativePgShadowDatabaseProvisionerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        HttpMessageHandler handler = HostRuntimeTrust.CreateKubernetesHandler(options.ApiServer, options.ServiceAccountTokenFile, options.ServiceAccountCaFile);
+        try { return new(options, handler) { _protectedHost = true }; }
+        catch { handler.Dispose(); throw; }
+    }
+    private bool _protectedHost;
     private readonly CloudNativePgShadowDatabaseProvisionerOptions _options;
     private readonly HttpClient _client;
     private readonly ConcurrentDictionary<string, ResourceFence> _fences = new(StringComparer.Ordinal);
@@ -79,27 +89,40 @@ public sealed partial class CloudNativePgShadowDatabaseProvisioner : IPostgreSql
         }
         catch (Exception primary)
         {
-            try
-            {
-                await AwaitOriginalPostCompletionAsync(postTask).ConfigureAwait(false);
-                await ReconcileAmbiguousCreateAndProveAbsenceAsync(shadow, resourceName).ConfigureAwait(false);
-            }
-            catch (Exception reconciliation)
-            {
-                if (primary is MigrationExecutionException migration &&
-                    migration.Code == "shadow_provisioning_observation_invalid")
-                {
-                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primary).Throw();
-                }
-
-                throw new AggregateException("CloudNativePG provisioning failed and its exact resource could not be reconciled.", primary, reconciliation);
-            }
-
+            // The bounded POST may outlive caller cancellation. Observe its completion,
+            // but never infer absence or issue compensating remote mutations.
+            await AwaitOriginalPostCompletionAsync(postTask, primary).ConfigureAwait(false);
             throw;
         }
     }
 
-    private static async Task AwaitOriginalPostCompletionAsync(Task<HttpResponseMessage> postTask)
+    public async Task<CloudNativePgShadowSettlement> ObserveSettlementAsync(ShadowDatabase originalShadow, CancellationToken cancellationToken)
+    {
+        ValidateRequest(originalShadow, _options.OwnerRole);
+        try
+        {
+            string resourceName = ResourceName(originalShadow.Name);
+            ObservedResource observed = await ObserveAsync(resourceName, cancellationToken).ConfigureAwait(false) ??
+                throw FenceError("The original provisioning resource is absent; settlement is not proven.");
+            ValidateObservedResource(observed.Root, originalShadow, resourceName, allowConnections: null, ensure: "present");
+            EnsureSameUid(originalShadow, observed.Fence.Uid);
+            JsonElement metadata = observed.Root.GetProperty("metadata");
+            long generation = metadata.GetProperty("generation").GetInt64();
+            return generation < 1 || (metadata.TryGetProperty("deletionTimestamp", out JsonElement deletion) && deletion.ValueKind != JsonValueKind.Null) ||
+                !observed.Root.TryGetProperty("status", out JsonElement status) ||
+                !status.TryGetProperty("applied", out JsonElement applied) || !applied.GetBoolean() ||
+                !status.TryGetProperty("observedGeneration", out JsonElement appliedGeneration) || appliedGeneration.GetInt64() != generation
+                ? throw new MigrationExecutionException("shadow_provisioning_unsettled", "The exact original provisioning resource has not settled; preserve it.")
+                : new(originalShadow, observed.Fence.Uid, observed.Fence.ResourceVersion, generation,
+                observed.Root.GetProperty("spec").GetProperty("allowConnections").GetBoolean());
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
+        {
+            throw new MigrationExecutionException("shadow_provisioning_observation_invalid", "The provisioning observation is incomplete or ambiguous.");
+        }
+    }
+
+    private static async Task AwaitOriginalPostCompletionAsync(Task<HttpResponseMessage> postTask, Exception primary)
     {
         try
         {
@@ -107,35 +130,7 @@ public sealed partial class CloudNativePgShadowDatabaseProvisioner : IPostgreSql
         }
         catch (Exception exception) when (exception is not OutOfMemoryException and not AccessViolationException)
         {
-            // Completion, including a bounded transport cancellation, is the fence needed before reconciliation.
-        }
-    }
-
-    private async Task ReconcileAmbiguousCreateAndProveAbsenceAsync(ShadowDatabase shadow, string resourceName)
-    {
-        using var deadline = new CancellationTokenSource(_options.ReconciliationTimeout);
-        long? absenceStarted = null;
-        while (true)
-        {
-            ObservedResource? observed = await ObserveAsync(resourceName, deadline.Token).ConfigureAwait(false);
-            if (observed is null)
-            {
-                absenceStarted ??= System.Diagnostics.Stopwatch.GetTimestamp();
-                if (System.Diagnostics.Stopwatch.GetElapsedTime(absenceStarted.Value) >= StableTerminalAbsenceWindow)
-                {
-                    _ = _fences.TryRemove(shadow.Name, out _);
-                    return;
-                }
-            }
-            else
-            {
-                absenceStarted = null;
-                ValidateObservedResource(observed.Root, shadow, resourceName, allowConnections: null, ensure: null);
-                _fences[shadow.Name] = observed.Fence;
-                await DeleteAsync(shadow, deadline.Token).ConfigureAwait(false);
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(250), deadline.Token).ConfigureAwait(false);
+            if (!ReferenceEquals(primary, exception)) { primary.Data["shadow_post_completion_failure"] = exception.GetType().Name; }
         }
     }
 
@@ -299,7 +294,8 @@ public sealed partial class CloudNativePgShadowDatabaseProvisioner : IPostgreSql
 
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        string token = (await File.ReadAllTextAsync(_options.ServiceAccountTokenFile, cancellationToken).ConfigureAwait(false)).Trim();
+        string token = (_protectedHost ? HostRuntimeTrust.ReadText(_options.ServiceAccountTokenFile) :
+            await File.ReadAllTextAsync(_options.ServiceAccountTokenFile, cancellationToken).ConfigureAwait(false)).Trim();
         if (string.IsNullOrWhiteSpace(token))
         {
             throw new MigrationExecutionException("shadow_provisioning_token_invalid", "The projected Kubernetes service-account token is empty.");

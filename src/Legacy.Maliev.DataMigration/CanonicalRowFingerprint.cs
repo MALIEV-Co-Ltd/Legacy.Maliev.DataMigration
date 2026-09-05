@@ -39,7 +39,15 @@ public sealed class CanonicalRowFingerprint : IDisposable
                     _hash.AppendData([0x01]);
                     if (value is StreamingLob lob)
                     {
-                        AppendStreaming(lob);
+                        if (!lob.IsConsumed)
+                        {
+                            throw new InvalidOperationException("A streamed value must be consumed before evidence is collected.");
+                        }
+                        AppendStreaming(lob.CanonicalByteLength, lob.CanonicalSha256);
+                    }
+                    else if (value is BufferedStreamingLob buffered)
+                    {
+                        AppendStreaming(buffered.CanonicalByteLength, buffered.CanonicalSha256);
                     }
                     else
                     {
@@ -75,16 +83,12 @@ public sealed class CanonicalRowFingerprint : IDisposable
         _hash.AppendData(value);
     }
 
-    private void AppendStreaming(StreamingLob lob)
+    private void AppendStreaming(long canonicalByteLength, string canonicalSha256)
     {
-        if (!lob.IsConsumed)
-        {
-            throw new InvalidOperationException("A streamed value must be consumed before evidence is collected.");
-        }
         Span<byte> length = stackalloc byte[sizeof(long)];
-        BinaryPrimitives.WriteInt64BigEndian(length, lob.CanonicalByteLength);
+        BinaryPrimitives.WriteInt64BigEndian(length, canonicalByteLength);
         _hash.AppendData(length);
-        _hash.AppendData(Convert.FromHexString(lob.CanonicalSha256));
+        _hash.AppendData(Convert.FromHexString(canonicalSha256));
     }
 
     private void AppendLength(int value)

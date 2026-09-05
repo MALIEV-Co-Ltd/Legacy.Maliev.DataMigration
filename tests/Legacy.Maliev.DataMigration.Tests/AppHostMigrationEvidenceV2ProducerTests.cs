@@ -50,12 +50,12 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
         using JsonDocument evidence = JsonDocument.Parse(document.EvidenceJson);
         JsonElement root = evidence.RootElement;
         Assert.Equal(2, root.GetProperty("schemaVersion").GetInt32());
-        Assert.Equal(24, root.GetProperty("databases").GetArrayLength());
+        Assert.Equal(23, root.GetProperty("databases").GetArrayLength());
         Assert.Equal(27, root.GetProperty("inventory").GetArrayLength());
         Assert.Empty(root.GetProperty("archives").EnumerateArray());
         JsonElement source = root.GetProperty("source");
         Assert.Equal(fixture.Request.BackupReceipt.SourceObservedAtUtc, source.GetProperty("observedAtUtc").GetDateTimeOffset());
-        Assert.Equal(24, source.GetProperty("artifacts").GetArrayLength());
+        Assert.Equal(23, source.GetProperty("artifacts").GetArrayLength());
         Assert.All(source.GetProperty("artifacts").EnumerateArray(), artifact =>
         {
             Assert.False(string.IsNullOrWhiteSpace(artifact.GetProperty("object").GetString()));
@@ -83,7 +83,7 @@ public sealed class AppHostMigrationEvidenceV2ProducerTests : IDisposable
 
         using JsonDocument baseline = JsonDocument.Parse(document.ApprovedBaselineJson);
         Assert.Equal(2, baseline.RootElement.GetProperty("schemaVersion").GetInt32());
-        Assert.Equal(24, baseline.RootElement.GetProperty("databases").GetArrayLength());
+        Assert.Equal(23, baseline.RootElement.GetProperty("databases").GetArrayLength());
     }
 
     [Fact]

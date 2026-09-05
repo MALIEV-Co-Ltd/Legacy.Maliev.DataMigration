@@ -2,26 +2,28 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class MigrationScriptContractTests
 {
-    [Fact]
-    public void ConsoleStages_UseOwnerProtectedPolicyForAllOperatorInputs()
+    [Theory]
+    [InlineData("execute-shadow")]
+    [InlineData("plan-incremental")]
+    [InlineData("plan-resume")]
+    [InlineData("authorize-resume")]
+    [InlineData("authorize-compatible-resume")]
+    [InlineData("resume-shadow")]
+    [InlineData("finalize-local")]
+    public async Task IncrementalStages_RejectUnprotectedOperatorConfigurationBeforeRuntime(string command)
     {
-        string source = File.ReadAllText(Path.Combine(RepositoryRoot(),
-            "src", "Legacy.Maliev.DataMigration.Console", "MigrationConsole.cs"));
-
-        Assert.DoesNotContain("ReadJsonAsync<", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("File.ReadAllTextAsync", source, StringComparison.Ordinal);
-        Assert.Contains("ReadProtectedJsonAsync<MigrationConsoleConfiguration>", source, StringComparison.Ordinal);
-        Assert.Contains("ReadProtectedTextAsync", source, StringComparison.Ordinal);
-
-        int executeStart = source.IndexOf("private static async Task ExecuteShadowAsync", StringComparison.Ordinal);
-        int trustStart = source.IndexOf("private static async Task<ReceiptAttestationTrustStore>", executeStart, StringComparison.Ordinal);
-        string execute = source[executeStart..trustStart];
-        Assert.True(execute.IndexOf("shadow_deploy_gate_invalid", StringComparison.Ordinal) <
-            execute.IndexOf("ReadProtectedJsonAsync<MigrationConsoleConfiguration>", StringComparison.Ordinal));
-        Assert.True(execute.IndexOf("ReadSigningRolesAsync", StringComparison.Ordinal) <
-            execute.IndexOf("CloudNativePgShadowDatabaseProvisioner", StringComparison.Ordinal));
-        Assert.True(execute.IndexOf("EnsureSignerMatchesRole", StringComparison.Ordinal) <
-            execute.IndexOf("CloudNativePgShadowDatabaseProvisioner", StringComparison.Ordinal));
+        string path = Path.Combine(Path.GetTempPath(), "unsafe-console-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            await File.WriteAllTextAsync(path, "private data must not be printed");
+            if (!OperatingSystem.IsWindows()) { File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.OtherRead); }
+            using var error = new StringWriter();
+            int exit = await Console.MigrationConsole.RunAsync([command, "--config", path], TextWriter.Null, error,
+                name => name == "LEGACY_DEPLOY_ENABLED" ? "false" : throw new InvalidOperationException("Runtime must not be reached"), CancellationToken.None);
+            Assert.Equal(65, exit);
+            Assert.Equal("incremental_config_unprotected" + Environment.NewLine, error.ToString());
+        }
+        finally { File.Delete(path); }
     }
 
     [Fact]
@@ -163,10 +165,5 @@ public sealed class MigrationScriptContractTests
     {
         return Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "../../../../../src/Legacy.Maliev.DataMigration.Console", file));
-    }
-
-    private static string RepositoryRoot()
-    {
-        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
     }
 }

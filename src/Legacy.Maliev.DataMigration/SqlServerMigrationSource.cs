@@ -343,6 +343,76 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         }
     }
 
+    public async IAsyncEnumerable<MigrationRow> ReadTableImmediatelyAsync(
+        string database,
+        TableCopyPlan table,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        string[] streamedColumns = [.. table.OrderedColumns.Where(column => IsLargeValueType(table.SourceColumnTypes[column]))];
+        if (streamedColumns.Length == 0)
+        {
+            await foreach (MigrationRow row in ReadTableAsync(database, table, cancellationToken)
+                .WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                yield return row;
+            }
+            yield break;
+        }
+
+        SnapshotLease lease = GetSnapshot(database);
+        string[] materializedColumns = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
+        await using var command = new SqlCommand(
+            BuildImmediateStreamingReadTableCommand(table),
+            lease.Connection,
+            lease.Transaction)
+        {
+            CommandTimeout = 0,
+        };
+        await using SqlDataReader reader = await command.ExecuteReaderAsync(
+            CommandBehavior.SequentialAccess,
+            cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var values = new Dictionary<string, object?>(table.OrderedColumns.Count, StringComparer.Ordinal);
+            for (var ordinal = 0; ordinal < materializedColumns.Length; ordinal++)
+            {
+                string column = materializedColumns[ordinal];
+                string sourceType = table.SourceColumnTypes[column];
+                object? value = await reader.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false)
+                    ? null
+                    : reader.GetValue(ordinal);
+                values.Add(column, NormalizeSourceValue(value, sourceType, table.ColumnTypes[column]));
+            }
+
+            var lobs = new List<StreamingLob>(streamedColumns.Length);
+            for (var index = 0; index < streamedColumns.Length; index++)
+            {
+                string column = streamedColumns[index];
+                int lengthOrdinal = materializedColumns.Length + index;
+                if (await reader.IsDBNullAsync(lengthOrdinal, cancellationToken).ConfigureAwait(false))
+                {
+                    values.Add(column, null);
+                    continue;
+                }
+
+                long expectedByteLength = Convert.ToInt64(reader.GetValue(lengthOrdinal), System.Globalization.CultureInfo.InvariantCulture);
+                int valueOrdinal = materializedColumns.Length + streamedColumns.Length + index;
+                StreamingLob lob = CreateImmediateStreamingLob(reader, valueOrdinal, table.SourceColumnTypes[column], expectedByteLength);
+                values.Add(column, lob);
+                lobs.Add(lob);
+            }
+
+            yield return new MigrationRow(values);
+            if (lobs.Any(lob => !lob.IsConsumed))
+            {
+                throw new MigrationExecutionException(
+                    "streaming_lob_not_consumed_immediately",
+                    "Every inline streamed field must be consumed before advancing to the next source row.");
+            }
+        }
+    }
+
     public async Task<IReadOnlyDictionary<string, long>> InspectForeignKeyOrphansAsync(
         string database,
         TableCopyPlan table,
@@ -525,6 +595,43 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         return table.SourceKnownEmpty
             ? $"{select};"
             : $"{select} ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
+    }
+
+    internal static string BuildImmediateStreamingReadTableCommand(TableCopyPlan table)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        if (table.OrderedColumns.Count == 0 || table.OrderByColumns.Count == 0)
+        {
+            throw new ArgumentException("A deterministic table read requires columns and ordering.", nameof(table));
+        }
+
+        string[] materialized = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
+        string[] streamed = [.. table.OrderedColumns.Where(column => IsLargeValueType(table.SourceColumnTypes[column]))];
+        string[] lengthProbes = [.. streamed.Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
+            ? $"DATALENGTH({QuoteIdentifier(column)})"
+            : $"DATALENGTH(CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
+        string[] streamedValues = [.. streamed.Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
+            ? QuoteIdentifier(column)
+            : $"CONVERT(varbinary(max), CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
+        string select = $"SELECT {string.Join(", ", materialized.Select(QuoteIdentifier).Concat(lengthProbes).Concat(streamedValues))} " +
+            $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)}";
+        return table.SourceKnownEmpty
+            ? $"{select};"
+            : $"{select} ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
+    }
+
+    private static StreamingLob CreateImmediateStreamingLob(
+        SqlDataReader reader,
+        int ordinal,
+        string sourceType,
+        long expectedByteLength)
+    {
+        bool binary = sourceType is "varbinary(max)" or "image";
+        return new StreamingLob(binary ? StreamingLobKind.Binary : StreamingLobKind.Text, expectedByteLength, async (destination, cancellationToken) =>
+        {
+            await using Stream input = reader.GetStream(ordinal);
+            await input.CopyToAsync(destination, 64 * 1024, cancellationToken).ConfigureAwait(false);
+        });
     }
 
     private static StreamingLob CreateStreamingLob(

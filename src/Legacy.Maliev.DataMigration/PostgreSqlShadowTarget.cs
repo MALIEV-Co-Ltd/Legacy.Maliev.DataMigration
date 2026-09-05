@@ -10,7 +10,12 @@ namespace Legacy.Maliev.DataMigration;
 public sealed record PostgreSqlShadowTargetOptions(
     string AdministrativeConnectionString,
     IPostgreSqlShadowDatabaseProvisioner Provisioner,
-    string? ExpectedRuntimeRole = null);
+    string? ExpectedRuntimeRole = null)
+{
+    // Bounds the same-connection session-to-transaction settlement handoff, not COPY/inspection.
+    public TimeSpan SettlementTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public RemotePostgreSqlHostBoundary? HostBoundary { get; init; }
+}
 
 public interface IPostgreSqlShadowDatabaseProvisioner
 {
@@ -25,8 +30,10 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
 {
     private const string OwnershipPrefix = "legacy-maliev-shadow:";
     private readonly string _administrativeConnectionString;
+    private readonly RemotePostgreSqlHostBoundary? _hostBoundary;
     private readonly IPostgreSqlShadowDatabaseProvisioner _provisioner;
     private readonly string _expectedRuntimeRole;
+    private readonly TimeSpan _settlementTimeout;
 
     public PostgreSqlShadowTarget(PostgreSqlShadowTargetOptions options)
     {
@@ -37,6 +44,11 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         }
 
         ArgumentNullException.ThrowIfNull(options.Provisioner);
+        if (options.SettlementTimeout <= TimeSpan.Zero || options.SettlementTimeout > TimeSpan.FromMinutes(5))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Settlement timeout must be positive and no greater than five minutes.");
+        }
+        _settlementTimeout = options.SettlementTimeout;
 
         var builder = new NpgsqlConnectionStringBuilder(options.AdministrativeConnectionString);
         if (string.IsNullOrWhiteSpace(builder.Database))
@@ -45,6 +57,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         }
 
         _administrativeConnectionString = builder.ConnectionString;
+        _hostBoundary = options.HostBoundary;
         _provisioner = options.Provisioner;
         _expectedRuntimeRole = options.ExpectedRuntimeRole ?? builder.Username ??
             throw new ArgumentException("The expected PostgreSQL runtime role is required.", nameof(options));
@@ -56,58 +69,70 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
     {
         ArgumentNullException.ThrowIfNull(plannedShadow);
         ValidateShadowIdentity(plannedShadow);
-        await using var connection = new NpgsqlConnection(_administrativeConnectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
-            connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
-        await AcquireShadowLockAsync(connection, plannedShadow.Name, cancellationToken).ConfigureAwait(false);
+        var connection = new NpgsqlConnection(_administrativeConnectionString);
+        bool locked = false;
+        Exception? primaryFailure = null;
         try
         {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            if (_hostBoundary is not null) { await _hostBoundary.VerifyOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false); }
+            await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
+                connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
+            await AcquireShadowLockAsync(connection, plannedShadow.Name, cancellationToken).ConfigureAwait(false);
+            locked = true;
             string quotedName = QuoteIdentifier(plannedShadow.Name);
             string ownerRole = await ObserveCurrentRoleAsync(connection, cancellationToken).ConfigureAwait(false);
-            try
+            await _provisioner.ProvisionWithConnectionsDisabledAsync(plannedShadow, ownerRole, cancellationToken).ConfigureAwait(false);
+            await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
+                connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
+            await using (var revokePublic = new NpgsqlCommand(
+                $"REVOKE CONNECT ON DATABASE {quotedName} FROM PUBLIC;",
+                connection))
             {
-                await _provisioner.ProvisionWithConnectionsDisabledAsync(plannedShadow, ownerRole, cancellationToken).ConfigureAwait(false);
-                await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
-                    connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
-                await using (var revokePublic = new NpgsqlCommand(
-                    $"REVOKE CONNECT ON DATABASE {quotedName} FROM PUBLIC;",
-                    connection))
-                {
-                    _ = await revokePublic.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-
-                string ownership = OwnershipValue(plannedShadow);
-                await using var comment = new NpgsqlCommand(
-                    $"COMMENT ON DATABASE {quotedName} IS {QuoteLiteral(ownership)};",
-                    connection);
-                _ = await comment.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
-                    connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
-                await _provisioner.EnableConnectionsAsync(plannedShadow, cancellationToken).ConfigureAwait(false);
-                await AssertDatabaseBoundaryAsync(connection, plannedShadow.Name, ownerRole, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception primary)
-            {
-                try
-                {
-                    await CleanupProvisioningFailureAsync(connection, plannedShadow).ConfigureAwait(false);
-                }
-                catch (Exception cleanup)
-                {
-                    throw new AggregateException("Shadow provisioning failed and exact cleanup could not be proven.", primary, cleanup);
-                }
-
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primary).Throw();
-                throw;
+                _ = await revokePublic.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            return plannedShadow;
+            string ownership = OwnershipValue(plannedShadow);
+            await using var comment = new NpgsqlCommand(
+                $"COMMENT ON DATABASE {quotedName} IS {QuoteLiteral(ownership)};",
+                connection);
+            _ = await comment.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
+                connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
+            await _provisioner.EnableConnectionsAsync(plannedShadow, cancellationToken).ConfigureAwait(false);
+            await AssertDatabaseBoundaryAsync(connection, plannedShadow.Name, ownerRole, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception primary)
+        {
+            // Preserve even an uncommitted candidate; cleanup requires separate authority.
+            primaryFailure = primary;
         }
         finally
         {
-            await ReleaseShadowLockAsync(connection, plannedShadow.Name).ConfigureAwait(false);
+            try
+            {
+                if (locked)
+                {
+                    try { await ReleaseShadowLockAsync(connection, plannedShadow.Name).ConfigureAwait(false); }
+                    catch (Exception secondary)
+                    {
+                        if (primaryFailure is not null) { primaryFailure.Data["shadow_lock_release_failure"] = secondary.GetType().Name; }
+                        else { primaryFailure = secondary; }
+                    }
+                }
+            }
+            finally
+            {
+                try { await connection.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception secondary)
+                {
+                    if (primaryFailure is not null) { primaryFailure.Data["shadow_connection_dispose_failure"] = secondary.GetType().Name; }
+                    else { primaryFailure = secondary; }
+                }
+            }
         }
+        if (primaryFailure is not null) { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primaryFailure).Throw(); }
+        return plannedShadow;
     }
 
     public Task<ShadowDatabase> CreateUniqueEmptyShadowAsync(
@@ -129,6 +154,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         _ = await AssertOwnershipAsync(shadow, cancellationToken).ConfigureAwait(false);
         await using NpgsqlConnection connection = CreateShadowConnection(shadow.Name);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        if (_hostBoundary is not null) { await _hostBoundary.VerifyOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false); }
         const string sql = """
             SELECT NOT EXISTS (
                 SELECT 1
@@ -146,12 +172,8 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         ShadowDatabase shadow,
         CancellationToken cancellationToken)
     {
-        _ = await AssertOwnershipAsync(shadow, cancellationToken).ConfigureAwait(false);
-        NpgsqlConnection connection = CreateShadowConnection(shadow.Name);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken).ConfigureAwait(false);
+        (NpgsqlConnection connection, NpgsqlTransaction transaction) =
+            await BeginSettledShadowAsync(shadow, readOnly: false, cancellationToken).ConfigureAwait(false);
         return new PostgreSqlWholeDatabaseTransaction(connection, transaction);
     }
 
@@ -159,6 +181,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
     {
         await using var connection = new NpgsqlConnection(_administrativeConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        if (_hostBoundary is not null) { await _hostBoundary.VerifyOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false); }
         await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
             connection, _expectedRuntimeRole, cancellationToken).ConfigureAwait(false);
         await AcquireShadowLockAsync(connection, shadow.Name, cancellationToken).ConfigureAwait(false);
@@ -182,14 +205,6 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         {
             await ReleaseShadowLockAsync(connection, shadow.Name).ConfigureAwait(false);
         }
-    }
-
-    private async Task CleanupProvisioningFailureAsync(NpgsqlConnection connection, ShadowDatabase shadow)
-    {
-        await PostgreSqlMigrationRuntimeBoundaryValidator.ValidateOperationalShadowConnectionAsync(
-            connection, _expectedRuntimeRole, CancellationToken.None).ConfigureAwait(false);
-        await _provisioner.DeleteAsync(shadow, CancellationToken.None).ConfigureAwait(false);
-        await AssertDatabaseAbsentAsync(connection, shadow.Name, CancellationToken.None).ConfigureAwait(false);
     }
 
     private static async Task AssertDatabaseAbsentAsync(
@@ -254,6 +269,7 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         ValidateShadowIdentity(shadow);
         await using var connection = new NpgsqlConnection(_administrativeConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        if (_hostBoundary is not null) { await _hostBoundary.VerifyOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false); }
         return await AssertOwnershipAsync(connection, shadow, allowMissing, cancellationToken).ConfigureAwait(false);
     }
 
@@ -286,6 +302,8 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
         {
             Database = database,
             Pooling = false,
+            // The settlement gate must start in autocommit, never an ambient transaction.
+            Enlist = false,
         };
         return new NpgsqlConnection(builder.ConnectionString);
     }
@@ -531,9 +549,19 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                 foreach (string column in copyColumns)
                 {
                     object? rawValue = row.Values[column];
+                    if (rawValue is BufferedStreamingLob buffered)
+                    {
+                        ValidateStreamingBound(table, column, buffered.Kind, buffered.CanonicalByteLength);
+                        await using Stream stream = buffered.OpenRead();
+                        await importer.WriteAsync(
+                            stream,
+                            PostgreSqlTypePolicy.Validate(table.ColumnTypes[column]),
+                            cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
                     if (rawValue is StreamingLob lob)
                     {
-                        ValidateStreamingBound(table, column, lob);
+                        ValidateStreamingBound(table, column, lob.Kind, lob.ExpectedByteLength);
                         await using Stream stream = await lob.OpenReadAsync(cancellationToken).ConfigureAwait(false);
                         await importer.WriteAsync(
                             stream,
@@ -566,21 +594,25 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         return count;
     }
 
-    private static void ValidateStreamingBound(TableCopyPlan table, string column, StreamingLob lob)
+    private static void ValidateStreamingBound(
+        TableCopyPlan table,
+        string column,
+        StreamingLobKind kind,
+        long? expectedByteLength)
     {
         long? observedBytes = table.SourceColumns.SingleOrDefault(item => item.Column == column)?.MaxObservedDataLength;
-        long safeSourceLimit = lob.Kind == StreamingLobKind.Binary ? 1_000_000_000L : 500_000_000L;
+        long safeSourceLimit = kind == StreamingLobKind.Binary ? 1_000_000_000L : 500_000_000L;
         if (observedBytes is null || observedBytes < 0 || observedBytes > safeSourceLimit)
         {
             throw new MigrationExecutionException(
                 "streaming_lob_target_limit_invalid",
                 "The signed source maximum cannot be represented safely as one PostgreSQL varlena value.");
         }
-        long expansionLimit = lob.Kind == StreamingLobKind.Binary
+        long expansionLimit = kind == StreamingLobKind.Binary
             ? observedBytes.Value
             : checked(observedBytes.Value * 2);
-        if (lob.ExpectedByteLength is null || lob.ExpectedByteLength < 0 ||
-            lob.ExpectedByteLength > 1_000_000_000L || lob.ExpectedByteLength > expansionLimit)
+        if (expectedByteLength is null || expectedByteLength < 0 ||
+            expectedByteLength > 1_000_000_000L || expectedByteLength > expansionLimit)
         {
             throw new MigrationExecutionException(
                 "streaming_lob_target_limit_invalid",
@@ -647,7 +679,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     PostgreSqlTypePolicy.Validate(reader.GetString(4)),
                     reader.GetBoolean(5),
                     reader.GetBoolean(6),
-                    NormalizeExpression(reader.GetString(7)),
+                    reader.GetString(7),
                     NormalizeExpression(reader.GetString(8)),
                     reader.GetString(9)));
             }
@@ -1179,7 +1211,9 @@ internal static class PostgreSqlSchemaFingerprint
                 PostgreSqlTypePolicy.Validate(table.ColumnTypes[column]),
                 table.NullableColumns.Contains(column, StringComparer.Ordinal),
                 table.Identities.Any(identity => string.Equals(identity.Column, column, StringComparison.Ordinal)),
-                table.DefaultExpressions.GetValueOrDefault(column, string.Empty),
+                PostgreSqlDefaultExpressionCanonicalizer.Expected(
+                    table.DefaultExpressions.GetValueOrDefault(column, string.Empty),
+                    PostgreSqlTypePolicy.Validate(table.ColumnTypes[column])),
                 table.GeneratedColumns.SingleOrDefault(item => string.Equals(item.Column, column, StringComparison.Ordinal))?.Expression ?? string.Empty,
                 table.Collations.GetValueOrDefault(column, string.Empty))))];
         List<ConstraintShape> constraints = [.. plan.Tables.SelectMany(table =>
@@ -1269,7 +1303,7 @@ internal static class PostgreSqlSchemaFingerprint
                 Write(writer, column.Type);
                 writer.Write(column.Nullable);
                 writer.Write(column.Identity);
-                Write(writer, NormalizeExpression(column.DefaultExpression));
+                Write(writer, PostgreSqlDefaultExpressionCanonicalizer.Canonicalize(column.DefaultExpression));
                 Write(writer, NormalizeExpression(column.GeneratedExpression));
                 Write(writer, column.Collation);
             }
@@ -1364,7 +1398,7 @@ internal static class SchemaExpressionCanonicalizer
         return normalized;
     }
 
-    private static bool HasSingleEnclosingParenthesisPair(string value)
+    internal static bool HasSingleEnclosingParenthesisPair(string value)
     {
         if (value.Length < 2 || value[0] != '(' || value[^1] != ')')
         {

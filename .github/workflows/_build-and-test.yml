@@ -50,8 +50,11 @@ jobs:
           SCRIPT
           cat >"${RUNNER_TEMP}/pg_restore18" <<'SCRIPT'
           #!/usr/bin/env bash
+          if [[ "${1:-}" == "--version" ]]; then
+            exec docker exec -i ${{ job.services.postgres18.id }} pg_restore --version
+          fi
           exec docker exec -i ${{ job.services.postgres18.id }} \
-            pg_restore "$@"
+            pg_restore --host=127.0.0.1 --username=legacy_snapshot_ci "$@"
           SCRIPT
           chmod 0700 "${RUNNER_TEMP}/pg_dump18" "${RUNNER_TEMP}/pg_restore18"
       - name: Verify PostgreSQL 18 snapshot producer compatibility

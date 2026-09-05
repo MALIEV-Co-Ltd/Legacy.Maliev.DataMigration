@@ -471,6 +471,35 @@ public sealed class SqlServerMigrationSourceIntegrationTests
         await largeBinaryValue.ConsumeAsync(Stream.Null, CancellationToken.None);
         Assert.Equal(9L * 1024 * 1024, largeTextValue.CanonicalByteLength);
         Assert.Equal(5L * 1024 * 1024, largeBinaryValue.CanonicalByteLength);
+
+        var immediateRows = new List<MigrationRow>();
+        await foreach (MigrationRow row in source.ReadTableImmediatelyAsync(database, table, CancellationToken.None))
+        {
+            foreach (StreamingLob lob in row.Values.Values.OfType<StreamingLob>())
+            {
+                await lob.ConsumeAsync(Stream.Null, CancellationToken.None);
+            }
+            immediateRows.Add(row);
+        }
+        MigrationRow immediateRow = Assert.Single(immediateRows);
+        StreamingLob immediateText = Assert.IsType<StreamingLob>(immediateRow.Values["LargeText"]);
+        StreamingLob immediateBinary = Assert.IsType<StreamingLob>(immediateRow.Values["LargeBinary"]);
+        Assert.Equal(9L * 1024 * 1024, immediateText.CanonicalByteLength);
+        Assert.Equal(5L * 1024 * 1024, immediateBinary.CanonicalByteLength);
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(new string('ก', 3 * 1024 * 1024)))).ToLowerInvariant(),
+            immediateText.CanonicalSha256);
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(Enumerable.Repeat((byte)0xA5, 5 * 1024 * 1024).ToArray())).ToLowerInvariant(),
+            immediateBinary.CanonicalSha256);
+
+        await using (IAsyncEnumerator<MigrationRow> unconsumed = source.ReadTableImmediatelyAsync(database, table, CancellationToken.None).GetAsyncEnumerator())
+        {
+            Assert.True(await unconsumed.MoveNextAsync());
+            MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(
+                async () => _ = await unconsumed.MoveNextAsync());
+            Assert.Equal("streaming_lob_not_consumed_immediately", failure.Code);
+        }
         IReadOnlyDictionary<string, long> orphans = await source.InspectForeignKeyOrphansAsync(database, table, CancellationToken.None);
         Assert.Equal(0, orphans["FK_Child_Parent"]);
         IReadOnlyDictionary<string, long> relationships = await source.InspectForeignKeyRelationshipsAsync(database, table, CancellationToken.None);

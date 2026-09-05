@@ -98,6 +98,24 @@ public sealed class CanonicalRowFingerprintTests
         Assert.Equal("Migration row does not exactly match the approved column shape.", exception.Message);
     }
 
+    [Fact]
+    public async Task Compute_BufferedStreamingValue_PreservesStreamingEvidenceHash()
+    {
+        TableCopyPlan table = CreatePlan("text");
+        byte[] content = "ข้อความทดสอบ"u8.ToArray();
+        var streaming = new StreamingLob(
+            StreamingLobKind.Text,
+            content.LongLength,
+            async (destination, cancellationToken) =>
+                await destination.WriteAsync(content, cancellationToken));
+        await streaming.ConsumeAsync(Stream.Null, CancellationToken.None);
+        var buffered = new BufferedStreamingLob(StreamingLobKind.Text, content);
+
+        Assert.Equal(
+            CanonicalRowFingerprint.Compute(table, [Row(streaming)]),
+            CanonicalRowFingerprint.Compute(table, [Row(buffered)]));
+    }
+
     private static TableCopyPlan CreatePlan(string type)
     {
         return new(

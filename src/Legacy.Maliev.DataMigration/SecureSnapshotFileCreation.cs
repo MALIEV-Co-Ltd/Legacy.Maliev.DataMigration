@@ -8,6 +8,65 @@ namespace Legacy.Maliev.DataMigration;
 
 internal static class SecureSnapshotFileCreation
 {
+    internal static void RejectLinkedAncestors(string path)
+    {
+        for (DirectoryInfo? current = new(Path.GetFullPath(path)); current is not null; current = current.Parent)
+        {
+            current.Refresh();
+            if (current.LinkTarget is not null || (current.Exists && (current.Attributes & FileAttributes.ReparsePoint) != 0))
+            {
+                throw new UnauthorizedAccessException("Snapshot paths must not traverse links or reparse points.");
+            }
+        }
+    }
+
+    internal static void CreateRestrictedDirectory(string path)
+    {
+        RejectLinkedAncestors(path);
+        if (Directory.Exists(path)) { ValidateRestrictedDirectory(path); return; }
+        if (OperatingSystem.IsWindows()) { CreateRestrictedWindowsDirectory(path); }
+        else { _ = Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); }
+        ValidateRestrictedDirectory(path);
+    }
+
+    internal static void ValidateRestrictedDirectory(string path)
+    {
+        RejectLinkedAncestors(path);
+        if (!Directory.Exists(path)) { throw new DirectoryNotFoundException("Snapshot directory is missing."); }
+        if (OperatingSystem.IsWindows()) { ValidateWindowsDirectoryOwnerOnly(path); return; }
+        if (!OperatingSystem.IsLinux() || Statx(-100, Path.GetFullPath(path), 0x100, StatxBasicStats, out LinuxStatx stat) != 0 ||
+            stat.Uid != GetEffectiveUserIdNative() || (stat.Mode & 0xF000) != 0x4000 || (stat.Mode & 0x003F) != 0 ||
+            (stat.Mode & 0x01C0) != 0x01C0)
+        {
+            throw new UnauthorizedAccessException("Snapshot directory must be owner-only.");
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void CreateRestrictedWindowsDirectory(string path)
+    {
+        SecurityIdentifier owner = WindowsIdentity.GetCurrent().User!;
+        var security = new DirectorySecurity();
+        security.SetOwner(owner);
+        security.SetAccessRuleProtection(true, false);
+        security.AddAccessRule(new FileSystemAccessRule(owner, FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+        new DirectoryInfo(path).Create(security);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void ValidateWindowsDirectoryOwnerOnly(string path)
+    {
+        SecurityIdentifier owner = WindowsIdentity.GetCurrent().User!;
+        DirectorySecurity security = new DirectoryInfo(path).GetAccessControl();
+        if (!owner.Equals(security.GetOwner(typeof(SecurityIdentifier))) ||
+            security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+                .Any(rule => rule.AccessControlType == AccessControlType.Allow && !owner.Equals(rule.IdentityReference)))
+        {
+            throw new UnauthorizedAccessException("Snapshot directory must be owner-only.");
+        }
+    }
+
     public static FileStream OpenValidatedRead(string path)
     {
         string fullPath = Path.GetFullPath(path);

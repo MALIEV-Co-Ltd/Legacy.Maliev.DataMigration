@@ -6,6 +6,11 @@ namespace Legacy.Maliev.DataMigration;
 
 public sealed partial class PgDumpSource(string executablePath, string administrativeConnectionString) : IPostgreSqlDumpSource
 {
+    public static IPostgreSqlDumpSource CreateForHost(string executablePath, RemotePostgreSqlHostBoundary boundary)
+    {
+        return new HostBoundPgDumpSource(executablePath, boundary);
+    }
+
     public Task<Stream> OpenDumpAsync(string database, string shadowDatabase, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -24,6 +29,7 @@ public sealed partial class PgDumpSource(string executablePath, string administr
             throw new MigrationExecutionException("snapshot_shadow_name_invalid", "Only a run-owned shadow database may be exported.");
         }
         var connection = new NpgsqlConnectionStringBuilder(connectionString);
+        ValidateConnectionOptions(connection);
         var start = new ProcessStartInfo(executablePath)
         {
             UseShellExecute = false,
@@ -31,6 +37,13 @@ public sealed partial class PgDumpSource(string executablePath, string administr
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        foreach (string name in start.Environment.Keys.Where(name => name.StartsWith("PG", StringComparison.OrdinalIgnoreCase)).ToArray())
+        { _ = start.Environment.Remove(name); }
+        start.Environment["PGPASSFILE"] = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
+        start.Environment["PGGSSENCMODE"] = "disable";
+        start.Environment["PGSSLCERTMODE"] = "disable";
+        start.Environment["PGCONNECT_TIMEOUT"] = connection.Timeout.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        start.Environment["PGAPPNAME"] = connection.ApplicationName ?? string.Empty;
         foreach (string argument in new[]
         {
             "--dbname", shadowDatabase,
@@ -39,6 +52,7 @@ public sealed partial class PgDumpSource(string executablePath, string administr
             "--no-owner",
             "--no-privileges",
             "--no-comments",
+            "--no-password",
             "--quote-all-identifiers",
         })
         {
@@ -48,8 +62,29 @@ public sealed partial class PgDumpSource(string executablePath, string administr
         start.Environment["PGPORT"] = connection.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
         start.Environment["PGUSER"] = connection.Username;
         start.Environment["PGPASSWORD"] = connection.Password;
-        start.Environment["PGSSLMODE"] = connection.SslMode.ToString().ToLowerInvariant();
+        start.Environment["PGSSLMODE"] = connection.SslMode switch
+        {
+            SslMode.VerifyFull => "verify-full",
+            SslMode.VerifyCA => "verify-ca",
+            SslMode.Disable => "disable",
+            SslMode.Allow => "allow",
+            SslMode.Prefer => "prefer",
+            SslMode.Require => "require",
+            _ => throw new MigrationExecutionException("host_postgres_options_unsupported", "The native SQL boundary requires a recognized SSL mode."),
+        };
+        if (!string.IsNullOrWhiteSpace(connection.RootCertificate))
+        {
+            start.Environment["PGSSLROOTCERT"] = connection.RootCertificate;
+        }
         return start;
+    }
+
+    internal static void ValidateConnectionOptions(NpgsqlConnectionStringBuilder settings)
+    {
+        string[] supported = ["Host", "Port", "Database", "Username", "Password", "SSL Mode", "Root Certificate", "Pooling", "Timeout", "Application Name", "GSS Encryption Mode"];
+        if (settings.Keys.Cast<string>().Where(settings.ShouldSerialize).Any(key => !supported.Contains(key, StringComparer.OrdinalIgnoreCase)) ||
+            (settings.ShouldSerialize("GSS Encryption Mode") && settings.GssEncryptionMode != GssEncryptionMode.Disable))
+        { throw new MigrationExecutionException("host_postgres_options_unsupported", "The native SQL boundary cannot safely preserve a configured connection option."); }
     }
 
     [GeneratedRegex("^legacy_shadow_[a-z0-9_]+_[0-9a-f]{32}$", RegexOptions.CultureInvariant)]

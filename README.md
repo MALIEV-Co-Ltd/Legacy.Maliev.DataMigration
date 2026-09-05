@@ -1,7 +1,11 @@
 # Legacy.Maliev.DataMigration
 
+Current operator-host execution uses the [protected incremental console](docs/incremental-operator-console.md): signed admission, one held Windows run lock, immediate encrypted per-database delivery/local verification, explicit signed resume, and preserve-first failures. `execute-shadow` no longer accepts legacy execution-only configuration. Migration and AppHost consumers now enforce the same exact-23 inventory, excluding Log. This software repair authorizes no live run or reuse of historical exact-24 approvals.
+
+The snapshot-export description below describes the original full-export compatibility API; incremental staging/recovery has separate authenticated checkpoint semantics in the operator guide.
+
 Local PostgreSQL review snapshots use the fail-closed `MLVSNP02` contract. The exporter stages each
-dump in a newly created owner-only directory, records the exact migration run id and canonical exact-24
+dump in a newly created owner-only directory, records the exact migration run id and canonical exact-23
 semantic manifest digest, derives separate AES-GCM and HMAC-SHA256 keys from the external 32-byte root
 key with HKDF-SHA256, binds every archive to the run id, database name, and manifest digest as AEAD AAD,
 then authenticates the complete manifest including ciphertext metadata. Version 1 is not accepted.
@@ -50,9 +54,9 @@ repository discovers or projects production credentials.
   disabling integrity checks or relying on table order.
 - The persistent PostgreSQL journal atomically acquires run IDs and retains
   immutable completed or signed failure evidence across process restarts.
-- No Kubernetes, GKE, GCS, Google Secret Manager, or GitHub client is present.
-- No command, process, network, deployment, restore, promotion, or canonical
-  database mutation method is exposed by the production assembly.
+- Protected incremental execution includes explicit Kubernetes observation,
+  database connections and native archive/local restore adapters. It exposes no
+  deployment, promotion or canonical-database mutation workflow.
 - The preflight still rejects target writes and requested external actions.
 - The preflight service never invokes its injected external-command sentinel;
   tests verify this for both valid and rejected inputs.
@@ -71,20 +75,20 @@ digest, target generation, and exact database scope. It has no promotion API.
 
 Each database is read inside one source snapshot and written inside one
 whole-database PostgreSQL transaction in a deterministic, run-owned, uniquely
-named empty shadow database. Reconciliation must pass before commit. Any failure
-rolls back the active database, removes every shadow created by the run, and
-releases the atomic journal lease. Completed replays return the immutable prior
-receipt only after its exact identity and trusted P-256 signature are verified,
-without database I/O; conflicting or concurrent replays fail closed. Ordered
-and modular multiset content digests are computed in bounded memory. Success and
-failure paths retain signed reconciliation and shadow-cleanup evidence.
+named empty shadow database. Reconciliation must pass before commit. Incremental
+execution rolls back an active transaction but preserves remote candidates and
+completed local checkpoints; it never automatically deletes shadows. Recovery
+requires the original signed admission and externally signed continuity. Completed
+local replay authenticates the immutable receipt and full local inventory without
+remote database I/O. Conflicting or concurrent replays fail closed. Ordered and
+modular multiset content digests are computed in bounded memory. Separately
+approved cleanup and final-evidence commands retain their own signed contracts.
 
 ## Approved database disposition
 
-The contract contains all 27 currently known historical names. Exactly 24 are
-active migration inputs. `Hangfire` is excluded because the unused scheduler was
-retired; `Log` remains read-only archival data under
-`Legacy.Maliev.CompatibilityContracts`; `ContactRequest`
+The contract contains all 27 currently known historical names. Exactly 23 are
+active migration inputs. `Hangfire` and `Log` are excluded because the unused scheduler
+and compatibility log store are retired from the migration inventory; `ContactRequest`
 and `LocationData` are active inputs owned by ContactService and CatalogService.
 `MachineLearning` and `MachineLearningData` are also excluded because those
 features were deliberately retired. A receipt, schema plan, and execution
@@ -119,7 +123,7 @@ backup, authorization, execution, provenance, and final-evidence public keys and
 reject any duplicate fingerprint before shadow provisioning can begin. The
 `execute-shadow` command independently requires `LEGACY_DEPLOY_ENABLED=false`;
 the wrapper is not the security boundary.
-The receipt producer independently re-reads all 24 local backup files and binds
+The receipt producer independently re-reads all 23 local backup files and binds
 their approved GCS object names,
 immutable generations, sizes, and SHA-256 metadata into the P-256 attestation.
 Signing keys are externally supplied and are never stored in this repository.
@@ -198,7 +202,7 @@ adapter, the Application Default Credentials GCS adapter, and atomic receipt
 publisher. Contract tests replace that runtime before any process or network
 operation, so repository validation never performs a live backup.
 
-`restore-backups` re-verifies the producer signature and exact 24-item inventory,
+`restore-backups` re-verifies the producer signature and exact 23-item inventory,
 derives every local recovery path from the signed filenames, securely reopens and
 re-hashes each owner-only artifact, and retains the verified file handle while a pinned
 helper image streams those exact bytes into a create-only object in a run-owned Docker
@@ -229,8 +233,11 @@ requires the exact reviewed plan digest and explicit allow flag before signing
 and executing; and `finalize-shadow-migration.ps1` exports the snapshot, emits a
 signed fenced cleanup receipt while deleting only its run-owned shadows, removes
 the disposable restore, signs provenance, and only then produces evidence. Every
-phase requires `LEGACY_DEPLOY_ENABLED=false`. See
-[`docs/shadow-migration-runbook.md`](docs/shadow-migration-runbook.md).
+phase requires `LEGACY_DEPLOY_ENABLED=false`. These scripts and the
+[`historical shadow runbook`](docs/shadow-migration-runbook.md) describe the
+compatibility workflow; they are not an incremental recovery entry point. In
+particular, their legacy execution-only configuration is now refused. Use the
+protected incremental guide above; finalization does not automatically clean up.
 
 The `plan` command opens a SQL Server snapshot for each approved database and
 generates a new deterministic plan directly from the restored source catalogs.
@@ -240,20 +247,16 @@ checks, defaults, generated columns, and lossless type mappings. Unsupported
 types, untrusted constraints, or tables without a proven total ordering fail
 closed; a checked-in or hand-maintained schema plan is not accepted as fresh.
 
-`execute-shadow` reads the signed receipt, freshly generated plan, and separate
-signed execution authorization from protected file references. SQL Server and
-PostgreSQL connection strings plus the execution-signing private-key path are
-accepted only through environment references. The target-administration
-connection is supplied through `LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION`.
-That connection is the unprivileged shadow runtime role; it must be `NOCREATEDB`.
-Database lifecycle is requested through the CloudNativePG `Database` API using
-the fixed in-cluster `https://kubernetes.default.svc` endpoint and fixed projected
-service-account token and CA paths. Caller-supplied API endpoints, trust paths,
-namespaces, clusters, runner paths, and runner digests are rejected. The client
-validates the API server against the projected CA and rereads the short-lived
-bound token for every request. Authorization and execution independently measure
-the owner-only, non-link Release publication and observe exactly
-`maliev-legacy/legacy-postgres-main` before any journal or shadow mutation.
+`execute-shadow` now requires the protected incremental configuration, exact
+signed original inputs and verified-restore receipt. Connection strings are read
+from owner-protected file references; private-key environment variables reference
+protected key files. The shadow runtime role remains unprivileged and `NOCREATEDB`.
+Host execution uses explicit HTTPS Kubernetes API/token/CA references and retains
+strict endpoint, role and target identity checks. Unrelated in-cluster and quotation
+paths keep their fixed projected trust boundary. Authorization and execution
+independently measure the actual running owner-only, non-link Release publication
+and observe exactly `maliev-legacy/legacy-postgres-main`; an arbitrary configured
+runner directory is never accepted as proof of the executable.
 
 The schema-2.1 authorization signature now binds the complete target observation,
 including reconciliation evidence, read count, instance/PVC sets, system ID, and
@@ -262,9 +265,9 @@ those fields were added; verification fails closed and the operator must issue a
 new short-lived authorization. No pre-fix authorization exists for the current
 shadow activation run.
 
-The durable journal uses an independently supplied
-`LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION` whose database must be exactly
-`legacy_migration_control`. The protected command configuration names the
+The durable journal uses an independently supplied protected control-connection
+file whose database must be exactly `legacy_migration_control`. The protected
+incremental command configuration names the
 expected control and shadow-administration roles. Startup verifies the observed
 database, role identities, and privileges: the control role has only local
 `CONNECT`/`CREATE`, while a distinct non-superuser shadow role has neither
@@ -347,7 +350,7 @@ applying the Job, and running either phase remain separately authorized writes.
   and SHA-256 evidence;
 - be no older than the caller-supplied positive maximum age and not be future-dated;
 - match the immutable database-disposition inventory SHA-256;
-- contain exactly one full `.bak` artifact for each of the 24 active databases;
+- contain exactly one full `.bak` artifact for each of the 23 active databases;
 - provide positive byte counts and well-formed declared and independently
   observed SHA-256 values;
 - have matching declared and observed artifact hashes; and
@@ -355,7 +358,7 @@ applying the Job, and running either phase remain separately authorized writes.
 - carry a valid signature from a configured trusted producer key.
 
 A valid preflight plan must remain `plan-only`, disallow target writes, request
-no external actions, cover all 24 target schema versions exactly, and use only
+no external actions, cover all 23 target schema versions exactly, and use only
 target schema version `1.0`.
 
 A fresh schema plan uses schema version `2.0`, binds an exact 40-character source
@@ -414,9 +417,10 @@ adapter suite also runs against a disposable PostgreSQL 18 Testcontainer to
 prove shadow ownership, whole-database commit gating, binary copy, independent
 schema/data reconciliation, atomic concurrent leases, persistent replay, and
 failure retry. The concrete PostgreSQL journal and shadow target are also tested
-together across an expired process lease: the restarted owner must discover and
-delete the exact fenced run-owned shadow before the same immutable run can
-replay. SQL Server command and connection behavior is covered by fail-closed
+together across an expired process lease in compatibility-runner tests. Those
+historical cleanup semantics do not authorize deletion in the admitted incremental
+workflow; its tests prove preserve-first checkpoint recovery and local replay.
+SQL Server command and connection behavior is covered by fail-closed
 contract tests. A gated disposable SQL Server 2022 Testcontainer fixture
 exercises snapshot/catalog/streaming behavior and proves that interrupted
 adapter disposal rolls back the source snapshot before a fresh adapter restart
@@ -465,8 +469,8 @@ never fabricates an equal cross-engine schema hash. The signed result now retain
 observed foreign-key relationship counts and source/target sequence-next-value
 parity in addition to table rows, ordered content, null counts, aggregate hashes,
 and zero-orphan evidence. The schema-v2 document emits a single whole-table
-content batch backed by that signed table hash, the exact 24 migrated databases,
-the two excluded databases, deterministic nested mapping inventories, and a
+content batch backed by that signed table hash, the exact 23 migrated databases,
+the four excluded databases, deterministic nested mapping inventories, and a
 separate review baseline. The baseline is not self-approving: its byte SHA-256
 must still be recorded independently and supplied to the AppHost verifier.
 
