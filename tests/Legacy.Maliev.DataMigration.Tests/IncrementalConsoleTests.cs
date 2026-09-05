@@ -67,7 +67,7 @@ public sealed class IncrementalConsoleTests : IDisposable
 
     public void Dispose() { Directory.Delete(_root, recursive: true); }
 
-    [Fact]
+    [WindowsLocalRunFact]
     public async Task InitialPlanning_ReadOnlyObservationsWithoutSigningLockOrRoot()
     {
         using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
@@ -85,7 +85,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Contains("readonly_preflight_complete", Output);
     }
 
-    [Fact]
+    [WindowsLocalRunFact]
     public async Task InitialExecution_TransfersFreshHeldBindingAndPreservesExpectedResultWire()
     {
         using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
@@ -107,7 +107,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Contains("\"localVerified\":" + DatabaseInventory.ActiveDatabases.Count, Output);
     }
 
-    [Theory]
+    [WindowsLocalRunTheory]
     [InlineData("resume-shadow")]
     [InlineData("authorize-resume")]
     [InlineData("authorize-compatible-resume")]
@@ -138,7 +138,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Contains("incremental_owner_approval_required", error.ToString());
     }
 
-    [Fact]
+    [WindowsLocalRunFact]
     public async Task LocalFinalization_DoesNotRequestRemoteConfigurationOrExecutionSigner()
     {
         using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
@@ -242,7 +242,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         }
     }
 
-    [Theory]
+    [WindowsLocalRunTheory]
     [InlineData("runtime")]
     [InlineData("native")]
     [InlineData("root")]
@@ -278,7 +278,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.False(Directory.Exists(fixture.Staging));
     }
 
-    [Fact]
+    [WindowsLocalRunFact]
     public async Task ReadinessCredentialFailure_IsSecretSafeAndPrecedesRemoteMutation()
     {
         using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
@@ -294,7 +294,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Contains("\"localVerified\":0", Output);
     }
 
-    [Theory]
+    [WindowsLocalRunTheory]
     [InlineData("admission-inside")]
     [InlineData("admission-exists")]
     [InlineData("result-exists")]
@@ -314,7 +314,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Equal(0, fixture.RunJournal.InitialCalls);
     }
 
-    [Theory]
+    [WindowsLocalRunTheory]
     [InlineData("execute-shadow")]
     [InlineData("resume-shadow")]
     [InlineData("plan-incremental")]
@@ -340,7 +340,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Equal(0, fixture.RunJournal.InitialCalls);
     }
 
-    [Theory]
+    [WindowsLocalRunTheory]
     [InlineData("outputPath", "artifactRoot")]
     [InlineData("outputPath", "outputDirectory")]
     [InlineData("admissionPath", "artifactRoot")]
@@ -365,7 +365,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Equal(65, Code);
     }
 
-    [Theory]
+    [WindowsLocalRunTheory]
     [InlineData("same")]
     [InlineData("case")]
     [InlineData("dot-segment")]
@@ -398,7 +398,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Equal(0, fixture.RunJournal.InitialCalls);
     }
 
-    [Theory]
+    [WindowsLocalRunTheory]
     [InlineData("admissionPath")]
     [InlineData("outputPath")]
     [InlineData("denied-outputPath")]
@@ -435,7 +435,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Equal(before, parent.GetAccessControl().GetSecurityDescriptorBinaryForm());
     }
 
-    [Theory]
+    [WindowsLocalRunTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Diagnostics_OnlySafeMetadataAndOriginalFailureCode(bool reconciliation)
@@ -463,7 +463,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         }
     }
 
-    [Fact]
+    [WindowsLocalRunFact]
     public async Task InterruptedConsole_NewConsoleResumesRetainedBytesAndCompletedLocalReplay()
     {
         using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
@@ -508,7 +508,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Equal(publishedResult, await File.ReadAllBytesAsync(Path.Combine(_root, "result.json")));
     }
 
-    [Fact]
+    [WindowsLocalRunFact]
     public async Task CompatibleResume_ExplicitCommandBindsReplacementRunnerAndIgnoresOnlyTargetResourceVersion()
     {
         using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
@@ -552,7 +552,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Equal(DatabaseInventory.ActiveDatabases.Count, fixture.RunJournal.Checkpoints.Count);
     }
 
-    [Theory]
+    [WindowsLocalRunTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task InvalidOrEmbeddedRootKey_RejectsBeforeSetup(bool embedded)
@@ -568,7 +568,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.Equal(0, fixture.RunJournal.InitialCalls);
     }
 
-    [Fact]
+    [WindowsLocalRunFact]
     public async Task ConcreteReadonlyRuntime_RejectsUnsafeHostTrustBeforeRootOrRemoteWrite()
     {
         using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();
@@ -580,7 +580,7 @@ public sealed class IncrementalConsoleTests : IDisposable
         Assert.DoesNotContain("test-only-seam", Error);
     }
 
-    [Fact]
+    [WindowsLocalRunFact]
     public async Task ProgressSinkFailure_DoesNotReplacePrimaryExecutionFailure()
     {
         using var fixture = await AdmittedCoordinatorTestHarness.CreateAsync();

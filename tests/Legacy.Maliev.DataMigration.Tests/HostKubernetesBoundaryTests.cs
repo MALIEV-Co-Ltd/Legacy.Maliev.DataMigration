@@ -25,7 +25,9 @@ public sealed class HostKubernetesBoundaryTests
             using var observer = CloudNativePgTargetObserver.CreateForHost(new(server.Address, server.TokenPath, ca));
             _ = await Assert.ThrowsAsync<RuntimeAttestationException>(() => observer.ObserveAsync("maliev-legacy", "legacy-postgres-main", default));
         }
-        Assert.True(server.Requests == (fault == "trusted" ? 1 : 0), server.LastFailure);
+        Assert.True(
+            server.Requests == (fault == "trusted" ? 1 : 0),
+            $"requests={server.Requests}; authorizationObserved={server.Authorization is not null}; lastFailure={server.LastFailure}");
         if (fault == "trusted") { Assert.Contains("synthetic.bound.token", server.Authorization); }
         else { Assert.Null(server.Authorization); }
     }

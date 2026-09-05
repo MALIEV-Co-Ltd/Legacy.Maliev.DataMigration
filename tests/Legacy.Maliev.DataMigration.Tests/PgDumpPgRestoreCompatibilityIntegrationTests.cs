@@ -18,6 +18,10 @@ public sealed class PostgreSql18SnapshotIntegrationFactAttribute : FactAttribute
 public sealed class PgDumpPgRestoreCompatibilityIntegrationTests(PostgreSqlAdapterFixture fixture)
 {
     private static readonly string[] ExpectedLocalFiles = [".store.lock", "archive.aes256", "artifact.json"];
+    private string ConnectionString => Environment.GetEnvironmentVariable("LEGACY_SNAPSHOT_INTEGRATION_CONNECTION") is { Length: > 0 } configured
+        ? configured
+        : fixture.ConnectionString;
+
     [PostgreSql18SnapshotIntegrationFact]
     public async Task ProducerCustomArchive_EncryptedDeliveryAndReplayRestoreSchemaRowsAndEvidenceWithoutPlaintextFiles()
     {
@@ -31,15 +35,15 @@ public sealed class PgDumpPgRestoreCompatibilityIntegrationTests(PostgreSqlAdapt
         try
         {
             await ExecuteAdministrativeCommandAsync($"CREATE DATABASE \"{shadow}\"");
-            var sourceConnection = new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Database = shadow };
+            var sourceConnection = new NpgsqlConnectionStringBuilder(ConnectionString) { Database = shadow };
             await using (var connection = new NpgsqlConnection(sourceConnection.ConnectionString))
             {
                 await connection.OpenAsync();
                 await using var setup = new NpgsqlCommand("CREATE TABLE snapshot_probe (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO snapshot_probe VALUES (1, 'pg18')", connection);
                 _ = await setup.ExecuteNonQueryAsync();
             }
-            var source = new CountedDumpSource(new PgDumpSource(pgDump, fixture.ConnectionString));
-            var verifier = new RestoreVerifier(pgRestore, fixture.ConnectionString);
+            var source = new CountedDumpSource(new PgDumpSource(pgDump, ConnectionString));
+            var verifier = new RestoreVerifier(pgRestore, ConnectionString);
             using (var store = new IncrementalLocalSnapshotStore(root, "pg18-streaming", data.Key, data.Verifier, source, verifier, _ => Task.CompletedTask))
             {
                 await store.DeliverAndVerifyAsync(checkpoint, default);
@@ -72,11 +76,11 @@ public sealed class PgDumpPgRestoreCompatibilityIntegrationTests(PostgreSqlAdapt
     {
         using var data = new LocalArtifactTestData();
         string root = Path.Combine(Path.GetTempPath(), $"snapshot-failed-dump-{Guid.NewGuid():N}");
-        var verifier = new RestoreVerifier(RequiredEnvironment("PG_RESTORE_PATH"), fixture.ConnectionString);
+        var verifier = new RestoreVerifier(RequiredEnvironment("PG_RESTORE_PATH"), ConnectionString);
         try
         {
             using var store = new IncrementalLocalSnapshotStore(root, "pg18-failed", data.Key, data.Verifier,
-                new PgDumpSource(RequiredEnvironment("PG_DUMP_PATH"), fixture.ConnectionString), verifier, _ => Task.CompletedTask);
+                new PgDumpSource(RequiredEnvironment("PG_DUMP_PATH"), ConnectionString), verifier, _ => Task.CompletedTask);
             MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() => store.DeliverAndVerifyAsync(data.Checkpoints[0], default));
             Assert.Equal("snapshot_dump_failed", failure.Code);
             Assert.Equal(0, verifier.VerifiedRestores);
@@ -87,7 +91,7 @@ public sealed class PgDumpPgRestoreCompatibilityIntegrationTests(PostgreSqlAdapt
 
     private Task ExecuteAdministrativeCommandAsync(string sql)
     {
-        return ExecuteAdministrativeCommandAsync(fixture.ConnectionString, sql);
+        return ExecuteAdministrativeCommandAsync(ConnectionString, sql);
     }
 
     private static async Task ExecuteAdministrativeCommandAsync(string connectionString, string sql)

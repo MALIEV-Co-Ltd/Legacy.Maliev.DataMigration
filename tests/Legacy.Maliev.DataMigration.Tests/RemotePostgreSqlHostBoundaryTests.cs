@@ -8,13 +8,55 @@ using DotNet.Testcontainers.Configurations;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
+public sealed class HostPgDumpFactAttribute : FactAttribute
+{
+    public HostPgDumpFactAttribute()
+    {
+        if (HostPgDumpTestEnvironment.Path is null)
+        {
+            Skip = "Requires an explicit existing PostgreSQL 18 pg_dump executable.";
+        }
+    }
+}
+
+public sealed class HostPgDumpTheoryAttribute : TheoryAttribute
+{
+    public HostPgDumpTheoryAttribute()
+    {
+        if (HostPgDumpTestEnvironment.Path is null)
+        {
+            Skip = "Requires an explicit existing PostgreSQL 18 pg_dump executable.";
+        }
+    }
+}
+
+internal static class HostPgDumpTestEnvironment
+{
+    internal static string? Path
+    {
+        get
+        {
+            string? configured = Environment.GetEnvironmentVariable("PG_DUMP_PATH");
+            if (!string.IsNullOrWhiteSpace(configured) && System.IO.Path.IsPathFullyQualified(configured) && File.Exists(configured))
+            {
+                return configured;
+            }
+
+            string platformDefault = OperatingSystem.IsWindows()
+                ? "C:/Program Files/PostgreSQL/18/bin/pg_dump.exe"
+                : "/usr/lib/postgresql/18/bin/pg_dump";
+            return File.Exists(platformDefault) ? platformDefault : null;
+        }
+    }
+}
+
 public sealed class RemotePostgreSqlHostFixture : IAsyncLifetime
 {
     internal HostTlsTestServer Tls { get; } = new();
-    private PostgreSqlContainer _postgres = null!;
+    private PostgreSqlContainer? _postgres;
     internal string ConnectionString = string.Empty;
     internal CloudNativePgTargetObservation Target = null!;
-    internal string AdminConnection => _postgres.GetConnectionString();
+    internal string AdminConnection => _postgres!.GetConnectionString();
 
     public async Task InitializeAsync()
     {
@@ -64,12 +106,16 @@ public sealed class RemotePostgreSqlHostFixture : IAsyncLifetime
         """;
     }
 
-    public async Task DisposeAsync() { await _postgres.DisposeAsync(); await Tls.DisposeAsync(); }
+    public async Task DisposeAsync()
+    {
+        if (_postgres is not null) { await _postgres.DisposeAsync(); }
+        await Tls.DisposeAsync();
+    }
 }
 
 public sealed class RemotePostgreSqlHostBoundaryTests(RemotePostgreSqlHostFixture fixture) : IClassFixture<RemotePostgreSqlHostFixture>
 {
-    [Theory]
+    [HostPgDumpTheory]
     [InlineData("create")]
     [InlineData("write")]
     [InlineData("cancel")]
@@ -252,7 +298,7 @@ public sealed class RemotePostgreSqlHostBoundaryTests(RemotePostgreSqlHostFixtur
         _ = await Assert.ThrowsAsync<NpgsqlException>(connection.OpenAsync);
     }
 
-    [Theory]
+    [HostPgDumpTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task HostDump_NativeFailureOrIncompleteConsumptionCannotBeAccepted(bool incomplete)
@@ -282,7 +328,7 @@ public sealed class RemotePostgreSqlHostBoundaryTests(RemotePostgreSqlHostFixtur
         finally { await using var drop = new NpgsqlCommand($"DROP DATABASE {name} WITH (FORCE)", admin); _ = await drop.ExecuteNonQueryAsync(); }
     }
 
-    [Fact]
+    [HostPgDumpFact]
     public async Task HostDump_CancellationObservesNativeExitAndRetainsPrimary()
     {
         string name = HostKubernetesBoundaryTests.Shadow().Name;
@@ -319,8 +365,8 @@ public sealed class RemotePostgreSqlHostBoundaryTests(RemotePostgreSqlHostFixtur
         finally { await using var drop = new NpgsqlCommand($"DROP DATABASE {name} WITH (FORCE)", admin); _ = await drop.ExecuteNonQueryAsync(); }
     }
 
-    private static string DumpPath => Environment.GetEnvironmentVariable("PG_DUMP_PATH") ?? "C:/Program Files/PostgreSQL/18/bin/pg_dump.exe";
-    [Theory]
+    private static string DumpPath => HostPgDumpTestEnvironment.Path!;
+    [HostPgDumpTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task HostDump_RechecksIdentityBeforeSuccessfulEof(bool drift)
@@ -333,7 +379,7 @@ public sealed class RemotePostgreSqlHostBoundaryTests(RemotePostgreSqlHostFixtur
         {
             using var observer = fixture.Observer();
             var boundary = new RemotePostgreSqlHostBoundary(fixture.ConnectionString, fixture.Target, observer);
-            IPostgreSqlDumpSource source = PgDumpSource.CreateForHost(Environment.GetEnvironmentVariable("PG_DUMP_PATH") ?? "C:/Program Files/PostgreSQL/18/bin/pg_dump.exe", boundary);
+            IPostgreSqlDumpSource source = PgDumpSource.CreateForHost(DumpPath, boundary);
             int before = fixture.Tls.Requests;
             Stream stream = await source.OpenDumpAsync("Order", name, default);
             Assert.True(fixture.Tls.Requests > before);

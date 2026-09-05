@@ -43,6 +43,11 @@ internal sealed class HostTlsTestServer : IAsyncDisposable
         Server = X509CertificateLoader.LoadPkcs12(withKey.Export(X509ContentType.Pkcs12), null, X509KeyStorageFlags.Exportable);
         File.WriteAllText(CaPath, Ca.ExportCertificatePem());
         File.WriteAllText(TokenPath, "synthetic.bound.token");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(CaPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.SetUnixFileMode(TokenPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
         _listener.Start();
         Address = new Uri($"https://localhost:{((IPEndPoint)_listener.LocalEndpoint).Port}");
         _serving = ServeAsync();
@@ -58,10 +63,18 @@ internal sealed class HostTlsTestServer : IAsyncDisposable
                 using var tls = new SslStream(client.GetStream());
                 await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions { ServerCertificate = Server }, _stop.Token);
                 using var reader = new StreamReader(tls, leaveOpen: true);
+                bool receivedRequest = false;
                 while (await reader.ReadLineAsync(_stop.Token) is { Length: > 0 } line)
                 {
+                    receivedRequest = true;
                     if (line.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase)) { Authorization = line; }
                 }
+
+                if (!receivedRequest)
+                {
+                    continue;
+                }
+
                 Requests++;
                 byte[] body = Encoding.UTF8.GetBytes(ResponseBody);
                 await tls.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 {ResponseStatusCode} Fixture\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n"), _stop.Token);

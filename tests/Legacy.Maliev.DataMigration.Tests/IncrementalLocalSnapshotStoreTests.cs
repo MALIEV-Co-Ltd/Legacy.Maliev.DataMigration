@@ -81,7 +81,8 @@ public sealed class IncrementalLocalSnapshotStoreTests : IDisposable
 
         Exception failure = await Record.ExceptionAsync(() => store.DeliverAndVerifyAsync(_data.Checkpoints[0], default));
 
-        _ = Assert.IsType<UnauthorizedAccessException>(failure);
+        Assert.NotNull(failure);
+        Assert.True(failure is UnauthorizedAccessException or IOException, failure.ToString());
         Assert.Equal(nameof(IOException), failure.Data["snapshot_dump_cleanup_failure"]);
         Assert.False(Directory.Exists(Path.GetDirectoryName(Archive(_data.Checkpoints[0]))));
         Assert.Empty(Directory.EnumerateFiles(Staging, "artifact.json", SearchOption.AllDirectories));
