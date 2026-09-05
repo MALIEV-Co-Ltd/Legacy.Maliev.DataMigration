@@ -1,4 +1,10 @@
-# Exact-24 shadow migration operator runbook
+# Exact active-inventory shadow migration operator runbook
+
+The active contract currently contains 23 databases. `Hangfire`, `Log`,
+`MachineLearning`, and `MachineLearningData` are retired and must not appear in a
+new receipt, plan, execution, or local snapshot. Historical script, image, and
+template filenames retain the `exact24` prefix for compatibility; that prefix is
+not an inventory assertion. `DatabaseInventory.ActiveDatabases` is authoritative.
 
 This runbook does not authorize a production operation. It defines a preparation
 phase, a mandatory owner-review stop, an approved execution phase, and a separate
@@ -81,14 +87,14 @@ and rejects unknown properties.
   directory; snapshot/backup generation/restore/evidence/lease identities and
   times; and the distinct final-evidence key ID.
 
-`authorize-shadow` re-hashes the exact fresh plan, verifies the signed exact-24
+`authorize-shadow` re-hashes the exact fresh plan, verifies the signed exact active-inventory
 backup, validates plan freshness and source commit, rejects stale approval
 windows and backup/authorization key reuse, measures the complete owner-only
 Release publication, and observes the exact healthy CloudNativePG target before
 publishing create-only. It cannot mint an authorization without the reviewed plan
 digest and explicit allow flag.
 
-`sign-provenance` verifies the exact-24 signed execution, authorization, backup,
+`sign-provenance` verifies the exact active-inventory signed execution, authorization, backup,
 and final restore receipt. Cleanup must be `Removed`; a pending cleanup receipt
 cannot produce provenance.
 
@@ -146,7 +152,7 @@ fresh plan.
 
 **STOP.** Preparation prints `schema_plan_sha256=<digest>` using the canonical
 `SchemaPlanCanonicalizer`. Record that digest and the plan file byte hash,
-inspect all 24 database plans, and place that exact canonical digest into
+inspect every active database plan, and place that exact canonical digest into
 `authorizeShadow.reviewedSchemaPlanSha256`. Do not continue until the owner has
 reviewed the plan and set `allowShadowAuthorization: true`.
 
@@ -157,7 +163,7 @@ reviewed the plan and set `allowShadowAuthorization: true`.
 
 The approved phase signs the reviewed authorization and writes only run-owned
 `legacy_shadow_*` databases plus `legacy_migration_control`. Inspect the signed
-result: it must cover exactly 24 databases and prove table row, content,
+result: it must cover exactly `DatabaseInventory.ActiveDatabases` and prove table row, content,
 aggregate, null, relationship, orphan, and sequence parity. After that review,
 set `signProvenance.allowProvenanceSigning: true`.
 
@@ -184,7 +190,7 @@ neither phase can mount the other phase's private key.
   -ProtectedConfigPath $Config -Configuration Release
 ```
 
-Finalization writes a new MLVSNP02 directory containing exactly 24 encrypted
+Finalization writes a new MLVSNP02 directory containing exactly the 23 active encrypted
 dumps and `manifest.json`, mints a separately reviewed short-lived cleanup
 authorization, then requires `cleanup-shadows` to reverify the signed
 execution, source receipt, fresh plan, authorization, current target observation,

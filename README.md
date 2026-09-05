@@ -151,11 +151,14 @@ It independently observes the fixed in-cluster `maliev-legacy/legacy-postgres-ma
 CloudNativePG resource, rechecks both observations, applies the protected
 five-role `SigningRoles` reuse fence, and publishes only to a new protected path.
 
-`Exact25FullBackupProducer` is the fail-closed producer used by the daily backup
+`Exact25FullBackupProducer` is the historical type name of the fail-closed producer used by the daily backup
 adapter. It requires the exact 27-database source disposition inventory to be
-`ONLINE`, but creates full backups only for the 25 approved migrate databases;
-the retired `MachineLearning` and `MachineLearningData` databases are observed
-but never copied. The producer binds the expected Kubernetes namespace, pod,
+`ONLINE`, but creates full backups only for the 23 databases in
+`DatabaseInventory.ActiveDatabases`; the type name is retained for binary and
+source compatibility and is not an inventory assertion. `Hangfire` and `Log`
+are retired from the active contract. The retired `MachineLearning` and
+`MachineLearningData` databases are observed but never copied. The producer
+binds the expected Kubernetes namespace, pod,
 pod UID, container, approved UTC run date, and run identifier. SQL Server itself
 reports the inventory observation time and the completion time of every full
 backup. The signed receipt uses the latest observed backup completion time; it
