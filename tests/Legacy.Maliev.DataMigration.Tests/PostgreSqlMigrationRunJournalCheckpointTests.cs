@@ -180,14 +180,17 @@ public sealed class PostgreSqlMigrationRunJournalCheckpointTests(PostgreSqlAdapt
     {
         using var data = new CheckpointTestData();
         string schema = NewSchema();
-        DateTimeOffset before = DateTimeOffset.UtcNow;
-        PostgreSqlMigrationRunJournal past = Journal(data, schema, new FixedTimeProvider(before.AddYears(-10)));
+        DateTimeOffset serverBeforeAcquire = await ReadServerTimeAsync();
+        PostgreSqlMigrationRunJournal past = Journal(data, schema, new FixedTimeProvider(serverBeforeAcquire.AddYears(-10)));
         MigrationRunLease lease = (await past.TryBeginAsync(data.Identity, default)).Lease!;
-        Assert.InRange(lease.ExpiresAtUtc, before.AddSeconds(60), DateTimeOffset.UtcNow.AddSeconds(60));
-        PostgreSqlMigrationRunJournal future = Journal(data, schema, new FixedTimeProvider(before.AddYears(10)));
+        DateTimeOffset serverAfterAcquire = await ReadServerTimeAsync();
+        Assert.InRange(lease.ExpiresAtUtc, serverBeforeAcquire.AddSeconds(60), serverAfterAcquire.AddSeconds(60));
+        PostgreSqlMigrationRunJournal future = Journal(data, schema, new FixedTimeProvider(serverBeforeAcquire.AddYears(10)));
         Assert.Equal(MigrationRunStartStatus.InProgress, (await future.TryBeginAsync(data.Identity, default)).Status);
+        DateTimeOffset serverBeforeHeartbeat = await ReadServerTimeAsync();
         MigrationRunLease renewed = await future.HeartbeatAsync(lease, default);
-        Assert.InRange(renewed.ExpiresAtUtc, before.AddSeconds(60), DateTimeOffset.UtcNow.AddSeconds(60));
+        DateTimeOffset serverAfterHeartbeat = await ReadServerTimeAsync();
+        Assert.InRange(renewed.ExpiresAtUtc, serverBeforeHeartbeat.AddSeconds(60), serverAfterHeartbeat.AddSeconds(60));
     }
 
     private PostgreSqlMigrationRunJournal Journal(CheckpointTestData data, string schema, TimeProvider? clock = null)
@@ -206,6 +209,14 @@ public sealed class PostgreSqlMigrationRunJournalCheckpointTests(PostgreSqlAdapt
     {
         return ExecuteAsync(
         $"UPDATE \"{schema}\".migration_runs SET lease_expires_at_utc = clock_timestamp() - interval '1 second' WHERE run_id = $1", runId);
+    }
+
+    private async Task<DateTimeOffset> ReadServerTimeAsync()
+    {
+        await using var connection = new NpgsqlConnection(fixture.ControlConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("SELECT clock_timestamp();", connection);
+        return new DateTimeOffset((DateTime)(await command.ExecuteScalarAsync())!);
     }
 
     private async Task ExecuteAsync(string sql, Guid runId, string? payload = null)
