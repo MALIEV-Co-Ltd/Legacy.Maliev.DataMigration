@@ -31,29 +31,43 @@ public static partial class MigrationConsole
             await error.WriteLineAsync(code).ConfigureAwait(false);
             if (failure is MigrationExecutionException { Reconciliation: { } diagnostic })
             {
-                string? SafeName(string? value)
-                {
-                    return value is { Length: > 0 and <= 128 } && value.All(character => char.IsLetterOrDigit(character) || character is '_' or '.' or '-') ? value : null;
-                }
-
-                string? SafeValue(string? value)
-                {
-                    return value is not null && ((value.Length == 64 && value.All(Uri.IsHexDigit)) ||
-                                    long.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _)) ? value : null;
-                }
-
-                await error.WriteLineAsync(JsonSerializer.Serialize(new
-                {
-                    database = DatabaseInventory.ActiveDatabases.Contains(diagnostic.Database, StringComparer.Ordinal) ? diagnostic.Database : null,
-                    table = SafeName(diagnostic.Table),
-                    check = SafeName(diagnostic.Check),
-                    field = SafeName(diagnostic.Field),
-                    expected = SafeValue(diagnostic.Expected),
-                    observed = SafeValue(diagnostic.Observed),
-                })).ConfigureAwait(false);
+                await WriteSafeReconciliationDiagnosticAsync(error, diagnostic).ConfigureAwait(false);
             }
             return failure is OperationCanceledException ? 130 : failure is MigrationConsoleException or OperatorAttestationException or JsonException or ArgumentException or FormatException or CryptographicException ? 65 : 70;
         }
+    }
+
+    internal static Task WriteSafeReconciliationDiagnosticAsync(TextWriter error, ReconciliationDiagnostic diagnostic)
+    {
+        static string? SafeName(string? value)
+        {
+            return value is { Length: > 0 and <= 128 } &&
+                   value.All(character => char.IsLetterOrDigit(character) || character is '_' or '.' or '-')
+                ? value
+                : null;
+        }
+
+        static string? SafeValue(string? value)
+        {
+            return value is not null &&
+                   ((value.Length == 64 && value.All(Uri.IsHexDigit)) ||
+                    long.TryParse(value, System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture, out _))
+                ? value
+                : null;
+        }
+
+        return error.WriteLineAsync(JsonSerializer.Serialize(new
+        {
+            database = DatabaseInventory.ActiveDatabases.Contains(diagnostic.Database, StringComparer.Ordinal)
+                ? diagnostic.Database
+                : null,
+            table = SafeName(diagnostic.Table),
+            check = SafeName(diagnostic.Check),
+            field = SafeName(diagnostic.Field),
+            expected = SafeValue(diagnostic.Expected),
+            observed = SafeValue(diagnostic.Observed),
+        }));
     }
 
     internal static Task<int> RunIncrementalForTestsAsync(IReadOnlyList<string> arguments, TextWriter output, TextWriter error,

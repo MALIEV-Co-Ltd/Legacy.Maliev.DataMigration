@@ -76,6 +76,10 @@ public static partial class MigrationConsole
                 code = "delta_execution_failed";
             }
             await error.WriteLineAsync(code).ConfigureAwait(false);
+            if (failure is MigrationExecutionException { Reconciliation: { } diagnostic })
+            {
+                await WriteSafeReconciliationDiagnosticAsync(error, diagnostic).ConfigureAwait(false);
+            }
             return failure is OperationCanceledException ? 130 : failure is MigrationConsoleException or DeltaPlanException or
                 JsonException or ArgumentException or FormatException or CryptographicException ? 65 : 70;
         }
