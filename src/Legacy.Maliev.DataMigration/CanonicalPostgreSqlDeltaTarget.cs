@@ -106,7 +106,9 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
             throw Error("canonical_delta_table_inventory_invalid", "The signed canonical table inventory is empty.");
         }
 
-        await using var tableLocks = new NpgsqlCommand($"LOCK TABLE {tables} IN ACCESS EXCLUSIVE MODE;", connection, transaction);
+        // Block every concurrent writer while still allowing the separately opened, read-only
+        // ordered target cursor to take its single ACCESS SHARE scan.
+        await using var tableLocks = new NpgsqlCommand($"LOCK TABLE {tables} IN SHARE ROW EXCLUSIVE MODE;", connection, transaction);
         _ = await tableLocks.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -233,18 +235,18 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         MigrationRow row = source ?? target ?? throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_row_missing", "The resolved canonical row is missing.");
         {
             ValidateRow(table, row);
-            string sourceHash = CanonicalRowFingerprint.Compute(table, [row]);
-            if (operation.Kind is DeltaOperationKind.Insert or DeltaOperationKind.Update &&
+            bool sourceContainsStreamingLob = source?.Values.Values.Any(value => value is StreamingLob) == true;
+            string? sourceHash = sourceContainsStreamingLob ? null : CanonicalRowFingerprint.Compute(table, [row]);
+            if (operation.Kind is DeltaOperationKind.Insert or DeltaOperationKind.Update && !sourceContainsStreamingLob &&
                 (!PostgreSqlDeltaCanonicalTarget.Hash(operation.SourceRowSha256 ?? string.Empty) ||
-                 !PostgreSqlDeltaCanonicalTarget.Fixed(sourceHash, operation.SourceRowSha256!)))
+                 !PostgreSqlDeltaCanonicalTarget.Fixed(sourceHash!, operation.SourceRowSha256!)))
             {
                 throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_source_row_drift", "A resolved source row does not match its signed fingerprint.");
             }
 
             if (operation.Kind is DeltaOperationKind.Update or DeltaOperationKind.Delete)
             {
-                MigrationRow current = await ReadCurrentAsync(table, target!, cancellationToken).ConfigureAwait(false);
-                string currentHash = CanonicalRowFingerprint.Compute(table, [current]);
+                string currentHash = CanonicalRowFingerprint.Compute(table, [target!]);
                 if (!PostgreSqlDeltaCanonicalTarget.Hash(operation.TargetRowSha256 ?? string.Empty) ||
                     !PostgreSqlDeltaCanonicalTarget.Fixed(currentHash, operation.TargetRowSha256!))
                 {
@@ -262,6 +264,15 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
             if (affected != 1)
             {
                 throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_affected_count_invalid", "A canonical row operation did not affect exactly one row.");
+            }
+            if (sourceContainsStreamingLob)
+            {
+                string consumedHash = CanonicalRowFingerprint.Compute(table, [source!]);
+                if (!PostgreSqlDeltaCanonicalTarget.Hash(operation.SourceRowSha256 ?? string.Empty) ||
+                    !PostgreSqlDeltaCanonicalTarget.Fixed(consumedHash, operation.SourceRowSha256!))
+                {
+                    throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_source_row_drift", "A streamed source row does not match its signed fingerprint.");
+                }
             }
         }
     }
@@ -317,37 +328,13 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         _completed = true;
     }
 
-    private async Task<MigrationRow> ReadCurrentAsync(TableCopyPlan table, MigrationRow row, CancellationToken token)
-    {
-        string columns = string.Join(", ", table.OrderedColumns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
-        await using var command = new NpgsqlCommand($"SELECT {columns} FROM {PostgreSqlDeltaCanonicalTarget.Qualified(table.TargetSchema, table.TargetTable)} WHERE {WhereKey(table)} FOR UPDATE;", connection, transaction);
-        AddKeys(command, table, row);
-        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
-        if (!await reader.ReadAsync(token).ConfigureAwait(false))
-        {
-            throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_target_row_missing", "The planned canonical target row is missing.");
-        }
-
-        var values = new Dictionary<string, object?>(StringComparer.Ordinal);
-        for (var index = 0; index < table.OrderedColumns.Count; index++)
-        {
-            values.Add(table.OrderedColumns[index], await reader.IsDBNullAsync(index, token).ConfigureAwait(false) ? null : reader.GetValue(index));
-        }
-
-        return new(values);
-    }
-
     private async Task<int> InsertAsync(TableCopyPlan table, MigrationRow row, CancellationToken token)
     {
         string[] columns = [.. table.OrderedColumns.Except(table.GeneratedColumns.Select(item => item.Column), StringComparer.Ordinal)];
         string names = string.Join(", ", columns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
-        string parameters = string.Join(", ", columns.Select((_, index) => $"${index + 1}"));
+        string parameters = string.Join(", ", columns.Select((column, index) => ParameterExpression(row, column, index + 1)));
         await using var command = new NpgsqlCommand($"INSERT INTO {PostgreSqlDeltaCanonicalTarget.Qualified(table.TargetSchema, table.TargetTable)} ({names}) VALUES ({parameters});", connection, transaction);
-        foreach (string column in columns)
-        {
-            _ = command.Parameters.AddWithValue(row.Values[column] ?? DBNull.Value);
-        }
-
+        await using ParameterResources resources = await AddValuesAsync(command, row, columns, token).ConfigureAwait(false);
         return await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
     }
 
@@ -359,15 +346,88 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
             throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_update_empty", "A canonical update has no mutable columns.");
         }
 
-        string set = string.Join(", ", columns.Select((column, index) => $"{PostgreSqlShadowTarget.QuoteIdentifier(column)}=${index + 1}"));
+        string set = string.Join(", ", columns.Select((column, index) => $"{PostgreSqlShadowTarget.QuoteIdentifier(column)}={ParameterExpression(row, column, index + 1)}"));
         await using var command = new NpgsqlCommand($"UPDATE {PostgreSqlDeltaCanonicalTarget.Qualified(table.TargetSchema, table.TargetTable)} SET {set} WHERE {WhereKey(table, columns.Length)};", connection, transaction);
-        foreach (string column in columns)
-        {
-            _ = command.Parameters.AddWithValue(row.Values[column] ?? DBNull.Value);
-        }
+        await using ParameterResources resources = await AddValuesAsync(command, row, columns, token).ConfigureAwait(false);
 
         AddKeys(command, table, row);
         return await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+    }
+
+    private static async Task<ParameterResources> AddValuesAsync(
+        NpgsqlCommand command,
+        MigrationRow row,
+        IEnumerable<string> columns,
+        CancellationToken token)
+    {
+        var resources = new ParameterResources();
+        try
+        {
+            foreach (string column in columns)
+            {
+                object? value = row.Values[column];
+                if (value is StreamingLob streaming)
+                {
+                    Stream stream = await streaming.OpenReadAsync(token).ConfigureAwait(false);
+                    resources.Add(stream);
+                    _ = command.Parameters.Add(new NpgsqlParameter
+                    {
+                        DataTypeName = "bytea",
+                        Value = stream,
+                    });
+                }
+                else if (value is BufferedStreamingLob buffered)
+                {
+                    Stream stream = buffered.OpenRead();
+                    resources.Add(stream);
+                    _ = command.Parameters.Add(new NpgsqlParameter
+                    {
+                        DataTypeName = "bytea",
+                        Value = stream,
+                    });
+                }
+                else
+                {
+                    _ = command.Parameters.AddWithValue(value ?? DBNull.Value);
+                }
+            }
+            return resources;
+        }
+        catch
+        {
+            await resources.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private sealed class ParameterResources : IAsyncDisposable
+    {
+        private readonly List<Stream> _resources = [];
+
+        internal void Add(Stream stream)
+        {
+            _resources.Add(stream);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            foreach (Stream stream in _resources)
+            {
+                await stream.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static string ParameterExpression(MigrationRow row, string column, int ordinal)
+    {
+        object? value = row.Values[column];
+        StreamingLobKind? kind = value switch
+        {
+            StreamingLob streaming => streaming.Kind,
+            BufferedStreamingLob buffered => buffered.Kind,
+            _ => null,
+        };
+        return kind == StreamingLobKind.Text ? $"convert_from(${ordinal},'UTF8')" : $"${ordinal}";
     }
 
     private async Task<int> DeleteAsync(TableCopyPlan table, MigrationRow row, CancellationToken token)

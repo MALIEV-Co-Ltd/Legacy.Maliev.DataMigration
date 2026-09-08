@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Reflection;
+using System.Text;
 using Npgsql;
 
 namespace Legacy.Maliev.DataMigration.Tests;
@@ -71,6 +72,34 @@ public sealed class PostgreSqlDeltaCanonicalTargetIntegrationTests(PostgreSqlAda
         DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() => target.BeginAsync(plan, schema, schema.Database, CancellationToken.None));
         Assert.Equal("canonical_delta_fence_stale", error.Code);
         Assert.Equal([(1, "old"), (2, "delete")], await RowsAsync(cs));
+    }
+
+    [Fact]
+    public async Task StreamedTextInsert_IsConsumedAndFingerprintCheckedBeforeAtomicCommit()
+    {
+        (string cs, DatabaseSchemaPlan schema, PostgreSqlDeltaCanonicalTarget target) = await SetupAsync();
+        byte[] expectedBytes = Encoding.UTF8.GetBytes("streamed text");
+        var expected = new MigrationRow(new Dictionary<string, object?>
+        {
+            ["id"] = 3,
+            ["value"] = new BufferedStreamingLob(StreamingLobKind.Text, expectedBytes),
+        });
+        CanonicalDeltaOperation insert = Operation(schema.Tables[0], [expected], []);
+        var lob = new StreamingLob(StreamingLobKind.Text, expectedBytes.Length, async (destination, token) =>
+            await destination.WriteAsync(expectedBytes, token));
+        var streamed = new MigrationRow(new Dictionary<string, object?> { ["id"] = 3, ["value"] = lob });
+        DeltaSynchronizationPlan plan = Plan(schema.Database, schema.Tables[0], [insert]);
+        string hash = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
+
+        await using (IDeltaCanonicalTransaction tx = await target.BeginAsync(plan, schema, schema.Database, CancellationToken.None))
+        {
+            await tx.ApplyAsync(schema.Tables[0], insert, streamed, null, CancellationToken.None);
+            Assert.True(lob.IsConsumed);
+            await tx.CommitAsync(hash, CancellationToken.None);
+        }
+
+        Assert.Equal([(1, "old"), (2, "delete"), (3, "streamed text")], await RowsAsync(cs));
+        Assert.Equal(1L, await ScalarAsync(cs, "SELECT count(*) FROM legacy_migration_internal.delta_journal"));
     }
 
     private async Task<(string, DatabaseSchemaPlan, PostgreSqlDeltaCanonicalTarget)> SetupAsync()

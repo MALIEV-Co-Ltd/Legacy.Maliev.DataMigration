@@ -26,7 +26,7 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
     public async Task Fingerprint_drift_rolls_back_without_later_mutations()
     {
         Fixture fixture = CreateFixture();
-        fixture.Rows.SourceRows[fixture.ParentInsert.KeySha256] = Row(100, "tampered");
+        fixture.Rows.SourceRows["public.parents"] = [Row(100, "tampered")];
 
         DeltaExecutionException exception = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
             fixture.Coordinator.ExecuteDatabaseAsync(fixture.Plan, fixture.Schema, fixture.Database, CancellationToken.None));
@@ -89,10 +89,10 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
         }, signer, Now());
         var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
         var rows = new FakeRows();
-        rows.SourceRows[parentInsert.KeySha256] = parentSource;
-        rows.SourceRows[childInsert.KeySha256] = childSource;
-        rows.TargetRows[parentDelete.KeySha256] = parentTarget;
-        rows.TargetRows[childDelete.KeySha256] = childTarget;
+        rows.SourceRows["public.parents"] = [parentSource];
+        rows.SourceRows["public.children"] = [childSource];
+        rows.TargetRows["public.parents"] = [parentTarget];
+        rows.TargetRows["public.children"] = [childTarget];
         var target = new FakeTarget(disposition);
         return new(
             database,
@@ -167,19 +167,27 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
         FakeRows Rows,
         CanonicalDeltaOperation ParentInsert);
 
-    private sealed class FakeRows : IDeltaExecutionRowProvider
+    private sealed class FakeRows : IDeltaExecutionRowSessionProvider
     {
-        internal Dictionary<string, MigrationRow> SourceRows { get; } = new(StringComparer.Ordinal);
-        internal Dictionary<string, MigrationRow> TargetRows { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<string, IReadOnlyList<MigrationRow>> SourceRows { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<string, IReadOnlyList<MigrationRow>> TargetRows { get; } = new(StringComparer.Ordinal);
 
-        public Task<MigrationRow?> ReadSourceAsync(string database, TableCopyPlan table, string keySha256, CancellationToken token)
+        public Task<IDeltaExecutionRowSession> OpenAsync(string database, TableCopyPlan table, CancellationToken token)
         {
-            return Task.FromResult(SourceRows.GetValueOrDefault(keySha256));
+            string name = $"{table.TargetSchema}.{table.TargetTable}";
+            var provider = new OrderedDeltaExecutionRowSessionProvider(
+                new Rows(SourceRows.GetValueOrDefault(name) ?? []),
+                new Rows(TargetRows.GetValueOrDefault(name) ?? []));
+            return provider.OpenAsync(database, table, token);
         }
 
-        public Task<MigrationRow?> ReadTargetAsync(string database, TableCopyPlan table, string keySha256, CancellationToken token)
+        private sealed class Rows(IReadOnlyList<MigrationRow> values) : IDeltaOrderedRowSource
         {
-            return Task.FromResult(TargetRows.GetValueOrDefault(keySha256));
+            public async IAsyncEnumerable<MigrationRow> ReadOrderedAsync(string database, TableCopyPlan table,
+                [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+            {
+                foreach (MigrationRow row in values) { cancellationToken.ThrowIfCancellationRequested(); yield return row; await Task.Yield(); }
+            }
         }
     }
 

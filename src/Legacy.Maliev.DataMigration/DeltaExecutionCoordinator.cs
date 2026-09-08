@@ -24,20 +24,22 @@ public interface IDeltaExecutionAuthorizationGate
     Task ValidateAsync(DeltaSynchronizationPlan plan, string database, CancellationToken cancellationToken);
 }
 
-public interface IDeltaExecutionRowProvider
+public interface IDeltaExecutionRowSessionProvider
 {
-    Task<MigrationRow?> ReadSourceAsync(
+    Task<IDeltaExecutionRowSession> OpenAsync(
         string database,
         TableCopyPlan table,
-        string keySha256,
-        CancellationToken cancellationToken);
-
-    Task<MigrationRow?> ReadTargetAsync(
-        string database,
-        TableCopyPlan table,
-        string keySha256,
         CancellationToken cancellationToken);
 }
+
+public interface IDeltaExecutionRowSession : IAsyncDisposable
+{
+    IAsyncEnumerable<ResolvedDeltaRow> ResolveAsync(
+        DeltaTablePlan plan,
+        CancellationToken cancellationToken);
+}
+
+public sealed record ResolvedDeltaRow(CanonicalDeltaOperation Operation, MigrationRow? Source, MigrationRow? Target);
 
 public interface IDeltaCanonicalTarget
 {
@@ -64,7 +66,7 @@ public interface IDeltaCanonicalTransaction : IAsyncDisposable
 
 public sealed class DeltaExecutionCoordinator(
     IDeltaCanonicalTarget target,
-    IDeltaExecutionRowProvider rows,
+    IDeltaExecutionRowSessionProvider rows,
     IDeltaExecutionAuthorizationGate authorization,
     IReceiptAttestationTrustStore planTrust,
     TimeProvider timeProvider)
@@ -116,27 +118,33 @@ public sealed class DeltaExecutionCoordinator(
         }
 
         IReadOnlyList<TableCopyPlan> ordered = ForeignKeyExecutionOrder.Create(schema.Tables);
+        var deletes = new Dictionary<string, List<ResolvedDeltaRow>>(StringComparer.Ordinal);
         long applied = 0;
         foreach (TableCopyPlan table in ordered)
         {
             DeltaTablePlan delta = databasePlan.Tables.Single(item => string.Equals(item.Table, Qualified(table), StringComparison.Ordinal));
-            foreach (CanonicalDeltaOperation operation in delta.Operations.Where(item => item.Kind != DeltaOperationKind.Delete))
+            await using IDeltaExecutionRowSession session = await rows.OpenAsync(database, table, cancellationToken).ConfigureAwait(false);
+            var tableDeletes = new List<ResolvedDeltaRow>();
+            await foreach (ResolvedDeltaRow resolved in session.ResolveAsync(delta, cancellationToken)
+                .WithCancellation(cancellationToken).ConfigureAwait(false))
             {
-                (MigrationRow? source, MigrationRow? currentTarget) = await ResolveAndVerifyAsync(
-                    database, table, operation, cancellationToken).ConfigureAwait(false);
-                await transaction.ApplyAsync(table, operation, source, currentTarget, cancellationToken).ConfigureAwait(false);
+                if (resolved.Operation.Kind == DeltaOperationKind.Delete)
+                {
+                    tableDeletes.Add(resolved);
+                    continue;
+                }
+                await transaction.ApplyAsync(table, resolved.Operation, resolved.Source, resolved.Target, cancellationToken).ConfigureAwait(false);
+                VerifyRow(table, resolved.Source, resolved.Operation.KeySha256, resolved.Operation.SourceRowSha256, "source");
                 applied++;
             }
+            deletes.Add(Qualified(table), tableDeletes);
         }
 
         foreach (TableCopyPlan table in ordered.Reverse())
         {
-            DeltaTablePlan delta = databasePlan.Tables.Single(item => string.Equals(item.Table, Qualified(table), StringComparison.Ordinal));
-            foreach (CanonicalDeltaOperation operation in delta.Operations.Where(item => item.Kind == DeltaOperationKind.Delete))
+            foreach (ResolvedDeltaRow resolved in deletes[Qualified(table)])
             {
-                (MigrationRow? source, MigrationRow? currentTarget) = await ResolveAndVerifyAsync(
-                    database, table, operation, cancellationToken).ConfigureAwait(false);
-                await transaction.ApplyAsync(table, operation, source, currentTarget, cancellationToken).ConfigureAwait(false);
+                await transaction.ApplyAsync(table, resolved.Operation, null, resolved.Target, cancellationToken).ConfigureAwait(false);
                 applied++;
             }
         }
@@ -145,33 +153,7 @@ public sealed class DeltaExecutionCoordinator(
         return new(database, DeltaExecutionDisposition.Committed, applied, planSha256);
     }
 
-    private async Task<(MigrationRow? Source, MigrationRow? Target)> ResolveAndVerifyAsync(
-        string database,
-        TableCopyPlan table,
-        CanonicalDeltaOperation operation,
-        CancellationToken cancellationToken)
-    {
-        MigrationRow? source = operation.Kind == DeltaOperationKind.Delete
-            ? null
-            : await rows.ReadSourceAsync(database, table, operation.KeySha256, cancellationToken).ConfigureAwait(false);
-        MigrationRow? currentTarget = operation.Kind == DeltaOperationKind.Insert
-            ? null
-            : await rows.ReadTargetAsync(database, table, operation.KeySha256, cancellationToken).ConfigureAwait(false);
-        if (source is null && operation.Kind != DeltaOperationKind.Delete)
-        {
-            throw Error("delta_execution_source_row_missing", "A planned source row is unavailable at execution.");
-        }
-        if (currentTarget is null && operation.Kind != DeltaOperationKind.Insert)
-        {
-            throw Error("delta_execution_target_row_missing", "A planned target row is unavailable at execution.");
-        }
-
-        VerifyRow(table, source, operation.KeySha256, operation.SourceRowSha256, "source");
-        VerifyRow(table, currentTarget, operation.KeySha256, operation.TargetRowSha256, "target");
-        return (source, currentTarget);
-    }
-
-    private static void VerifyRow(
+    internal static void VerifyRow(
         TableCopyPlan table,
         MigrationRow? row,
         string expectedKeySha256,
