@@ -121,8 +121,12 @@ public static class CanonicalDeltaPlanner
             target is null ? null : CanonicalRowFingerprint.Compute(table, [target]));
     }
 
-    private static string ComputeKeySha256(TableCopyPlan table, MigrationRow row)
+    public static string ComputeKeySha256(TableCopyPlan table, MigrationRow row)
     {
+        ArgumentNullException.ThrowIfNull(table);
+        ArgumentNullException.ThrowIfNull(row);
+        ValidateTable(table);
+        ValidateRow(table, row, "key");
         IReadOnlyList<string> keys = table.PrimaryKey!.Columns;
         var values = new ReadOnlyDictionary<string, object?>(keys.ToDictionary(
             key => key,
