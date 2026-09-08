@@ -11,7 +11,8 @@ public sealed record DeltaDatabaseExecutionResult(
     string Database,
     DeltaExecutionDisposition Disposition,
     long AppliedOperations,
-    string PlanSha256);
+    string PlanSha256,
+    string? ReconciliationSha256 = null);
 
 public sealed class DeltaExecutionException(string code, string message, Exception? innerException = null)
     : Exception(message, innerException)
@@ -54,6 +55,8 @@ public interface IDeltaCanonicalTransaction : IAsyncDisposable
 {
     DeltaExecutionDisposition Disposition { get; }
 
+    string? ReconciliationSha256 { get; }
+
     Task ApplyAsync(
         TableCopyPlan table,
         CanonicalDeltaOperation operation,
@@ -61,13 +64,21 @@ public interface IDeltaCanonicalTransaction : IAsyncDisposable
         MigrationRow? target,
         CancellationToken cancellationToken);
 
-    Task CommitAsync(string planSha256, CancellationToken cancellationToken);
+    Task<string> ReconcileAsync(
+        DatabaseReconciliationEvidence expected,
+        CancellationToken cancellationToken);
+
+    Task CommitAsync(
+        string planSha256,
+        string reconciliationSha256,
+        CancellationToken cancellationToken);
 }
 
 public sealed class DeltaExecutionCoordinator(
     IDeltaCanonicalTarget target,
     IDeltaExecutionRowSessionProvider rows,
     IDeltaExecutionAuthorizationGate authorization,
+    IDeltaReconciliationInspector sourceReconciliation,
     IReceiptAttestationTrustStore planTrust,
     TimeProvider timeProvider)
 {
@@ -109,7 +120,8 @@ public sealed class DeltaExecutionCoordinator(
             plan, schema, database, cancellationToken).ConfigureAwait(false);
         if (transaction.Disposition == DeltaExecutionDisposition.AlreadyCommitted)
         {
-            return new(database, DeltaExecutionDisposition.AlreadyCommitted, 0, planSha256);
+            return new(database, DeltaExecutionDisposition.AlreadyCommitted, 0, planSha256,
+                transaction.ReconciliationSha256);
         }
 
         if (transaction.Disposition != DeltaExecutionDisposition.Pending)
@@ -149,8 +161,12 @@ public sealed class DeltaExecutionCoordinator(
             }
         }
 
-        await transaction.CommitAsync(planSha256, cancellationToken).ConfigureAwait(false);
-        return new(database, DeltaExecutionDisposition.Committed, applied, planSha256);
+        DatabaseReconciliationEvidence expected = await sourceReconciliation.InspectAsync(schema, cancellationToken)
+            .ConfigureAwait(false);
+        string reconciliationSha256 = await transaction.ReconcileAsync(expected, cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(planSha256, reconciliationSha256, cancellationToken).ConfigureAwait(false);
+        return new(database, DeltaExecutionDisposition.Committed, applied, planSha256, reconciliationSha256);
     }
 
     internal static void VerifyRow(

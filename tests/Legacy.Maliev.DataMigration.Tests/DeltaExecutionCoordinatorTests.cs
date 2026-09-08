@@ -20,6 +20,7 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
             fixture.Target.Applied);
         Assert.True(fixture.Target.Committed);
         Assert.False(fixture.Target.RolledBack);
+        Assert.NotNull(result.ReconciliationSha256);
     }
 
     [Fact]
@@ -48,6 +49,22 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
         Assert.Equal(DeltaExecutionDisposition.AlreadyCommitted, result.Disposition);
         Assert.Empty(fixture.Target.Applied);
         Assert.False(fixture.Target.Committed);
+        Assert.Equal(new string('7', 64), result.ReconciliationSha256);
+    }
+
+    [Fact]
+    public async Task Reconciliation_failure_rolls_back_without_commit_or_checkpoint()
+    {
+        Fixture fixture = CreateFixture();
+        fixture.Target.FailReconciliation = true;
+
+        DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            fixture.Coordinator.ExecuteDatabaseAsync(fixture.Plan, fixture.Schema, fixture.Database, CancellationToken.None));
+
+        Assert.Equal("shadow_reconciliation_failed", error.Code);
+        Assert.False(fixture.Target.Committed);
+        Assert.False(fixture.Target.Checkpointed);
+        Assert.True(fixture.Target.RolledBack);
     }
 
     private Fixture CreateFixture(DeltaExecutionDisposition disposition = DeltaExecutionDisposition.Pending)
@@ -98,7 +115,7 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
             database,
             new DatabaseSchemaPlan(database, "1.0", hashA, new('b', 64), [parents, children]),
             plan,
-            new DeltaExecutionCoordinator(target, rows, new AllowAuthorization(), trust, TimeProvider.System),
+            new DeltaExecutionCoordinator(target, rows, new AllowAuthorization(), new FakeSourceReconciliation(database, [parents, children]), trust, TimeProvider.System),
             target,
             rows,
             parentInsert);
@@ -196,6 +213,8 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
         internal List<string> Applied { get; } = [];
         internal bool Committed { get; private set; }
         internal bool RolledBack { get; private set; }
+        internal bool Checkpointed { get; private set; }
+        internal bool FailReconciliation { get; set; }
 
         public Task<IDeltaCanonicalTransaction> BeginAsync(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema, string database, CancellationToken token)
         {
@@ -206,14 +225,24 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
         {
             public DeltaExecutionDisposition Disposition => disposition;
 
+            public string? ReconciliationSha256 => disposition == DeltaExecutionDisposition.AlreadyCommitted ? new('7', 64) : null;
+
             public Task ApplyAsync(TableCopyPlan table, CanonicalDeltaOperation operation, MigrationRow? source, MigrationRow? target, CancellationToken token)
             {
                 owner.Applied.Add($"{operation.Kind}:{table.TargetSchema}.{table.TargetTable}");
                 return Task.CompletedTask;
             }
 
-            public Task CommitAsync(string planSha256, CancellationToken token)
+            public Task<string> ReconcileAsync(DatabaseReconciliationEvidence expected, CancellationToken token)
             {
+                return owner.FailReconciliation
+                    ? throw new DeltaExecutionException("shadow_reconciliation_failed", "Synthetic mismatch.")
+                    : Task.FromResult(DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(expected));
+            }
+
+            public Task CommitAsync(string planSha256, string reconciliationSha256, CancellationToken token)
+            {
+                owner.Checkpointed = true;
                 owner.Committed = true;
                 return Task.CompletedTask;
             }
@@ -223,6 +252,21 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
                 if (!owner.Committed && disposition == DeltaExecutionDisposition.Pending) { owner.RolledBack = true; }
                 return ValueTask.CompletedTask;
             }
+        }
+    }
+
+    private sealed class FakeSourceReconciliation(string database, IReadOnlyList<TableCopyPlan> tables) : IDeltaReconciliationInspector
+    {
+        public Task<DatabaseReconciliationEvidence> InspectAsync(DatabaseSchemaPlan schema, CancellationToken cancellationToken)
+        {
+            TableReconciliationEvidence[] evidence = [.. tables.Select(table => new TableReconciliationEvidence(
+                $"{table.TargetSchema}.{table.TargetTable}", 0, new('1', 64), new('2', 64),
+                table.OrderedColumns.ToDictionary(column => column, _ => 0L, StringComparer.Ordinal),
+                table.ForeignKeys.ToDictionary(foreignKey => foreignKey.Name, _ => 0L, StringComparer.Ordinal))
+            {
+                ForeignKeyRelationshipCounts = table.ForeignKeys.ToDictionary(foreignKey => foreignKey.Name, _ => 0L, StringComparer.Ordinal),
+            })];
+            return Task.FromResult(new DatabaseReconciliationEvidence(database, schema.SourceSchemaSha256, schema.TargetSchemaSha256, evidence));
         }
     }
 

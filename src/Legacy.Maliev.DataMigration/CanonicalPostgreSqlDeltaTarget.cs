@@ -52,9 +52,9 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
             {
                 await AcquireLocksAsync(connection, transaction, binding, schema, cancellationToken).ConfigureAwait(false);
                 await ValidateFenceAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
-                bool replay = await ValidateReplayAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
+                string? replayReconciliationSha256 = await ValidateReplayAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
                 IReadOnlyDictionary<string, int> upsertOrder = CanonicalForeignKeyOrder.Build(schema);
-                return new PostgreSqlDeltaCanonicalTransaction(connection, transaction, binding, schema, replay, upsertOrder,
+                return new PostgreSqlDeltaCanonicalTransaction(connection, transaction, binding, schema, replayReconciliationSha256, upsertOrder,
                     ComputeOperationsSha256(plan, database));
             }
             catch
@@ -136,14 +136,14 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         }
     }
 
-    private static async Task<bool> ValidateReplayAsync(
+    private static async Task<string?> ValidateReplayAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         CanonicalDeltaTargetBinding binding,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand("""
-            SELECT plan_sha256, source_cutoff_utc, target_observation_sha256
+            SELECT plan_sha256, source_cutoff_utc, target_observation_sha256, reconciliation_sha256
             FROM legacy_migration_internal.delta_journal
             WHERE plan_sha256=$1 OR plan_id=$2
             FOR UPDATE;
@@ -151,11 +151,17 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         _ = command.Parameters.AddWithValue(binding.PlanSha256);
         _ = command.Parameters.AddWithValue(binding.PlanId);
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) &&
-            (!Fixed(reader.GetString(0), binding.PlanSha256) || reader.GetFieldValue<DateTimeOffset>(1) != binding.SourceCutoffUtc ||
-            !Fixed(reader.GetString(2), binding.TargetObservationSha256)
-            ? throw Error("canonical_delta_replay_conflict", "A conflicting canonical delta execution already uses this plan identity.")
-            : true);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ValidateReplayRow(reader, binding)
+            : null;
+    }
+
+    private static string ValidateReplayRow(NpgsqlDataReader reader, CanonicalDeltaTargetBinding binding)
+    {
+        return Fixed(reader.GetString(0), binding.PlanSha256) && reader.GetFieldValue<DateTimeOffset>(1) == binding.SourceCutoffUtc &&
+            Fixed(reader.GetString(2), binding.TargetObservationSha256) && Hash(reader.GetString(3))
+            ? reader.GetString(3).ToLowerInvariant()
+            : throw Error("canonical_delta_replay_conflict", "A conflicting canonical delta execution already uses this plan identity.");
     }
 
     private static string ComputeOperationsSha256(DeltaSynchronizationPlan plan, string database)
@@ -193,16 +199,21 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
     NpgsqlTransaction transaction,
     CanonicalDeltaTargetBinding binding,
     DatabaseSchemaPlan schema,
-    bool replay,
+    string? replayReconciliationSha256,
     IReadOnlyDictionary<string, int> upsertOrder,
     string operationsSha256) : IDeltaCanonicalTransaction
 {
     private bool _completed;
     private bool _checkpointRecorded;
+    private string? _reconciliationSha256;
     private int _lastUpsertOrder = -1;
     private int _lastDeleteOrder = -1;
 
-    public DeltaExecutionDisposition Disposition => replay ? DeltaExecutionDisposition.AlreadyCommitted : DeltaExecutionDisposition.Pending;
+    public DeltaExecutionDisposition Disposition => replayReconciliationSha256 is not null
+        ? DeltaExecutionDisposition.AlreadyCommitted
+        : DeltaExecutionDisposition.Pending;
+
+    public string? ReconciliationSha256 => replayReconciliationSha256 ?? _reconciliationSha256;
 
     public async Task ApplyAsync(TableCopyPlan table, CanonicalDeltaOperation operation, MigrationRow? source, MigrationRow? target,
         CancellationToken cancellationToken)
@@ -277,6 +288,96 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         }
     }
 
+    public async Task<string> ReconcileAsync(
+        DatabaseReconciliationEvidence expected,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        if (Disposition != DeltaExecutionDisposition.Pending || _checkpointRecorded || _reconciliationSha256 is not null)
+        {
+            throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_reconciliation_invalid", "Canonical reconciliation is unavailable in the current transaction state.");
+        }
+
+        ValidateExpectedReconciliation(expected);
+        await AlignSequencesAsync(expected.SequenceNextValues, cancellationToken).ConfigureAwait(false);
+        await using var inspection = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
+        string targetSchemaSha256 = await inspection.InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
+        ReconciliationDiagnostics.CompareSchema(schema.Database, schema.TargetSchemaSha256, targetSchemaSha256);
+        var tables = new List<TableReconciliationEvidence>(schema.Tables.Count);
+        foreach (TableCopyPlan table in schema.Tables)
+        {
+            TableReconciliationEvidence observed = await inspection.InspectTableAsync(table, cancellationToken).ConfigureAwait(false);
+            TableReconciliationEvidence expectedTable = expected.Tables.Single(item =>
+                string.Equals(item.Table, $"{table.TargetSchema}.{table.TargetTable}", StringComparison.Ordinal));
+            ReconciliationDiagnostics.CompareTable(schema.Database, expectedTable, observed);
+            tables.Add(observed);
+        }
+
+        IReadOnlyDictionary<string, long> sequences = await inspection
+            .InspectSequenceNextValuesAsync(schema, cancellationToken).ConfigureAwait(false);
+        ReconciliationDiagnostics.CompareSequences(schema, expected.SequenceNextValues, sequences);
+        var observedEvidence = new DatabaseReconciliationEvidence(
+            schema.Database,
+            schema.SourceSchemaSha256,
+            targetSchemaSha256,
+            tables.AsReadOnly())
+        {
+            SequenceNextValues = sequences,
+        };
+        _reconciliationSha256 = DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(observedEvidence);
+        return _reconciliationSha256;
+    }
+
+    private void ValidateExpectedReconciliation(DatabaseReconciliationEvidence expected)
+    {
+        string[] expectedTables = [.. schema.Tables.Select(table => $"{table.TargetSchema}.{table.TargetTable}").Order(StringComparer.Ordinal)];
+        string[] observedTables = [.. expected.Tables.Select(table => table.Table).Order(StringComparer.Ordinal)];
+        if (!string.Equals(expected.Database, schema.Database, StringComparison.Ordinal) ||
+            !PostgreSqlDeltaCanonicalTarget.Fixed(expected.SourceSchemaSha256, schema.SourceSchemaSha256) ||
+            !PostgreSqlDeltaCanonicalTarget.Fixed(expected.TargetSchemaSha256, schema.TargetSchemaSha256) ||
+            !expectedTables.SequenceEqual(observedTables, StringComparer.Ordinal) ||
+            observedTables.Distinct(StringComparer.Ordinal).Count() != observedTables.Length)
+        {
+            throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_reconciliation_shape_invalid", "Source reconciliation evidence does not match the signed database schema.");
+        }
+    }
+
+    private async Task AlignSequencesAsync(
+        IReadOnlyDictionary<string, long> expected,
+        CancellationToken cancellationToken)
+    {
+        string[] planned = [.. schema.Tables.SelectMany(table => table.Identities.Select(identity =>
+            $"{table.TargetSchema}.{table.TargetTable}.{identity.Column}")).Order(StringComparer.Ordinal)];
+        if (!planned.SequenceEqual(expected.Keys.Order(StringComparer.Ordinal), StringComparer.Ordinal))
+        {
+            throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_sequence_shape_invalid", "Source sequence evidence does not cover the signed identity inventory.");
+        }
+
+        foreach (TableCopyPlan table in schema.Tables)
+        {
+            foreach (IdentityCopyPlan identity in table.Identities.OrderBy(item => item.Column, StringComparer.Ordinal))
+            {
+                string key = $"{table.TargetSchema}.{table.TargetTable}.{identity.Column}";
+                const string sequenceSql = "SELECT pg_get_serial_sequence($1, $2);";
+                await using var sequence = new NpgsqlCommand(sequenceSql, connection, transaction);
+                _ = sequence.Parameters.AddWithValue(PostgreSqlDeltaCanonicalTarget.Qualified(table.TargetSchema, table.TargetTable));
+                _ = sequence.Parameters.AddWithValue(identity.Column);
+                string? sequenceName = (string?)await sequence.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(sequenceName))
+                {
+                    throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_sequence_missing", "A signed identity sequence is unavailable on the target.");
+                }
+
+                string restart = expected[key].ToString(System.Globalization.CultureInfo.InvariantCulture);
+                await using var setValue = new NpgsqlCommand(
+                    $"ALTER SEQUENCE {PostgreSqlShadowTarget.QuoteQualifiedIdentifier(sequenceName)} RESTART WITH {restart};",
+                    connection,
+                    transaction);
+                _ = await setValue.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
     private async Task RecordCheckpointAsync(CancellationToken cancellationToken)
     {
         if (Disposition != DeltaExecutionDisposition.Pending || _checkpointRecorded || !PostgreSqlDeltaCanonicalTarget.Hash(operationsSha256))
@@ -286,14 +387,15 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
 
         await using var command = new NpgsqlCommand("""
             INSERT INTO legacy_migration_internal.delta_journal
-                (plan_sha256, plan_id, source_cutoff_utc, target_observation_sha256, operations_sha256, committed_at_utc)
-            VALUES ($1,$2,$3,$4,$5,clock_timestamp());
+                (plan_sha256, plan_id, source_cutoff_utc, target_observation_sha256, operations_sha256, reconciliation_sha256, committed_at_utc)
+            VALUES ($1,$2,$3,$4,$5,$6,clock_timestamp());
             """, connection, transaction);
         _ = command.Parameters.AddWithValue(binding.PlanSha256);
         _ = command.Parameters.AddWithValue(binding.PlanId);
         _ = command.Parameters.AddWithValue(binding.SourceCutoffUtc);
         _ = command.Parameters.AddWithValue(binding.TargetObservationSha256);
         _ = command.Parameters.AddWithValue(operationsSha256);
+        _ = command.Parameters.AddWithValue(_reconciliationSha256!);
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
         {
             throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_checkpoint_write_failed", "The atomic canonical checkpoint was not written.");
@@ -301,9 +403,10 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         _checkpointRecorded = true;
     }
 
-    public async Task CommitAsync(string planSha256, CancellationToken cancellationToken)
+    public async Task CommitAsync(string planSha256, string reconciliationSha256, CancellationToken cancellationToken)
     {
-        if (_completed || !PostgreSqlDeltaCanonicalTarget.Fixed(planSha256, binding.PlanSha256))
+        if (_completed || !PostgreSqlDeltaCanonicalTarget.Fixed(planSha256, binding.PlanSha256) ||
+            _reconciliationSha256 is null || !PostgreSqlDeltaCanonicalTarget.Fixed(reconciliationSha256, _reconciliationSha256))
         {
             throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_commit_invalid", "Canonical delta commit does not match the opened signed plan.");
         }

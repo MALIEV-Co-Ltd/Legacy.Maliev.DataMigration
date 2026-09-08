@@ -374,7 +374,8 @@ public sealed partial class PostgreSqlShadowTarget : IPostgreSqlShadowTarget
 
 internal sealed class PostgreSqlWholeDatabaseTransaction(
     NpgsqlConnection connection,
-    NpgsqlTransaction transaction) : IPostgreSqlWholeDatabaseTransaction
+    NpgsqlTransaction transaction,
+    bool ownsResources = true) : IPostgreSqlWholeDatabaseTransaction
 {
     private bool _completed;
     private bool _schemaInspected;
@@ -994,6 +995,11 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
 
     public async ValueTask DisposeAsync()
     {
+        if (!ownsResources)
+        {
+            return;
+        }
+
         if (!_completed)
         {
             try
