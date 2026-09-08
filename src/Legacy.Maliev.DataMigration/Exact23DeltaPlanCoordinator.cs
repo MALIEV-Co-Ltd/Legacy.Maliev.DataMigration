@@ -10,7 +10,10 @@ public sealed record Exact23DeltaPlanRequest(
     string TargetGeneration,
     string TargetObservationSha256,
     string BackupKeyFingerprintSha256,
-    string ExecutionAuthorizationKeyFingerprintSha256);
+    string ExecutionAuthorizationKeyFingerprintSha256)
+{
+    public DeltaTargetAuthority? TargetAuthority { get; init; }
+}
 
 public sealed class Exact23DeltaPlanCoordinator(
     IDeltaOrderedRowSource restoredSource,
@@ -58,7 +61,10 @@ public sealed class Exact23DeltaPlanCoordinator(
             request.TargetObservationSha256,
             request.BackupKeyFingerprintSha256,
             request.ExecutionAuthorizationKeyFingerprintSha256,
-            databases), planSigner, nowUtc);
+            databases)
+        {
+            TargetAuthority = request.TargetAuthority,
+        }, planSigner, nowUtc);
     }
 
     private static void ValidateInventory(FreshSchemaPlan schema)

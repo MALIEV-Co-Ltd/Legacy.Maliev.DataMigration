@@ -17,11 +17,14 @@ public sealed record DeltaExecutionAuthorization(
     DateTimeOffset IssuedAtUtc,
     DateTimeOffset ExpiresAtUtc,
     string AttestationKeyId,
-    string? AttestationSignature);
+    string? AttestationSignature)
+{
+    public DeltaTargetAuthority? TargetAuthority { get; init; }
+}
 
 public static class DeltaExecutionAuthorizationCanonicalizer
 {
-    private static ReadOnlySpan<byte> Domain => "legacy-maliev-exact23-delta-execution-authorization-v1\0"u8;
+    private static ReadOnlySpan<byte> Domain => "legacy-maliev-exact23-delta-execution-authorization-v1.1\0"u8;
 
     public static byte[] CreatePayload(DeltaExecutionAuthorization authorization)
     {
@@ -44,7 +47,10 @@ public static class DeltaExecutionAuthorizationProducer
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(signer);
-        if (issuedAtUtc.Offset != TimeSpan.Zero || expiresAtUtc.Offset != TimeSpan.Zero ||
+        if (plan.SchemaVersion != "1.1" ||
+            !DeltaSynchronizationPlanProducer.ValidAuthority(
+                plan.TargetAuthority, plan.TargetNamespace, plan.TargetCluster) ||
+            issuedAtUtc.Offset != TimeSpan.Zero || expiresAtUtc.Offset != TimeSpan.Zero ||
             expiresAtUtc <= issuedAtUtc || expiresAtUtc - issuedAtUtc > TimeSpan.FromMinutes(15) ||
             !DeltaSynchronizationPlanProducer.FixedHashEquals(
                 signer.PublicKeyFingerprintSha256, plan.ExecutionAuthorizationKeyFingerprintSha256))
@@ -53,9 +59,12 @@ public static class DeltaExecutionAuthorizationProducer
                 "Execution authorization requires the reviewed role and a UTC lifetime no longer than fifteen minutes.");
         }
         var unsigned = new DeltaExecutionAuthorization(
-            "1.0", Guid.NewGuid(), plan.PlanId, DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan),
+            "1.1", Guid.NewGuid(), plan.PlanId, DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan),
             plan.TargetNamespace, plan.TargetCluster, plan.TargetGeneration, plan.TargetObservationSha256,
-            [.. plan.Databases.Select(item => item.Database)], issuedAtUtc, expiresAtUtc, signer.KeyId, null);
+            [.. plan.Databases.Select(item => item.Database)], issuedAtUtc, expiresAtUtc, signer.KeyId, null)
+        {
+            TargetAuthority = plan.TargetAuthority,
+        };
         return unsigned with
         {
             AttestationSignature = Convert.ToBase64String(signer.Sign(
@@ -67,15 +76,20 @@ public static class DeltaExecutionAuthorizationProducer
 public sealed class SignedDeltaExecutionAuthorizationGate(
     DeltaExecutionAuthorization authorization,
     IReceiptAttestationTrustStore trust,
-    TimeProvider timeProvider) : IDeltaExecutionAuthorizationGate
+    TimeProvider timeProvider,
+    DeltaTargetAuthority expectedAuthority) : IDeltaExecutionAuthorizationGate
 {
     public Task ValidateAsync(DeltaSynchronizationPlan plan, string database, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         DateTimeOffset nowUtc = timeProvider.GetUtcNow();
-        bool valid = authorization.SchemaVersion == "1.0" &&
+        bool valid = authorization.SchemaVersion == "1.1" && plan.SchemaVersion == "1.1" &&
             authorization.AuthorizationId != Guid.Empty && authorization.PlanId == plan.PlanId &&
             Fixed(authorization.PlanSha256, DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan)) &&
+            authorization.TargetAuthority == plan.TargetAuthority &&
+            authorization.TargetAuthority == expectedAuthority &&
+            DeltaSynchronizationPlanProducer.ValidAuthority(
+                authorization.TargetAuthority, authorization.TargetNamespace, authorization.TargetCluster) &&
             string.Equals(authorization.TargetNamespace, plan.TargetNamespace, StringComparison.Ordinal) &&
             string.Equals(authorization.TargetCluster, plan.TargetCluster, StringComparison.Ordinal) &&
             string.Equals(authorization.TargetGeneration, plan.TargetGeneration, StringComparison.Ordinal) &&

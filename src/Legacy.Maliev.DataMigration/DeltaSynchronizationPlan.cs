@@ -4,6 +4,14 @@ using System.Text.RegularExpressions;
 
 namespace Legacy.Maliev.DataMigration;
 
+public static class DeltaTargetAuthorityKind
+{
+    public const string ProductionCloudNativePg = "production-cloudnativepg";
+    public const string LocalAspire = "local-aspire";
+}
+
+public sealed record DeltaTargetAuthority(string Kind, string AuthorityId, string SystemIdentifierSha256);
+
 public sealed record DeltaTablePlan(
     string Table,
     long InsertCount,
@@ -27,7 +35,10 @@ public sealed record DeltaPlanSigningRequest(
     string TargetObservationSha256,
     string BackupKeyFingerprintSha256,
     string ExecutionAuthorizationKeyFingerprintSha256,
-    IReadOnlyList<DeltaDatabasePlan> Databases);
+    IReadOnlyList<DeltaDatabasePlan> Databases)
+{
+    public DeltaTargetAuthority? TargetAuthority { get; init; }
+}
 
 public sealed record DeltaSynchronizationPlan(
     string SchemaVersion,
@@ -46,7 +57,10 @@ public sealed record DeltaSynchronizationPlan(
     DateTimeOffset CreatedAtUtc,
     IReadOnlyList<DeltaDatabasePlan> Databases,
     string AttestationKeyId,
-    string? AttestationSignature);
+    string? AttestationSignature)
+{
+    public DeltaTargetAuthority? TargetAuthority { get; init; }
+}
 
 public sealed class DeltaPlanException(string code, string message) : Exception(message)
 {
@@ -55,7 +69,7 @@ public sealed class DeltaPlanException(string code, string message) : Exception(
 
 public static class DeltaSynchronizationPlanCanonicalizer
 {
-    private static ReadOnlySpan<byte> Domain => "legacy-maliev-exact23-delta-plan-v1\0"u8;
+    private static ReadOnlySpan<byte> Domain => "legacy-maliev-exact23-delta-plan-v1.1\0"u8;
 
     public static byte[] CreatePayload(DeltaSynchronizationPlan plan)
     {
@@ -129,7 +143,7 @@ public static partial class DeltaSynchronizationPlanProducer
         ArgumentNullException.ThrowIfNull(signer);
         ValidateRequest(request, signer, nowUtc);
         var unsigned = new DeltaSynchronizationPlan(
-            "1.0",
+            "1.1",
             Guid.NewGuid(),
             request.SourceCommitSha,
             request.SourceCutoffUtc,
@@ -145,7 +159,10 @@ public static partial class DeltaSynchronizationPlanProducer
             nowUtc,
             request.Databases,
             signer.KeyId,
-            null);
+            null)
+        {
+            TargetAuthority = request.TargetAuthority,
+        };
         return unsigned with
         {
             AttestationSignature = Convert.ToBase64String(signer.Sign(
@@ -173,8 +190,7 @@ public static partial class DeltaSynchronizationPlanProducer
         }
 
         if (string.IsNullOrWhiteSpace(request.TargetGeneration) ||
-            !string.Equals(request.TargetNamespace, "maliev-legacy", StringComparison.Ordinal) ||
-            !string.Equals(request.TargetCluster, "legacy-postgres-main", StringComparison.Ordinal))
+            !ValidAuthority(request.TargetAuthority, request.TargetNamespace, request.TargetCluster))
         {
             throw Error("delta_plan_target_invalid", "The reviewed target identity or generation is invalid.");
         }
@@ -186,6 +202,24 @@ public static partial class DeltaSynchronizationPlanProducer
         }
 
         ValidateDatabases(request.Databases);
+    }
+
+    internal static bool ValidAuthority(
+        DeltaTargetAuthority? authority,
+        string targetNamespace,
+        string targetCluster)
+    {
+        return authority is not null && Sha256().IsMatch(authority.SystemIdentifierSha256) &&
+            !string.IsNullOrWhiteSpace(authority.AuthorityId) && authority.AuthorityId.Length <= 512 && authority.Kind switch
+            {
+                DeltaTargetAuthorityKind.ProductionCloudNativePg =>
+                    targetNamespace == "maliev-legacy" && targetCluster == "legacy-postgres-main" &&
+                    authority.AuthorityId.StartsWith("gke://maliev-website/", StringComparison.Ordinal),
+                DeltaTargetAuthorityKind.LocalAspire =>
+                    targetNamespace == "local-aspire" && targetCluster == "legacy-postgres-main-local" &&
+                    authority.AuthorityId.StartsWith("aspire://legacy-postgres-main-local/", StringComparison.Ordinal),
+                _ => false,
+            };
     }
 
     internal static void ValidateDatabases(IReadOnlyList<DeltaDatabasePlan> databases)
@@ -268,7 +302,7 @@ public static class DeltaSynchronizationPlanVerifier
         ArgumentNullException.ThrowIfNull(trust);
         try
         {
-            if (!string.Equals(plan.SchemaVersion, "1.0", StringComparison.Ordinal) ||
+            if (!string.Equals(plan.SchemaVersion, "1.1", StringComparison.Ordinal) ||
                 plan.PlanId == Guid.Empty || nowUtc.Offset != TimeSpan.Zero || plan.CreatedAtUtc.Offset != TimeSpan.Zero ||
                 plan.CreatedAtUtc > nowUtc || plan.SourceCutoffUtc > plan.CreatedAtUtc ||
                 nowUtc - plan.SourceCutoffUtc > GuardedRunnerPolicy.MaximumBackupReceiptAge ||
@@ -276,8 +310,7 @@ public static class DeltaSynchronizationPlanVerifier
                 !Hashes(plan.BackupManifestSha256, plan.SchemaPlanSha256, plan.RunnerDigestSha256,
                     plan.TargetObservationSha256, plan.BackupKeyFingerprintSha256,
                     plan.ExecutionAuthorizationKeyFingerprintSha256) ||
-                !string.Equals(plan.TargetNamespace, "maliev-legacy", StringComparison.Ordinal) ||
-                !string.Equals(plan.TargetCluster, "legacy-postgres-main", StringComparison.Ordinal) ||
+                !DeltaSynchronizationPlanProducer.ValidAuthority(plan.TargetAuthority, plan.TargetNamespace, plan.TargetCluster) ||
                 string.IsNullOrWhiteSpace(plan.TargetGeneration) ||
                 string.IsNullOrWhiteSpace(plan.AttestationKeyId) || string.IsNullOrWhiteSpace(plan.AttestationSignature))
             {
