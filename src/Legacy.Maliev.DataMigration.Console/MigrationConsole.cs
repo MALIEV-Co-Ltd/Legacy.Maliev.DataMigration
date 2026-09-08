@@ -130,6 +130,13 @@ public static partial class MigrationConsole
                 case "finalize-local":
                     return await RunIncrementalBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable, output, error,
                         incrementalRuntime ?? new DefaultIncrementalConsoleRuntime(), cancellationToken).ConfigureAwait(false);
+                case "plan-delta":
+                case "authorize-delta":
+                case "apply-delta-local":
+                case "apply-delta-production":
+                case "reconcile-delta":
+                    return await RunDeltaBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable,
+                        output, error, new DefaultGuardedDeltaConsoleRuntime(), cancellationToken).ConfigureAwait(false);
                 case "evidence":
                     await ProduceEvidenceAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("evidence_complete").ConfigureAwait(false);
@@ -1329,7 +1336,8 @@ public static partial class MigrationConsole
         QuotationSchemaBaselineCommandConfiguration? QuotationSchemaBaseline = null,
         QuotationPostgreSqlSnapshotCommandConfiguration? QuotationPostgreSqlSnapshot = null,
         SigningRolesCommandConfiguration? SigningRoles = null,
-        IncrementalCommandConfiguration? Incremental = null);
+        IncrementalCommandConfiguration? Incremental = null,
+        DeltaCommandConfiguration? Delta = null);
 
     private sealed record QuotationSchemaBaselineCommandConfiguration(
         string PlanPath,
