@@ -17,6 +17,36 @@ public sealed class PostgreSqlDeltaCanonicalTargetApiTests
             Assert.DoesNotContain(forbidden, api, StringComparison.OrdinalIgnoreCase);
         }
     }
+
+    [Fact]
+    public void Canonical_enforcement_uses_the_same_deterministic_foreign_key_order_as_execution()
+    {
+        TableCopyPlan parent = Table("a_parent");
+        TableCopyPlan child = Table("b_child") with
+        {
+            ForeignKeys = [new("fk_child_parent", ["id"], "public", "a_parent", ["id"])],
+        };
+        TableCopyPlan independent = Table("c_independent");
+        var schema = new DatabaseSchemaPlan("test", "1", new string('a', 64), new string('b', 64), [parent, child, independent]);
+
+        IReadOnlyList<TableCopyPlan> execution = ForeignKeyExecutionOrder.Create(schema.Tables);
+        IReadOnlyDictionary<string, int> enforcement = CanonicalForeignKeyOrder.Build(schema);
+
+        Assert.Equal(["public.a_parent", "public.c_independent", "public.b_child"],
+            execution.Select(table => $"{table.TargetSchema}.{table.TargetTable}"));
+        Assert.Equal(execution.Select((table, index) => index),
+            execution.Select(table => enforcement[$"{table.TargetSchema}.{table.TargetTable}"]));
+    }
+
+    private static TableCopyPlan Table(string name)
+    {
+        return new("dbo", name, "public", name, ["id"], ["id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string> { ["id"] = "int" },
+            ColumnTypes = new Dictionary<string, string> { ["id"] = "integer" },
+            PrimaryKey = new($"pk_{name}", ["id"]),
+        };
+    }
 }
 
 [Collection(PostgreSqlAdapterTestGroup.Name)]

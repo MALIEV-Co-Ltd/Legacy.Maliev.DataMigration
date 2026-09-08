@@ -193,8 +193,8 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         const long ticksPerMicrosecond = TimeSpan.TicksPerMillisecond / 1000;
         long storedTicks = stored.ToUniversalTime().Ticks;
         long expectedTicks = expected.ToUniversalTime().Ticks;
-        return storedTicks - storedTicks % ticksPerMicrosecond ==
-            expectedTicks - expectedTicks % ticksPerMicrosecond;
+        return (storedTicks - (storedTicks % ticksPerMicrosecond)) ==
+            (expectedTicks - (expectedTicks % ticksPerMicrosecond));
     }
 
     internal static DeltaExecutionException Error(string code, string message)
@@ -583,42 +583,9 @@ internal static class CanonicalForeignKeyOrder
 {
     internal static IReadOnlyDictionary<string, int> Build(DatabaseSchemaPlan schema)
     {
-        string[] names = [.. schema.Tables.Select(Name).OrderBy(value => value, StringComparer.Ordinal)];
-        var outgoing = names.ToDictionary(name => name, _ => new HashSet<string>(StringComparer.Ordinal), StringComparer.Ordinal);
-        var indegree = names.ToDictionary(name => name, _ => 0, StringComparer.Ordinal);
-        foreach (TableCopyPlan child in schema.Tables)
-        {
-            string childName = Name(child);
-            foreach (ForeignKeyCopyPlan foreignKey in child.ForeignKeys)
-            {
-                string parentName = $"{foreignKey.ReferencedSchema}.{foreignKey.ReferencedTable}";
-                if (!outgoing.TryGetValue(parentName, out HashSet<string>? children) || !children.Add(childName))
-                {
-                    continue;
-                }
-
-                indegree[childName]++;
-            }
-        }
-
-        var ready = new SortedSet<string>(indegree.Where(item => item.Value == 0).Select(item => item.Key), StringComparer.Ordinal);
-        var ordered = new List<string>(names.Length);
-        while (ready.Count != 0)
-        {
-            string current = ready.Min!;
-            _ = ready.Remove(current);
-            ordered.Add(current);
-            foreach (string child in outgoing[current].OrderBy(value => value, StringComparer.Ordinal))
-            {
-                if (--indegree[child] == 0)
-                {
-                    _ = ready.Add(child);
-                }
-            }
-        }
-        return ordered.Count != names.Length
-            ? throw PostgreSqlDeltaCanonicalTarget.Error("canonical_delta_foreign_key_cycle", "The canonical schema contains a non-deferrable foreign-key cycle.")
-            : (IReadOnlyDictionary<string, int>)ordered.Select((name, index) => (name, index)).ToDictionary(item => item.name, item => item.index, StringComparer.Ordinal);
+        return ForeignKeyExecutionOrder.Create(schema.Tables)
+            .Select((table, index) => (name: Name(table), index))
+            .ToDictionary(item => item.name, item => item.index, StringComparer.Ordinal);
     }
 
     private static string Name(TableCopyPlan table)

@@ -119,3 +119,17 @@ public sealed class PostgreSqlDeltaRowSource(PostgreSqlDeltaRowSourceOptions opt
             "text" or "ntext" or "image" or "xml";
     }
 }
+
+public sealed class SqlServerSnapshotDeltaExecutionRowSource(SqlServerMigrationSource source) : IDeltaOrderedRowSource
+{
+    public IAsyncEnumerable<MigrationRow> ReadOrderedAsync(
+        string database,
+        TableCopyPlan table,
+        CancellationToken cancellationToken)
+    {
+        // Execution can open more than one streamed source value before PostgreSQL starts
+        // consuming its parameters. Use key-bound MARS readers so no LOB retains the
+        // sequential table reader that produced the row.
+        return source.ReadTableAsync(database, table, cancellationToken);
+    }
+}

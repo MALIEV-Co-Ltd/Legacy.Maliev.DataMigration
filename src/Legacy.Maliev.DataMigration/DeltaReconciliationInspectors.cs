@@ -63,6 +63,49 @@ public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconc
 {
     private readonly NpgsqlConnectionStringBuilder _settings = Validate(options);
 
+    public async Task<string> InspectSchemaAsync(
+        DatabaseSchemaPlan schema,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        var builder = new NpgsqlConnectionStringBuilder(_settings.ConnectionString)
+        {
+            Database = schema.Database,
+            Pooling = false,
+        };
+        var connection = new NpgsqlConnection(builder.ConnectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
+            IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait(false);
+        await using var inspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction);
+        try
+        {
+            string result = await inspector.InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
+            await inspector.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+        catch
+        {
+            try
+            {
+                await inspector.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception rollbackFailure) when (rollbackFailure is InvalidOperationException or NpgsqlException)
+            {
+                // Preserve the primary schema inspection failure.
+            }
+            throw;
+        }
+    }
+
+    public async Task ValidateSchemaAsync(
+        DatabaseSchemaPlan schema,
+        CancellationToken cancellationToken)
+    {
+        string observed = await InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
+        ReconciliationDiagnostics.CompareSchema(schema.Database, schema.TargetSchemaSha256, observed);
+    }
+
     public async Task<DatabaseReconciliationEvidence> InspectAsync(
         DatabaseSchemaPlan schema,
         CancellationToken cancellationToken)

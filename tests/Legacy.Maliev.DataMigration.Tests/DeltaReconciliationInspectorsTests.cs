@@ -39,6 +39,10 @@ public sealed class DeltaReconciliationInspectorsTests(PostgreSqlAdapterFixture 
         DatabaseSchemaPlan schema = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
         var inspector = new PostgreSqlDeltaReconciliationInspector(new(fixture.ConnectionString));
 
+        Assert.Equal(schema.TargetSchemaSha256, await inspector.InspectSchemaAsync(schema, CancellationToken.None));
+        MigrationExecutionException mismatch = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            inspector.ValidateSchemaAsync(schema with { TargetSchemaSha256 = Hash('b') }, CancellationToken.None));
+        Assert.Equal("shadow_reconciliation_failed", mismatch.Code);
         DatabaseReconciliationEvidence evidence = await inspector.InspectAsync(schema, CancellationToken.None);
 
         Assert.Equal(schema.TargetSchemaSha256, evidence.TargetSchemaSha256);
