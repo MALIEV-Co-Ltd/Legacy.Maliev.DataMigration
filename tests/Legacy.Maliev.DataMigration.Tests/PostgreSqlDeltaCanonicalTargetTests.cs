@@ -203,7 +203,7 @@ public sealed class PostgreSqlDeltaCanonicalTargetIntegrationTests(PostgreSqlAda
         IReadOnlyList<DeltaDatabasePlan> databases = [new(database, [delta]), .. DatabaseInventory.ActiveDatabases
             .Where(name => !string.Equals(name, database, StringComparison.Ordinal))
             .Select(name => new DeltaDatabasePlan(name, [new("public.items", 0, 0, 0, 0, DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256([]), [])]))];
-        return new("1.0", Guid.NewGuid(), new string('1', 40), DateTimeOffset.Parse("2026-09-08T05:00:00Z", CultureInfo.InvariantCulture), Hash('a'), Hash('7'), Hash('d'), "maliev-legacy", "legacy-postgres-main", "generation-1", Hash('c'), Hash('e'), Hash('f'), DateTimeOffset.Parse("2026-09-08T05:01:00Z", CultureInfo.InvariantCulture), databases, "test", null);
+        return new("1.0", Guid.NewGuid(), new string('1', 40), DateTimeOffset.Parse("2026-09-08T05:00:00.0000001Z", CultureInfo.InvariantCulture), Hash('a'), Hash('7'), Hash('d'), "maliev-legacy", "legacy-postgres-main", "generation-1", Hash('c'), Hash('e'), Hash('f'), DateTimeOffset.Parse("2026-09-08T05:01:00Z", CultureInfo.InvariantCulture), databases, "test", null);
     }
     private static string Hash(char value)
     {

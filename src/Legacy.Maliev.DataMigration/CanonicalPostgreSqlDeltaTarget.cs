@@ -158,7 +158,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
 
     private static string ValidateReplayRow(NpgsqlDataReader reader, CanonicalDeltaTargetBinding binding)
     {
-        return Fixed(reader.GetString(0), binding.PlanSha256) && reader.GetFieldValue<DateTimeOffset>(1) == binding.SourceCutoffUtc &&
+        return Fixed(reader.GetString(0), binding.PlanSha256) && SamePostgreSqlTimestamp(reader.GetFieldValue<DateTimeOffset>(1), binding.SourceCutoffUtc) &&
             Fixed(reader.GetString(2), binding.TargetObservationSha256) && Hash(reader.GetString(3))
             ? reader.GetString(3).ToLowerInvariant()
             : throw Error("canonical_delta_replay_conflict", "A conflicting canonical delta execution already uses this plan identity.");
@@ -186,6 +186,15 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
     {
         return Hash(left) && Hash(right) &&
         CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(left.ToLowerInvariant()), Encoding.ASCII.GetBytes(right.ToLowerInvariant()));
+    }
+
+    private static bool SamePostgreSqlTimestamp(DateTimeOffset stored, DateTimeOffset expected)
+    {
+        const long ticksPerMicrosecond = TimeSpan.TicksPerMillisecond / 1000;
+        long storedTicks = stored.ToUniversalTime().Ticks;
+        long expectedTicks = expected.ToUniversalTime().Ticks;
+        return storedTicks - storedTicks % ticksPerMicrosecond ==
+            expectedTicks - expectedTicks % ticksPerMicrosecond;
     }
 
     internal static DeltaExecutionException Error(string code, string message)
