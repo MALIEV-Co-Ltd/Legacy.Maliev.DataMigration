@@ -204,7 +204,7 @@ public static partial class DeltaSynchronizationPlanProducer
         ValidateDatabases(request.Databases);
     }
 
-    internal static bool ValidAuthority(
+    public static bool ValidAuthority(
         DeltaTargetAuthority? authority,
         string targetNamespace,
         string targetCluster)

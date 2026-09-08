@@ -18,6 +18,11 @@ public sealed class ConsoleCommandContractTests
         "sign-provenance",
         "sign-quotation-schema-baseline",
         "sign-quotation-postgres-snapshot",
+        "plan-delta",
+        "authorize-delta",
+        "apply-delta-local",
+        "apply-delta-production",
+        "reconcile-delta",
     ];
 
     [Theory]
