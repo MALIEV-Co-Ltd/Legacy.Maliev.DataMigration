@@ -350,6 +350,11 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime : IGuardedDeltaConsoleRu
     {
         await VerifyTargetAuthorityAsync(request.TargetConnectionString, request.Configuration.TargetAuthority,
             cancellationToken).ConfigureAwait(false);
+        var targetSchema = new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString));
+        foreach (DatabaseSchemaPlan database in request.Schema.Databases)
+        {
+            await targetSchema.ValidateSchemaAsync(database, cancellationToken).ConfigureAwait(false);
+        }
         await using var source = new SqlServerMigrationSource(new(request.SourceConnectionString));
         var opened = new List<string>(DatabaseInventory.ActiveDatabases.Count);
         try
@@ -424,7 +429,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime : IGuardedDeltaConsoleRu
             }.ConnectionString;
             return new(
                 new PostgreSqlDeltaCanonicalTarget(new(connection, database, request.Plan.TargetGeneration)),
-                new OrderedDeltaExecutionRowSessionProvider(new SqlServerSnapshotDeltaRowSource(source), targetRows),
+                new OrderedDeltaExecutionRowSessionProvider(new SqlServerSnapshotDeltaExecutionRowSource(source), targetRows),
                 gate,
                 new SqlServerDeltaReconciliationInspector(source),
                 request.Trust,

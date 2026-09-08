@@ -1,5 +1,6 @@
 using System.Data;
 using System.Runtime.CompilerServices;
+using System.Text;
 using Npgsql;
 
 namespace Legacy.Maliev.DataMigration;
@@ -62,11 +63,12 @@ public sealed class PostgreSqlDeltaRowSource(PostgreSqlDeltaRowSourceOptions opt
                 var values = new Dictionary<string, object?>(table.OrderedColumns.Count, StringComparer.Ordinal);
                 for (var ordinal = 0; ordinal < table.OrderedColumns.Count; ordinal++)
                 {
+                    string column = table.OrderedColumns[ordinal];
                     values.Add(
-                        table.OrderedColumns[ordinal],
+                        column,
                         await reader.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false)
                             ? null
-                            : reader.GetValue(ordinal));
+                            : ReadValue(reader, ordinal, table.SourceColumnTypes[column]));
                 }
                 yield return new MigrationRow(values);
             }
@@ -93,5 +95,41 @@ public sealed class PostgreSqlDeltaRowSource(PostgreSqlDeltaRowSourceOptions opt
         {
             throw new DeltaPlanningException("delta_primary_key_required", "Ordered PostgreSQL delta reads require a primary key.");
         }
+    }
+
+    private static object ReadValue(NpgsqlDataReader reader, int ordinal, string sourceType)
+    {
+        if (!IsLargeValueType(sourceType))
+        {
+            return reader.GetValue(ordinal);
+        }
+
+        bool binary = sourceType is "varbinary(max)" or "image";
+        byte[] bytes = binary
+            ? reader.GetFieldValue<byte[]>(ordinal)
+            : Encoding.UTF8.GetBytes(reader.GetString(ordinal));
+        return new BufferedStreamingLob(
+            binary ? StreamingLobKind.Binary : StreamingLobKind.Text,
+            bytes);
+    }
+
+    private static bool IsLargeValueType(string declaredType)
+    {
+        return declaredType is "nvarchar(max)" or "varchar(max)" or "varbinary(max)" or
+            "text" or "ntext" or "image" or "xml";
+    }
+}
+
+public sealed class SqlServerSnapshotDeltaExecutionRowSource(SqlServerMigrationSource source) : IDeltaOrderedRowSource
+{
+    public IAsyncEnumerable<MigrationRow> ReadOrderedAsync(
+        string database,
+        TableCopyPlan table,
+        CancellationToken cancellationToken)
+    {
+        // Execution can open more than one streamed source value before PostgreSQL starts
+        // consuming its parameters. Use key-bound MARS readers so no LOB retains the
+        // sequential table reader that produced the row.
+        return source.ReadTableAsync(database, table, cancellationToken);
     }
 }

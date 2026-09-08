@@ -75,6 +75,7 @@ public static class CanonicalAsyncDeltaPlanner
         }
         MigrationRow row = rows.Current;
         CanonicalDeltaPlanner.ValidateRow(table, row, side);
+        await ConsumeStreamingValuesAsync(row, cancellationToken).ConfigureAwait(false);
         if (previous is not null)
         {
             int comparison = CanonicalDeltaPlanner.CompareKeys(table, previous, row);
@@ -88,5 +89,15 @@ public static class CanonicalAsyncDeltaPlanner
             }
         }
         return row;
+    }
+
+    private static async Task ConsumeStreamingValuesAsync(
+        MigrationRow row,
+        CancellationToken cancellationToken)
+    {
+        foreach (StreamingLob value in row.Values.Values.OfType<StreamingLob>())
+        {
+            await value.ConsumeAsync(Stream.Null, cancellationToken).ConfigureAwait(false);
+        }
     }
 }

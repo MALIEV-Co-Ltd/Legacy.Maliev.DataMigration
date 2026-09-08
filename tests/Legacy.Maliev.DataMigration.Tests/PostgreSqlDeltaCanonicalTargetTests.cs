@@ -17,6 +17,36 @@ public sealed class PostgreSqlDeltaCanonicalTargetApiTests
             Assert.DoesNotContain(forbidden, api, StringComparison.OrdinalIgnoreCase);
         }
     }
+
+    [Fact]
+    public void Canonical_enforcement_uses_the_same_deterministic_foreign_key_order_as_execution()
+    {
+        TableCopyPlan parent = Table("a_parent");
+        TableCopyPlan child = Table("b_child") with
+        {
+            ForeignKeys = [new("fk_child_parent", ["id"], "public", "a_parent", ["id"])],
+        };
+        TableCopyPlan independent = Table("c_independent");
+        var schema = new DatabaseSchemaPlan("test", "1", new string('a', 64), new string('b', 64), [parent, child, independent]);
+
+        IReadOnlyList<TableCopyPlan> execution = ForeignKeyExecutionOrder.Create(schema.Tables);
+        IReadOnlyDictionary<string, int> enforcement = CanonicalForeignKeyOrder.Build(schema);
+
+        Assert.Equal(["public.a_parent", "public.c_independent", "public.b_child"],
+            execution.Select(table => $"{table.TargetSchema}.{table.TargetTable}"));
+        Assert.Equal(execution.Select((table, index) => index),
+            execution.Select(table => enforcement[$"{table.TargetSchema}.{table.TargetTable}"]));
+    }
+
+    private static TableCopyPlan Table(string name)
+    {
+        return new("dbo", name, "public", name, ["id"], ["id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string> { ["id"] = "int" },
+            ColumnTypes = new Dictionary<string, string> { ["id"] = "integer" },
+            PrimaryKey = new($"pk_{name}", ["id"]),
+        };
+    }
 }
 
 [Collection(PostgreSqlAdapterTestGroup.Name)]
@@ -203,7 +233,7 @@ public sealed class PostgreSqlDeltaCanonicalTargetIntegrationTests(PostgreSqlAda
         IReadOnlyList<DeltaDatabasePlan> databases = [new(database, [delta]), .. DatabaseInventory.ActiveDatabases
             .Where(name => !string.Equals(name, database, StringComparison.Ordinal))
             .Select(name => new DeltaDatabasePlan(name, [new("public.items", 0, 0, 0, 0, DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256([]), [])]))];
-        return new("1.0", Guid.NewGuid(), new string('1', 40), DateTimeOffset.Parse("2026-09-08T05:00:00Z", CultureInfo.InvariantCulture), Hash('a'), Hash('7'), Hash('d'), "maliev-legacy", "legacy-postgres-main", "generation-1", Hash('c'), Hash('e'), Hash('f'), DateTimeOffset.Parse("2026-09-08T05:01:00Z", CultureInfo.InvariantCulture), databases, "test", null);
+        return new("1.0", Guid.NewGuid(), new string('1', 40), DateTimeOffset.Parse("2026-09-08T05:00:00.0000001Z", CultureInfo.InvariantCulture), Hash('a'), Hash('7'), Hash('d'), "maliev-legacy", "legacy-postgres-main", "generation-1", Hash('c'), Hash('e'), Hash('f'), DateTimeOffset.Parse("2026-09-08T05:01:00Z", CultureInfo.InvariantCulture), databases, "test", null);
     }
     private static string Hash(char value)
     {
