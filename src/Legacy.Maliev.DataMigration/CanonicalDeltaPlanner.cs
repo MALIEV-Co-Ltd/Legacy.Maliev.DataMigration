@@ -107,7 +107,7 @@ public static class CanonicalDeltaPlanner
             unchanged);
     }
 
-    private static CanonicalDeltaOperation Create(
+    internal static CanonicalDeltaOperation Create(
         DeltaOperationKind kind,
         TableCopyPlan table,
         MigrationRow? source,
@@ -149,7 +149,7 @@ public static class CanonicalDeltaPlanner
         return CanonicalRowFingerprint.Compute(keyPlan, [new MigrationRow(values)]);
     }
 
-    private static int CompareKeys(TableCopyPlan table, MigrationRow left, MigrationRow right)
+    internal static int CompareKeys(TableCopyPlan table, MigrationRow left, MigrationRow right)
     {
         foreach (string column in table.PrimaryKey!.Columns)
         {
@@ -181,7 +181,7 @@ public static class CanonicalDeltaPlanner
         return value is byte or sbyte or short or ushort or int or uint or long or ulong or decimal;
     }
 
-    private static void ValidateTable(TableCopyPlan table)
+    internal static void ValidateTable(TableCopyPlan table)
     {
         if (table.PrimaryKey is null || table.PrimaryKey.Columns.Count == 0 ||
             table.PrimaryKey.Columns.Distinct(StringComparer.Ordinal).Count() != table.PrimaryKey.Columns.Count ||
@@ -245,7 +245,7 @@ public static class CanonicalDeltaPlanner
         }
     }
 
-    private static void ValidateRow(TableCopyPlan table, MigrationRow row, string side)
+    internal static void ValidateRow(TableCopyPlan table, MigrationRow row, string side)
     {
         if (row.Values.Count != table.OrderedColumns.Count ||
             table.OrderedColumns.Any(column => !row.Values.ContainsKey(column)))
