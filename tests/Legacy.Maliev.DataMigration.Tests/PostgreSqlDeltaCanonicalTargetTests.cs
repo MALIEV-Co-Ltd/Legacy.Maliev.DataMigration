@@ -39,7 +39,7 @@ public sealed class PostgreSqlDeltaCanonicalTargetIntegrationTests(PostgreSqlAda
             await tx.CommitAsync(hash, CancellationToken.None);
         }
         Assert.Equal([(1, "updated"), (3, "inserted")], await RowsAsync(cs));
-        Assert.Equal(1L, await ScalarAsync(cs, "SELECT count(*) FROM legacy_migration_delta_journal"));
+        Assert.Equal(1L, await ScalarAsync(cs, "SELECT count(*) FROM legacy_migration_internal.delta_journal"));
         await using IDeltaCanonicalTransaction replay = await target.BeginAsync(plan, schema, schema.Database, CancellationToken.None);
         Assert.Equal(DeltaExecutionDisposition.AlreadyCommitted, replay.Disposition);
         await replay.CommitAsync(hash, CancellationToken.None);
@@ -60,7 +60,7 @@ public sealed class PostgreSqlDeltaCanonicalTargetIntegrationTests(PostgreSqlAda
             Assert.Equal("canonical_delta_target_row_drift", error.Code);
         }
         Assert.Equal([(1, "old"), (2, "delete")], await RowsAsync(cs));
-        Assert.Equal(0L, await ScalarAsync(cs, "SELECT count(*) FROM legacy_migration_delta_journal"));
+        Assert.Equal(0L, await ScalarAsync(cs, "SELECT count(*) FROM legacy_migration_internal.delta_journal"));
     }
 
     [Fact]
@@ -79,11 +79,12 @@ public sealed class PostgreSqlDeltaCanonicalTargetIntegrationTests(PostgreSqlAda
         string cs = new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Database = db }.ConnectionString;
         await using var connection = new NpgsqlConnection(cs); await connection.OpenAsync();
         await using var command = new NpgsqlCommand($"""
-            DROP TABLE IF EXISTS legacy_migration_delta_journal; DROP TABLE IF EXISTS legacy_migration_delta_fence; DROP TABLE IF EXISTS public.delta_items;
+            CREATE SCHEMA IF NOT EXISTS legacy_migration_internal;
+            DROP TABLE IF EXISTS legacy_migration_internal.delta_journal; DROP TABLE IF EXISTS legacy_migration_internal.delta_fence; DROP TABLE IF EXISTS public.delta_items;
             CREATE TABLE public.delta_items(id integer PRIMARY KEY, value text NOT NULL); INSERT INTO public.delta_items VALUES (1,'old'),(2,'delete');
-            CREATE TABLE legacy_migration_delta_fence(database_name text PRIMARY KEY, schema_plan_sha256 text NOT NULL, target_schema_sha256 text NOT NULL, target_generation text NOT NULL, target_observation_sha256 text NOT NULL);
-            INSERT INTO legacy_migration_delta_fence VALUES ('{db}','{Hash('7')}','{Hash('b')}','generation-1','{Hash('c')}');
-            CREATE TABLE legacy_migration_delta_journal(plan_sha256 text PRIMARY KEY, plan_id uuid NOT NULL UNIQUE, source_cutoff_utc timestamptz NOT NULL, target_observation_sha256 text NOT NULL, operations_sha256 text NOT NULL, committed_at_utc timestamptz NOT NULL);
+            CREATE TABLE legacy_migration_internal.delta_fence(database_name text PRIMARY KEY, schema_plan_sha256 text NOT NULL, target_schema_sha256 text NOT NULL, target_generation text NOT NULL, target_observation_sha256 text NOT NULL);
+            INSERT INTO legacy_migration_internal.delta_fence VALUES ('{db}','{Hash('7')}','{Hash('b')}','generation-1','{Hash('c')}');
+            CREATE TABLE legacy_migration_internal.delta_journal(plan_sha256 text PRIMARY KEY, plan_id uuid NOT NULL UNIQUE, source_cutoff_utc timestamptz NOT NULL, target_observation_sha256 text NOT NULL, operations_sha256 text NOT NULL, committed_at_utc timestamptz NOT NULL);
             """, connection); _ = await command.ExecuteNonQueryAsync();
         DatabaseSchemaPlan schema = new(db, "1", Hash('d'), Hash('b'), [Table()]);
         return (cs, schema, new PostgreSqlDeltaCanonicalTarget(new(cs, db, "generation-1")));

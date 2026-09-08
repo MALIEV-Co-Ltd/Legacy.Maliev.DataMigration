@@ -118,7 +118,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
     {
         await using var command = new NpgsqlCommand("""
             SELECT schema_plan_sha256, target_schema_sha256, target_generation, target_observation_sha256
-            FROM legacy_migration_delta_fence
+            FROM legacy_migration_internal.delta_fence
             WHERE database_name=$1
             FOR UPDATE;
             """, connection, transaction);
@@ -142,7 +142,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
     {
         await using var command = new NpgsqlCommand("""
             SELECT plan_sha256, source_cutoff_utc, target_observation_sha256
-            FROM legacy_migration_delta_journal
+            FROM legacy_migration_internal.delta_journal
             WHERE plan_sha256=$1 OR plan_id=$2
             FOR UPDATE;
             """, connection, transaction);
@@ -274,7 +274,7 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         }
 
         await using var command = new NpgsqlCommand("""
-            INSERT INTO legacy_migration_delta_journal
+            INSERT INTO legacy_migration_internal.delta_journal
                 (plan_sha256, plan_id, source_cutoff_utc, target_observation_sha256, operations_sha256, committed_at_utc)
             VALUES ($1,$2,$3,$4,$5,clock_timestamp());
             """, connection, transaction);
