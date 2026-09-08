@@ -632,7 +632,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             FROM pg_catalog.pg_class AS c
             INNER JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
             WHERE c.relkind IN ('r', 'p')
-              AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'legacy_migration_internal')
               AND n.nspname NOT LIKE 'pg_toast%'
             ORDER BY n.nspname, c.relname;
             """;
@@ -662,7 +662,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             WHERE c.relkind IN ('r', 'p')
               AND a.attnum > 0
               AND NOT a.attisdropped
-              AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'legacy_migration_internal')
               AND n.nspname NOT LIKE 'pg_toast%'
             ORDER BY n.nspname, c.relname, a.attnum;
             """;
@@ -703,7 +703,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             INNER JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
             LEFT JOIN pg_catalog.pg_index AS index_data ON index_data.indexrelid = constraint_row.conindid
             WHERE constraint_row.contype IN ('p', 'u', 'c')
-              AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'legacy_migration_internal')
             ORDER BY n.nspname, c.relname, constraint_row.conname;
             """;
         await using (var command = new NpgsqlCommand(constraintSql, connection, transaction))
@@ -752,7 +752,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             INNER JOIN pg_catalog.pg_class AS table_row ON table_row.oid = index_data.indrelid
             INNER JOIN pg_catalog.pg_namespace AS n ON n.oid = table_row.relnamespace
             INNER JOIN pg_catalog.pg_class AS index_row ON index_row.oid = index_data.indexrelid
-            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'legacy_migration_internal')
               AND n.nspname NOT LIKE 'pg_toast%'
               AND NOT EXISTS (
                   SELECT 1 FROM pg_catalog.pg_constraint AS constraint_row
@@ -803,7 +803,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             INNER JOIN pg_catalog.pg_class AS referenced ON referenced.oid = constraint_row.confrelid
             INNER JOIN pg_catalog.pg_namespace AS referenced_ns ON referenced_ns.oid = referenced.relnamespace
             WHERE constraint_row.contype = 'f'
-              AND child_ns.nspname NOT IN ('pg_catalog', 'information_schema')
+              AND child_ns.nspname NOT IN ('pg_catalog', 'information_schema', 'legacy_migration_internal')
             ORDER BY child_ns.nspname, child.relname, constraint_row.conname;
             """;
         await using (var command = new NpgsqlCommand(foreignKeySql, connection, transaction))
