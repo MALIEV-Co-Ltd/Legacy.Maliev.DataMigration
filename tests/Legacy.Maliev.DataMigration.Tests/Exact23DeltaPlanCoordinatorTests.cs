@@ -48,7 +48,11 @@ public sealed class Exact23DeltaPlanCoordinatorTests : IDisposable
         string distinct = string.Equals(signer.PublicKeyFingerprintSha256, Hash('e'), StringComparison.OrdinalIgnoreCase) ? Hash('1') : Hash('e');
         string authorization = string.Equals(signer.PublicKeyFingerprintSha256, Hash('f'), StringComparison.OrdinalIgnoreCase) ? Hash('2') : Hash('f');
         return new(schema, now.AddMinutes(-1), Hash('a'), Hash('d'), "maliev-legacy", "legacy-postgres-main",
-            "generation-1", Hash('c'), distinct, authorization);
+            "generation-1", Hash('c'), distinct, authorization)
+        {
+            TargetAuthority = new(DeltaTargetAuthorityKind.ProductionCloudNativePg,
+                "gke://maliev-website/us-central1-a/maliev-legacy/legacy-postgres-main/uid-1", Hash('8')),
+        };
     }
 
     private static FreshSchemaPlan Schema(DateTimeOffset now)

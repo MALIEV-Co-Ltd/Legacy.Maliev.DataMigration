@@ -94,11 +94,37 @@ public sealed class SignedDeltaPlanTests : IDisposable
             hashD,
             new('e', 64),
             new('f', 64),
-            databases);
+            databases)
+        {
+            TargetAuthority = new(DeltaTargetAuthorityKind.ProductionCloudNativePg,
+                "gke://maliev-website/us-central1-a/maliev-legacy/legacy-postgres-main/uid-1", hashD),
+        };
     }
 
     public void Dispose()
     {
         _key.Dispose();
+    }
+
+    [Fact]
+    public void Local_aspire_authority_requires_the_dedicated_local_target_identity()
+    {
+        DateTimeOffset now = Now();
+        using var signer = new P256MigrationEvidenceSigner("plan", _key.ExportECPrivateKeyPem());
+        DeltaPlanSigningRequest request = Request() with
+        {
+            TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
+                "aspire://legacy-postgres-main-local/legacy-maliev-exact23-postgres-data", new('9', 64)),
+            TargetNamespace = "local-aspire",
+            TargetCluster = "legacy-postgres-main-local",
+        };
+
+        DeltaSynchronizationPlan plan = DeltaSynchronizationPlanProducer.Produce(request, signer, now);
+
+        Assert.Equal(DeltaTargetAuthorityKind.LocalAspire, plan.TargetAuthority!.Kind);
+        var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(plan, trust, now));
+        _ = Assert.Throws<DeltaPlanException>(() => DeltaSynchronizationPlanProducer.Produce(
+            request with { TargetCluster = "legacy-postgres-main" }, signer, now));
     }
 }

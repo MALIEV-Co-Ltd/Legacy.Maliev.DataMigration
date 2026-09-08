@@ -82,7 +82,11 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
         DeltaSynchronizationPlan plan = DeltaSynchronizationPlanProducer.Produce(new(
             "5ac7d045c51194edd9e64d8564f1b726b001be34",
             Now().AddMinutes(-1), hashA, new('b', 64), new('c', 64), "maliev-legacy", "legacy-postgres-main",
-            "generation-1", new('d', 64), Different(signerHash, 'e'), Different(signerHash, 'f'), databases), signer, Now());
+            "generation-1", new('d', 64), Different(signerHash, 'e'), Different(signerHash, 'f'), databases)
+        {
+            TargetAuthority = new(DeltaTargetAuthorityKind.ProductionCloudNativePg,
+                "gke://maliev-website/us-central1-a/maliev-legacy/legacy-postgres-main/uid-1", new('8', 64)),
+        }, signer, Now());
         var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
         var rows = new FakeRows();
         rows.SourceRows[parentInsert.KeySha256] = parentSource;

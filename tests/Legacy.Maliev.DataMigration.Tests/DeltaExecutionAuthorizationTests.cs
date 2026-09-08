@@ -18,7 +18,8 @@ public sealed class DeltaExecutionAuthorizationTests : IDisposable
             DeltaExecutionAuthorization authorization = DeltaExecutionAuthorizationProducer.Produce(
                 plan, now.AddMinutes(-1), now.AddMinutes(9), authorizer);
             var trust = new ReceiptAttestationTrustStore([new(authorizer.KeyId, authorizer.ExportSubjectPublicKeyInfo())]);
-            var gate = new SignedDeltaExecutionAuthorizationGate(authorization, trust, new FixedTime(now));
+            var gate = new SignedDeltaExecutionAuthorizationGate(
+                authorization, trust, new FixedTime(now), plan.TargetAuthority!);
 
             await gate.ValidateAsync(plan, DatabaseInventory.ActiveDatabases[0], CancellationToken.None);
         }
@@ -49,7 +50,8 @@ public sealed class DeltaExecutionAuthorizationTests : IDisposable
                 _ => authorization,
             };
             var trust = new ReceiptAttestationTrustStore([new(authorizer.KeyId, authorizer.ExportSubjectPublicKeyInfo())]);
-            var gate = new SignedDeltaExecutionAuthorizationGate(authorization, trust, new FixedTime(now));
+            var gate = new SignedDeltaExecutionAuthorizationGate(
+                authorization, trust, new FixedTime(now), plan.TargetAuthority!);
 
             DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
                 gate.ValidateAsync(plan, DatabaseInventory.ActiveDatabases[0], CancellationToken.None));
@@ -67,13 +69,82 @@ public sealed class DeltaExecutionAuthorizationTests : IDisposable
         DeltaSynchronizationPlan plan = DeltaSynchronizationPlanProducer.Produce(new(
             new string('1', 40), now.AddMinutes(-2), Hash('a'), Hash('b'), Hash('c'), "maliev-legacy",
             "legacy-postgres-main", "generation-1", Hash('d'), Hash('e'),
-            authorizationSigner.PublicKeyFingerprintSha256, databases), planSigner, now.AddMinutes(-1));
+            authorizationSigner.PublicKeyFingerprintSha256, databases)
+        {
+            TargetAuthority = ProductionAuthority(),
+        }, planSigner, now.AddMinutes(-1));
         return (plan, planSigner);
+    }
+
+    [Fact]
+    public async Task Authorization_cannot_cross_local_and_production_authorities()
+    {
+        DateTimeOffset now = new(2026, 9, 8, 6, 0, 0, TimeSpan.Zero);
+        (DeltaSynchronizationPlan production, P256MigrationEvidenceSigner signer) = Plan(now);
+        try
+        {
+            DeltaSynchronizationPlan local = production with
+            {
+                TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
+                    "aspire://legacy-postgres-main-local/legacy-maliev-exact23-postgres-data", Hash('9')),
+                TargetNamespace = "local-aspire",
+                TargetCluster = "legacy-postgres-main-local",
+            };
+            using var authorizer = new P256MigrationEvidenceSigner("authorization", _authorizationKey.ExportECPrivateKeyPem());
+            DeltaExecutionAuthorization authorization = DeltaExecutionAuthorizationProducer.Produce(
+                local, now, now.AddMinutes(5), authorizer);
+            var trust = new ReceiptAttestationTrustStore([new(authorizer.KeyId, authorizer.ExportSubjectPublicKeyInfo())]);
+            var gate = new SignedDeltaExecutionAuthorizationGate(
+                authorization, trust, new FixedTime(now), production.TargetAuthority!);
+
+            DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                gate.ValidateAsync(local, DatabaseInventory.ActiveDatabases[0], CancellationToken.None));
+
+            Assert.Equal("delta_execution_authorization_invalid", error.Code);
+        }
+        finally
+        {
+            signer.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Historical_v1_plan_is_never_executable()
+    {
+        DateTimeOffset now = new(2026, 9, 8, 6, 0, 0, TimeSpan.Zero);
+        (DeltaSynchronizationPlan current, P256MigrationEvidenceSigner signer) = Plan(now);
+        try
+        {
+            using var authorizer = new P256MigrationEvidenceSigner("authorization", _authorizationKey.ExportECPrivateKeyPem());
+            DeltaExecutionAuthorization authorization = DeltaExecutionAuthorizationProducer.Produce(
+                current, now, now.AddMinutes(5), authorizer);
+            var trust = new ReceiptAttestationTrustStore([new(authorizer.KeyId, authorizer.ExportSubjectPublicKeyInfo())]);
+            var gate = new SignedDeltaExecutionAuthorizationGate(
+                authorization, trust, new FixedTime(now), current.TargetAuthority!);
+
+            DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                gate.ValidateAsync(current with { SchemaVersion = "1.0" },
+                    DatabaseInventory.ActiveDatabases[0], CancellationToken.None));
+
+            Assert.Equal("delta_execution_authorization_invalid", error.Code);
+        }
+        finally
+        {
+            signer.Dispose();
+        }
     }
 
     private static string Hash(char value)
     {
         return new(value, 64);
+    }
+
+    private static DeltaTargetAuthority ProductionAuthority()
+    {
+        return new(
+            DeltaTargetAuthorityKind.ProductionCloudNativePg,
+            "gke://maliev-website/us-central1-a/maliev-legacy/legacy-postgres-main/uid-1",
+            Hash('8'));
     }
 
     public void Dispose()
