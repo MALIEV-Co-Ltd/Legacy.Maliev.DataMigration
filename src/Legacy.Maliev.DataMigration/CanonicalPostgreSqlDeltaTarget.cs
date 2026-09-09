@@ -55,7 +55,8 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                 string? replayReconciliationSha256 = await ValidateReplayAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
                 IReadOnlyDictionary<string, int> upsertOrder = CanonicalForeignKeyOrder.Build(schema);
                 return new PostgreSqlDeltaCanonicalTransaction(connection, transaction, binding, schema, replayReconciliationSha256, upsertOrder,
-                    ComputeOperationsSha256(plan, database));
+                    DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(
+                        plan.Databases.Single(item => string.Equals(item.Database, database, StringComparison.Ordinal))));
             }
             catch
             {
@@ -162,14 +163,6 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
             Fixed(reader.GetString(2), binding.TargetObservationSha256) && Hash(reader.GetString(3))
             ? reader.GetString(3).ToLowerInvariant()
             : throw Error("canonical_delta_replay_conflict", "A conflicting canonical delta execution already uses this plan identity.");
-    }
-
-    private static string ComputeOperationsSha256(DeltaSynchronizationPlan plan, string database)
-    {
-        DeltaDatabasePlan selected = plan.Databases.Single(item => string.Equals(item.Database, database, StringComparison.Ordinal));
-        string joined = string.Join('|', selected.Tables.OrderBy(item => item.Table, StringComparer.Ordinal)
-            .Select(item => $"{item.Table}:{item.OperationsSha256}"));
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(joined))).ToLowerInvariant();
     }
 
     internal static string Qualified(string schema, string table)

@@ -104,6 +104,14 @@ public static class DeltaSynchronizationPlanCanonicalizer
         return Convert.ToHexString(SHA256.HashData(stream.ToArray())).ToLowerInvariant();
     }
 
+    public static string ComputeDatabaseOperationsSha256(DeltaDatabasePlan database)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        string joined = string.Join('|', database.Tables.OrderBy(item => item.Table, StringComparer.Ordinal)
+            .Select(item => $"{item.Table}:{item.OperationsSha256}"));
+        return Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(joined))).ToLowerInvariant();
+    }
+
     private static void WriteCanonical(Utf8JsonWriter writer, JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
