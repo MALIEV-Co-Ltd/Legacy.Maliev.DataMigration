@@ -9,7 +9,7 @@ public sealed record IncrementalMigrationProgress(string? Database, int RemoteCo
 public sealed record IncrementalMigrationResult(MigrationExecutionReceipt Receipt, LocalSnapshotManifest Manifest, IncrementalMigrationProgress Progress);
 
 internal sealed record AdmittedCoordinatorRuntime(
-    IReadOnlySqlServerMigrationSource Source, IPostgreSqlShadowTarget Target, IPostgreSqlShadowRecoveryTarget Recovery,
+    IReadOnlyMigrationSource Source, IPostgreSqlShadowTarget Target, IPostgreSqlShadowRecoveryTarget Recovery,
     IAdmittedMigrationRunJournal Journal, IPostgreSqlDumpSource Dump, ILocalDatabaseArchiveVerifier LocalVerifier,
     Func<CancellationToken, Task> Readiness,
     Func<CancellationToken, Task<RestoredSourceObservation>> ObserveSource,

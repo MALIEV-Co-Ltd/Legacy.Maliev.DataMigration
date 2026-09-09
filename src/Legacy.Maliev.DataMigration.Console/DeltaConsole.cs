@@ -348,8 +348,10 @@ internal interface IGuardedDeltaConsoleRuntime
     Task<Exact23DeltaReconciliationResult> ReconcileAsync(DeltaReconcileRuntimeRequest request, CancellationToken cancellationToken);
 }
 
-internal sealed class DefaultGuardedDeltaConsoleRuntime : IGuardedDeltaConsoleRuntime
+internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory? sourceFactory = null) : IGuardedDeltaConsoleRuntime
 {
+    private readonly IMigrationSourceFactory _sourceFactory = sourceFactory ?? new SqlServerMigrationSourceFactory();
+
     public async Task<DeltaSynchronizationPlan> PlanAsync(DeltaPlanRuntimeRequest request, CancellationToken cancellationToken)
     {
         await VerifyTargetAuthorityAsync(request.TargetConnectionString, request.Configuration.TargetAuthority,
@@ -359,7 +361,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime : IGuardedDeltaConsoleRu
         {
             await targetSchema.ValidateSchemaAsync(database, cancellationToken).ConfigureAwait(false);
         }
-        await using var source = new SqlServerMigrationSource(new(request.SourceConnectionString));
+        await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
         var opened = new List<string>(DatabaseInventory.ActiveDatabases.Count);
         try
         {
@@ -422,7 +424,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime : IGuardedDeltaConsoleRu
         }
         await new PostgreSqlDeltaMetadataProvisioner(new(request.TargetConnectionString, request.ExpectedAuthority))
             .ProvisionAsync(request.Plan, request.Schema, cancellationToken).ConfigureAwait(false);
-        await using var source = new SqlServerMigrationSource(new(request.SourceConnectionString));
+        await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
         var targetRows = new PostgreSqlDeltaRowSource(new(request.TargetConnectionString));
         DeltaExecutionCoordinator CreateExecutor(string database)
         {
@@ -448,7 +450,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime : IGuardedDeltaConsoleRu
         await VerifyTargetAuthorityAsync(request.TargetConnectionString,
             request.Plan.TargetAuthority ?? throw new DeltaExecutionException("delta_target_authority_invalid", "The delta plan has no target authority."),
             cancellationToken).ConfigureAwait(false);
-        await using var source = new SqlServerMigrationSource(new(request.SourceConnectionString));
+        await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
         var opened = new List<string>(DatabaseInventory.ActiveDatabases.Count);
         try
         {

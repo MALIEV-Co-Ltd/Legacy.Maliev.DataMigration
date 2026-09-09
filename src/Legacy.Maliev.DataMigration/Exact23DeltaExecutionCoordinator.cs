@@ -9,7 +9,7 @@ public sealed record Exact23DeltaExecutionResult(
     IReadOnlyList<DeltaDatabaseExecutionResult> Databases);
 
 public sealed class Exact23DeltaExecutionCoordinator(
-    IReadOnlySqlServerMigrationSource source,
+    IReadOnlyMigrationSource source,
     Func<string, DeltaExecutionCoordinator> executorFactory)
 {
     public async Task<Exact23DeltaExecutionResult> ExecuteAsync(
