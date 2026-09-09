@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json.Nodes;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -90,13 +91,113 @@ public sealed class Exact23LocalDeltaFinalizationTests : IDisposable
         Assert.Equal(["apply", "reconcile", "queries", "snapshot", "apphost-evidence"], fixture.Runtime.Calls);
     }
 
+    [Fact]
+    public async Task Representative_query_validator_verifies_terminal_before_opening_PostgreSql()
+    {
+        Fixture fixture = await Fixture.CreateAsync(_key, terminalValid: false);
+        var executor = new QueryExecutor();
+        var validator = new Exact23RepresentativeServiceQueryValidator(executor, fixture.Trust, new FixedTime(fixture.Now));
+
+        DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            validator.ValidateAsync(fixture.Plan, fixture.Schema, fixture.Terminal, CancellationToken.None));
+
+        Assert.Equal("local_delta_terminal_receipt_invalid", error.Code);
+        Assert.Empty(executor.Calls);
+    }
+
+    [Fact]
+    public async Task Representative_query_validator_reads_one_signed_table_per_database_and_records_owner()
+    {
+        Fixture fixture = await Fixture.CreateAsync(_key, terminalValid: true);
+        var executor = new QueryExecutor();
+        var validator = new Exact23RepresentativeServiceQueryValidator(executor, fixture.Trust, new FixedTime(fixture.Now));
+
+        Exact23RepresentativeServiceQueryEvidence evidence = await validator.ValidateAsync(
+            fixture.Plan, fixture.Schema, fixture.Terminal, CancellationToken.None);
+
+        Assert.Equal(DatabaseInventory.ActiveDatabases, executor.Calls.Select(item => item.Database));
+        Assert.All(executor.Calls, item => Assert.Equal("public.items", item.Table));
+        Assert.All(evidence.Queries, item => Assert.Equal(DatabaseInventory.Entries[item.Database].Owner, item.Service));
+    }
+
+    [Fact]
+    public async Task Delta_AppHost_evidence_binds_terminal_queries_and_snapshot_without_replacement_authority()
+    {
+        Fixture fixture = await Fixture.CreateAsync(_key, terminalValid: true);
+        Exact23LocalDeltaFinalizationResult finalized = await fixture.Coordinator
+            .FinalizeAsync(fixture.Plan, fixture.Schema, CancellationToken.None);
+        using var signer = new P256MigrationEvidenceSigner("local-evidence", _key.ExportECPrivateKeyPem());
+
+        AppHostMigrationEvidenceV2Document document = Exact23LocalDeltaAppHostEvidenceV2Producer.Produce(
+            fixture.Plan, fixture.Schema, finalized.TerminalReceipt, finalized.QueryEvidence, finalized.Snapshot,
+            fixture.Trust, signer, new FixedTime(fixture.Now));
+        JsonObject evidence = JsonNode.Parse(document.EvidenceJson)!.AsObject();
+
+        Assert.Equal(2, evidence["schemaVersion"]!.GetValue<int>());
+        Assert.Equal("incremental", evidence["target"]!["mode"]!.GetValue<string>());
+        Assert.Equal("local-aspire", evidence["target"]!["authority"]!.GetValue<string>());
+        Assert.False(evidence["constraints"]!["databaseReplacementAllowed"]!.GetValue<bool>());
+        Assert.Equal(23, evidence["databases"]!.AsArray().Count);
+        Assert.NotNull(evidence["attestation"]);
+        Assert.DoesNotContain("password", document.EvidenceJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("connection", document.EvidenceJson, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Delta_AppHost_evidence_rejects_failed_query_before_signing()
+    {
+        Fixture fixture = await Fixture.CreateAsync(_key, terminalValid: true);
+        Exact23LocalDeltaFinalizationResult finalized = await fixture.Coordinator
+            .FinalizeAsync(fixture.Plan, fixture.Schema, CancellationToken.None);
+        Exact23RepresentativeServiceQueryEvidence failed = finalized.QueryEvidence with
+        {
+            Queries = [finalized.QueryEvidence.Queries[0] with { Succeeded = false }, .. finalized.QueryEvidence.Queries.Skip(1)],
+        };
+        var signer = new CountingSigner(new P256MigrationEvidenceSigner("local-evidence", _key.ExportECPrivateKeyPem()));
+
+        DeltaExecutionException error = Assert.Throws<DeltaExecutionException>(() =>
+            Exact23LocalDeltaAppHostEvidenceV2Producer.Produce(fixture.Plan, fixture.Schema,
+                finalized.TerminalReceipt, failed, finalized.Snapshot, fixture.Trust, signer, new FixedTime(fixture.Now)));
+
+        Assert.Equal("local_delta_apphost_evidence_invalid", error.Code);
+        Assert.Equal(0, signer.SignCount);
+        signer.Dispose();
+    }
+
+    [Fact]
+    public async Task Guarded_console_runtime_binds_apply_reconcile_queries_snapshot_and_evidence()
+    {
+        Fixture fixture = await Fixture.CreateAsync(_key, terminalValid: true);
+        var guarded = new GuardedRuntime(fixture.Runtime);
+        using var signer = new P256MigrationEvidenceSigner("local-evidence", _key.ExportECPrivateKeyPem());
+        var apply = new Console.DeltaApplyRuntimeRequest(
+            fixture.Schema, fixture.Plan, null!, "source", "target", fixture.Plan.TargetAuthority!, fixture.Trust);
+        var reconcile = new Console.DeltaReconcileRuntimeRequest(
+            fixture.Schema, fixture.Plan, "source", "target", signer);
+        var queryExecutor = new QueryExecutor();
+        var runtime = new Console.GuardedLocalDeltaFinalizationRuntime(
+            guarded, apply, reconcile,
+            new(queryExecutor, fixture.Trust, new FixedTime(fixture.Now)), fixture.Trust, _root, "bound-delta",
+            RandomNumberGenerator.GetBytes(32), new DumpSource(), signer, new FixedTime(fixture.Now));
+
+        Exact23LocalDeltaFinalizationResult result = await new Exact23LocalDeltaFinalizationCoordinator(runtime, fixture.Trust)
+            .FinalizeAsync(fixture.Plan, fixture.Schema, CancellationToken.None);
+
+        Assert.Equal(1, guarded.ApplyCalls);
+        Assert.Equal(1, guarded.ReconcileCalls);
+        Assert.Equal(23, result.QueryEvidence.Queries.Count);
+        Assert.Equal(23, result.Snapshot.Databases.Count);
+        Assert.Contains("\"mode\": \"incremental\"", result.AppHostEvidence.EvidenceJson, StringComparison.Ordinal);
+    }
+
     private sealed record Fixture(
         FreshSchemaPlan Schema,
         DeltaSynchronizationPlan Plan,
         Runtime Runtime,
         Exact23LocalDeltaFinalizationCoordinator Coordinator,
         Exact23DeltaReconciliationResult Terminal,
-        IReceiptAttestationTrustStore Trust)
+        ReceiptAttestationTrustStore Trust,
+        DateTimeOffset Now)
     {
         internal static async Task<Fixture> CreateAsync(ECDsa key, bool terminalValid)
         {
@@ -115,7 +216,7 @@ public sealed class Exact23LocalDeltaFinalizationTests : IDisposable
             }
             var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
             var runtime = new Runtime(plan, terminal, now);
-            return new(schema, plan, runtime, new(runtime, trust), terminal, trust);
+            return new(schema, plan, runtime, new(runtime, trust), terminal, trust, now);
         }
     }
 
@@ -238,6 +339,62 @@ public sealed class Exact23LocalDeltaFinalizationTests : IDisposable
         {
             Opened.Add(database);
             return Task.FromResult<Stream>(new MemoryStream(System.Text.Encoding.UTF8.GetBytes($"{database}:{shadowDatabase}")));
+        }
+    }
+
+    private sealed class QueryExecutor : IExact23RepresentativeServiceQueryExecutor
+    {
+        internal List<(string Database, string Table)> Calls { get; } = [];
+
+        public Task<bool> ExecuteAsync(string database, TableCopyPlan table, CancellationToken cancellationToken)
+        {
+            Calls.Add((database, $"{table.TargetSchema}.{table.TargetTable}"));
+            return Task.FromResult(true);
+        }
+    }
+
+    private sealed class CountingSigner(P256MigrationEvidenceSigner inner) : IMigrationEvidenceSigner, IDisposable
+    {
+        internal int SignCount { get; private set; }
+        public string KeyId => inner.KeyId;
+        public string PublicKeyFingerprintSha256 => inner.PublicKeyFingerprintSha256;
+        public byte[] Sign(ReadOnlySpan<byte> payload)
+        {
+            SignCount++;
+            return inner.Sign(payload);
+        }
+        public void Dispose()
+        {
+            inner.Dispose();
+        }
+    }
+
+    private sealed class GuardedRuntime(Runtime runtime) : Console.IGuardedDeltaConsoleRuntime
+    {
+        internal int ApplyCalls { get; private set; }
+        internal int ReconcileCalls { get; private set; }
+
+        public Task<DeltaSynchronizationPlan> PlanAsync(
+            Console.DeltaPlanRuntimeRequest request,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<Exact23DeltaExecutionResult> ApplyAsync(
+            Console.DeltaApplyRuntimeRequest request,
+            CancellationToken cancellationToken)
+        {
+            ApplyCalls++;
+            return runtime.ApplyAsync(request.Plan, request.Schema, cancellationToken);
+        }
+
+        public Task<Exact23DeltaReconciliationResult> ReconcileAsync(
+            Console.DeltaReconcileRuntimeRequest request,
+            CancellationToken cancellationToken)
+        {
+            ReconcileCalls++;
+            return runtime.ReconcileAsync(request.Plan, request.Schema, cancellationToken);
         }
     }
 
