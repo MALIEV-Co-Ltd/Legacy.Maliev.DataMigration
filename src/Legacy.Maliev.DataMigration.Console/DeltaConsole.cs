@@ -502,5 +502,16 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime : IGuardedDeltaConsoleRu
             throw new DeltaExecutionException("delta_target_system_identifier_invalid",
                 "The opened PostgreSQL cluster does not match the signed target authority.");
         }
+
+        await using var inventoryCommand = new NpgsqlCommand(
+            "SELECT datname FROM pg_database WHERE datistemplate = false AND datname <> 'postgres' ORDER BY datname;",
+            connection);
+        var databases = new List<string>();
+        await using NpgsqlDataReader reader = await inventoryCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            databases.Add(reader.GetString(0));
+        }
+        Exact23TargetDatabaseInventory.Validate(databases);
     }
 }
