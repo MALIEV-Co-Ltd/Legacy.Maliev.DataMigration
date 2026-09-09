@@ -5,6 +5,7 @@ using Testcontainers.MsSql;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
+[Collection(SqlServerAdapterTestGroup.Name)]
 public sealed class CurrentQuotationSourceIntegrationTests
 {
     [SqlServerIntegrationFact]

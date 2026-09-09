@@ -5,7 +5,7 @@ using Testcontainers.PostgreSql;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
-[CollectionDefinition(Name)]
+[CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class PostgreSqlAdapterTestGroup : ICollectionFixture<PostgreSqlAdapterFixture>
 {
     public const string Name = "PostgreSQL adapter";
