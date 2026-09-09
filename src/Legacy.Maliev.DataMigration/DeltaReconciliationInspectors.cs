@@ -4,7 +4,7 @@ using Npgsql;
 
 namespace Legacy.Maliev.DataMigration;
 
-public sealed class SqlServerDeltaReconciliationInspector(IReadOnlySqlServerMigrationSource source)
+public sealed class SqlServerDeltaReconciliationInspector(IReadOnlyMigrationSource source)
     : IDeltaReconciliationInspector
 {
     public async Task<DatabaseReconciliationEvidence> InspectAsync(

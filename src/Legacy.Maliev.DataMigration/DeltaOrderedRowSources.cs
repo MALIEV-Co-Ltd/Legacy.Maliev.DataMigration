@@ -13,7 +13,7 @@ public interface IDeltaOrderedRowSource
         CancellationToken cancellationToken);
 }
 
-public sealed class SqlServerSnapshotDeltaRowSource(SqlServerMigrationSource source) : IDeltaOrderedRowSource
+public sealed class SqlServerSnapshotDeltaRowSource(IReadOnlyMigrationSource source) : IDeltaOrderedRowSource
 {
     public IAsyncEnumerable<MigrationRow> ReadOrderedAsync(
         string database,
@@ -120,7 +120,7 @@ public sealed class PostgreSqlDeltaRowSource(PostgreSqlDeltaRowSourceOptions opt
     }
 }
 
-public sealed class SqlServerSnapshotDeltaExecutionRowSource(SqlServerMigrationSource source) : IDeltaOrderedRowSource
+public sealed class SqlServerSnapshotDeltaExecutionRowSource(IReadOnlyMigrationSource source) : IDeltaOrderedRowSource
 {
     public IAsyncEnumerable<MigrationRow> ReadOrderedAsync(
         string database,

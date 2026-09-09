@@ -193,45 +193,6 @@ public sealed class MigrationExecutionException(string code, string message, Exc
     public ReconciliationDiagnostic? Reconciliation { get; init; }
 }
 
-public interface IReadOnlySqlServerMigrationSource
-{
-    Task BeginDatabaseSnapshotAsync(string database, CancellationToken cancellationToken);
-
-    Task<SourceSchemaEvidence> InspectSchemaAsync(string database, CancellationToken cancellationToken);
-
-    IAsyncEnumerable<MigrationRow> ReadTableAsync(
-        string database,
-        TableCopyPlan table,
-        CancellationToken cancellationToken);
-
-    IAsyncEnumerable<MigrationRow> ReadTableImmediatelyAsync(
-        string database,
-        TableCopyPlan table,
-        CancellationToken cancellationToken)
-    {
-        return ReadTableAsync(database, table, cancellationToken);
-    }
-
-    Task<IReadOnlyDictionary<string, long>> InspectForeignKeyOrphansAsync(
-        string database,
-        TableCopyPlan table,
-        CancellationToken cancellationToken);
-
-    Task<IReadOnlyDictionary<string, long>> InspectForeignKeyRelationshipsAsync(
-        string database,
-        TableCopyPlan table,
-        CancellationToken cancellationToken);
-
-    Task<IReadOnlyDictionary<string, long>> InspectSequenceNextValuesAsync(
-        string database,
-        DatabaseSchemaPlan plan,
-        CancellationToken cancellationToken);
-
-    Task CompleteDatabaseSnapshotAsync(string database, CancellationToken cancellationToken);
-
-    Task RollbackDatabaseSnapshotAsync(string database, CancellationToken cancellationToken);
-}
-
 public interface IPostgreSqlShadowTarget
 {
     Task<ShadowDatabase> CreateUniqueEmptyShadowAsync(
@@ -469,7 +430,7 @@ public sealed partial class GuardedShadowMigrationRunner
     private readonly PreflightService _backupPreflight;
     private readonly IReceiptAttestationTrustStore _authorizationTrustStore;
     private readonly IReceiptAttestationTrustStore _executionTrustStore;
-    private readonly IReadOnlySqlServerMigrationSource _source;
+    private readonly IReadOnlyMigrationSource _source;
     private readonly IPostgreSqlShadowTarget _target;
     private readonly IMigrationRunJournal _journal;
     private readonly IMigrationEvidenceSigner _evidenceSigner;
@@ -481,7 +442,7 @@ public sealed partial class GuardedShadowMigrationRunner
         PreflightService backupPreflight,
         IReceiptAttestationTrustStore authorizationTrustStore,
         IReceiptAttestationTrustStore executionTrustStore,
-        IReadOnlySqlServerMigrationSource source,
+        IReadOnlyMigrationSource source,
         IPostgreSqlShadowTarget target,
         IMigrationRunJournal journal,
         IMigrationEvidenceSigner evidenceSigner,
@@ -713,7 +674,7 @@ public sealed partial class GuardedShadowMigrationRunner
     }
 
     internal static async Task<MigratedShadowDatabase> CopyWholeDatabaseAsync(
-        IReadOnlySqlServerMigrationSource source,
+        IReadOnlyMigrationSource source,
         IPostgreSqlShadowTarget target,
         ShadowDatabase shadow,
         DatabaseSchemaPlan databasePlan,
@@ -923,7 +884,7 @@ public sealed partial class GuardedShadowMigrationRunner
     }
 
     private static async Task<long> CopySourceTableAsync(
-        IReadOnlySqlServerMigrationSource source,
+        IReadOnlyMigrationSource source,
         IPostgreSqlWholeDatabaseTransaction transaction,
         string database,
         TableCopyPlan table,

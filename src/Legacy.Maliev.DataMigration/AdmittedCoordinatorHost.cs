@@ -14,7 +14,17 @@ public sealed partial class AdmittedSequentialMigrationCoordinator
     public static AdmittedSequentialMigrationCoordinator CreateForHost(AdmittedCoordinatorHostOptions options,
         Action<IncrementalMigrationProgress>? progress = null)
     {
+        return CreateForHost(options, new SqlServerMigrationSourceFactory(), progress);
+    }
+
+    /// <summary>Builds concrete admitted adapters with an explicitly selected restored-source provider.</summary>
+    public static AdmittedSequentialMigrationCoordinator CreateForHost(
+        AdmittedCoordinatorHostOptions options,
+        IMigrationSourceFactory sourceFactory,
+        Action<IncrementalMigrationProgress>? progress = null)
+    {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(sourceFactory);
         var verification = new RecoveryAuthorityVerifier(options.Verification);
         // A deserialized target is never used to construct host authority before signature validation.
         verification.ValidateAdmission(options.Admission, DateTimeOffset.UtcNow);
@@ -42,7 +52,7 @@ public sealed partial class AdmittedSequentialMigrationCoordinator
             { CheckpointVerification = checkpointOptions, RecoveryVerification = options.Verification, HostBoundary = controlBoundary });
             var target = new PostgreSqlShadowTarget(new(options.ShadowAdministrativeConnectionString, provisioner, options.Provisioning.OwnerRole)
             { HostBoundary = targetBoundary });
-            var source = new SqlServerMigrationSource(new(options.SourceConnectionString));
+            IMigrationSourceSession source = sourceFactory.Create(options.SourceConnectionString);
             var sourceObserver = new DockerSqlRestoredSourceObserver(options.Verification.TrustStore);
             var local = new LocalPostgreSqlArchiveVerifier(options.LocalVerification, checkpointOptions);
             var runtime = new AdmittedCoordinatorRuntime(source, target, target, journal, PgDumpSource.CreateForHost(options.PgDumpPath, targetBoundary), local,
