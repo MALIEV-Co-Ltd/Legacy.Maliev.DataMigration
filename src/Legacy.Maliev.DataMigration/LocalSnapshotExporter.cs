@@ -39,6 +39,42 @@ public static partial class LocalSnapshotExporter
         IPostgreSqlDumpSource dumpSource,
         CancellationToken cancellationToken)
     {
+        return await ExportCoreAsync(databases, outputDirectory, snapshotId, encryptionKey, dumpSource,
+            allowCanonicalDatabases: false, cancellationToken).ConfigureAwait(false);
+    }
+
+    public static async Task<LocalSnapshotManifest> ExportCanonicalDeltaAsync(
+        Exact23DeltaReconciliationResult terminalReceipt,
+        IReceiptAttestationTrustStore terminalReceiptTrust,
+        string outputDirectory,
+        string snapshotId,
+        ReadOnlyMemory<byte> encryptionKey,
+        IPostgreSqlDumpSource dumpSource,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(terminalReceipt);
+        ArgumentNullException.ThrowIfNull(terminalReceiptTrust);
+        if (!Exact23DeltaReconciliationCoordinator.Verify(terminalReceipt, terminalReceiptTrust))
+        {
+            throw new MigrationExecutionException("snapshot_terminal_receipt_invalid",
+                "Canonical local snapshot export requires the signed journal-bound exact-23 terminal receipt.");
+        }
+        IReadOnlyList<MigratedShadowDatabase> databases = [.. terminalReceipt.Databases.Select(database =>
+            new MigratedShadowDatabase(database.Database, database.Database,
+                database.Tables.Sum(table => table.RowCount), DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(database)))];
+        return await ExportCoreAsync(databases, outputDirectory, snapshotId, encryptionKey, dumpSource,
+            allowCanonicalDatabases: true, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<LocalSnapshotManifest> ExportCoreAsync(
+        IReadOnlyList<MigratedShadowDatabase> databases,
+        string outputDirectory,
+        string snapshotId,
+        ReadOnlyMemory<byte> encryptionKey,
+        IPostgreSqlDumpSource dumpSource,
+        bool allowCanonicalDatabases,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(databases);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(snapshotId);
@@ -47,7 +83,9 @@ public static partial class LocalSnapshotExporter
         if (observed.Distinct(StringComparer.Ordinal).Count() != observed.Length ||
             !observed.OrderBy(database => database, StringComparer.Ordinal)
                 .SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
-            databases.Any(database => !ShadowName().IsMatch(database.ShadowName)))
+            databases.Any(database => allowCanonicalDatabases
+                ? !string.Equals(database.Database, database.ShadowName, StringComparison.Ordinal)
+                : !ShadowName().IsMatch(database.ShadowName)))
         {
             throw new MigrationExecutionException("snapshot_database_inventory_invalid", "Snapshot export requires the exact run-owned shadow inventory.");
         }

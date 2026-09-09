@@ -4,7 +4,10 @@ using Npgsql;
 
 namespace Legacy.Maliev.DataMigration;
 
-public sealed partial class PgDumpSource(string executablePath, string administrativeConnectionString) : IPostgreSqlDumpSource
+public sealed partial class PgDumpSource(
+    string executablePath,
+    string administrativeConnectionString,
+    bool allowCanonicalDeltaDatabase = false) : IPostgreSqlDumpSource
 {
     public static IPostgreSqlDumpSource CreateForHost(string executablePath, RemotePostgreSqlHostBoundary boundary)
     {
@@ -14,7 +17,8 @@ public sealed partial class PgDumpSource(string executablePath, string administr
     public Task<Stream> OpenDumpAsync(string database, string shadowDatabase, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        ProcessStartInfo startInfo = BuildStartInfo(executablePath, administrativeConnectionString, shadowDatabase);
+        ProcessStartInfo startInfo = BuildStartInfo(executablePath, administrativeConnectionString, shadowDatabase,
+            allowCanonicalDeltaDatabase);
         Process process = Process.Start(startInfo) ??
             throw new MigrationExecutionException("snapshot_dump_start_failed", "The PostgreSQL dump process could not start.");
         return Task.FromResult<Stream>(new PgDumpProcessStream(process));
@@ -22,11 +26,22 @@ public sealed partial class PgDumpSource(string executablePath, string administr
 
     internal static ProcessStartInfo BuildStartInfo(string executablePath, string connectionString, string shadowDatabase)
     {
+        return BuildStartInfo(executablePath, connectionString, shadowDatabase, allowCanonicalDeltaDatabase: false);
+    }
+
+    internal static ProcessStartInfo BuildStartInfo(
+        string executablePath,
+        string connectionString,
+        string shadowDatabase,
+        bool allowCanonicalDeltaDatabase)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
-        if (!ShadowDatabaseName().IsMatch(shadowDatabase))
+        if (!ShadowDatabaseName().IsMatch(shadowDatabase) &&
+            (!allowCanonicalDeltaDatabase || !DatabaseInventory.ActiveDatabases.Contains(shadowDatabase, StringComparer.Ordinal)))
         {
-            throw new MigrationExecutionException("snapshot_shadow_name_invalid", "Only a run-owned shadow database may be exported.");
+            throw new MigrationExecutionException("snapshot_shadow_name_invalid",
+                "Only a run-owned shadow or exact active canonical delta database may be exported.");
         }
         var connection = new NpgsqlConnectionStringBuilder(connectionString);
         ValidateConnectionOptions(connection);
