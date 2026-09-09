@@ -7,6 +7,12 @@ using System.Security.Cryptography;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class SqlServerAdapterTestGroup
+{
+    public const string Name = "SQL Server adapter";
+}
+
 public sealed class SqlServerIntegrationFactAttribute : FactAttribute
 {
     public SqlServerIntegrationFactAttribute()
@@ -21,6 +27,7 @@ public sealed class SqlServerIntegrationFactAttribute : FactAttribute
     }
 }
 
+[Collection(SqlServerAdapterTestGroup.Name)]
 public sealed class SqlServerMigrationSourceIntegrationTests
 {
     [SqlServerIntegrationFact]
