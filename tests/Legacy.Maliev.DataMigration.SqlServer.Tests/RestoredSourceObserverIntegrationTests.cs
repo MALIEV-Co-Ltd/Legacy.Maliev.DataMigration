@@ -1,4 +1,5 @@
 using DotNet.Testcontainers.Builders;
+using SourceObservationFixture = Legacy.Maliev.DataMigration.Tests.SqlServerSourceObservationFixture;
 using DotNet.Testcontainers.Configurations;
 using DotNet.Testcontainers.Volumes;
 using Microsoft.Data.SqlClient;

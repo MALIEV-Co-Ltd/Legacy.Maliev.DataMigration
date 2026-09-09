@@ -5,6 +5,7 @@
     <Project Path="src/Legacy.Maliev.DataMigration.SqlServer/Legacy.Maliev.DataMigration.SqlServer.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Legacy.Maliev.DataMigration.SqlServer.Tests/Legacy.Maliev.DataMigration.SqlServer.Tests.csproj" />
     <Project Path="tests/Legacy.Maliev.DataMigration.Tests/Legacy.Maliev.DataMigration.Tests.csproj" />
   </Folder>
 </Solution>

@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);IDE0130</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
@@ -18,12 +19,15 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.14.0" />
+    <PackageReference Include="Testcontainers.MsSql" Version="4.14.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Legacy.Maliev.DataMigration/Legacy.Maliev.DataMigration.csproj" />
+    <ProjectReference Include="../../src/Legacy.Maliev.DataMigration.SqlServer/Legacy.Maliev.DataMigration.SqlServer.csproj" />
     <ProjectReference Include="../../src/Legacy.Maliev.DataMigration.Console/Legacy.Maliev.DataMigration.Console.csproj" />
+    <ProjectReference Include="../Legacy.Maliev.DataMigration.Tests/Legacy.Maliev.DataMigration.Tests.csproj" />
     <None Include="../../database-disposition.json" Link="database-disposition.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="Fixtures/SourceScripts/*.sql" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="Fixtures/Quotation/*.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../Legacy.Maliev.DataMigration.Tests/Fixtures/SourceScripts/*.sql" Link="Fixtures/SourceScripts/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../Legacy.Maliev.DataMigration.Tests/Fixtures/Quotation/*.sql" Link="Fixtures/Quotation/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
