@@ -10,7 +10,6 @@ public sealed class PostgreSqlAdapterTestGroup : ICollectionFixture<PostgreSqlAd
 {
     public const string Name = "PostgreSQL adapter";
 }
-
 public sealed class PostgreSqlAdapterFixture : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:18-alpine").Build();
@@ -187,11 +186,11 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
                 PrimaryKey = new PrimaryKeyCopyPlan("PK_ComputedColumns", ["ID"]),
                 GeneratedColumns =
                 [
-                    new("FullName", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(Trim(concat([FirstName],N' ',[LastName])))", sourceColumnTypes, columnTypes)),
-                    new("Remaining", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("([Quantity]-[Manufactured])", sourceColumnTypes, columnTypes)),
-                    new("Subtotal", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(CONVERT([decimal](18,2),[UnitPrice]*[Quantity]-(([UnitPrice]*[Quantity])*[DiscountPercent])/(100)))", sourceColumnTypes, columnTypes)),
-                    new("QuotedAmount", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(CONVERT([decimal](18,2),[Total]-[WithholdingTax]))", sourceColumnTypes, columnTypes)),
-                    new("Turnaround", SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql("(datediff(day,[CreatedDate],[FinishedDate]))", sourceColumnTypes, columnTypes)),
+                    new("FullName", "btrim((((COALESCE(\"FirstName\", ''::character varying))::text || ' '::text) || (COALESCE(\"LastName\", ''::character varying))::text))"),
+                    new("Remaining", "(\"Quantity\" - \"Manufactured\")"),
+                    new("Subtotal", "(((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) - ((((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) * \"DiscountPercent\"))::numeric(35,4) / (100)::numeric))::numeric(38,7)))::numeric(38,6))::numeric(18,2)"),
+                    new("QuotedAmount", "(((\"Total\" - \"WithholdingTax\"))::numeric(19,2))::numeric(18,2)"),
+                    new("Turnaround", "(\"FinishedDate\" - (\"CreatedDate\")::date)"),
                 ],
             };
             var draft = new DatabaseSchemaPlan("ComputedColumns", "1.0", Hash("source"), Hash("target"), [table]);
@@ -290,7 +289,7 @@ public sealed class PostgreSqlShadowTargetIntegrationTests(PostgreSqlAdapterFixt
                 PrimaryKey = new PrimaryKeyCopyPlan("PK_Message", ["ID"]),
                 DefaultExpressions = new Dictionary<string, string>(StringComparer.Ordinal)
                 {
-                    ["CreatedDate"] = SqlServerMigrationSource.TranslateExpressionForPostgreSql("(getutcdate())"),
+                    ["CreatedDate"] = "(timezone('UTC'::text, CURRENT_TIMESTAMP))",
                 },
             };
             var draft = new DatabaseSchemaPlan("Contact", "1.0", Hash("source"), Hash("target"), [table]);
@@ -1269,27 +1268,5 @@ internal sealed class BoundaryObservingProvisioner(string administratorConnectio
     {
         DeleteCalled = true;
         await _inner.DeleteAsync(shadow, cancellationToken);
-    }
-}
-
-public sealed class ShadowMigrationRuntimeTests
-{
-    [Fact]
-    public async Task Create_ComposesOnlyShadowTargetAndReadOnlySource()
-    {
-        ShadowMigrationRuntime runtime = ShadowMigrationRuntime.Create(new ShadowMigrationRuntimeOptions(
-            new SqlServerMigrationSourceOptions(
-                "Server=sql.example;Database=master;Integrated Security=True;Encrypt=True"),
-            new PostgreSqlShadowTargetOptions(
-                "Host=postgres.example;Database=postgres;Username=reviewer",
-                new TestcontainerShadowDatabaseProvisioner(
-                    "Host=postgres.example;Database=postgres;Username=provisioner")),
-            new PostgreSqlMigrationRunJournalOptions(
-                "Host=postgres.example;Database=legacy_migration_control;Username=control")));
-
-        _ = Assert.IsType<SqlServerMigrationSource>(runtime.Source);
-        _ = Assert.IsType<PostgreSqlShadowTarget>(runtime.ShadowTarget);
-        _ = Assert.IsType<PostgreSqlMigrationRunJournal>(runtime.Journal);
-        await runtime.DisposeAsync();
     }
 }

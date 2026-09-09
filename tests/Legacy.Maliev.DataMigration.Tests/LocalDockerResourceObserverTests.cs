@@ -25,7 +25,7 @@ public sealed class LocalDockerResourceObserverTests
     {
         var process = new FakeDockerProcess { Failure = failure };
         MigrationExecutionException error = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
-            new LocalDockerResourceObserver(process).ObserveAsync(SourceObservationFixture.ContainerId, CancellationToken.None));
+            new LocalDockerResourceObserver(process).ObserveAsync(ProviderNeutralSourceObservationFixture.ContainerId, CancellationToken.None));
         Assert.StartsWith("source_observation_", error.Code);
         Assert.DoesNotContain("do-not-log", error.ToString());
         Assert.All(process.Commands, command => Assert.DoesNotContain(".Env", string.Join(' ', command)));
@@ -37,26 +37,26 @@ public sealed class LocalDockerResourceObserverTests
     {
         var process = new FakeDockerProcess();
         LocalDockerResourceState result = await new LocalDockerResourceObserver(process)
-            .ObserveAsync(SourceObservationFixture.ContainerId, CancellationToken.None);
+            .ObserveAsync(ProviderNeutralSourceObservationFixture.ContainerId, CancellationToken.None);
         Assert.Equal("7", Assert.Single(result.Mounts).FileSystemIdentity.Device);
         Assert.Equal("902", Assert.Single(result.Mounts).FileSystemIdentity.Inode);
         Assert.False(Assert.Single(result.Mounts).ReadWrite);
-        Assert.Equal(SourceObservationFixture.ContainerId, result.Layer.Id);
+        Assert.Equal(ProviderNeutralSourceObservationFixture.ContainerId, result.Layer.Id);
         Assert.All(process.Commands.Where(command => command.Contains("exec")), command =>
         {
-            Assert.Contains(SourceObservationFixture.ContainerId, command);
+            Assert.Contains(ProviderNeutralSourceObservationFixture.ContainerId, command);
             Assert.True(command.Contains("stat") || command.Contains("readlink"));
             Assert.DoesNotContain("sh", command);
         });
     }
 }
 
-internal sealed class FakeDockerProcess : IReadOnlyDockerProcess
+public sealed class FakeDockerProcess : IReadOnlyDockerProcess
 {
-    internal bool ChangeOnRepeat;
-    internal string? Failure;
-    internal Func<IReadOnlyList<string>, string, BackupProcessResult>? BatchResult;
-    internal readonly List<IReadOnlyList<string>> Commands = [];
+    public bool ChangeOnRepeat { get; set; }
+    public string? Failure { get; set; }
+    public Func<IReadOnlyList<string>, string, BackupProcessResult>? BatchResult { get; set; }
+    public List<IReadOnlyList<string>> Commands { get; } = [];
     private int _containers;
     public Task<BackupProcessResult> RunAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
@@ -91,7 +91,7 @@ internal sealed class FakeDockerProcess : IReadOnlyDockerProcess
         {
             json = new()
             {
-                ["Id"] = SourceObservationFixture.ImageId,
+                ["Id"] = ProviderNeutralSourceObservationFixture.ImageId,
                 ["Created"] = "2026-08-01T00:00:00Z",
                 ["Os"] = "linux",
                 ["Architecture"] = "amd64",
@@ -111,7 +111,7 @@ internal sealed class FakeDockerProcess : IReadOnlyDockerProcess
                 ["Options"] = Failure == "volume-options" ? new JsonObject { ["device"] = "/tmp/bind" } : null,
                 ["RunBinding"] = "run-1",
                 ["VolumeBinding"] = "backup-binding",
-                ["Fingerprint"] = SourceObservationFixture.Fingerprint
+                ["Fingerprint"] = ProviderNeutralSourceObservationFixture.Fingerprint
             };
         }
         else if (args[0] == "container")
@@ -119,9 +119,9 @@ internal sealed class FakeDockerProcess : IReadOnlyDockerProcess
             _containers++;
             json = new()
             {
-                ["Id"] = Failure == "container-id" ? new string('b', 64) : SourceObservationFixture.ContainerId,
+                ["Id"] = Failure == "container-id" ? new string('b', 64) : ProviderNeutralSourceObservationFixture.ContainerId,
                 ["Name"] = "/restore-test",
-                ["Image"] = SourceObservationFixture.ImageId,
+                ["Image"] = ProviderNeutralSourceObservationFixture.ImageId,
                 ["Created"] = "2026-09-01T00:00:00Z",
                 ["Hostname"] = "restore-host",
                 ["RunBinding"] = "run-1",
@@ -136,7 +136,7 @@ internal sealed class FakeDockerProcess : IReadOnlyDockerProcess
                     ["Name"] = "overlay2",
                     ["Data"] = new JsonObject
                     {
-                        ["ID"] = Failure == "layer-id" ? "wrong" : SourceObservationFixture.ContainerId,
+                        ["ID"] = Failure == "layer-id" ? "wrong" : ProviderNeutralSourceObservationFixture.ContainerId,
                         ["LowerDir"] = "/var/lib/docker/overlay2/lower/diff",
                         ["MergedDir"] = "/var/lib/docker/overlay2/layer/merged",
                         ["UpperDir"] = Failure == "layer-missing" ? "" : "/var/lib/docker/overlay2/layer/diff",

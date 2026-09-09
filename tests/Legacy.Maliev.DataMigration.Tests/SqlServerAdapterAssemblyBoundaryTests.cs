@@ -17,18 +17,6 @@ public sealed class SqlServerAdapterAssemblyBoundaryTests
     }
 
     [Fact]
-    public void Adapter_owns_SQL_Client_and_implements_the_provider_neutral_factory()
-    {
-        Assembly adapter = typeof(SqlServerMigrationSource).Assembly;
-
-        Assert.NotEqual(typeof(DeltaSynchronizationPlan).Assembly, adapter);
-        Assert.Contains(adapter.GetReferencedAssemblies(), reference => reference.Name == "Microsoft.Data.SqlClient");
-        _ = Assert.IsType<IMigrationSourceFactory>(new SqlServerMigrationSourceFactory(), exactMatch: false);
-        _ = Assert.IsType<IRestoredMigrationSourceObserver>(
-            new DockerSqlRestoredSourceObserver(new ReceiptAttestationTrustStore([])), exactMatch: false);
-    }
-
-    [Fact]
     public void Core_project_has_no_SQL_Client_package_and_console_references_adapter()
     {
         string root = Repository();
@@ -37,6 +25,21 @@ public sealed class SqlServerAdapterAssemblyBoundaryTests
 
         Assert.DoesNotContain("Microsoft.Data.SqlClient", core, StringComparison.Ordinal);
         Assert.Contains("Legacy.Maliev.DataMigration.SqlServer.csproj", console, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Core_test_project_has_no_SQL_Server_dependencies()
+    {
+        string root = Repository();
+        string tests = File.ReadAllText(Path.Combine(
+            root,
+            "tests",
+            "Legacy.Maliev.DataMigration.Tests",
+            "Legacy.Maliev.DataMigration.Tests.csproj"));
+
+        Assert.DoesNotContain("Testcontainers.MsSql", tests, StringComparison.Ordinal);
+        Assert.DoesNotContain("Microsoft.Data.SqlClient", tests, StringComparison.Ordinal);
+        Assert.DoesNotContain("Legacy.Maliev.DataMigration.SqlServer.csproj", tests, StringComparison.Ordinal);
     }
 
     private static string Repository()

@@ -31,13 +31,12 @@ internal sealed class RecoveryAuthorityTestData : IDisposable
     internal LocalExecutionBinding Binding = new(1, "windows-host", "ntfs-volume", "C:\\ARTIFACTS\\RUN", "root-id", ".run.lock", "lock-id", 1);
     internal static RecoveryAuthorityRoles Roles => new("backup", "authorization", "execution", "provenance", "final");
 
-    internal static async Task<RecoveryAuthorityTestData> CreateAsync(bool prepare = true, TimeSpan? resumeDelay = null, DateTimeOffset? admittedAt = null, bool webOriginals = false)
+    internal static Task<RecoveryAuthorityTestData> CreateAsync(bool prepare = true, TimeSpan? resumeDelay = null, DateTimeOffset? admittedAt = null, bool webOriginals = false)
     {
         var data = new RecoveryAuthorityTestData();
         data.AdmittedAt = admittedAt ?? data.AdmittedAt;
         data._resumeDelay = resumeDelay ?? data._resumeDelay;
-        using var source = new SourceObservationFixture();
-        RestoredSourceObservation measured = await source.ObserveAsync();
+        RestoredSourceObservation measured = ProviderNeutralSourceObservationFixture.Create(data.AdmittedAt.AddMinutes(-5));
         FreshSchemaPlan plan = new("2.0", data.AdmittedAt.AddMinutes(-10), new string('a', 40),
             DatabaseInventory.ActiveDatabases.Select(name => new DatabaseSchemaPlan(name, "1.0", Hash("source:" + name), Hash("target:" + name),
             [new("dbo", "Rows", "public", "Rows", ["ID"], ["ID"])
@@ -80,7 +79,7 @@ internal sealed class RecoveryAuthorityTestData : IDisposable
         { TargetObservation = target };
         Assert.True(ExecutionAuthorizationAttestation.TryCreatePayload(authorization, out byte[] authorizationBytes));
         authorization = authorization with { AttestationSignature = Convert.ToBase64String(data.Signers[1].Sign(authorizationBytes)) };
-        VerifiedRestoreReceipt restore = source.Receipt with
+        VerifiedRestoreReceipt restore = ProviderNeutralSourceObservationFixture.CreateReceipt(data.AdmittedAt) with
         {
             AttestationKeyId = "provenance",
             BackupManifestSha256 = manifest,
@@ -110,7 +109,7 @@ internal sealed class RecoveryAuthorityTestData : IDisposable
             data.Baseline = new(data.AdmissionPayload.Identity, data.Admission.ComputeSha256(), "failed", "original-owner", 1, Guid.NewGuid(), null, "[]", [], []);
             data.Resume = data.PrepareResume();
         }
-        return data;
+        return Task.FromResult(data);
     }
 
     internal ResumeAuthorizationReceipt PrepareResume()

@@ -21,13 +21,13 @@ public sealed class LocalDockerFileBatchTests
             BatchResult = (args, output) => new(0, args.Contains("stat") ?
                 string.Concat(Paths(args).Select(path => path + "\0" + "7\0" + (Array.IndexOf(paths, path) + 100) + "\0regular file\0")) : output, "")
         };
-        var result = await new LocalDockerResourceObserver(process).StatManyAsync(Host, SourceObservationFixture.ContainerId, paths, CancellationToken.None);
+        var result = await new LocalDockerResourceObserver(process).StatManyAsync(Host, ProviderNeutralSourceObservationFixture.ContainerId, paths, CancellationToken.None);
         Assert.Equal(commandCount, process.Commands.Count);
         Assert.Equal(count, result.Length);
         for (int index = 0; index < count; index++) { Assert.Equal(new FileSystemObjectIdentity("7", (index + 100).ToString(System.Globalization.CultureInfo.InvariantCulture), "regular file"), result[index]); }
         foreach (IReadOnlyList<string> command in process.Commands)
         {
-            Assert.Equal(["--host", Host, "exec", SourceObservationFixture.ContainerId], command.Take(4));
+            Assert.Equal(["--host", Host, "exec", ProviderNeutralSourceObservationFixture.ContainerId], command.Take(4));
             Assert.InRange(Paths(command).Length, 1, 32);
             Assert.True(command.Sum(arg => Math.Max((2L * arg.Length) + 3, Encoding.UTF8.GetByteCount(arg) + 1L)) <= 8192);
             Assert.DoesNotContain("sh", command);
@@ -48,7 +48,7 @@ public sealed class LocalDockerFileBatchTests
     {
         string[] paths = ["/data/a 'quoted' \"double\" \\backslash $variable;|--.mdf ", "/data/ภาษาไทย.mdf"];
         var process = new FakeDockerProcess();
-        var result = await new LocalDockerResourceObserver(process).StatManyAsync(Host, SourceObservationFixture.ContainerId, paths, CancellationToken.None);
+        var result = await new LocalDockerResourceObserver(process).StatManyAsync(Host, ProviderNeutralSourceObservationFixture.ContainerId, paths, CancellationToken.None);
         Assert.Equal(2, result.Length);
         Assert.All(process.Commands, command => Assert.Equal(paths, Paths(command)));
     }
@@ -65,7 +65,7 @@ public sealed class LocalDockerFileBatchTests
     [InlineData("host-oversized")]
     public async Task StatMany_ValidatesEntireRequestBeforeFirstProcess(string failure)
     {
-        string host = Host, container = SourceObservationFixture.ContainerId;
+        string host = Host, container = ProviderNeutralSourceObservationFixture.ContainerId;
         string[] paths = Enumerable.Range(0, 65).Select(index => $"/data/{index}.mdf").ToArray();
         switch (failure)
         {
@@ -136,7 +136,7 @@ public sealed class LocalDockerFileBatchTests
             }
         };
         var error = await Assert.ThrowsAsync<MigrationExecutionException>(() => new LocalDockerResourceObserver(process)
-            .StatManyAsync(Host, SourceObservationFixture.ContainerId, paths, CancellationToken.None));
+            .StatManyAsync(Host, ProviderNeutralSourceObservationFixture.ContainerId, paths, CancellationToken.None));
         Assert.Equal("source_observation_" + boundary, error.Code);
         Assert.DoesNotContain("do-not-log", error.ToString());
         Assert.Equal(failure.StartsWith("readlink", StringComparison.Ordinal) ? 1 : 2, process.Commands.Count);
@@ -151,7 +151,7 @@ public sealed class LocalDockerFileBatchTests
         var process = new FakeDockerProcess { BatchResult = (_, output) => { cancellation.Cancel(); return new(0, output, ""); } };
         if (!during) { cancellation.Cancel(); }
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new LocalDockerResourceObserver(process)
-            .StatManyAsync(Host, SourceObservationFixture.ContainerId, ["/data/a.mdf"], cancellation.Token));
+            .StatManyAsync(Host, ProviderNeutralSourceObservationFixture.ContainerId, ["/data/a.mdf"], cancellation.Token));
         Assert.Equal(during ? 1 : 0, process.Commands.Count);
     }
 
@@ -161,7 +161,7 @@ public sealed class LocalDockerFileBatchTests
         string[] paths = Enumerable.Range(0, 33).Select(index => $"/data/{index}.mdf").ToArray();
         string[] original = paths.ToArray();
         var process = new FakeDockerProcess { BatchResult = (_, output) => { paths[^1] = "/../changed"; return new(0, output, ""); } };
-        var result = await new LocalDockerResourceObserver(process).StatManyAsync(Host, SourceObservationFixture.ContainerId, paths, CancellationToken.None);
+        var result = await new LocalDockerResourceObserver(process).StatManyAsync(Host, ProviderNeutralSourceObservationFixture.ContainerId, paths, CancellationToken.None);
         Assert.Equal(33, result.Length);
         Assert.Equal(original, process.Commands.Where(command => command.Contains("stat")).SelectMany(Paths));
     }

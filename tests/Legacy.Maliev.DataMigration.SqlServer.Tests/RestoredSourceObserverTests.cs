@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using SourceObservationFixture = Legacy.Maliev.DataMigration.Tests.SqlServerSourceObservationFixture;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -206,7 +207,7 @@ public sealed class RestoredSourceObserverTests
     }
 }
 
-internal sealed class SourceObservationFixture : IDisposable
+internal sealed class SqlServerSourceObservationFixture : IDisposable
 {
     internal const string ContainerId = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
     internal const string ImageId = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -219,7 +220,7 @@ internal sealed class SourceObservationFixture : IDisposable
     internal SqlRestoredSourceState Sql;
     internal readonly FakeDockerProcess Docker = new();
 
-    internal SourceObservationFixture()
+    internal SqlServerSourceObservationFixture()
     {
         Receipt = Sign(new("1.0", Now, DatabaseInventory.InventorySha256, new string('d', 64),
             new("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04@sha256:" + new string('a', 64),

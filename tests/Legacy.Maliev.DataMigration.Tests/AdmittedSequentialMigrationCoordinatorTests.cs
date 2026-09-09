@@ -3,6 +3,23 @@ namespace Legacy.Maliev.DataMigration.Tests;
 [Collection(LocalSnapshotIoTestGroup.Name)]
 public sealed class AdmittedSequentialMigrationCoordinatorTests
 {
+    private sealed class UnusedSourceFactory : IMigrationSourceFactory
+    {
+        public IMigrationSourceSession Create(string protectedConnectionReference)
+        {
+            throw new InvalidOperationException("The source factory must not be reached by this guard test.");
+        }
+    }
+
+    private sealed class UnusedSourceObserver : IRestoredMigrationSourceObserver
+    {
+        public Task<RestoredSourceObservation> ObserveAsync(string connectionString, VerifiedRestoreReceipt receipt,
+            FreshSchemaPlan plan, CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException("The source observer must not be reached by this guard test.");
+        }
+    }
+
     [WindowsLocalRunFact]
     public async Task HostFactory_ProducerOriginalsReachTargetBindingGuardBeforeExternalAccess()
     {
@@ -16,8 +33,8 @@ public sealed class AdmittedSequentialMigrationCoordinatorTests
             new("unused", "unused", "unused", "unused", "unused", existingExecutable),
             existingExecutable, harness.Root, "test", new byte[32], harness.Output);
         MigrationExecutionException failure = Assert.Throws<MigrationExecutionException>(() =>
-            AdmittedSequentialMigrationCoordinator.CreateForHost(options, new SqlServerMigrationSourceFactory(),
-                new DockerSqlRestoredSourceObserver(options.Verification.TrustStore)));
+            AdmittedSequentialMigrationCoordinator.CreateForHost(options, new UnusedSourceFactory(),
+                new UnusedSourceObserver()));
         Assert.Equal("host_target_configuration_mismatch", failure.Code);
         Assert.Equal(0, harness.RunJournal.InitialCalls);
         Assert.Empty(harness.Target.Created);
@@ -32,8 +49,8 @@ public sealed class AdmittedSequentialMigrationCoordinatorTests
             harness.Data.Signers[2], "unused", new("unused"), "unused", null!, null!, null!,
             Path.Combine(harness.Root, "missing.exe"), harness.Root, "test", new byte[32], harness.Output);
         MigrationExecutionException failure = Assert.Throws<MigrationExecutionException>(() =>
-            AdmittedSequentialMigrationCoordinator.CreateForHost(options, new SqlServerMigrationSourceFactory(),
-                new DockerSqlRestoredSourceObserver(options.Verification.TrustStore)));
+            AdmittedSequentialMigrationCoordinator.CreateForHost(options, new UnusedSourceFactory(),
+                new UnusedSourceObserver()));
         Assert.Equal("host_native_runtime_required", failure.Code);
         Assert.Empty(harness.Target.Created);
     }
