@@ -884,3 +884,12 @@ public sealed partial class SqlServerMigrationSource : IReadOnlySqlServerMigrati
         bool Enabled,
         bool Trusted);
 }
+
+public sealed class SqlServerMigrationSourceFactory : IMigrationSourceFactory
+{
+    public IMigrationSourceSession Create(string protectedConnectionReference)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(protectedConnectionReference);
+        return new SqlServerMigrationSource(new(protectedConnectionReference));
+    }
+}

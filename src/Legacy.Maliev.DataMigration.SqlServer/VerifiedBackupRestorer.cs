@@ -1,9 +1,12 @@
 using System.Security.Cryptography;
 using System.Text;
+#if ADAPTER_ONLY
 using Microsoft.Data.SqlClient;
+#endif
 
 namespace Legacy.Maliev.DataMigration;
 
+#if !ADAPTER_ONLY
 public sealed record VerifiedBackupRestoreArtifact(
     string Database,
     string LocalPath,
@@ -164,7 +167,9 @@ public static class VerifiedBackupRestorer
         }
     }
 }
+#endif
 
+#if ADAPTER_ONLY
 public sealed class SqlServerBackupRestoreTarget(
     string adminConnectionString,
     string dataDirectory,
@@ -318,3 +323,4 @@ public sealed class SqlServerBackupRestoreTarget(
         return value.Replace("'", "''", StringComparison.Ordinal);
     }
 }
+#endif

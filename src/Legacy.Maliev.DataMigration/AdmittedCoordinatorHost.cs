@@ -11,20 +11,16 @@ public sealed record AdmittedCoordinatorHostOptions(
 public sealed partial class AdmittedSequentialMigrationCoordinator
 {
     /// <summary>Builds concrete admitted adapters. Actual source, target, native and local identities are revalidated during execution.</summary>
-    public static AdmittedSequentialMigrationCoordinator CreateForHost(AdmittedCoordinatorHostOptions options,
-        Action<IncrementalMigrationProgress>? progress = null)
-    {
-        return CreateForHost(options, new SqlServerMigrationSourceFactory(), progress);
-    }
-
     /// <summary>Builds concrete admitted adapters with an explicitly selected restored-source provider.</summary>
     public static AdmittedSequentialMigrationCoordinator CreateForHost(
         AdmittedCoordinatorHostOptions options,
         IMigrationSourceFactory sourceFactory,
+        IRestoredMigrationSourceObserver sourceObserver,
         Action<IncrementalMigrationProgress>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(sourceFactory);
+        ArgumentNullException.ThrowIfNull(sourceObserver);
         var verification = new RecoveryAuthorityVerifier(options.Verification);
         // A deserialized target is never used to construct host authority before signature validation.
         verification.ValidateAdmission(options.Admission, DateTimeOffset.UtcNow);
@@ -53,7 +49,6 @@ public sealed partial class AdmittedSequentialMigrationCoordinator
             var target = new PostgreSqlShadowTarget(new(options.ShadowAdministrativeConnectionString, provisioner, options.Provisioning.OwnerRole)
             { HostBoundary = targetBoundary });
             IMigrationSourceSession source = sourceFactory.Create(options.SourceConnectionString);
-            var sourceObserver = new DockerSqlRestoredSourceObserver(options.Verification.TrustStore);
             var local = new LocalPostgreSqlArchiveVerifier(options.LocalVerification, checkpointOptions);
             var runtime = new AdmittedCoordinatorRuntime(source, target, target, journal, PgDumpSource.CreateForHost(options.PgDumpPath, targetBoundary), local,
                 local.VerifyExecutionReadinessAsync,

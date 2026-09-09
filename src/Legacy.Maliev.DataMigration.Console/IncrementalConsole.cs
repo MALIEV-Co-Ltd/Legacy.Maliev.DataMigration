@@ -460,6 +460,7 @@ internal sealed class DefaultIncrementalConsoleRuntime : IIncrementalConsoleRunt
 
     public AdmittedSequentialMigrationCoordinator CreateExecution(AdmittedCoordinatorHostOptions options, Action<IncrementalMigrationProgress> progress)
     {
-        return AdmittedSequentialMigrationCoordinator.CreateForHost(options, progress);
+        return AdmittedSequentialMigrationCoordinator.CreateForHost(options, new SqlServerMigrationSourceFactory(),
+            new DockerSqlRestoredSourceObserver(options.Verification.TrustStore), progress);
     }
 }

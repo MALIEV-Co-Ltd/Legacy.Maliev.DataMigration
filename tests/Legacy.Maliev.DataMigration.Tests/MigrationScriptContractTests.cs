@@ -43,9 +43,9 @@ public sealed class MigrationScriptContractTests
     [Fact]
     public void DotNetRestoreTarget_ProvesSqlServerReadsTheVerifiedBytesBeforeRestore()
     {
-        string source = File.ReadAllText(SourceCodePath("VerifiedBackupRestorer.cs"));
+        string source = File.ReadAllText(SqlServerSourceCodePath("VerifiedBackupRestorer.cs"));
         string staging = File.ReadAllText(SourceCodePath("DockerVolumeBackupStager.cs"));
-        string provisioning = File.ReadAllText(SourceCodePath("DockerDisposableSqlServerProvisioner.cs"));
+        string provisioning = File.ReadAllText(SqlServerSourceCodePath("DockerDisposableSqlServerProvisioner.cs"));
         string console = File.ReadAllText(ConsoleSourceCodePath("MigrationConsole.cs"));
         Assert.Contains("RESTORE VERIFYONLY", source, StringComparison.Ordinal);
         Assert.Contains("WITH CHECKSUM", source, StringComparison.Ordinal);
@@ -165,5 +165,11 @@ public sealed class MigrationScriptContractTests
     {
         return Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "../../../../../src/Legacy.Maliev.DataMigration.Console", file));
+    }
+
+    private static string SqlServerSourceCodePath(string file)
+    {
+        return Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "../../../../../src/Legacy.Maliev.DataMigration.SqlServer", file));
     }
 }

@@ -2,6 +2,7 @@
   <Project Path="src/Legacy.Maliev.DataMigration.Console/Legacy.Maliev.DataMigration.Console.csproj" />
   <Folder Name="/src/">
     <Project Path="src/Legacy.Maliev.DataMigration/Legacy.Maliev.DataMigration.csproj" />
+    <Project Path="src/Legacy.Maliev.DataMigration.SqlServer/Legacy.Maliev.DataMigration.SqlServer.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Legacy.Maliev.DataMigration.Tests/Legacy.Maliev.DataMigration.Tests.csproj" />
