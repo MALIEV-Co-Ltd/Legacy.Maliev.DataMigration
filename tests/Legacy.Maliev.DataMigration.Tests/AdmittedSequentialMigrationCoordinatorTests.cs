@@ -15,7 +15,9 @@ public sealed class AdmittedSequentialMigrationCoordinatorTests
             new(new Uri("https://unused.test"), "unused", "unused"),
             new("unused", "unused", "unused", "unused", "unused", existingExecutable),
             existingExecutable, harness.Root, "test", new byte[32], harness.Output);
-        MigrationExecutionException failure = Assert.Throws<MigrationExecutionException>(() => AdmittedSequentialMigrationCoordinator.CreateForHost(options));
+        MigrationExecutionException failure = Assert.Throws<MigrationExecutionException>(() =>
+            AdmittedSequentialMigrationCoordinator.CreateForHost(options, new SqlServerMigrationSourceFactory(),
+                new DockerSqlRestoredSourceObserver(options.Verification.TrustStore)));
         Assert.Equal("host_target_configuration_mismatch", failure.Code);
         Assert.Equal(0, harness.RunJournal.InitialCalls);
         Assert.Empty(harness.Target.Created);
@@ -29,7 +31,9 @@ public sealed class AdmittedSequentialMigrationCoordinatorTests
             new(new(harness.Plan.SourceCommitSha, harness.Data.AdmissionPayload.Identity.RunnerDigestSha256), RecoveryAuthorityTestData.Roles, harness.Data.Trust),
             harness.Data.Signers[2], "unused", new("unused"), "unused", null!, null!, null!,
             Path.Combine(harness.Root, "missing.exe"), harness.Root, "test", new byte[32], harness.Output);
-        MigrationExecutionException failure = Assert.Throws<MigrationExecutionException>(() => AdmittedSequentialMigrationCoordinator.CreateForHost(options));
+        MigrationExecutionException failure = Assert.Throws<MigrationExecutionException>(() =>
+            AdmittedSequentialMigrationCoordinator.CreateForHost(options, new SqlServerMigrationSourceFactory(),
+                new DockerSqlRestoredSourceObserver(options.Verification.TrustStore)));
         Assert.Equal("host_native_runtime_required", failure.Code);
         Assert.Empty(harness.Target.Created);
     }

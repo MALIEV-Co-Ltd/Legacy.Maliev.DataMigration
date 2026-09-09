@@ -35,12 +35,8 @@ public interface IMigrationSourceFactory
 /// <summary>Compatibility contract retained while the SQL Server adapter moves to its dedicated assembly.</summary>
 public interface IReadOnlySqlServerMigrationSource : IReadOnlyMigrationSource;
 
-/// <summary>Current restored-snapshot adapter factory; this moves with the provider implementation in extraction stage B.</summary>
-public sealed class SqlServerMigrationSourceFactory : IMigrationSourceFactory
+public interface IRestoredMigrationSourceObserver
 {
-    public IMigrationSourceSession Create(string protectedConnectionReference)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(protectedConnectionReference);
-        return new SqlServerMigrationSource(new(protectedConnectionReference));
-    }
+    Task<RestoredSourceObservation> ObserveAsync(string connectionString, VerifiedRestoreReceipt receipt,
+        FreshSchemaPlan plan, CancellationToken cancellationToken);
 }

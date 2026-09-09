@@ -7,7 +7,7 @@ using static Legacy.Maliev.DataMigration.LocalDockerResourceObserver;
 namespace Legacy.Maliev.DataMigration;
 
 /// <summary>Current source state only. GUIDs and read-only flags do not prove absence of intervening writes or re-restores.</summary>
-public sealed partial class DockerSqlRestoredSourceObserver
+public sealed partial class DockerSqlRestoredSourceObserver : IRestoredMigrationSourceObserver
 {
     private readonly IReceiptAttestationTrustStore _trust;
     private readonly LocalDockerResourceObserver _docker;
