@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -14,5 +15,17 @@ public sealed class SqlServerAdapterAssemblyDependencyTests
         _ = Assert.IsType<IMigrationSourceFactory>(new SqlServerMigrationSourceFactory(), exactMatch: false);
         _ = Assert.IsType<IRestoredMigrationSourceObserver>(
             new DockerSqlRestoredSourceObserver(new ReceiptAttestationTrustStore([])), exactMatch: false);
+    }
+
+    [Fact]
+    public void Adapter_grants_internal_access_only_to_its_own_tests()
+    {
+        string[] friends = typeof(SqlServerMigrationSource).Assembly
+            .GetCustomAttributes<InternalsVisibleToAttribute>()
+            .Select(attribute => attribute.AssemblyName.Split(',')[0])
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(["Legacy.Maliev.DataMigration.SqlServer.Tests"], friends);
     }
 }

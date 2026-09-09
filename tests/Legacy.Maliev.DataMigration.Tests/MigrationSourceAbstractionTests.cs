@@ -1,3 +1,7 @@
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using Legacy.Maliev.DataMigration.Console;
+
 namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class MigrationSourceAbstractionTests
@@ -33,6 +37,33 @@ public sealed class MigrationSourceAbstractionTests
 
         Assert.Contains("IMigrationSourceFactory sourceFactory", source, StringComparison.Ordinal);
         Assert.DoesNotContain("new SqlServerMigrationSource(new", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Core_exposes_only_provider_neutral_source_contracts()
+    {
+        Assembly core = typeof(IReadOnlyMigrationSource).Assembly;
+
+        Assert.Null(core.GetType("Legacy.Maliev.DataMigration.IReadOnlySqlServerMigrationSource"));
+    }
+
+    [Fact]
+    public void Friend_assembly_access_is_limited_to_required_boundaries()
+    {
+        Assert.Equal(
+            ["Legacy.Maliev.DataMigration.SqlServer", "Legacy.Maliev.DataMigration.SqlServer.Tests", "Legacy.Maliev.DataMigration.Tests"],
+            Friends(typeof(IReadOnlyMigrationSource).Assembly));
+        Assert.Equal(
+            ["Legacy.Maliev.DataMigration.SqlServer.Tests", "Legacy.Maliev.DataMigration.Tests"],
+            Friends(typeof(MigrationConsole).Assembly));
+    }
+
+    private static string[] Friends(Assembly assembly)
+    {
+        return assembly.GetCustomAttributes<InternalsVisibleToAttribute>()
+            .Select(attribute => attribute.AssemblyName.Split(',')[0])
+            .Order(StringComparer.Ordinal)
+            .ToArray();
     }
 
     private static string Repository()
@@ -74,7 +105,7 @@ public sealed class MigrationSourceAbstractionTests
         }
 
         public async IAsyncEnumerable<MigrationRow> ReadTableAsync(string database, TableCopyPlan table,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
+            [EnumeratorCancellation] CancellationToken token)
         { await Task.CompletedTask; yield break; }
         public Task<IReadOnlyDictionary<string, long>> InspectForeignKeyOrphansAsync(string database, TableCopyPlan table, CancellationToken token)
         {

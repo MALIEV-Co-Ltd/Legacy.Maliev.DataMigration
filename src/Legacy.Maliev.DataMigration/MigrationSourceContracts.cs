@@ -32,9 +32,6 @@ public interface IMigrationSourceFactory
     IMigrationSourceSession Create(string protectedConnectionReference);
 }
 
-/// <summary>Compatibility contract retained while the SQL Server adapter moves to its dedicated assembly.</summary>
-public interface IReadOnlySqlServerMigrationSource : IReadOnlyMigrationSource;
-
 public interface IRestoredMigrationSourceObserver
 {
     Task<RestoredSourceObservation> ObserveAsync(string connectionString, VerifiedRestoreReceipt receipt,

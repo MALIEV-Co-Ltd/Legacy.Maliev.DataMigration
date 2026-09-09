@@ -896,7 +896,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         }
     }
 
-    private sealed class FakeSource : IReadOnlySqlServerMigrationSource
+    private sealed class FakeSource : IReadOnlyMigrationSource
     {
         public List<string> SchemaInspections { get; } = [];
         public List<string> SnapshotsStarted { get; } = [];
