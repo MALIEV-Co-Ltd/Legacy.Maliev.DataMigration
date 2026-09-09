@@ -137,6 +137,17 @@ public static partial class MigrationConsole
                 case "reconcile-delta":
                     return await RunDeltaBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable,
                         output, error, new DefaultGuardedDeltaConsoleRuntime(), cancellationToken).ConfigureAwait(false);
+                case "authorize-canonical-bootstrap":
+                case "bootstrap-canonical-database":
+                    return await RunBootstrapBoundaryAsync(
+                        invocation.Command,
+                        invocation.ConfigPath,
+                        getEnvironmentVariable,
+                        output,
+                        error,
+                        new DefaultCanonicalDatabaseBootstrapConsoleRuntime(),
+                        TimeProvider.System,
+                        cancellationToken).ConfigureAwait(false);
                 case "evidence":
                     await ProduceEvidenceAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("evidence_complete").ConfigureAwait(false);
@@ -1337,7 +1348,8 @@ public static partial class MigrationConsole
         QuotationPostgreSqlSnapshotCommandConfiguration? QuotationPostgreSqlSnapshot = null,
         SigningRolesCommandConfiguration? SigningRoles = null,
         IncrementalCommandConfiguration? Incremental = null,
-        DeltaCommandConfiguration? Delta = null);
+        DeltaCommandConfiguration? Delta = null,
+        CanonicalDatabaseBootstrapCommandConfiguration? CanonicalBootstrap = null);
 
     private sealed record QuotationSchemaBaselineCommandConfiguration(
         string PlanPath,

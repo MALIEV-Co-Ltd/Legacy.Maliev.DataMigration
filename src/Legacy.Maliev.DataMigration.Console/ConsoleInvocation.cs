@@ -29,6 +29,8 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "apply-delta-local",
         "apply-delta-production",
         "reconcile-delta",
+        "authorize-canonical-bootstrap",
+        "bootstrap-canonical-database",
     ];
 
     private static readonly string[] SecretOptionFragments =
