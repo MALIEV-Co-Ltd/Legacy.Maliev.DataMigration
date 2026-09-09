@@ -43,4 +43,21 @@ public sealed class PgDumpSourceContractTests
         Assert.True(start.RedirectStandardOutput);
         Assert.True(start.RedirectStandardError);
     }
+
+    [Fact]
+    public void BuildStartInfo_CanonicalDatabaseRequiresExplicitDeltaBoundary()
+    {
+        const string connection = "Host=localhost;Database=postgres;Username=legacy;Password=secret;SSL Mode=Disable";
+
+        MigrationExecutionException rejected = Assert.Throws<MigrationExecutionException>(() =>
+            PgDumpSource.BuildStartInfo("C:/tools/pg_dump.exe", connection, "Order"));
+        System.Diagnostics.ProcessStartInfo admitted = PgDumpSource.BuildStartInfo(
+            "C:/tools/pg_dump.exe", connection, "Order", allowCanonicalDeltaDatabase: true);
+        MigrationExecutionException unknown = Assert.Throws<MigrationExecutionException>(() =>
+            PgDumpSource.BuildStartInfo("C:/tools/pg_dump.exe", connection, "NotMigrated", allowCanonicalDeltaDatabase: true));
+
+        Assert.Equal("snapshot_shadow_name_invalid", rejected.Code);
+        Assert.Contains("Order", admitted.ArgumentList);
+        Assert.Equal("snapshot_shadow_name_invalid", unknown.Code);
+    }
 }
