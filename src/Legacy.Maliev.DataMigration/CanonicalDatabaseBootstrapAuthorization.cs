@@ -29,10 +29,22 @@ public sealed record CanonicalDatabaseBootstrapAuthorization(
     string? AttestationSignature);
 
 /// <summary>Reports a fail-closed canonical database bootstrap validation failure.</summary>
-public sealed class CanonicalDatabaseBootstrapException(string code, string message) : Exception(message)
+public sealed class CanonicalDatabaseBootstrapException : Exception
 {
+    /// <summary>Creates a bootstrap failure with a stable non-sensitive code.</summary>
+    public CanonicalDatabaseBootstrapException(string code, string message) : base(message)
+    {
+        Code = code;
+    }
+
+    internal CanonicalDatabaseBootstrapException(string code, string message, Exception innerException)
+        : base(message, innerException)
+    {
+        Code = code;
+    }
+
     /// <summary>Gets the stable non-sensitive failure code.</summary>
-    public string Code { get; } = code;
+    public string Code { get; }
 }
 
 /// <summary>Creates deterministic bytes for a canonical database bootstrap authorization signature.</summary>
