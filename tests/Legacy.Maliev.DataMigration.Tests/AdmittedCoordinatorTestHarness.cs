@@ -226,7 +226,7 @@ internal sealed class AdmittedCoordinatorTestHarness : IDisposable
         _ = Assert.Throws<IOException>(() => WindowsLocalRunAuthority.AcquireResume(Staging, Data.Binding));
     }
 
-    internal sealed class SourceAdapter(AdmittedCoordinatorTestHarness owner) : IReadOnlySqlServerMigrationSource
+    internal sealed class SourceAdapter(AdmittedCoordinatorTestHarness owner) : IReadOnlyMigrationSource
     {
         internal List<string> Started = [];
         internal Dictionary<string, int> Reads = new(StringComparer.Ordinal);

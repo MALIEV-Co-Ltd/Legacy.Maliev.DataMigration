@@ -188,7 +188,7 @@ public sealed class AdmittedCoordinatorRealPipelineTests
             throw new InvalidOperationException("automatic delete");
         }
     }
-    private sealed class StoppingSource(SqlServerMigrationSource inner, Action<string> begin) : IReadOnlySqlServerMigrationSource, IAsyncDisposable
+    private sealed class StoppingSource(SqlServerMigrationSource inner, Action<string> begin) : IReadOnlyMigrationSource, IAsyncDisposable
     {
         public Task BeginDatabaseSnapshotAsync(string database, CancellationToken token) { begin(database); return inner.BeginDatabaseSnapshotAsync(database, token); }
         public Task<SourceSchemaEvidence> InspectSchemaAsync(string database, CancellationToken token)

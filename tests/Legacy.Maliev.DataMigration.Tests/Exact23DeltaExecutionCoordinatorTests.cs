@@ -96,7 +96,7 @@ public sealed class Exact23DeltaExecutionCoordinatorTests : IDisposable
         _planKey.Dispose();
     }
 
-    private sealed class Source : IReadOnlySqlServerMigrationSource
+    private sealed class Source : IReadOnlyMigrationSource
     {
         internal List<string> Begun { get; } = [];
         internal List<string> Completed { get; } = [];
