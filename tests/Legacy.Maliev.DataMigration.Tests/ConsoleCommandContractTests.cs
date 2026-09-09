@@ -23,6 +23,8 @@ public sealed class ConsoleCommandContractTests
         "apply-delta-local",
         "apply-delta-production",
         "reconcile-delta",
+        "authorize-canonical-bootstrap",
+        "bootstrap-canonical-database",
     ];
 
     [Theory]
@@ -50,6 +52,8 @@ public sealed class ConsoleCommandContractTests
     [InlineData("sign-provenance")]
     [InlineData("cleanup-shadows")]
     [InlineData("authorize-cleanup")]
+    [InlineData("authorize-canonical-bootstrap")]
+    [InlineData("bootstrap-canonical-database")]
     public void Parse_SigningCommandsRejectInlinePrivateKeys(string command)
     {
         CommandLineException exception = Assert.Throws<CommandLineException>(() =>
