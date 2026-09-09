@@ -12,14 +12,16 @@ public sealed class Exact23DeltaReconciliationCoordinatorTests : IDisposable
         FreshSchemaPlan schemas = Schemas(now);
         var inspector = new Inspector(Evidence);
         using var signer = Signer();
-        var coordinator = new Exact23DeltaReconciliationCoordinator(inspector, inspector, new FixedTime(now), signer);
         DeltaSynchronizationPlan plan = Plan(schemas, now);
+        var coordinator = new Exact23DeltaReconciliationCoordinator(inspector, inspector,
+            new Checkpoints(plan, schemas), new FixedTime(now), signer);
 
         Exact23DeltaReconciliationResult result = await coordinator.ReconcileAsync(plan, schemas, CancellationToken.None);
 
         Assert.Equal(DatabaseInventory.ActiveDatabases, result.Databases.Select(item => item.Database));
         Assert.Equal(plan.SourceCutoffUtc, result.SourceCutoffUtc);
         Assert.Equal(now, result.ReconciledAtUtc);
+        Assert.Equal(DatabaseInventory.ActiveDatabases, result.Checkpoints.Select(item => item.Database));
         var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
         Assert.True(Exact23DeltaReconciliationCoordinator.Verify(result, trust));
     }
@@ -37,12 +39,38 @@ public sealed class Exact23DeltaReconciliationCoordinatorTests : IDisposable
         var source = new Inspector(Evidence);
         var target = new Inspector(schema => Change(Evidence(schema), field));
         using var signer = Signer();
-        var coordinator = new Exact23DeltaReconciliationCoordinator(source, target, new FixedTime(now), signer);
+        DeltaSynchronizationPlan plan = Plan(schemas, now);
+        var coordinator = new Exact23DeltaReconciliationCoordinator(source, target,
+            new Checkpoints(plan, schemas), new FixedTime(now), signer);
 
         MigrationExecutionException error = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
-            coordinator.ReconcileAsync(Plan(schemas, now), schemas, CancellationToken.None));
+            coordinator.ReconcileAsync(plan, schemas, CancellationToken.None));
 
         Assert.Equal("shadow_reconciliation_failed", error.Code);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("foreign")]
+    [InlineData("plan")]
+    [InlineData("cutoff")]
+    [InlineData("target")]
+    [InlineData("operations")]
+    [InlineData("reconciliation")]
+    public async Task Invalid_or_incomplete_checkpoint_inventory_cannot_emit_signed_success(string field)
+    {
+        DateTimeOffset now = new(2026, 9, 8, 8, 0, 0, TimeSpan.Zero);
+        FreshSchemaPlan schemas = Schemas(now);
+        DeltaSynchronizationPlan plan = Plan(schemas, now);
+        var inspector = new Inspector(Evidence);
+        using var signer = Signer();
+        var coordinator = new Exact23DeltaReconciliationCoordinator(inspector, inspector,
+            new Checkpoints(plan, schemas, field), new FixedTime(now), signer);
+
+        DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            coordinator.ReconcileAsync(plan, schemas, CancellationToken.None));
+
+        Assert.Equal("delta_reconciliation_checkpoint_invalid", error.Code);
     }
 
     private static DatabaseReconciliationEvidence Change(DatabaseReconciliationEvidence value, string field)
@@ -116,6 +144,49 @@ public sealed class Exact23DeltaReconciliationCoordinatorTests : IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(inspect(schema));
+        }
+    }
+
+    private sealed class Checkpoints(
+        DeltaSynchronizationPlan plan,
+        FreshSchemaPlan schemas,
+        string? fault = null) : IExact23DeltaCheckpointReader
+    {
+        public Task<IReadOnlyList<DeltaDatabaseCheckpointEvidence>> ReadAsync(
+            DeltaSynchronizationPlan requestedPlan,
+            FreshSchemaPlan schemaPlan,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string planSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
+            var values = DatabaseInventory.ActiveDatabases.Select(database =>
+            {
+                DeltaDatabasePlan databasePlan = plan.Databases.Single(item => item.Database == database);
+                DatabaseSchemaPlan schema = schemas.Databases.Single(item => item.Database == database);
+                string operations = DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(databasePlan);
+                string reconciliation = DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(Evidence(schema));
+                return new DeltaDatabaseCheckpointEvidence(database, plan.PlanId, planSha256, plan.SourceCutoffUtc,
+                    plan.TargetObservationSha256, operations, reconciliation, plan.SourceCutoffUtc.AddSeconds(1));
+            }).ToArray();
+            IReadOnlyList<DeltaDatabaseCheckpointEvidence> result = fault switch
+            {
+                "missing" => values.Skip(1).ToArray(),
+                "foreign" => Replace(values, values[0] with { Database = "Unapproved" }),
+                "plan" => Replace(values, values[0] with { PlanId = Guid.NewGuid() }),
+                "cutoff" => Replace(values, values[0] with { SourceCutoffUtc = plan.SourceCutoffUtc.AddSeconds(1) }),
+                "target" => Replace(values, values[0] with { TargetObservationSha256 = Hash('9') }),
+                "operations" => Replace(values, values[0] with { OperationsSha256 = Hash('9') }),
+                "reconciliation" => Replace(values, values[0] with { ReconciliationSha256 = Hash('9') }),
+                _ => values,
+            };
+            return Task.FromResult(result);
+        }
+
+        private static IReadOnlyList<DeltaDatabaseCheckpointEvidence> Replace(
+            DeltaDatabaseCheckpointEvidence[] values,
+            DeltaDatabaseCheckpointEvidence replacement)
+        {
+            return [replacement, .. values.Skip(1)];
         }
     }
 

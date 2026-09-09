@@ -460,6 +460,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime : IGuardedDeltaConsoleRu
             var coordinator = new Exact23DeltaReconciliationCoordinator(
                 new SqlServerDeltaReconciliationInspector(source),
                 new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString)),
+                new PostgreSqlExact23DeltaCheckpointReader(new(request.TargetConnectionString)),
                 TimeProvider.System,
                 request.Signer);
             Exact23DeltaReconciliationResult result = await coordinator.ReconcileAsync(
