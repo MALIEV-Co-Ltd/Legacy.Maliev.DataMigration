@@ -1,7 +1,48 @@
+using Microsoft.Data.SqlClient;
+using Testcontainers.MsSql;
+using Legacy.Maliev.DataMigration.Tests;
+
 namespace Legacy.Maliev.DataMigration.SqlServer.Tests;
 
+[Collection(SqlServerAdapterTestGroup.Name)]
 public sealed class SqlServerLiveSourceObservationTests
 {
+    [SqlServerIntegrationFact]
+    public async Task Live_observation_reads_all_23_snapshot_enabled_databases_and_rejects_disabled_isolation()
+    {
+        const string image = "mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04";
+        await using var container = new MsSqlBuilder(image)
+            .WithPassword("MALIEV_test_Only!123456")
+            .Build();
+        await container.StartAsync();
+        await using var connection = new SqlConnection(container.GetConnectionString());
+        await connection.OpenAsync();
+        foreach (string database in DatabaseInventory.ActiveDatabases)
+        {
+            string name = database.Replace("]", "]]", StringComparison.Ordinal);
+            await using var create = new SqlCommand($"CREATE DATABASE [{name}];", connection) { CommandTimeout = 120 };
+            _ = await create.ExecuteNonQueryAsync();
+            await using var enable = new SqlCommand(
+                $"ALTER DATABASE [{name}] SET ALLOW_SNAPSHOT_ISOLATION ON;", connection)
+            { CommandTimeout = 120 };
+            _ = await enable.ExecuteNonQueryAsync();
+        }
+
+        string observed = await SqlServerLiveSourceObservation.ObserveSha256Async(
+            container.GetConnectionString(), CancellationToken.None);
+        Assert.Matches("^[0-9a-f]{64}$", observed);
+        Assert.Equal(observed, await SqlServerLiveSourceObservation.ObserveSha256Async(
+            container.GetConnectionString(), CancellationToken.None));
+
+        await using var disable = new SqlCommand(
+            "ALTER DATABASE [Country] SET ALLOW_SNAPSHOT_ISOLATION OFF;", connection)
+        { CommandTimeout = 120 };
+        _ = await disable.ExecuteNonQueryAsync();
+        MigrationExecutionException error = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            SqlServerLiveSourceObservation.ObserveSha256Async(container.GetConnectionString(), CancellationToken.None));
+        Assert.Equal("delta_live_source_observation_invalid", error.Code);
+    }
+
     [Fact]
     public void Exact23_online_snapshot_inventory_has_a_stable_identity_digest()
     {

@@ -23,7 +23,8 @@ public static class SqlServerLiveSourceObservation
             const string query = """
                 SELECT CONVERT(nvarchar(128), SERVERPROPERTY('ServerName')),
                        CONVERT(nvarchar(20), SERVERPROPERTY('ProductMajorVersion'));
-                SELECT d.name, r.database_guid, d.state, d.snapshot_isolation_state
+                SELECT d.name, r.database_guid, CONVERT(int, d.state),
+                       CONVERT(int, d.snapshot_isolation_state)
                 FROM sys.databases AS d
                 LEFT JOIN sys.database_recovery_status AS r ON r.database_id = d.database_id
                 WHERE d.database_id > 4 ORDER BY d.name;
@@ -57,7 +58,7 @@ public static class SqlServerLiveSourceObservation
             }
             return ComputeSha256(server, majorVersion, observed);
         }
-        catch (Exception failure) when (failure is SqlException or InvalidOperationException or FormatException)
+        catch (Exception failure) when (failure is SqlException or InvalidOperationException or InvalidCastException or FormatException)
         {
             // SQL client messages can contain endpoint and credential details.
             throw Invalid();
