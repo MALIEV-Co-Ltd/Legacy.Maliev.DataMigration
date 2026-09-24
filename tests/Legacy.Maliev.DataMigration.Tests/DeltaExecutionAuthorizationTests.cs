@@ -25,6 +25,82 @@ public sealed class DeltaExecutionAuthorizationTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Admitted_run_can_finish_later_databases_after_token_expiry_but_retry_cannot()
+    {
+        DateTimeOffset now = new(2026, 9, 8, 7, 0, 0, TimeSpan.Zero);
+        (DeltaSynchronizationPlan plan, P256MigrationEvidenceSigner signer) = Plan(now);
+        using (signer)
+        using (var authorizer = new P256MigrationEvidenceSigner("authorization", _authorizationKey.ExportECPrivateKeyPem()))
+        {
+            DeltaExecutionAuthorization authorization = DeltaExecutionAuthorizationProducer.Produce(
+                plan, now.AddMinutes(-1), now.AddMinutes(9), authorizer);
+            var trust = new ReceiptAttestationTrustStore([new(authorizer.KeyId, authorizer.ExportSubjectPublicKeyInfo())]);
+            var clock = new AdvancingTime(now);
+            SignedDeltaExecutionAuthorizationGate admitted = await DeltaExecutionAdmission.AdmitAsync(
+                authorization, trust, clock, plan.TargetAuthority!, plan, CancellationToken.None);
+
+            clock.Now = now.AddMinutes(30);
+            await admitted.ValidateAsync(plan, DatabaseInventory.ActiveDatabases[^1], CancellationToken.None);
+            DeltaExecutionException retry = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                DeltaExecutionAdmission.AdmitAsync(authorization, trust, clock, plan.TargetAuthority!,
+                    plan, CancellationToken.None));
+            Assert.Equal("delta_execution_authorization_invalid", retry.Code);
+        }
+    }
+
+    [Fact]
+    public async Task Admission_rejects_target_mismatch_before_any_database_execution()
+    {
+        DateTimeOffset now = new(2026, 9, 8, 7, 0, 0, TimeSpan.Zero);
+        (DeltaSynchronizationPlan plan, P256MigrationEvidenceSigner signer) = Plan(now);
+        using (signer)
+        using (var authorizer = new P256MigrationEvidenceSigner("authorization", _authorizationKey.ExportECPrivateKeyPem()))
+        {
+            DeltaExecutionAuthorization authorization = DeltaExecutionAuthorizationProducer.Produce(
+                plan, now.AddMinutes(-1), now.AddMinutes(9), authorizer);
+            var trust = new ReceiptAttestationTrustStore([new(authorizer.KeyId, authorizer.ExportSubjectPublicKeyInfo())]);
+            DeltaTargetAuthority wrongTarget = plan.TargetAuthority! with { AuthorityId = "gke://wrong-target" };
+
+            DeltaExecutionException rejected = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                DeltaExecutionAdmission.AdmitAsync(authorization, trust, new FixedTime(now), wrongTarget,
+                    plan, CancellationToken.None));
+            Assert.Equal("delta_execution_authorization_invalid", rejected.Code);
+        }
+    }
+
+    [Fact]
+    public async Task Live_read_only_plan_requires_its_own_matching_short_lived_authorization()
+    {
+        DateTimeOffset now = new(2026, 9, 8, 7, 0, 0, TimeSpan.Zero);
+        (DeltaSynchronizationPlan backupPlan, P256MigrationEvidenceSigner signer) = Plan(now);
+        using (signer)
+        using (var authorizer = new P256MigrationEvidenceSigner("authorization", _authorizationKey.ExportECPrivateKeyPem()))
+        {
+            DeltaSynchronizationPlan live = DeltaSynchronizationPlanProducer.Produce(new(
+                backupPlan.SourceCommitSha, backupPlan.SourceCutoffUtc, backupPlan.BackupManifestSha256,
+                backupPlan.SchemaPlanSha256, backupPlan.RunnerDigestSha256, backupPlan.TargetNamespace,
+                backupPlan.TargetCluster, backupPlan.TargetGeneration, backupPlan.TargetObservationSha256,
+                backupPlan.BackupKeyFingerprintSha256, backupPlan.ExecutionAuthorizationKeyFingerprintSha256,
+                backupPlan.Databases)
+            {
+                TargetAuthority = backupPlan.TargetAuthority,
+                SourceMode = DeltaSourceMode.LiveReadOnly,
+                SourceObservationSha256 = Hash('9'),
+                SourceCaptureCompletedAtUtc = now.AddMinutes(-1),
+            }, signer, now);
+            DeltaExecutionAuthorization authorization = DeltaExecutionAuthorizationProducer.Produce(
+                live, now, now.AddMinutes(10), authorizer);
+            var trust = new ReceiptAttestationTrustStore([new(authorizer.KeyId, authorizer.ExportSubjectPublicKeyInfo())]);
+            var gate = new SignedDeltaExecutionAuthorizationGate(
+                authorization, trust, new FixedTime(now), live.TargetAuthority!);
+
+            await gate.ValidateAsync(live, DatabaseInventory.ActiveDatabases[0], CancellationToken.None);
+            _ = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                gate.ValidateAsync(backupPlan, DatabaseInventory.ActiveDatabases[0], CancellationToken.None));
+        }
+    }
+
     [Theory]
     [InlineData("expired")]
     [InlineData("wrong-plan")]
@@ -158,6 +234,16 @@ public sealed class DeltaExecutionAuthorizationTests : IDisposable
         public override DateTimeOffset GetUtcNow()
         {
             return now;
+        }
+    }
+
+    private sealed class AdvancingTime(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            return Now;
         }
     }
 }
