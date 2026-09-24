@@ -147,6 +147,75 @@ public sealed class SqlServerMigrationSourceContractTests
             sql);
     }
 
+    [Fact]
+    public void BuildImmediateStreamingReadTableCommand_SqlServer2017_LeavesUnicodeTextForClientEncoding()
+    {
+        var table = new TableCopyPlan("sales", "InvoiceFile", "public", "InvoiceFile",
+            ["Id", "Content", "Description"], ["Id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "bigint",
+                ["Content"] = "varbinary(max)",
+                ["Description"] = "nvarchar(max)",
+            },
+        };
+
+        string sql = SqlServerMigrationSource.BuildImmediateStreamingReadTableCommand(table,
+            supportsUtf8Collation: false);
+
+        Assert.Equal("SELECT [Id], DATALENGTH([Content]), DATALENGTH([Description]), " +
+            "[Description], [Content] FROM [sales].[InvoiceFile] ORDER BY [Id];", sql);
+        Assert.DoesNotContain("_UTF8", sql, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("14.0.3475.1", false)]
+    [InlineData("15.0.4322.2", true)]
+    [InlineData("16.0.1000.6", true)]
+    public void SupportsUtf8Collation_UsesSqlServerMajorVersion(string version, bool expected)
+    {
+        Assert.Equal(expected, SqlServerMigrationSource.SupportsUtf8Collation(version));
+    }
+
+    [Fact]
+    public async Task BufferUtf8TextAsync_PreservesThaiAndSupplementaryUnicode()
+    {
+        const string content = "ชิ้นงาน MALIEV 😊";
+        using var text = new StringReader(content);
+
+        BufferedStreamingLob buffered = await SqlServerMigrationSource.BufferUtf8TextAsync(text,
+            CancellationToken.None);
+        using Stream bytes = buffered.OpenRead();
+        using var result = new MemoryStream();
+        await bytes.CopyToAsync(result);
+
+        Assert.Equal(System.Text.Encoding.UTF8.GetBytes(content), result.ToArray());
+        Assert.Equal(result.Length, buffered.CanonicalByteLength);
+    }
+
+    [Fact]
+    public async Task BufferUtf8TextAsync_SurrogateSplitAcrossReads_PreservesCodePoint()
+    {
+        using var text = new SingleCharacterReader("ก😊ข");
+
+        BufferedStreamingLob buffered = await SqlServerMigrationSource.BufferUtf8TextAsync(text,
+            CancellationToken.None);
+        using Stream bytes = buffered.OpenRead();
+        using var result = new MemoryStream();
+        await bytes.CopyToAsync(result);
+
+        Assert.Equal(System.Text.Encoding.UTF8.GetBytes("ก😊ข"), result.ToArray());
+    }
+
+    private sealed class SingleCharacterReader(string content) : StringReader(content)
+    {
+        public override ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
+        {
+            return base.ReadAsync(buffer[..Math.Min(1, buffer.Length)], cancellationToken);
+        }
+    }
+
     [Theory]
     [InlineData("(getutcdate())", "(timezone('UTC'::text, CURRENT_TIMESTAMP))")]
     [InlineData("GETUTCDATE()", "timezone('UTC'::text, CURRENT_TIMESTAMP)")]
