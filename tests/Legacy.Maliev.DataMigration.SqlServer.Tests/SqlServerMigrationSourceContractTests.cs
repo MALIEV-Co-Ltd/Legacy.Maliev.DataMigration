@@ -119,6 +119,28 @@ public sealed class SqlServerMigrationSourceContractTests
     }
 
     [Fact]
+    public void BuildStreamingReadTableCommand_SqlServer2017_ProbesUnicodeWithoutUnsupportedCollation()
+    {
+        var table = new TableCopyPlan("sales", "InvoiceFile", "public", "InvoiceFile",
+            ["Id", "Content", "Description"], ["Id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "bigint",
+                ["Content"] = "varbinary(max)",
+                ["Description"] = "nvarchar(max)",
+            },
+        };
+
+        string sql = SqlServerMigrationSource.BuildStreamingReadTableCommand(table,
+            supportsUtf8Collation: false);
+
+        Assert.Equal("SELECT [Id], DATALENGTH([Content]), DATALENGTH([Description]) " +
+            "FROM [sales].[InvoiceFile] ORDER BY [Id];", sql);
+        Assert.DoesNotContain("_UTF8", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildImmediateStreamingReadTableCommand_SelectsLargeValuesAfterLengthProbes()
     {
         var table = new TableCopyPlan(

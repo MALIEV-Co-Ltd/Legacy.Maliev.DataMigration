@@ -303,7 +303,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         SnapshotLease lease = GetSnapshot(database);
         bool hasLargeValues = table.OrderedColumns.Any(column => IsLargeValueType(table.SourceColumnTypes[column]));
         await using var command = new SqlCommand(
-            hasLargeValues ? BuildStreamingReadTableCommand(table) : BuildReadTableCommand(table),
+            hasLargeValues ? BuildStreamingReadTableCommand(table, lease.SupportsUtf8Collation) : BuildReadTableCommand(table),
             lease.Connection,
             lease.Transaction)
         {
@@ -337,7 +337,9 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
                 else
                 {
                     long expectedByteLength = Convert.ToInt64(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture);
-                    values.Add(column, CreateStreamingLob(lease, table, column, expectedByteLength, values));
+                    values.Add(column, !lease.SupportsUtf8Collation && !IsBinaryLargeValueType(table.SourceColumnTypes[column])
+                        ? await BufferDeferredUtf8TextAsync(lease, table, column, values, cancellationToken).ConfigureAwait(false)
+                        : CreateStreamingLob(lease, table, column, expectedByteLength, values));
                 }
             }
 
@@ -632,7 +634,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         return NormalizeSourceValue(value, sourceType, string.Empty);
     }
 
-    internal static string BuildStreamingReadTableCommand(TableCopyPlan table)
+    internal static string BuildStreamingReadTableCommand(TableCopyPlan table, bool supportsUtf8Collation = true)
     {
         IReadOnlyList<string> keys = table.PrimaryKey?.Columns ?? table.OrderByColumns;
         if (keys.Count == 0 || keys.Any(column => IsLargeValueType(table.SourceColumnTypes[column])))
@@ -641,7 +643,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         }
         string[] materialized = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
         string[] lengthProbes = [.. table.OrderedColumns.Where(column => IsLargeValueType(table.SourceColumnTypes[column]))
-            .Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
+            .Select(column => IsBinaryLargeValueType(table.SourceColumnTypes[column]) || !supportsUtf8Collation
                 ? $"DATALENGTH({QuoteIdentifier(column)})"
                 : $"DATALENGTH(CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
         string select = $"SELECT {string.Join(", ", materialized.Select(QuoteIdentifier).Concat(lengthProbes))} " +
@@ -779,6 +781,42 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
                 throw new MigrationExecutionException("streaming_lob_row_ambiguous", "The deterministic source key selected multiple rows.");
             }
         });
+    }
+
+    private static async Task<BufferedStreamingLob> BufferDeferredUtf8TextAsync(
+        SnapshotLease lease,
+        TableCopyPlan table,
+        string column,
+        Dictionary<string, object?> values,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<string> keys = table.PrimaryKey?.Columns ?? table.OrderByColumns;
+        object?[] keyValues = [.. keys.Select(key => values[key])];
+        string predicate = string.Join(" AND ", keys.Select((key, index) =>
+            keyValues[index] is null or DBNull ? $"{QuoteIdentifier(key)} IS NULL" : $"{QuoteIdentifier(key)} = @key{index}"));
+        string sql = $"SELECT {QuoteIdentifier(column)} FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)} WHERE {predicate};";
+        await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction) { CommandTimeout = 0 };
+        for (var index = 0; index < keys.Count; index++)
+        {
+            if (keyValues[index] is not null and not DBNull)
+            {
+                _ = command.Parameters.AddWithValue($"key{index}", keyValues[index]);
+            }
+        }
+        await using SqlDataReader reader = await command.ExecuteReaderAsync(
+            CommandBehavior.SequentialAccess, cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
+            await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            throw new MigrationExecutionException("streaming_lob_row_missing",
+                "The deterministic source row for a streamed value is missing or null.");
+        }
+        using TextReader text = reader.GetTextReader(0);
+        BufferedStreamingLob result = await BufferUtf8TextAsync(text, cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? throw new MigrationExecutionException("streaming_lob_row_ambiguous",
+                "The deterministic source key selected multiple rows.")
+            : result;
     }
 
     internal static object? NormalizeSourceValue(object? value, string sourceType, string targetType)
