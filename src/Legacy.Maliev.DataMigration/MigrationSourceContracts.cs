@@ -19,6 +19,13 @@ public interface IReadOnlyMigrationSource
     {
         return ReadTableAsync(database, table, cancellationToken);
     }
+    IAsyncEnumerable<MigrationRow> ReadTableForDeltaExecutionAsync(
+        string database,
+        TableCopyPlan table,
+        CancellationToken cancellationToken)
+    {
+        return ReadTableAsync(database, table, cancellationToken);
+    }
     Task<IReadOnlyDictionary<string, long>> InspectForeignKeyOrphansAsync(
         string database, TableCopyPlan table, CancellationToken cancellationToken);
     Task<IReadOnlyDictionary<string, long>> InspectForeignKeyRelationshipsAsync(

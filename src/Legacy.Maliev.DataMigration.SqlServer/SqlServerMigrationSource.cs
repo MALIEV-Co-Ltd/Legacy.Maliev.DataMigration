@@ -392,6 +392,31 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         }
     }
 
+    public IAsyncEnumerable<MigrationRow> ReadTableForDeltaExecutionAsync(
+        string database,
+        TableCopyPlan table,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        SnapshotLease lease = GetSnapshot(database);
+        return UseImmediateDeltaExecutionRead(lease.SupportsUtf8Collation, table)
+            ? ReadTableImmediatelyAsync(database, table, cancellationToken)
+            : ReadTableAsync(database, table, cancellationToken);
+    }
+
+    internal static bool UseImmediateDeltaExecutionRead(bool supportsUtf8Collation, TableCopyPlan table)
+    {
+        // SQL Server 2017 cannot use a UTF-8 collation. For text-only LOB tables,
+        // the immediate reader buffers bounded UTF-8 before yielding each row,
+        // avoiding one MARS key lookup per unchanged row. Binary LOBs and newer
+        // SQL Server streams keep the key-bound deferred path so no stream outlives
+        // its sequential table reader.
+        return !supportsUtf8Collation &&
+            table.OrderedColumns.Any(column => IsLargeValueType(table.SourceColumnTypes[column]) &&
+                !IsBinaryLargeValueType(table.SourceColumnTypes[column])) &&
+            table.OrderedColumns.All(column => !IsBinaryLargeValueType(table.SourceColumnTypes[column]));
+    }
+
     public async IAsyncEnumerable<MigrationRow> ReadTableImmediatelyAsync(
         string database,
         TableCopyPlan table,
