@@ -60,17 +60,7 @@ public static partial class MigrationConsole
         }
         catch (Exception failure)
         {
-            string code = failure switch
-            {
-                MigrationConsoleException value => value.Code,
-                DeltaExecutionException value => value.Code,
-                DeltaPlanException value => value.Code,
-                MigrationExecutionException value => value.Code,
-                JsonException or ArgumentException or FormatException or CryptographicException => "delta_configuration_invalid",
-                IOException or UnauthorizedAccessException => "delta_io_failed",
-                OperationCanceledException => "operation_cancelled",
-                _ => "delta_execution_failed",
-            };
+            string code = ClassifyDeltaFailure(failure);
             if (code.Length > 100 || code.Any(value => value is not (>= 'a' and <= 'z') and not '_'))
             {
                 code = "delta_execution_failed";
@@ -83,6 +73,33 @@ public static partial class MigrationConsole
             return failure is OperationCanceledException ? 130 : failure is MigrationConsoleException or DeltaPlanException or
                 JsonException or ArgumentException or FormatException or CryptographicException ? 65 : 70;
         }
+    }
+
+    internal static string ClassifyDeltaFailure(Exception failure)
+    {
+        return failure switch
+        {
+            MigrationConsoleException value => value.Code,
+            DeltaExecutionException value => value.Code,
+            DeltaPlanException value => value.Code,
+            MigrationExecutionException value => value.Code,
+            PostgresException value => value.SqlState switch
+            {
+                "3D000" => "delta_postgresql_database_missing",
+                "42501" => "delta_postgresql_permission_denied",
+                "42P01" => "delta_postgresql_relation_missing",
+                "42703" => "delta_postgresql_column_missing",
+                _ => "delta_postgresql_query_failed",
+            },
+            NpgsqlException => "delta_postgresql_connection_failed",
+            Microsoft.Data.SqlClient.SqlException => "delta_sqlserver_query_failed",
+            TimeoutException => "delta_runtime_timeout",
+            InvalidOperationException => "delta_runtime_state_invalid",
+            JsonException or ArgumentException or FormatException or CryptographicException => "delta_configuration_invalid",
+            IOException or UnauthorizedAccessException => "delta_io_failed",
+            OperationCanceledException => "operation_cancelled",
+            _ => "delta_execution_failed",
+        };
     }
 
     private static async Task<DeltaSynchronizationPlan> ProduceDeltaPlanAsync(
