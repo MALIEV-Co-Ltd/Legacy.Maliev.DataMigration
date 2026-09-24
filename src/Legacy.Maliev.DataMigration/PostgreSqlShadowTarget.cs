@@ -1297,14 +1297,15 @@ internal static class PostgreSqlSchemaFingerprint
                 Write(writer, table.Table);
             }
 
+            // Physical column order may differ when an existing PostgreSQL table is advanced
+            // by an additive EF migration. Delta reads and writes name columns explicitly.
             foreach (ColumnShape column in columns.OrderBy(item => item.Schema, StringComparer.Ordinal)
                 .ThenBy(item => item.Table, StringComparer.Ordinal)
-                .ThenBy(item => item.Ordinal))
+                .ThenBy(item => item.Column, StringComparer.Ordinal))
             {
                 writer.Write((byte)'C');
                 Write(writer, column.Schema);
                 Write(writer, column.Table);
-                writer.Write(column.Ordinal);
                 Write(writer, column.Column);
                 Write(writer, column.Type);
                 writer.Write(column.Nullable);
