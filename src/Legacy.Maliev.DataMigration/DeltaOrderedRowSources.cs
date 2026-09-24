@@ -127,9 +127,6 @@ public sealed class SqlServerSnapshotDeltaExecutionRowSource(IReadOnlyMigrationS
         TableCopyPlan table,
         CancellationToken cancellationToken)
     {
-        // Execution can open more than one streamed source value before PostgreSQL starts
-        // consuming its parameters. Use key-bound MARS readers so no LOB retains the
-        // sequential table reader that produced the row.
-        return source.ReadTableAsync(database, table, cancellationToken);
+        return source.ReadTableForDeltaExecutionAsync(database, table, cancellationToken);
     }
 }

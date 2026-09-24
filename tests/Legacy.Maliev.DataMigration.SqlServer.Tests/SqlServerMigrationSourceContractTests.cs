@@ -201,6 +201,34 @@ public sealed class SqlServerMigrationSourceContractTests
     }
 
     [Theory]
+    [InlineData(false, "nvarchar(max)", null, true)]
+    [InlineData(false, "text", null, true)]
+    [InlineData(false, "nvarchar(max)", "varbinary(max)", false)]
+    [InlineData(false, "varbinary(max)", null, false)]
+    [InlineData(false, "nvarchar(128)", null, false)]
+    [InlineData(true, "nvarchar(max)", null, false)]
+    public void Delta_execution_uses_immediate_buffering_only_for_sql2017_text_lobs(
+        bool supportsUtf8Collation, string sourceType, string? secondSourceType, bool expected)
+    {
+        string[] columns = secondSourceType is null ? ["ID", "Payload"] : ["ID", "Payload", "Other"];
+        var sourceTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["ID"] = "int",
+            ["Payload"] = sourceType,
+        };
+        if (secondSourceType is not null)
+        {
+            sourceTypes["Other"] = secondSourceType;
+        }
+        var table = new TableCopyPlan("dbo", "Source", "public", "Target", columns, ["ID"])
+        {
+            SourceColumnTypes = sourceTypes,
+        };
+
+        Assert.Equal(expected, SqlServerMigrationSource.UseImmediateDeltaExecutionRead(supportsUtf8Collation, table));
+    }
+
+    [Theory]
     [InlineData("columns", 12, "dbo", "Customer", "ID", "70000", "69789")]
     [InlineData("columns", 11, "dbo", "Customer", "ID", "1", "1")]
     [InlineData("keys-indexes", 12, "dbo", "Customer", "ID", "70000", "70000")]
