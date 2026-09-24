@@ -16,6 +16,7 @@ public sealed class SignedDeltaPlanTests : IDisposable
         Assert.True(DeltaSynchronizationPlanVerifier.Verify(plan, trust, Now()));
         Assert.Equal(DatabaseInventory.ActiveDatabases, plan.Databases.Select(database => database.Database));
         Assert.DoesNotContain("private-row-value", System.Text.Json.JsonSerializer.Serialize(plan), StringComparison.Ordinal);
+        Assert.DoesNotContain("SourceObservationSha256", System.Text.Json.JsonSerializer.Serialize(plan), StringComparison.Ordinal);
         Assert.Matches("^[0-9a-f]{64}$", DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan));
     }
 
@@ -126,5 +127,51 @@ public sealed class SignedDeltaPlanTests : IDisposable
         Assert.True(DeltaSynchronizationPlanVerifier.Verify(plan, trust, now));
         _ = Assert.Throws<DeltaPlanException>(() => DeltaSynchronizationPlanProducer.Produce(
             request with { TargetCluster = "legacy-postgres-main" }, signer, now));
+    }
+
+    [Fact]
+    public void Live_read_only_plan_is_explicit_and_binds_the_source_capture_window()
+    {
+        using var signer = new P256MigrationEvidenceSigner("live-plan", _key.ExportECPrivateKeyPem());
+        DeltaPlanSigningRequest request = Request() with
+        {
+            SourceMode = DeltaSourceMode.LiveReadOnly,
+            SourceObservationSha256 = new('9', 64),
+            SourceCaptureCompletedAtUtc = Now().AddMinutes(-1),
+        };
+        DeltaSynchronizationPlan plan = DeltaSynchronizationPlanProducer.Produce(request, signer, Now());
+        var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
+
+        Assert.Equal("1.2", plan.SchemaVersion);
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(plan, trust, Now()));
+        Assert.False(DeltaSynchronizationPlanVerifier.Verify(plan with
+        {
+            SourceObservationSha256 = new('8', 64),
+        }, trust, Now()));
+        Assert.False(DeltaSynchronizationPlanVerifier.Verify(plan with
+        {
+            SourceCaptureCompletedAtUtc = Now().AddMinutes(1),
+        }, trust, Now()));
+        _ = Assert.Throws<DeltaPlanException>(() => DeltaSynchronizationPlanProducer.Produce(request with
+        {
+            SourceCaptureCompletedAtUtc = request.SourceCutoffUtc.AddHours(2),
+        }, signer, Now()));
+    }
+
+    [Fact]
+    public void Live_mode_cannot_be_silently_added_to_a_legacy_backup_plan()
+    {
+        using var signer = new P256MigrationEvidenceSigner("backup-plan", _key.ExportECPrivateKeyPem());
+        DeltaSynchronizationPlan plan = DeltaSynchronizationPlanProducer.Produce(Request(), signer, Now());
+        var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
+
+        Assert.Equal("1.1", plan.SchemaVersion);
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(plan, trust, Now()));
+        Assert.False(DeltaSynchronizationPlanVerifier.Verify(plan with
+        {
+            SourceMode = DeltaSourceMode.LiveReadOnly,
+            SourceObservationSha256 = new('9', 64),
+            SourceCaptureCompletedAtUtc = Now(),
+        }, trust, Now()));
     }
 }

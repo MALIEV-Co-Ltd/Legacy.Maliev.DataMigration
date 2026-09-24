@@ -191,6 +191,10 @@ public static partial class MigrationConsole
 
     private static void ValidateDeltaConfiguration(string command, DeltaCommandConfiguration configuration)
     {
+        if (configuration.SourceMode is not null and not DeltaSourceMode.LiveReadOnly)
+        {
+            throw DeltaInvalid("delta_source_mode_invalid");
+        }
         if (string.IsNullOrWhiteSpace(configuration.OutputPath) || File.Exists(configuration.OutputPath) || Directory.Exists(configuration.OutputPath))
         {
             throw DeltaInvalid("delta_output_exists");
@@ -291,7 +295,8 @@ internal sealed record DeltaCommandConfiguration(
     DateTimeOffset? AuthorizationExpiresAtUtc = null,
     bool AllowPlanSigning = false,
     bool AllowAuthorizationSigning = false,
-    bool AllowExecution = false);
+    bool AllowExecution = false,
+    string? SourceMode = null);
 
 internal static class GuardedDeltaCommandPolicy
 {
@@ -354,6 +359,11 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
 
     public async Task<DeltaSynchronizationPlan> PlanAsync(DeltaPlanRuntimeRequest request, CancellationToken cancellationToken)
     {
+        bool live = request.Configuration.SourceMode == DeltaSourceMode.LiveReadOnly;
+        string? sourceObservation = live
+            ? await SqlServerLiveSourceObservation.ObserveSha256Async(request.SourceConnectionString, cancellationToken)
+                .ConfigureAwait(false)
+            : null;
         await VerifyTargetAuthorityAsync(request.TargetConnectionString, request.Configuration.TargetAuthority,
             cancellationToken).ConfigureAwait(false);
         var targetSchema = new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString));
@@ -361,6 +371,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         {
             await targetSchema.ValidateSchemaAsync(database, cancellationToken).ConfigureAwait(false);
         }
+        DateTimeOffset captureStartedAtUtc = live ? TimeProvider.System.GetUtcNow() : request.Configuration.SourceCutoffUtc;
         await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
         var opened = new List<string>(DatabaseInventory.ActiveDatabases.Count);
         try
@@ -378,7 +389,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
             DeltaCommandConfiguration configuration = request.Configuration;
             DeltaSynchronizationPlan result = await coordinator.ProduceAsync(new(
                 request.Schema,
-                configuration.SourceCutoffUtc,
+                captureStartedAtUtc,
                 configuration.BackupManifestSha256,
                 configuration.RunnerDigestSha256,
                 configuration.TargetNamespace,
@@ -389,13 +400,19 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
                 request.AuthorizationKeyFingerprintSha256)
             {
                 TargetAuthority = configuration.TargetAuthority,
+                SourceMode = configuration.SourceMode,
+                SourceObservationSha256 = sourceObservation,
             }, cancellationToken).ConfigureAwait(false);
             foreach (string database in opened)
             {
                 await source.CompleteDatabaseSnapshotAsync(database, cancellationToken).ConfigureAwait(false);
             }
             opened.Clear();
-            return result;
+            return live && !string.Equals(sourceObservation,
+                await SqlServerLiveSourceObservation.ObserveSha256Async(request.SourceConnectionString, cancellationToken)
+                    .ConfigureAwait(false), StringComparison.Ordinal)
+                ? throw new DeltaExecutionException("delta_live_source_drift", "The live SQL Server source identity changed during planning.")
+                : result;
         }
         catch
         {
@@ -414,6 +431,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         {
             throw new DeltaExecutionException("delta_execution_plan_invalid", "The signed delta plan is invalid or targets another authority.");
         }
+        await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
         await VerifyTargetAuthorityAsync(request.TargetConnectionString, request.ExpectedAuthority, cancellationToken)
             .ConfigureAwait(false);
         var gate = new SignedDeltaExecutionAuthorizationGate(request.Authorization, request.Trust,
@@ -441,12 +459,15 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
                 request.Trust,
                 TimeProvider.System);
         }
-        return await new Exact23DeltaExecutionCoordinator(source, CreateExecutor)
+        Exact23DeltaExecutionResult result = await new Exact23DeltaExecutionCoordinator(source, CreateExecutor)
             .ExecuteAsync(request.Plan, request.Schema, cancellationToken).ConfigureAwait(false);
+        await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
+        return result;
     }
 
     public async Task<Exact23DeltaReconciliationResult> ReconcileAsync(DeltaReconcileRuntimeRequest request, CancellationToken cancellationToken)
     {
+        await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
         await VerifyTargetAuthorityAsync(request.TargetConnectionString,
             request.Plan.TargetAuthority ?? throw new DeltaExecutionException("delta_target_authority_invalid", "The delta plan has no target authority."),
             cancellationToken).ConfigureAwait(false);
@@ -472,6 +493,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
                 await source.CompleteDatabaseSnapshotAsync(database, cancellationToken).ConfigureAwait(false);
             }
             opened.Clear();
+            await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
             return result;
         }
         catch
@@ -481,6 +503,21 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
                 await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None).ConfigureAwait(false);
             }
             throw;
+        }
+    }
+
+    private static async Task VerifyLiveSourceAsync(DeltaSynchronizationPlan plan, string connectionString,
+        CancellationToken cancellationToken)
+    {
+        if (plan.SourceMode != DeltaSourceMode.LiveReadOnly)
+        {
+            return;
+        }
+        string observed = await SqlServerLiveSourceObservation.ObserveSha256Async(connectionString, cancellationToken)
+            .ConfigureAwait(false);
+        if (!string.Equals(observed, plan.SourceObservationSha256, StringComparison.Ordinal))
+        {
+            throw new DeltaExecutionException("delta_live_source_drift", "The live SQL Server source identity differs from the signed plan.");
         }
     }
 
