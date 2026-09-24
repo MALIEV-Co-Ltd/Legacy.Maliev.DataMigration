@@ -200,6 +200,41 @@ public sealed class SqlServerMigrationSourceContractTests
         Assert.Equal(expected, SqlServerMigrationSource.SupportsUtf8Collation(version));
     }
 
+    [Theory]
+    [InlineData("columns", 12, "dbo", "Customer", "ID", "70000", "69789")]
+    [InlineData("columns", 11, "dbo", "Customer", "ID", "1", "1")]
+    [InlineData("keys-indexes", 12, "dbo", "Customer", "ID", "70000", "70000")]
+    [InlineData("columns", 12, "dbo", "Customer", "Name", "70000", "70000")]
+    public void ResolveSchemaHashValue_ReplacesOnlyPlannedIdentityCurrentValue(
+        string section,
+        int ordinal,
+        string schema,
+        string table,
+        string column,
+        string observed,
+        string expected)
+    {
+        var baseline = new Dictionary<(string Schema, string Table, string Column), string?>
+        {
+            [("dbo", "Customer", "ID")] = "69789",
+        };
+
+        Assert.Equal(expected, SqlServerMigrationSource.ResolveSchemaHashValue(
+            section, ordinal, schema, table, column, observed, baseline));
+    }
+
+    [Fact]
+    public void ResolveSchemaHashValue_UnusedIdentityRestoresNullBaseline()
+    {
+        var baseline = new Dictionary<(string Schema, string Table, string Column), string?>
+        {
+            [("dbo", "Unused", "ID")] = null,
+        };
+
+        Assert.Equal("<null>", SqlServerMigrationSource.ResolveSchemaHashValue(
+            "columns", 12, "dbo", "Unused", "ID", "1", baseline));
+    }
+
     [Fact]
     public async Task BufferUtf8TextAsync_PreservesThaiAndSupplementaryUnicode()
     {

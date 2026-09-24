@@ -56,8 +56,24 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         }
     }
 
-    public async Task<SourceSchemaEvidence> InspectSchemaAsync(
+    public Task<SourceSchemaEvidence> InspectSchemaAsync(
         string database,
+        CancellationToken cancellationToken)
+    {
+        return InspectSchemaCoreAsync(database, null, cancellationToken);
+    }
+
+    public Task<SourceSchemaEvidence> InspectSchemaForPlanAsync(
+        DatabaseSchemaPlan plan,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        return InspectSchemaCoreAsync(plan.Database, plan, cancellationToken);
+    }
+
+    private async Task<SourceSchemaEvidence> InspectSchemaCoreAsync(
+        string database,
+        DatabaseSchemaPlan? baseline,
         CancellationToken cancellationToken)
     {
         SnapshotLease lease = GetSnapshot(database);
@@ -140,7 +156,18 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
             ORDER BY child_schema.name, child_table.name, foreign_key.name, mapping.constraint_column_id;
             """;
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        await AppendSchemaQueryAsync(hash, lease, "columns", columnSql, cancellationToken).ConfigureAwait(false);
+        IReadOnlyDictionary<(string Schema, string Table, string Column), string?>? baselineIdentities =
+            baseline?.Tables
+                .SelectMany(table => table.Identities.Select(identity => new
+                {
+                    Key = (table.SourceSchema, table.SourceTable, identity.Column),
+                    Value = identity.IsCalled
+                        ? identity.CurrentValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        : null,
+                }))
+                .ToDictionary(item => item.Key, item => item.Value);
+        await AppendSchemaQueryAsync(hash, lease, "columns", columnSql, cancellationToken,
+            baselineIdentities).ConfigureAwait(false);
         await AppendSchemaQueryAsync(hash, lease, "keys-indexes", keyAndIndexSql, cancellationToken).ConfigureAwait(false);
         await AppendSchemaQueryAsync(hash, lease, "checks", checkSql, cancellationToken).ConfigureAwait(false);
         await AppendSchemaQueryAsync(hash, lease, "foreign-keys", foreignKeySql, cancellationToken).ConfigureAwait(false);
@@ -267,7 +294,8 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         SnapshotLease lease,
         string section,
         string sql,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<(string Schema, string Table, string Column), string?>? baselineIdentities = null)
     {
         AppendHashValue(hash, section);
         await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction);
@@ -276,13 +304,30 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         {
             for (var ordinal = 0; ordinal < reader.FieldCount; ordinal++)
             {
-                AppendHashValue(
-                    hash,
-                    reader.IsDBNull(ordinal)
-                        ? "<null>"
-                        : Convert.ToString(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty);
+                string value = reader.IsDBNull(ordinal)
+                    ? "<null>"
+                    : Convert.ToString(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                AppendHashValue(hash, section == "columns" && ordinal == 12
+                    ? ResolveSchemaHashValue(section, ordinal, reader.GetString(0), reader.GetString(1),
+                        reader.GetString(3), value, baselineIdentities)
+                    : value);
             }
         }
+    }
+
+    internal static string ResolveSchemaHashValue(
+        string section,
+        int ordinal,
+        string schema,
+        string table,
+        string column,
+        string observedValue,
+        IReadOnlyDictionary<(string Schema, string Table, string Column), string?>? baselineIdentities)
+    {
+        return section == "columns" && ordinal == 12 && baselineIdentities is not null &&
+            baselineIdentities.TryGetValue((schema, table, column), out string? baselineValue)
+            ? baselineValue ?? "<null>"
+            : observedValue;
     }
 
     private static void AppendHashValue(IncrementalHash hash, string value)
