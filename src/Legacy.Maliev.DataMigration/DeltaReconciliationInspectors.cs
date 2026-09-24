@@ -12,7 +12,7 @@ public sealed class SqlServerDeltaReconciliationInspector(IReadOnlyMigrationSour
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(schema);
-        SourceSchemaEvidence observedSchema = await source.InspectSchemaAsync(schema.Database, cancellationToken)
+        SourceSchemaEvidence observedSchema = await source.InspectSchemaForPlanAsync(schema, cancellationToken)
             .ConfigureAwait(false);
         if (!string.Equals(observedSchema.SchemaSha256, schema.SourceSchemaSha256, StringComparison.OrdinalIgnoreCase))
         {
