@@ -33,8 +33,10 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         SqlTransaction transaction;
+        bool supportsUtf8Collation;
         try
         {
+            supportsUtf8Collation = SupportsUtf8Collation(connection.ServerVersion);
             transaction = (SqlTransaction)await connection
                 .BeginTransactionAsync(IsolationLevel.Snapshot, cancellationToken)
                 .ConfigureAwait(false);
@@ -45,7 +47,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
             throw;
         }
 
-        if (!_snapshots.TryAdd(database, new SnapshotLease(connection, transaction)))
+        if (!_snapshots.TryAdd(database, new SnapshotLease(connection, transaction, supportsUtf8Collation)))
         {
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             await transaction.DisposeAsync().ConfigureAwait(false);
@@ -363,7 +365,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         SnapshotLease lease = GetSnapshot(database);
         string[] materializedColumns = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
         await using var command = new SqlCommand(
-            BuildImmediateStreamingReadTableCommand(table),
+            BuildImmediateStreamingReadTableCommand(table, lease.SupportsUtf8Collation),
             lease.Connection,
             lease.Transaction)
         {
@@ -383,6 +385,58 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
                     ? null
                     : reader.GetValue(ordinal);
                 values.Add(column, NormalizeSourceValue(value, sourceType, table.ColumnTypes[column]));
+            }
+
+            if (!lease.SupportsUtf8Collation)
+            {
+                long?[] lengths = new long?[streamedColumns.Length];
+                for (var index = 0; index < streamedColumns.Length; index++)
+                {
+                    int ordinal = materializedColumns.Length + index;
+                    lengths[index] = await reader.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false)
+                        ? null
+                        : Convert.ToInt64(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture);
+                }
+
+                string[] textColumns = [.. streamedColumns.Where(column => !IsBinaryLargeValueType(table.SourceColumnTypes[column]))];
+                string[] binaryColumns = [.. streamedColumns.Where(column => IsBinaryLargeValueType(table.SourceColumnTypes[column]))];
+                int valueStart = materializedColumns.Length + streamedColumns.Length;
+                for (var index = 0; index < textColumns.Length; index++)
+                {
+                    string column = textColumns[index];
+                    long? length = lengths[Array.IndexOf(streamedColumns, column)];
+                    if (length is null)
+                    {
+                        values.Add(column, null);
+                        continue;
+                    }
+                    using TextReader text = reader.GetTextReader(valueStart + index);
+                    values.Add(column, await BufferUtf8TextAsync(text, cancellationToken).ConfigureAwait(false));
+                }
+
+                var binaryLobs = new List<StreamingLob>(binaryColumns.Length);
+                for (var index = 0; index < binaryColumns.Length; index++)
+                {
+                    string column = binaryColumns[index];
+                    long? length = lengths[Array.IndexOf(streamedColumns, column)];
+                    if (length is null)
+                    {
+                        values.Add(column, null);
+                        continue;
+                    }
+                    StreamingLob lob = CreateImmediateStreamingLob(reader, valueStart + textColumns.Length + index,
+                        table.SourceColumnTypes[column], length.Value);
+                    values.Add(column, lob);
+                    binaryLobs.Add(lob);
+                }
+
+                yield return new MigrationRow(values);
+                if (binaryLobs.Any(lob => !lob.IsConsumed))
+                {
+                    throw new MigrationExecutionException("streaming_lob_not_consumed_immediately",
+                        "Every inline streamed field must be consumed before advancing to the next source row.");
+                }
+                continue;
             }
 
             var lobs = new List<StreamingLob>(streamedColumns.Length);
@@ -597,7 +651,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
             : $"{select} ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
     }
 
-    internal static string BuildImmediateStreamingReadTableCommand(TableCopyPlan table)
+    internal static string BuildImmediateStreamingReadTableCommand(TableCopyPlan table, bool supportsUtf8Collation = true)
     {
         ArgumentNullException.ThrowIfNull(table);
         if (table.OrderedColumns.Count == 0 || table.OrderByColumns.Count == 0)
@@ -607,12 +661,15 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
 
         string[] materialized = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
         string[] streamed = [.. table.OrderedColumns.Where(column => IsLargeValueType(table.SourceColumnTypes[column]))];
-        string[] lengthProbes = [.. streamed.Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
+        string[] lengthProbes = [.. streamed.Select(column => IsBinaryLargeValueType(table.SourceColumnTypes[column]) || !supportsUtf8Collation
             ? $"DATALENGTH({QuoteIdentifier(column)})"
             : $"DATALENGTH(CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
-        string[] streamedValues = [.. streamed.Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
-            ? QuoteIdentifier(column)
-            : $"CONVERT(varbinary(max), CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
+        string[] streamedValues = supportsUtf8Collation
+            ? [.. streamed.Select(column => IsBinaryLargeValueType(table.SourceColumnTypes[column])
+                ? QuoteIdentifier(column)
+                : $"CONVERT(varbinary(max), CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")]
+            : [.. streamed.Where(column => !IsBinaryLargeValueType(table.SourceColumnTypes[column])).Select(QuoteIdentifier)
+                .Concat(streamed.Where(column => IsBinaryLargeValueType(table.SourceColumnTypes[column])).Select(QuoteIdentifier))];
         string select = $"SELECT {string.Join(", ", materialized.Select(QuoteIdentifier).Concat(lengthProbes).Concat(streamedValues))} " +
             $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)}";
         return table.SourceKnownEmpty
@@ -632,6 +689,44 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
             await using Stream input = reader.GetStream(ordinal);
             await input.CopyToAsync(destination, 64 * 1024, cancellationToken).ConfigureAwait(false);
         });
+    }
+
+    internal static bool SupportsUtf8Collation(string serverVersion)
+    {
+        string major = serverVersion.Split('.', 2)[0];
+        return int.TryParse(major, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out int version) && version >= 14
+            ? version >= 15
+            : throw new MigrationExecutionException("sqlserver_version_unsupported",
+                "The SQL Server source version cannot be used for a verified text stream.");
+    }
+
+    private static bool IsBinaryLargeValueType(string sourceType)
+    {
+        return sourceType is "varbinary(max)" or "image";
+    }
+
+    internal static async Task<BufferedStreamingLob> BufferUtf8TextAsync(TextReader text, CancellationToken cancellationToken)
+    {
+        const long maximumBytes = 64L * 1024 * 1024;
+        using var buffer = new MemoryStream();
+        await using var writer = new StreamWriter(buffer, new UTF8Encoding(false, true), 32 * 1024, leaveOpen: true);
+        char[] chars = new char[32 * 1024];
+        int count;
+        while ((count = await text.ReadAsync(chars.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            await writer.WriteAsync(chars.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+            if (buffer.Length > maximumBytes)
+            {
+                throw new MigrationExecutionException("delta_text_lob_capacity_exceeded",
+                    "A SQL Server text field exceeds the bounded UTF-8 migration buffer.");
+            }
+        }
+        await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+        return buffer.Length > maximumBytes
+            ? throw new MigrationExecutionException("delta_text_lob_capacity_exceeded",
+                "A SQL Server text field exceeds the bounded UTF-8 migration buffer.")
+            : new BufferedStreamingLob(StreamingLobKind.Text, buffer.ToArray());
     }
 
     private static StreamingLob CreateStreamingLob(
@@ -865,7 +960,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
     [GeneratedRegex("^[A-Za-z][A-Za-z0-9_]{0,127}$", RegexOptions.CultureInvariant)]
     private static partial Regex DatabaseName();
 
-    private sealed record SnapshotLease(SqlConnection Connection, SqlTransaction Transaction) : IAsyncDisposable
+    private sealed record SnapshotLease(SqlConnection Connection, SqlTransaction Transaction, bool SupportsUtf8Collation) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {
