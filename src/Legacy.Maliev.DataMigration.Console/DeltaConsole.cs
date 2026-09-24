@@ -92,13 +92,31 @@ public static partial class MigrationConsole
                 _ => "delta_postgresql_query_failed",
             },
             NpgsqlException => "delta_postgresql_connection_failed",
-            Microsoft.Data.SqlClient.SqlException => "delta_sqlserver_query_failed",
+            Microsoft.Data.SqlClient.SqlException value => ClassifySqlServerErrorNumber(value.Number),
             TimeoutException => "delta_runtime_timeout",
             InvalidOperationException => "delta_runtime_state_invalid",
             JsonException or ArgumentException or FormatException or CryptographicException => "delta_configuration_invalid",
             IOException or UnauthorizedAccessException => "delta_io_failed",
             OperationCanceledException => "operation_cancelled",
             _ => "delta_execution_failed",
+        };
+    }
+
+    internal static string ClassifySqlServerErrorNumber(int number)
+    {
+        return number switch
+        {
+            -2 => "delta_sqlserver_query_timeout",
+            207 => "delta_sqlserver_column_missing",
+            208 => "delta_sqlserver_relation_missing",
+            229 => "delta_sqlserver_permission_denied",
+            1205 => "delta_sqlserver_deadlock",
+            3960 => "delta_sqlserver_snapshot_conflict",
+            4060 => "delta_sqlserver_database_unavailable",
+            >= 0 => "delta_sqlserver_error_" + string.Concat(number.ToString(
+                System.Globalization.CultureInfo.InvariantCulture).Select(digit =>
+                (char)('a' + digit - '0'))),
+            _ => "delta_sqlserver_query_failed",
         };
     }
 
