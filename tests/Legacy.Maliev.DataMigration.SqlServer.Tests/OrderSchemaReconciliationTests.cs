@@ -165,6 +165,21 @@ public sealed class OrderSchemaReconciliationTests(PostgreSqlAdapterFixture fixt
         Assert.Equal(exact, actual);
     }
 
+    [Fact]
+    public void Compute_ColumnOrdinalDifferencesDoNotChangeSemanticSchema()
+    {
+        PostgreSqlSchemaFingerprint.ColumnShape id = new("public", "Order", 1, "ID", "integer", false, false, "", "", "");
+        PostgreSqlSchemaFingerprint.ColumnShape name = new("public", "Order", 2, "Name", "text", true, false, "", "", "");
+        string first = PostgreSqlSchemaFingerprint.Compute([new("public", "Order")], [id, name], [], [], []);
+        string reordered = PostgreSqlSchemaFingerprint.Compute([new("public", "Order")],
+            [id with { Ordinal = 2 }, name with { Ordinal = 1 }], [], [], []);
+        string changedType = PostgreSqlSchemaFingerprint.Compute([new("public", "Order")],
+            [id, name with { Type = "character varying(50)" }], [], [], []);
+
+        Assert.Equal(first, reordered);
+        Assert.NotEqual(first, changedType);
+    }
+
     internal static DatabaseSchemaPlan CreatePlan(string nameDefault)
     {
         var table = new TableCopyPlan("dbo", "Order", "public", "Order", ["ID", "Name", "Manufactured"], ["ID"])

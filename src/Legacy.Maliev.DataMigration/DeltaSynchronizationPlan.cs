@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace Legacy.Maliev.DataMigration;
@@ -8,6 +9,11 @@ public static class DeltaTargetAuthorityKind
 {
     public const string ProductionCloudNativePg = "production-cloudnativepg";
     public const string LocalAspire = "local-aspire";
+}
+
+public static class DeltaSourceMode
+{
+    public const string LiveReadOnly = "live-readonly-comparison";
 }
 
 public sealed record DeltaTargetAuthority(string Kind, string AuthorityId, string SystemIdentifierSha256);
@@ -38,6 +44,9 @@ public sealed record DeltaPlanSigningRequest(
     IReadOnlyList<DeltaDatabasePlan> Databases)
 {
     public DeltaTargetAuthority? TargetAuthority { get; init; }
+    public string? SourceMode { get; init; }
+    public string? SourceObservationSha256 { get; init; }
+    public DateTimeOffset? SourceCaptureCompletedAtUtc { get; init; }
 }
 
 public sealed record DeltaSynchronizationPlan(
@@ -60,6 +69,12 @@ public sealed record DeltaSynchronizationPlan(
     string? AttestationSignature)
 {
     public DeltaTargetAuthority? TargetAuthority { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourceMode { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourceObservationSha256 { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? SourceCaptureCompletedAtUtc { get; init; }
 }
 
 public sealed class DeltaPlanException(string code, string message) : Exception(message)
@@ -69,14 +84,19 @@ public sealed class DeltaPlanException(string code, string message) : Exception(
 
 public static class DeltaSynchronizationPlanCanonicalizer
 {
-    private static ReadOnlySpan<byte> Domain => "legacy-maliev-exact23-delta-plan-v1.1\0"u8;
+    private static ReadOnlySpan<byte> Domain(DeltaSynchronizationPlan plan)
+    {
+        return plan.SchemaVersion == "1.2"
+        ? "legacy-maliev-exact23-delta-plan-v1.2\0"u8
+        : "legacy-maliev-exact23-delta-plan-v1.1\0"u8;
+    }
 
     public static byte[] CreatePayload(DeltaSynchronizationPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
         JsonElement element = JsonSerializer.SerializeToElement(plan with { AttestationSignature = null });
         using var stream = new MemoryStream();
-        stream.Write(Domain);
+        stream.Write(Domain(plan));
         using (var writer = new Utf8JsonWriter(stream))
         {
             WriteCanonical(writer, element);
@@ -151,7 +171,7 @@ public static partial class DeltaSynchronizationPlanProducer
         ArgumentNullException.ThrowIfNull(signer);
         ValidateRequest(request, signer, nowUtc);
         var unsigned = new DeltaSynchronizationPlan(
-            "1.1",
+            request.SourceMode == DeltaSourceMode.LiveReadOnly ? "1.2" : "1.1",
             Guid.NewGuid(),
             request.SourceCommitSha,
             request.SourceCutoffUtc,
@@ -170,6 +190,9 @@ public static partial class DeltaSynchronizationPlanProducer
             null)
         {
             TargetAuthority = request.TargetAuthority,
+            SourceMode = request.SourceMode,
+            SourceObservationSha256 = request.SourceObservationSha256,
+            SourceCaptureCompletedAtUtc = request.SourceCaptureCompletedAtUtc,
         };
         return unsigned with
         {
@@ -209,7 +232,26 @@ public static partial class DeltaSynchronizationPlanProducer
             throw Error("delta_plan_signing_role_reused", "Backup, delta-plan, and execution-authorization roles require distinct keys.");
         }
 
+        ValidateSourceEvidence(request.SourceMode, request.SourceObservationSha256,
+            request.SourceCutoffUtc, request.SourceCaptureCompletedAtUtc, nowUtc);
+
         ValidateDatabases(request.Databases);
+    }
+
+    internal static void ValidateSourceEvidence(string? mode, string? observationSha256,
+        DateTimeOffset captureStartedAtUtc, DateTimeOffset? captureCompletedAtUtc, DateTimeOffset nowUtc)
+    {
+        if (mode is null && observationSha256 is null && captureCompletedAtUtc is null)
+        {
+            return;
+        }
+        if (mode != DeltaSourceMode.LiveReadOnly || !Sha256().IsMatch(observationSha256 ?? string.Empty) ||
+            captureCompletedAtUtc is null || captureCompletedAtUtc.Value.Offset != TimeSpan.Zero ||
+            captureCompletedAtUtc.Value < captureStartedAtUtc || captureCompletedAtUtc.Value > nowUtc ||
+            captureCompletedAtUtc.Value - captureStartedAtUtc > TimeSpan.FromHours(1))
+        {
+            throw Error("delta_plan_live_source_invalid", "Live comparison requires a bounded, observed read-only source capture window.");
+        }
     }
 
     public static bool ValidAuthority(
@@ -310,7 +352,7 @@ public static class DeltaSynchronizationPlanVerifier
         ArgumentNullException.ThrowIfNull(trust);
         try
         {
-            if (!string.Equals(plan.SchemaVersion, "1.1", StringComparison.Ordinal) ||
+            if (plan.SchemaVersion is not ("1.1" or "1.2") ||
                 plan.PlanId == Guid.Empty || nowUtc.Offset != TimeSpan.Zero || plan.CreatedAtUtc.Offset != TimeSpan.Zero ||
                 plan.CreatedAtUtc > nowUtc || plan.SourceCutoffUtc > plan.CreatedAtUtc ||
                 nowUtc - plan.SourceCutoffUtc > GuardedRunnerPolicy.MaximumBackupReceiptAge ||
@@ -321,6 +363,14 @@ public static class DeltaSynchronizationPlanVerifier
                 !DeltaSynchronizationPlanProducer.ValidAuthority(plan.TargetAuthority, plan.TargetNamespace, plan.TargetCluster) ||
                 string.IsNullOrWhiteSpace(plan.TargetGeneration) ||
                 string.IsNullOrWhiteSpace(plan.AttestationKeyId) || string.IsNullOrWhiteSpace(plan.AttestationSignature))
+            {
+                return false;
+            }
+
+            DeltaSynchronizationPlanProducer.ValidateSourceEvidence(plan.SourceMode,
+                plan.SourceObservationSha256, plan.SourceCutoffUtc,
+                plan.SourceCaptureCompletedAtUtc, nowUtc);
+            if (plan.SchemaVersion == "1.2" != (plan.SourceMode == DeltaSourceMode.LiveReadOnly))
             {
                 return false;
             }

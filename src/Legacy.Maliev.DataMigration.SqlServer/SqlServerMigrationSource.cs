@@ -33,8 +33,10 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         SqlTransaction transaction;
+        bool supportsUtf8Collation;
         try
         {
+            supportsUtf8Collation = SupportsUtf8Collation(connection.ServerVersion);
             transaction = (SqlTransaction)await connection
                 .BeginTransactionAsync(IsolationLevel.Snapshot, cancellationToken)
                 .ConfigureAwait(false);
@@ -45,7 +47,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
             throw;
         }
 
-        if (!_snapshots.TryAdd(database, new SnapshotLease(connection, transaction)))
+        if (!_snapshots.TryAdd(database, new SnapshotLease(connection, transaction, supportsUtf8Collation)))
         {
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             await transaction.DisposeAsync().ConfigureAwait(false);
@@ -54,8 +56,24 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         }
     }
 
-    public async Task<SourceSchemaEvidence> InspectSchemaAsync(
+    public Task<SourceSchemaEvidence> InspectSchemaAsync(
         string database,
+        CancellationToken cancellationToken)
+    {
+        return InspectSchemaCoreAsync(database, null, cancellationToken);
+    }
+
+    public Task<SourceSchemaEvidence> InspectSchemaForPlanAsync(
+        DatabaseSchemaPlan plan,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        return InspectSchemaCoreAsync(plan.Database, plan, cancellationToken);
+    }
+
+    private async Task<SourceSchemaEvidence> InspectSchemaCoreAsync(
+        string database,
+        DatabaseSchemaPlan? baseline,
         CancellationToken cancellationToken)
     {
         SnapshotLease lease = GetSnapshot(database);
@@ -138,7 +156,18 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
             ORDER BY child_schema.name, child_table.name, foreign_key.name, mapping.constraint_column_id;
             """;
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        await AppendSchemaQueryAsync(hash, lease, "columns", columnSql, cancellationToken).ConfigureAwait(false);
+        IReadOnlyDictionary<(string Schema, string Table, string Column), string?>? baselineIdentities =
+            baseline?.Tables
+                .SelectMany(table => table.Identities.Select(identity => new
+                {
+                    Key = (table.SourceSchema, table.SourceTable, identity.Column),
+                    Value = identity.IsCalled
+                        ? identity.CurrentValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        : null,
+                }))
+                .ToDictionary(item => item.Key, item => item.Value);
+        await AppendSchemaQueryAsync(hash, lease, "columns", columnSql, cancellationToken,
+            baselineIdentities).ConfigureAwait(false);
         await AppendSchemaQueryAsync(hash, lease, "keys-indexes", keyAndIndexSql, cancellationToken).ConfigureAwait(false);
         await AppendSchemaQueryAsync(hash, lease, "checks", checkSql, cancellationToken).ConfigureAwait(false);
         await AppendSchemaQueryAsync(hash, lease, "foreign-keys", foreignKeySql, cancellationToken).ConfigureAwait(false);
@@ -265,7 +294,8 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         SnapshotLease lease,
         string section,
         string sql,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<(string Schema, string Table, string Column), string?>? baselineIdentities = null)
     {
         AppendHashValue(hash, section);
         await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction);
@@ -274,13 +304,30 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         {
             for (var ordinal = 0; ordinal < reader.FieldCount; ordinal++)
             {
-                AppendHashValue(
-                    hash,
-                    reader.IsDBNull(ordinal)
-                        ? "<null>"
-                        : Convert.ToString(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty);
+                string value = reader.IsDBNull(ordinal)
+                    ? "<null>"
+                    : Convert.ToString(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                AppendHashValue(hash, section == "columns" && ordinal == 12
+                    ? ResolveSchemaHashValue(section, ordinal, reader.GetString(0), reader.GetString(1),
+                        reader.GetString(3), value, baselineIdentities)
+                    : value);
             }
         }
+    }
+
+    internal static string ResolveSchemaHashValue(
+        string section,
+        int ordinal,
+        string schema,
+        string table,
+        string column,
+        string observedValue,
+        IReadOnlyDictionary<(string Schema, string Table, string Column), string?>? baselineIdentities)
+    {
+        return section == "columns" && ordinal == 12 && baselineIdentities is not null &&
+            baselineIdentities.TryGetValue((schema, table, column), out string? baselineValue)
+            ? baselineValue ?? "<null>"
+            : observedValue;
     }
 
     private static void AppendHashValue(IncrementalHash hash, string value)
@@ -301,7 +348,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         SnapshotLease lease = GetSnapshot(database);
         bool hasLargeValues = table.OrderedColumns.Any(column => IsLargeValueType(table.SourceColumnTypes[column]));
         await using var command = new SqlCommand(
-            hasLargeValues ? BuildStreamingReadTableCommand(table) : BuildReadTableCommand(table),
+            hasLargeValues ? BuildStreamingReadTableCommand(table, lease.SupportsUtf8Collation) : BuildReadTableCommand(table),
             lease.Connection,
             lease.Transaction)
         {
@@ -335,12 +382,39 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
                 else
                 {
                     long expectedByteLength = Convert.ToInt64(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture);
-                    values.Add(column, CreateStreamingLob(lease, table, column, expectedByteLength, values));
+                    values.Add(column, !lease.SupportsUtf8Collation && !IsBinaryLargeValueType(table.SourceColumnTypes[column])
+                        ? await BufferDeferredUtf8TextAsync(lease, table, column, values, cancellationToken).ConfigureAwait(false)
+                        : CreateStreamingLob(lease, table, column, expectedByteLength, values));
                 }
             }
 
             yield return new MigrationRow(values);
         }
+    }
+
+    public IAsyncEnumerable<MigrationRow> ReadTableForDeltaExecutionAsync(
+        string database,
+        TableCopyPlan table,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        SnapshotLease lease = GetSnapshot(database);
+        return UseImmediateDeltaExecutionRead(lease.SupportsUtf8Collation, table)
+            ? ReadTableImmediatelyAsync(database, table, cancellationToken)
+            : ReadTableAsync(database, table, cancellationToken);
+    }
+
+    internal static bool UseImmediateDeltaExecutionRead(bool supportsUtf8Collation, TableCopyPlan table)
+    {
+        // SQL Server 2017 cannot use a UTF-8 collation. For text-only LOB tables,
+        // the immediate reader buffers bounded UTF-8 before yielding each row,
+        // avoiding one MARS key lookup per unchanged row. Binary LOBs and newer
+        // SQL Server streams keep the key-bound deferred path so no stream outlives
+        // its sequential table reader.
+        return !supportsUtf8Collation &&
+            table.OrderedColumns.Any(column => IsLargeValueType(table.SourceColumnTypes[column]) &&
+                !IsBinaryLargeValueType(table.SourceColumnTypes[column])) &&
+            table.OrderedColumns.All(column => !IsBinaryLargeValueType(table.SourceColumnTypes[column]));
     }
 
     public async IAsyncEnumerable<MigrationRow> ReadTableImmediatelyAsync(
@@ -363,7 +437,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         SnapshotLease lease = GetSnapshot(database);
         string[] materializedColumns = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
         await using var command = new SqlCommand(
-            BuildImmediateStreamingReadTableCommand(table),
+            BuildImmediateStreamingReadTableCommand(table, lease.SupportsUtf8Collation),
             lease.Connection,
             lease.Transaction)
         {
@@ -383,6 +457,58 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
                     ? null
                     : reader.GetValue(ordinal);
                 values.Add(column, NormalizeSourceValue(value, sourceType, table.ColumnTypes[column]));
+            }
+
+            if (!lease.SupportsUtf8Collation)
+            {
+                long?[] lengths = new long?[streamedColumns.Length];
+                for (var index = 0; index < streamedColumns.Length; index++)
+                {
+                    int ordinal = materializedColumns.Length + index;
+                    lengths[index] = await reader.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false)
+                        ? null
+                        : Convert.ToInt64(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture);
+                }
+
+                string[] textColumns = [.. streamedColumns.Where(column => !IsBinaryLargeValueType(table.SourceColumnTypes[column]))];
+                string[] binaryColumns = [.. streamedColumns.Where(column => IsBinaryLargeValueType(table.SourceColumnTypes[column]))];
+                int valueStart = materializedColumns.Length + streamedColumns.Length;
+                for (var index = 0; index < textColumns.Length; index++)
+                {
+                    string column = textColumns[index];
+                    long? length = lengths[Array.IndexOf(streamedColumns, column)];
+                    if (length is null)
+                    {
+                        values.Add(column, null);
+                        continue;
+                    }
+                    using TextReader text = reader.GetTextReader(valueStart + index);
+                    values.Add(column, await BufferUtf8TextAsync(text, cancellationToken).ConfigureAwait(false));
+                }
+
+                var binaryLobs = new List<StreamingLob>(binaryColumns.Length);
+                for (var index = 0; index < binaryColumns.Length; index++)
+                {
+                    string column = binaryColumns[index];
+                    long? length = lengths[Array.IndexOf(streamedColumns, column)];
+                    if (length is null)
+                    {
+                        values.Add(column, null);
+                        continue;
+                    }
+                    StreamingLob lob = CreateImmediateStreamingLob(reader, valueStart + textColumns.Length + index,
+                        table.SourceColumnTypes[column], length.Value);
+                    values.Add(column, lob);
+                    binaryLobs.Add(lob);
+                }
+
+                yield return new MigrationRow(values);
+                if (binaryLobs.Any(lob => !lob.IsConsumed))
+                {
+                    throw new MigrationExecutionException("streaming_lob_not_consumed_immediately",
+                        "Every inline streamed field must be consumed before advancing to the next source row.");
+                }
+                continue;
             }
 
             var lobs = new List<StreamingLob>(streamedColumns.Length);
@@ -578,7 +704,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         return NormalizeSourceValue(value, sourceType, string.Empty);
     }
 
-    internal static string BuildStreamingReadTableCommand(TableCopyPlan table)
+    internal static string BuildStreamingReadTableCommand(TableCopyPlan table, bool supportsUtf8Collation = true)
     {
         IReadOnlyList<string> keys = table.PrimaryKey?.Columns ?? table.OrderByColumns;
         if (keys.Count == 0 || keys.Any(column => IsLargeValueType(table.SourceColumnTypes[column])))
@@ -587,7 +713,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         }
         string[] materialized = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
         string[] lengthProbes = [.. table.OrderedColumns.Where(column => IsLargeValueType(table.SourceColumnTypes[column]))
-            .Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
+            .Select(column => IsBinaryLargeValueType(table.SourceColumnTypes[column]) || !supportsUtf8Collation
                 ? $"DATALENGTH({QuoteIdentifier(column)})"
                 : $"DATALENGTH(CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
         string select = $"SELECT {string.Join(", ", materialized.Select(QuoteIdentifier).Concat(lengthProbes))} " +
@@ -597,7 +723,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
             : $"{select} ORDER BY {string.Join(", ", table.OrderByColumns.Select(QuoteIdentifier))};";
     }
 
-    internal static string BuildImmediateStreamingReadTableCommand(TableCopyPlan table)
+    internal static string BuildImmediateStreamingReadTableCommand(TableCopyPlan table, bool supportsUtf8Collation = true)
     {
         ArgumentNullException.ThrowIfNull(table);
         if (table.OrderedColumns.Count == 0 || table.OrderByColumns.Count == 0)
@@ -607,12 +733,15 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
 
         string[] materialized = [.. table.OrderedColumns.Where(column => !IsLargeValueType(table.SourceColumnTypes[column]))];
         string[] streamed = [.. table.OrderedColumns.Where(column => IsLargeValueType(table.SourceColumnTypes[column]))];
-        string[] lengthProbes = [.. streamed.Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
+        string[] lengthProbes = [.. streamed.Select(column => IsBinaryLargeValueType(table.SourceColumnTypes[column]) || !supportsUtf8Collation
             ? $"DATALENGTH({QuoteIdentifier(column)})"
             : $"DATALENGTH(CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
-        string[] streamedValues = [.. streamed.Select(column => table.SourceColumnTypes[column] is "varbinary(max)" or "image"
-            ? QuoteIdentifier(column)
-            : $"CONVERT(varbinary(max), CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")];
+        string[] streamedValues = supportsUtf8Collation
+            ? [.. streamed.Select(column => IsBinaryLargeValueType(table.SourceColumnTypes[column])
+                ? QuoteIdentifier(column)
+                : $"CONVERT(varbinary(max), CONVERT(varchar(max), {QuoteIdentifier(column)} COLLATE Latin1_General_100_BIN2_UTF8))")]
+            : [.. streamed.Where(column => !IsBinaryLargeValueType(table.SourceColumnTypes[column])).Select(QuoteIdentifier)
+                .Concat(streamed.Where(column => IsBinaryLargeValueType(table.SourceColumnTypes[column])).Select(QuoteIdentifier))];
         string select = $"SELECT {string.Join(", ", materialized.Select(QuoteIdentifier).Concat(lengthProbes).Concat(streamedValues))} " +
             $"FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)}";
         return table.SourceKnownEmpty
@@ -632,6 +761,44 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
             await using Stream input = reader.GetStream(ordinal);
             await input.CopyToAsync(destination, 64 * 1024, cancellationToken).ConfigureAwait(false);
         });
+    }
+
+    internal static bool SupportsUtf8Collation(string serverVersion)
+    {
+        string major = serverVersion.Split('.', 2)[0];
+        return int.TryParse(major, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out int version) && version >= 14
+            ? version >= 15
+            : throw new MigrationExecutionException("sqlserver_version_unsupported",
+                "The SQL Server source version cannot be used for a verified text stream.");
+    }
+
+    private static bool IsBinaryLargeValueType(string sourceType)
+    {
+        return sourceType is "varbinary(max)" or "image";
+    }
+
+    internal static async Task<BufferedStreamingLob> BufferUtf8TextAsync(TextReader text, CancellationToken cancellationToken)
+    {
+        const long maximumBytes = 64L * 1024 * 1024;
+        using var buffer = new MemoryStream();
+        await using var writer = new StreamWriter(buffer, new UTF8Encoding(false, true), 32 * 1024, leaveOpen: true);
+        char[] chars = new char[32 * 1024];
+        int count;
+        while ((count = await text.ReadAsync(chars.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            await writer.WriteAsync(chars.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+            if (buffer.Length > maximumBytes)
+            {
+                throw new MigrationExecutionException("delta_text_lob_capacity_exceeded",
+                    "A SQL Server text field exceeds the bounded UTF-8 migration buffer.");
+            }
+        }
+        await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+        return buffer.Length > maximumBytes
+            ? throw new MigrationExecutionException("delta_text_lob_capacity_exceeded",
+                "A SQL Server text field exceeds the bounded UTF-8 migration buffer.")
+            : new BufferedStreamingLob(StreamingLobKind.Text, buffer.ToArray());
     }
 
     private static StreamingLob CreateStreamingLob(
@@ -684,6 +851,42 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
                 throw new MigrationExecutionException("streaming_lob_row_ambiguous", "The deterministic source key selected multiple rows.");
             }
         });
+    }
+
+    private static async Task<BufferedStreamingLob> BufferDeferredUtf8TextAsync(
+        SnapshotLease lease,
+        TableCopyPlan table,
+        string column,
+        Dictionary<string, object?> values,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<string> keys = table.PrimaryKey?.Columns ?? table.OrderByColumns;
+        object?[] keyValues = [.. keys.Select(key => values[key])];
+        string predicate = string.Join(" AND ", keys.Select((key, index) =>
+            keyValues[index] is null or DBNull ? $"{QuoteIdentifier(key)} IS NULL" : $"{QuoteIdentifier(key)} = @key{index}"));
+        string sql = $"SELECT {QuoteIdentifier(column)} FROM {QuoteIdentifier(table.SourceSchema)}.{QuoteIdentifier(table.SourceTable)} WHERE {predicate};";
+        await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction) { CommandTimeout = 0 };
+        for (var index = 0; index < keys.Count; index++)
+        {
+            if (keyValues[index] is not null and not DBNull)
+            {
+                _ = command.Parameters.AddWithValue($"key{index}", keyValues[index]);
+            }
+        }
+        await using SqlDataReader reader = await command.ExecuteReaderAsync(
+            CommandBehavior.SequentialAccess, cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
+            await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            throw new MigrationExecutionException("streaming_lob_row_missing",
+                "The deterministic source row for a streamed value is missing or null.");
+        }
+        using TextReader text = reader.GetTextReader(0);
+        BufferedStreamingLob result = await BufferUtf8TextAsync(text, cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? throw new MigrationExecutionException("streaming_lob_row_ambiguous",
+                "The deterministic source key selected multiple rows.")
+            : result;
     }
 
     internal static object? NormalizeSourceValue(object? value, string sourceType, string targetType)
@@ -865,7 +1068,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
     [GeneratedRegex("^[A-Za-z][A-Za-z0-9_]{0,127}$", RegexOptions.CultureInvariant)]
     private static partial Regex DatabaseName();
 
-    private sealed record SnapshotLease(SqlConnection Connection, SqlTransaction Transaction) : IAsyncDisposable
+    private sealed record SnapshotLease(SqlConnection Connection, SqlTransaction Transaction, bool SupportsUtf8Collation) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {

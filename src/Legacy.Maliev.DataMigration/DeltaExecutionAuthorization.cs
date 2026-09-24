@@ -47,7 +47,7 @@ public static class DeltaExecutionAuthorizationProducer
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(signer);
-        if (plan.SchemaVersion != "1.1" ||
+        if (plan.SchemaVersion is not ("1.1" or "1.2") ||
             !DeltaSynchronizationPlanProducer.ValidAuthority(
                 plan.TargetAuthority, plan.TargetNamespace, plan.TargetCluster) ||
             issuedAtUtc.Offset != TimeSpan.Zero || expiresAtUtc.Offset != TimeSpan.Zero ||
@@ -83,7 +83,7 @@ public sealed class SignedDeltaExecutionAuthorizationGate(
     {
         cancellationToken.ThrowIfCancellationRequested();
         DateTimeOffset nowUtc = timeProvider.GetUtcNow();
-        bool valid = authorization.SchemaVersion == "1.1" && plan.SchemaVersion == "1.1" &&
+        bool valid = authorization.SchemaVersion == "1.1" && plan.SchemaVersion is "1.1" or "1.2" &&
             authorization.AuthorizationId != Guid.Empty && authorization.PlanId == plan.PlanId &&
             Fixed(authorization.PlanSha256, DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan)) &&
             authorization.TargetAuthority == plan.TargetAuthority &&
@@ -129,5 +129,40 @@ public sealed class SignedDeltaExecutionAuthorizationGate(
         return left.Length == 64 && right.Length == 64 && left.All(char.IsAsciiHexDigit) && right.All(char.IsAsciiHexDigit) &&
             CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(left.ToLowerInvariant()),
                 Encoding.ASCII.GetBytes(right.ToLowerInvariant()));
+    }
+}
+
+/// <summary>
+/// Admits one uninterrupted execution while the signed authorization is live. A new process
+/// or retry must obtain a new authorization; expiry is not reinterpreted between databases
+/// after admission to an already-running exact-23 operation.
+/// </summary>
+public static class DeltaExecutionAdmission
+{
+    public static async Task<SignedDeltaExecutionAuthorizationGate> AdmitAsync(
+        DeltaExecutionAuthorization authorization,
+        IReceiptAttestationTrustStore trust,
+        TimeProvider timeProvider,
+        DeltaTargetAuthority expectedAuthority,
+        DeltaSynchronizationPlan plan,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        DateTimeOffset admittedAtUtc = timeProvider.GetUtcNow();
+        var gate = new SignedDeltaExecutionAuthorizationGate(
+            authorization, trust, new AdmissionTimeProvider(admittedAtUtc), expectedAuthority);
+        foreach (string database in DatabaseInventory.ActiveDatabases)
+        {
+            await gate.ValidateAsync(plan, database, cancellationToken).ConfigureAwait(false);
+        }
+        return gate;
+    }
+
+    private sealed class AdmissionTimeProvider(DateTimeOffset admittedAtUtc) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow()
+        {
+            return admittedAtUtc;
+        }
     }
 }
