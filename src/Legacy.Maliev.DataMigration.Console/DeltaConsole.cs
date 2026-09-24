@@ -60,17 +60,7 @@ public static partial class MigrationConsole
         }
         catch (Exception failure)
         {
-            string code = failure switch
-            {
-                MigrationConsoleException value => value.Code,
-                DeltaExecutionException value => value.Code,
-                DeltaPlanException value => value.Code,
-                MigrationExecutionException value => value.Code,
-                JsonException or ArgumentException or FormatException or CryptographicException => "delta_configuration_invalid",
-                IOException or UnauthorizedAccessException => "delta_io_failed",
-                OperationCanceledException => "operation_cancelled",
-                _ => "delta_execution_failed",
-            };
+            string code = ClassifyDeltaFailure(failure);
             if (code.Length > 100 || code.Any(value => value is not (>= 'a' and <= 'z') and not '_'))
             {
                 code = "delta_execution_failed";
@@ -83,6 +73,51 @@ public static partial class MigrationConsole
             return failure is OperationCanceledException ? 130 : failure is MigrationConsoleException or DeltaPlanException or
                 JsonException or ArgumentException or FormatException or CryptographicException ? 65 : 70;
         }
+    }
+
+    internal static string ClassifyDeltaFailure(Exception failure)
+    {
+        return failure switch
+        {
+            MigrationConsoleException value => value.Code,
+            DeltaExecutionException value => value.Code,
+            DeltaPlanException value => value.Code,
+            MigrationExecutionException value => value.Code,
+            PostgresException value => value.SqlState switch
+            {
+                "3D000" => "delta_postgresql_database_missing",
+                "42501" => "delta_postgresql_permission_denied",
+                "42P01" => "delta_postgresql_relation_missing",
+                "42703" => "delta_postgresql_column_missing",
+                _ => "delta_postgresql_query_failed",
+            },
+            NpgsqlException => "delta_postgresql_connection_failed",
+            Microsoft.Data.SqlClient.SqlException value => ClassifySqlServerErrorNumber(value.Number),
+            TimeoutException => "delta_runtime_timeout",
+            InvalidOperationException => "delta_runtime_state_invalid",
+            JsonException or ArgumentException or FormatException or CryptographicException => "delta_configuration_invalid",
+            IOException or UnauthorizedAccessException => "delta_io_failed",
+            OperationCanceledException => "operation_cancelled",
+            _ => "delta_execution_failed",
+        };
+    }
+
+    internal static string ClassifySqlServerErrorNumber(int number)
+    {
+        return number switch
+        {
+            -2 => "delta_sqlserver_query_timeout",
+            207 => "delta_sqlserver_column_missing",
+            208 => "delta_sqlserver_relation_missing",
+            229 => "delta_sqlserver_permission_denied",
+            1205 => "delta_sqlserver_deadlock",
+            3960 => "delta_sqlserver_snapshot_conflict",
+            4060 => "delta_sqlserver_database_unavailable",
+            >= 0 => "delta_sqlserver_error_" + string.Concat(number.ToString(
+                System.Globalization.CultureInfo.InvariantCulture).Select(digit =>
+                (char)('a' + digit - '0'))),
+            _ => "delta_sqlserver_query_failed",
+        };
     }
 
     private static async Task<DeltaSynchronizationPlan> ProduceDeltaPlanAsync(
@@ -191,6 +226,10 @@ public static partial class MigrationConsole
 
     private static void ValidateDeltaConfiguration(string command, DeltaCommandConfiguration configuration)
     {
+        if (configuration.SourceMode is not null and not DeltaSourceMode.LiveReadOnly)
+        {
+            throw DeltaInvalid("delta_source_mode_invalid");
+        }
         if (string.IsNullOrWhiteSpace(configuration.OutputPath) || File.Exists(configuration.OutputPath) || Directory.Exists(configuration.OutputPath))
         {
             throw DeltaInvalid("delta_output_exists");
@@ -291,7 +330,8 @@ internal sealed record DeltaCommandConfiguration(
     DateTimeOffset? AuthorizationExpiresAtUtc = null,
     bool AllowPlanSigning = false,
     bool AllowAuthorizationSigning = false,
-    bool AllowExecution = false);
+    bool AllowExecution = false,
+    string? SourceMode = null);
 
 internal static class GuardedDeltaCommandPolicy
 {
@@ -354,6 +394,11 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
 
     public async Task<DeltaSynchronizationPlan> PlanAsync(DeltaPlanRuntimeRequest request, CancellationToken cancellationToken)
     {
+        bool live = request.Configuration.SourceMode == DeltaSourceMode.LiveReadOnly;
+        string? sourceObservation = live
+            ? await SqlServerLiveSourceObservation.ObserveSha256Async(request.SourceConnectionString, cancellationToken)
+                .ConfigureAwait(false)
+            : null;
         await VerifyTargetAuthorityAsync(request.TargetConnectionString, request.Configuration.TargetAuthority,
             cancellationToken).ConfigureAwait(false);
         var targetSchema = new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString));
@@ -361,6 +406,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         {
             await targetSchema.ValidateSchemaAsync(database, cancellationToken).ConfigureAwait(false);
         }
+        DateTimeOffset captureStartedAtUtc = live ? TimeProvider.System.GetUtcNow() : request.Configuration.SourceCutoffUtc;
         await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
         var opened = new List<string>(DatabaseInventory.ActiveDatabases.Count);
         try
@@ -378,7 +424,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
             DeltaCommandConfiguration configuration = request.Configuration;
             DeltaSynchronizationPlan result = await coordinator.ProduceAsync(new(
                 request.Schema,
-                configuration.SourceCutoffUtc,
+                captureStartedAtUtc,
                 configuration.BackupManifestSha256,
                 configuration.RunnerDigestSha256,
                 configuration.TargetNamespace,
@@ -389,13 +435,19 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
                 request.AuthorizationKeyFingerprintSha256)
             {
                 TargetAuthority = configuration.TargetAuthority,
+                SourceMode = configuration.SourceMode,
+                SourceObservationSha256 = sourceObservation,
             }, cancellationToken).ConfigureAwait(false);
             foreach (string database in opened)
             {
                 await source.CompleteDatabaseSnapshotAsync(database, cancellationToken).ConfigureAwait(false);
             }
             opened.Clear();
-            return result;
+            return live && !string.Equals(sourceObservation,
+                await SqlServerLiveSourceObservation.ObserveSha256Async(request.SourceConnectionString, cancellationToken)
+                    .ConfigureAwait(false), StringComparison.Ordinal)
+                ? throw new DeltaExecutionException("delta_live_source_drift", "The live SQL Server source identity changed during planning.")
+                : result;
         }
         catch
         {
@@ -414,14 +466,12 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         {
             throw new DeltaExecutionException("delta_execution_plan_invalid", "The signed delta plan is invalid or targets another authority.");
         }
+        await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
         await VerifyTargetAuthorityAsync(request.TargetConnectionString, request.ExpectedAuthority, cancellationToken)
             .ConfigureAwait(false);
-        var gate = new SignedDeltaExecutionAuthorizationGate(request.Authorization, request.Trust,
-            TimeProvider.System, request.ExpectedAuthority);
-        foreach (string database in DatabaseInventory.ActiveDatabases)
-        {
-            await gate.ValidateAsync(request.Plan, database, cancellationToken).ConfigureAwait(false);
-        }
+        SignedDeltaExecutionAuthorizationGate gate = await DeltaExecutionAdmission.AdmitAsync(
+            request.Authorization, request.Trust, TimeProvider.System, request.ExpectedAuthority,
+            request.Plan, cancellationToken).ConfigureAwait(false);
         await new PostgreSqlDeltaMetadataProvisioner(new(request.TargetConnectionString, request.ExpectedAuthority))
             .ProvisionAsync(request.Plan, request.Schema, cancellationToken).ConfigureAwait(false);
         await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
@@ -441,12 +491,15 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
                 request.Trust,
                 TimeProvider.System);
         }
-        return await new Exact23DeltaExecutionCoordinator(source, CreateExecutor)
+        Exact23DeltaExecutionResult result = await new Exact23DeltaExecutionCoordinator(source, CreateExecutor)
             .ExecuteAsync(request.Plan, request.Schema, cancellationToken).ConfigureAwait(false);
+        await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
+        return result;
     }
 
     public async Task<Exact23DeltaReconciliationResult> ReconcileAsync(DeltaReconcileRuntimeRequest request, CancellationToken cancellationToken)
     {
+        await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
         await VerifyTargetAuthorityAsync(request.TargetConnectionString,
             request.Plan.TargetAuthority ?? throw new DeltaExecutionException("delta_target_authority_invalid", "The delta plan has no target authority."),
             cancellationToken).ConfigureAwait(false);
@@ -472,6 +525,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
                 await source.CompleteDatabaseSnapshotAsync(database, cancellationToken).ConfigureAwait(false);
             }
             opened.Clear();
+            await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
             return result;
         }
         catch
@@ -481,6 +535,21 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
                 await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None).ConfigureAwait(false);
             }
             throw;
+        }
+    }
+
+    private static async Task VerifyLiveSourceAsync(DeltaSynchronizationPlan plan, string connectionString,
+        CancellationToken cancellationToken)
+    {
+        if (plan.SourceMode != DeltaSourceMode.LiveReadOnly)
+        {
+            return;
+        }
+        string observed = await SqlServerLiveSourceObservation.ObserveSha256Async(connectionString, cancellationToken)
+            .ConfigureAwait(false);
+        if (!string.Equals(observed, plan.SourceObservationSha256, StringComparison.Ordinal))
+        {
+            throw new DeltaExecutionException("delta_live_source_drift", "The live SQL Server source identity differs from the signed plan.");
         }
     }
 

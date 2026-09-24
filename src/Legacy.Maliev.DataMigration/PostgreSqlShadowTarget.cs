@@ -1297,14 +1297,15 @@ internal static class PostgreSqlSchemaFingerprint
                 Write(writer, table.Table);
             }
 
+            // Physical column order may differ when an existing PostgreSQL table is advanced
+            // by an additive EF migration. Delta reads and writes name columns explicitly.
             foreach (ColumnShape column in columns.OrderBy(item => item.Schema, StringComparer.Ordinal)
                 .ThenBy(item => item.Table, StringComparer.Ordinal)
-                .ThenBy(item => item.Ordinal))
+                .ThenBy(item => item.Column, StringComparer.Ordinal))
             {
                 writer.Write((byte)'C');
                 Write(writer, column.Schema);
                 Write(writer, column.Table);
-                writer.Write(column.Ordinal);
                 Write(writer, column.Column);
                 Write(writer, column.Type);
                 writer.Write(column.Nullable);
@@ -1324,7 +1325,7 @@ internal static class PostgreSqlSchemaFingerprint
                 Write(writer, constraint.Name);
                 writer.Write(constraint.Kind);
                 Write(writer, constraint.Columns);
-                Write(writer, NormalizeExpression(constraint.Expression));
+                Write(writer, QuotationCheckPredicateCompatibility.Canonicalize(constraint));
                 writer.Write(constraint.NullsNotDistinct);
             }
 
@@ -1388,6 +1389,49 @@ internal static class PostgreSqlSchemaFingerprint
     private static string NormalizeExpression(string expression)
     {
         return SchemaExpressionCanonicalizer.Canonicalize(expression);
+    }
+}
+
+internal static class QuotationCheckPredicateCompatibility
+{
+    // PostgreSQL 18 adds implicit text casts and grouping when deparsing these four
+    // source-derived checks. Accept only the reviewed source and catalog forms; an
+    // absent, loosened, or otherwise changed predicate still changes the fingerprint.
+    private static readonly Dictionary<(string Table, string Name), (string Source, string Catalog)> Known =
+        new()
+        {
+            [("Request", "CK_Request_QualificationState")] = (
+                "(\"QualificationState\"='incomplete' OR \"QualificationState\"='stale' OR \"QualificationState\"='duplicate' OR \"QualificationState\"='not_qualified' OR \"QualificationState\"='qualified' OR \"QualificationState\"='unreviewed')",
+                "(((\"QualificationState\")::text = 'incomplete'::text) OR ((\"QualificationState\")::text = 'stale'::text) OR ((\"QualificationState\")::text = 'duplicate'::text) OR ((\"QualificationState\")::text = 'not_qualified'::text) OR ((\"QualificationState\")::text = 'qualified'::text) OR ((\"QualificationState\")::text = 'unreviewed'::text))"),
+            [("RequestQualificationAudit", "CK_RequestQualificationAudit_DuplicateCount")] = (
+                "(\"DuplicateCount\">=(0))",
+                "(\"DuplicateCount\" >= 0)"),
+            [("RequestQualificationAudit", "CK_RequestQualificationAudit_NewState")] = (
+                "(\"NewState\"='incomplete' OR \"NewState\"='stale' OR \"NewState\"='duplicate' OR \"NewState\"='not_qualified' OR \"NewState\"='qualified' OR \"NewState\"='unreviewed')",
+                "(((\"NewState\")::text = 'incomplete'::text) OR ((\"NewState\")::text = 'stale'::text) OR ((\"NewState\")::text = 'duplicate'::text) OR ((\"NewState\")::text = 'not_qualified'::text) OR ((\"NewState\")::text = 'qualified'::text) OR ((\"NewState\")::text = 'unreviewed'::text))"),
+            [("RequestQualificationAudit", "CK_RequestQualificationAudit_Reason")] = (
+                "(\"NewState\"='qualified' OR nullif(ltrim(rtrim(\"Reason\")),'') IS NOT NULL)",
+                "(((\"NewState\")::text = 'qualified'::text) OR (NULLIF(ltrim(rtrim((\"Reason\")::text)), ''::text) IS NOT NULL))"),
+        };
+
+    internal static string Canonicalize(PostgreSqlSchemaFingerprint.ConstraintShape constraint)
+    {
+        string normalized = SchemaExpressionCanonicalizer.Canonicalize(constraint.Expression);
+        if (constraint.Kind != 'c' || constraint.Schema != "public" ||
+            !Known.TryGetValue((constraint.Table, constraint.Name), out var approved))
+        {
+            return normalized;
+        }
+
+        string compact = Compact(normalized);
+        string source = Compact(SchemaExpressionCanonicalizer.Canonicalize(approved.Source));
+        string catalog = Compact(SchemaExpressionCanonicalizer.Canonicalize(approved.Catalog));
+        return compact == source || compact == catalog ? source : normalized;
+    }
+
+    private static string Compact(string value)
+    {
+        return string.Concat(value.Where(character => !char.IsWhiteSpace(character)));
     }
 }
 

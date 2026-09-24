@@ -2,6 +2,12 @@
 
 Current operator-host execution uses the [protected incremental console](docs/incremental-operator-console.md): signed admission, one held Windows run lock, immediate encrypted per-database delivery/local verification, explicit signed resume, and preserve-first failures. `execute-shadow` no longer accepts legacy execution-only configuration. Migration and AppHost consumers now enforce the same exact-23 inventory, excluding Log. This software repair authorizes no live run or reuse of historical exact-24 approvals.
 
+For already populated canonical targets, the [daily read-only delta workflow](docs/daily-readonly-delta.md)
+compares live SQL Server snapshot reads with PostgreSQL without pulling a new
+full backup each day. It applies only reviewed row differences; the full-table
+scan and per-database capture window are explicit. Production apply remains
+separately reviewed and is never performed by the daily script.
+
 The snapshot-export description below describes the original full-export compatibility API; incremental staging/recovery has separate authenticated checkpoint semantics in the operator guide.
 
 Local PostgreSQL review snapshots use the fail-closed `MLVSNP02` contract. The exporter stages each

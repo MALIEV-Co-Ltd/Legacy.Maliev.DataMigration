@@ -6,6 +6,7 @@ public static class Exact23TargetDatabaseInventory
     private static readonly HashSet<string> ApprovedExtras = new(StringComparer.Ordinal)
     {
         "Auth",
+        "legacy_local",
         "legacy_migration_control",
     };
 

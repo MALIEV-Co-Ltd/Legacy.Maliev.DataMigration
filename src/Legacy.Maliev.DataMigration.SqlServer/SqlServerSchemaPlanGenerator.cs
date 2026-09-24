@@ -89,7 +89,9 @@ public sealed partial class SqlServerMigrationSource
                             targetColumnTypes)))],
                 CheckConstraints = [.. tableChecks.Select(check => new CheckConstraintCopyPlan(check.Name, TranslateExpressionForPostgreSql(check.Expression))
                 {
-                    Columns = inventory.OrderedColumns,
+                    Columns = ReferencedCheckColumns(
+                        inventory.OrderedColumns,
+                        TranslateExpressionForPostgreSql(check.Expression)),
                 })],
             };
             tables.Add(table);
@@ -97,6 +99,14 @@ public sealed partial class SqlServerMigrationSource
 
         var draft = new DatabaseSchemaPlan(database, "1.0", schema.SchemaSha256, new string('0', 64), tables);
         return draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+    }
+
+    internal static IReadOnlyList<string> ReferencedCheckColumns(
+        IReadOnlyList<string> orderedColumns,
+        string translatedExpression)
+    {
+        return [.. orderedColumns.Where(column => translatedExpression.Contains(
+            $"\"{column.Replace("\"", "\"\"", StringComparison.Ordinal)}\"", StringComparison.Ordinal))];
     }
 
     private static async Task<bool> IsTableEmptyAsync(

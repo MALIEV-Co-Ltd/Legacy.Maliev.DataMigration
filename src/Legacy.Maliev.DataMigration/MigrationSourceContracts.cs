@@ -5,8 +5,21 @@ public interface IReadOnlyMigrationSource
 {
     Task BeginDatabaseSnapshotAsync(string database, CancellationToken cancellationToken);
     Task<SourceSchemaEvidence> InspectSchemaAsync(string database, CancellationToken cancellationToken);
+    Task<SourceSchemaEvidence> InspectSchemaForPlanAsync(
+        DatabaseSchemaPlan plan,
+        CancellationToken cancellationToken)
+    {
+        return InspectSchemaAsync(plan.Database, cancellationToken);
+    }
     IAsyncEnumerable<MigrationRow> ReadTableAsync(string database, TableCopyPlan table, CancellationToken cancellationToken);
     IAsyncEnumerable<MigrationRow> ReadTableImmediatelyAsync(
+        string database,
+        TableCopyPlan table,
+        CancellationToken cancellationToken)
+    {
+        return ReadTableAsync(database, table, cancellationToken);
+    }
+    IAsyncEnumerable<MigrationRow> ReadTableForDeltaExecutionAsync(
         string database,
         TableCopyPlan table,
         CancellationToken cancellationToken)

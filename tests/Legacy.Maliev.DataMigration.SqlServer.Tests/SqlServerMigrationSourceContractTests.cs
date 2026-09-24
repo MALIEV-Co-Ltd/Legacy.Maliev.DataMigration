@@ -119,6 +119,28 @@ public sealed class SqlServerMigrationSourceContractTests
     }
 
     [Fact]
+    public void BuildStreamingReadTableCommand_SqlServer2017_ProbesUnicodeWithoutUnsupportedCollation()
+    {
+        var table = new TableCopyPlan("sales", "InvoiceFile", "public", "InvoiceFile",
+            ["Id", "Content", "Description"], ["Id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "bigint",
+                ["Content"] = "varbinary(max)",
+                ["Description"] = "nvarchar(max)",
+            },
+        };
+
+        string sql = SqlServerMigrationSource.BuildStreamingReadTableCommand(table,
+            supportsUtf8Collation: false);
+
+        Assert.Equal("SELECT [Id], DATALENGTH([Content]), DATALENGTH([Description]) " +
+            "FROM [sales].[InvoiceFile] ORDER BY [Id];", sql);
+        Assert.DoesNotContain("_UTF8", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildImmediateStreamingReadTableCommand_SelectsLargeValuesAfterLengthProbes()
     {
         var table = new TableCopyPlan(
@@ -145,6 +167,138 @@ public sealed class SqlServerMigrationSourceContractTests
             "[Content], CONVERT(varbinary(max), CONVERT(varchar(max), [Description] COLLATE Latin1_General_100_BIN2_UTF8)) " +
             "FROM [sales].[InvoiceFile] ORDER BY [Id];",
             sql);
+    }
+
+    [Fact]
+    public void BuildImmediateStreamingReadTableCommand_SqlServer2017_LeavesUnicodeTextForClientEncoding()
+    {
+        var table = new TableCopyPlan("sales", "InvoiceFile", "public", "InvoiceFile",
+            ["Id", "Content", "Description"], ["Id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "bigint",
+                ["Content"] = "varbinary(max)",
+                ["Description"] = "nvarchar(max)",
+            },
+        };
+
+        string sql = SqlServerMigrationSource.BuildImmediateStreamingReadTableCommand(table,
+            supportsUtf8Collation: false);
+
+        Assert.Equal("SELECT [Id], DATALENGTH([Content]), DATALENGTH([Description]), " +
+            "[Description], [Content] FROM [sales].[InvoiceFile] ORDER BY [Id];", sql);
+        Assert.DoesNotContain("_UTF8", sql, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("14.0.3475.1", false)]
+    [InlineData("15.0.4322.2", true)]
+    [InlineData("16.0.1000.6", true)]
+    public void SupportsUtf8Collation_UsesSqlServerMajorVersion(string version, bool expected)
+    {
+        Assert.Equal(expected, SqlServerMigrationSource.SupportsUtf8Collation(version));
+    }
+
+    [Theory]
+    [InlineData(false, "nvarchar(max)", null, true)]
+    [InlineData(false, "text", null, true)]
+    [InlineData(false, "nvarchar(max)", "varbinary(max)", false)]
+    [InlineData(false, "varbinary(max)", null, false)]
+    [InlineData(false, "nvarchar(128)", null, false)]
+    [InlineData(true, "nvarchar(max)", null, false)]
+    public void Delta_execution_uses_immediate_buffering_only_for_sql2017_text_lobs(
+        bool supportsUtf8Collation, string sourceType, string? secondSourceType, bool expected)
+    {
+        string[] columns = secondSourceType is null ? ["ID", "Payload"] : ["ID", "Payload", "Other"];
+        var sourceTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["ID"] = "int",
+            ["Payload"] = sourceType,
+        };
+        if (secondSourceType is not null)
+        {
+            sourceTypes["Other"] = secondSourceType;
+        }
+        var table = new TableCopyPlan("dbo", "Source", "public", "Target", columns, ["ID"])
+        {
+            SourceColumnTypes = sourceTypes,
+        };
+
+        Assert.Equal(expected, SqlServerMigrationSource.UseImmediateDeltaExecutionRead(supportsUtf8Collation, table));
+    }
+
+    [Theory]
+    [InlineData("columns", 12, "dbo", "Customer", "ID", "70000", "69789")]
+    [InlineData("columns", 11, "dbo", "Customer", "ID", "1", "1")]
+    [InlineData("keys-indexes", 12, "dbo", "Customer", "ID", "70000", "70000")]
+    [InlineData("columns", 12, "dbo", "Customer", "Name", "70000", "70000")]
+    public void ResolveSchemaHashValue_ReplacesOnlyPlannedIdentityCurrentValue(
+        string section,
+        int ordinal,
+        string schema,
+        string table,
+        string column,
+        string observed,
+        string expected)
+    {
+        var baseline = new Dictionary<(string Schema, string Table, string Column), string?>
+        {
+            [("dbo", "Customer", "ID")] = "69789",
+        };
+
+        Assert.Equal(expected, SqlServerMigrationSource.ResolveSchemaHashValue(
+            section, ordinal, schema, table, column, observed, baseline));
+    }
+
+    [Fact]
+    public void ResolveSchemaHashValue_UnusedIdentityRestoresNullBaseline()
+    {
+        var baseline = new Dictionary<(string Schema, string Table, string Column), string?>
+        {
+            [("dbo", "Unused", "ID")] = null,
+        };
+
+        Assert.Equal("<null>", SqlServerMigrationSource.ResolveSchemaHashValue(
+            "columns", 12, "dbo", "Unused", "ID", "1", baseline));
+    }
+
+    [Fact]
+    public async Task BufferUtf8TextAsync_PreservesThaiAndSupplementaryUnicode()
+    {
+        const string content = "ชิ้นงาน MALIEV 😊";
+        using var text = new StringReader(content);
+
+        BufferedStreamingLob buffered = await SqlServerMigrationSource.BufferUtf8TextAsync(text,
+            CancellationToken.None);
+        using Stream bytes = buffered.OpenRead();
+        using var result = new MemoryStream();
+        await bytes.CopyToAsync(result);
+
+        Assert.Equal(System.Text.Encoding.UTF8.GetBytes(content), result.ToArray());
+        Assert.Equal(result.Length, buffered.CanonicalByteLength);
+    }
+
+    [Fact]
+    public async Task BufferUtf8TextAsync_SurrogateSplitAcrossReads_PreservesCodePoint()
+    {
+        using var text = new SingleCharacterReader("ก😊ข");
+
+        BufferedStreamingLob buffered = await SqlServerMigrationSource.BufferUtf8TextAsync(text,
+            CancellationToken.None);
+        using Stream bytes = buffered.OpenRead();
+        using var result = new MemoryStream();
+        await bytes.CopyToAsync(result);
+
+        Assert.Equal(System.Text.Encoding.UTF8.GetBytes("ก😊ข"), result.ToArray());
+    }
+
+    private sealed class SingleCharacterReader(string content) : StringReader(content)
+    {
+        public override ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
+        {
+            return base.ReadAsync(buffer[..Math.Min(1, buffer.Length)], cancellationToken);
+        }
     }
 
     [Theory]

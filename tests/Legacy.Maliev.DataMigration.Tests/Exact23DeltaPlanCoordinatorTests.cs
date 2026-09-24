@@ -43,6 +43,26 @@ public sealed class Exact23DeltaPlanCoordinatorTests : IDisposable
         Assert.Equal(0, rows.Reads);
     }
 
+    [Fact]
+    public async Task Rejects_schema_fingerprint_from_stale_runner_before_reading_rows()
+    {
+        DateTimeOffset now = DateTimeOffset.Parse("2026-09-08T06:00:00Z", CultureInfo.InvariantCulture);
+        FreshSchemaPlan valid = Schema(now);
+        FreshSchemaPlan stale = valid with
+        {
+            Databases = [valid.Databases[0] with { TargetSchemaSha256 = Hash('b') }, .. valid.Databases.Skip(1)],
+        };
+        var rows = new Rows(_ => []);
+        using var signer = new P256MigrationEvidenceSigner("plan", _key.ExportECPrivateKeyPem());
+        var coordinator = new Exact23DeltaPlanCoordinator(rows, rows, signer, new FixedTime(now));
+
+        DeltaPlanException error = await Assert.ThrowsAsync<DeltaPlanException>(() =>
+            coordinator.ProduceAsync(Request(stale, signer, now), CancellationToken.None));
+
+        Assert.Equal("delta_plan_schema_fingerprint_stale", error.Code);
+        Assert.Equal(0, rows.Reads);
+    }
+
     private static Exact23DeltaPlanRequest Request(FreshSchemaPlan schema, P256MigrationEvidenceSigner signer, DateTimeOffset now)
     {
         string distinct = string.Equals(signer.PublicKeyFingerprintSha256, Hash('e'), StringComparison.OrdinalIgnoreCase) ? Hash('1') : Hash('e');
@@ -58,7 +78,10 @@ public sealed class Exact23DeltaPlanCoordinatorTests : IDisposable
     private static FreshSchemaPlan Schema(DateTimeOffset now)
     {
         return new("2.0", now, new string('1', 40), [.. DatabaseInventory.ActiveDatabases.Select(name =>
-            new DatabaseSchemaPlan(name, "1.0", Hash('a'), Hash('b'), [Table()]))]);
+        {
+            var draft = new DatabaseSchemaPlan(name, "1.0", Hash('a'), string.Empty, [Table()]);
+            return draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+        })]);
     }
 
     private static TableCopyPlan Table()
