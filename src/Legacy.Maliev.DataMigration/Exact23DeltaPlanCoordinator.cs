@@ -13,6 +13,8 @@ public sealed record Exact23DeltaPlanRequest(
     string ExecutionAuthorizationKeyFingerprintSha256)
 {
     public DeltaTargetAuthority? TargetAuthority { get; init; }
+    public string? SourceMode { get; init; }
+    public string? SourceObservationSha256 { get; init; }
 }
 
 public sealed class Exact23DeltaPlanCoordinator(
@@ -64,6 +66,9 @@ public sealed class Exact23DeltaPlanCoordinator(
             databases)
         {
             TargetAuthority = request.TargetAuthority,
+            SourceMode = request.SourceMode,
+            SourceObservationSha256 = request.SourceObservationSha256,
+            SourceCaptureCompletedAtUtc = request.SourceMode == DeltaSourceMode.LiveReadOnly ? nowUtc : null,
         }, planSigner, nowUtc);
     }
 

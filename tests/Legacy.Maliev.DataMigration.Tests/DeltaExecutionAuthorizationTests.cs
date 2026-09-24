@@ -25,6 +25,38 @@ public sealed class DeltaExecutionAuthorizationTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Live_read_only_plan_requires_its_own_matching_short_lived_authorization()
+    {
+        DateTimeOffset now = new(2026, 9, 8, 7, 0, 0, TimeSpan.Zero);
+        (DeltaSynchronizationPlan backupPlan, P256MigrationEvidenceSigner signer) = Plan(now);
+        using (signer)
+        using (var authorizer = new P256MigrationEvidenceSigner("authorization", _authorizationKey.ExportECPrivateKeyPem()))
+        {
+            DeltaSynchronizationPlan live = DeltaSynchronizationPlanProducer.Produce(new(
+                backupPlan.SourceCommitSha, backupPlan.SourceCutoffUtc, backupPlan.BackupManifestSha256,
+                backupPlan.SchemaPlanSha256, backupPlan.RunnerDigestSha256, backupPlan.TargetNamespace,
+                backupPlan.TargetCluster, backupPlan.TargetGeneration, backupPlan.TargetObservationSha256,
+                backupPlan.BackupKeyFingerprintSha256, backupPlan.ExecutionAuthorizationKeyFingerprintSha256,
+                backupPlan.Databases)
+            {
+                TargetAuthority = backupPlan.TargetAuthority,
+                SourceMode = DeltaSourceMode.LiveReadOnly,
+                SourceObservationSha256 = Hash('9'),
+                SourceCaptureCompletedAtUtc = now.AddMinutes(-1),
+            }, signer, now);
+            DeltaExecutionAuthorization authorization = DeltaExecutionAuthorizationProducer.Produce(
+                live, now, now.AddMinutes(10), authorizer);
+            var trust = new ReceiptAttestationTrustStore([new(authorizer.KeyId, authorizer.ExportSubjectPublicKeyInfo())]);
+            var gate = new SignedDeltaExecutionAuthorizationGate(
+                authorization, trust, new FixedTime(now), live.TargetAuthority!);
+
+            await gate.ValidateAsync(live, DatabaseInventory.ActiveDatabases[0], CancellationToken.None);
+            _ = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                gate.ValidateAsync(backupPlan, DatabaseInventory.ActiveDatabases[0], CancellationToken.None));
+        }
+    }
+
     [Theory]
     [InlineData("expired")]
     [InlineData("wrong-plan")]
