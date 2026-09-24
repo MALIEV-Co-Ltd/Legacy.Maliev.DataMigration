@@ -131,3 +131,38 @@ public sealed class SignedDeltaExecutionAuthorizationGate(
                 Encoding.ASCII.GetBytes(right.ToLowerInvariant()));
     }
 }
+
+/// <summary>
+/// Admits one uninterrupted execution while the signed authorization is live. A new process
+/// or retry must obtain a new authorization; expiry is not reinterpreted between databases
+/// after admission to an already-running exact-23 operation.
+/// </summary>
+public static class DeltaExecutionAdmission
+{
+    public static async Task<SignedDeltaExecutionAuthorizationGate> AdmitAsync(
+        DeltaExecutionAuthorization authorization,
+        IReceiptAttestationTrustStore trust,
+        TimeProvider timeProvider,
+        DeltaTargetAuthority expectedAuthority,
+        DeltaSynchronizationPlan plan,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        DateTimeOffset admittedAtUtc = timeProvider.GetUtcNow();
+        var gate = new SignedDeltaExecutionAuthorizationGate(
+            authorization, trust, new AdmissionTimeProvider(admittedAtUtc), expectedAuthority);
+        foreach (string database in DatabaseInventory.ActiveDatabases)
+        {
+            await gate.ValidateAsync(plan, database, cancellationToken).ConfigureAwait(false);
+        }
+        return gate;
+    }
+
+    private sealed class AdmissionTimeProvider(DateTimeOffset admittedAtUtc) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow()
+        {
+            return admittedAtUtc;
+        }
+    }
+}
