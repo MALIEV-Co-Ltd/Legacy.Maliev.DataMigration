@@ -469,12 +469,9 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
         await VerifyTargetAuthorityAsync(request.TargetConnectionString, request.ExpectedAuthority, cancellationToken)
             .ConfigureAwait(false);
-        var gate = new SignedDeltaExecutionAuthorizationGate(request.Authorization, request.Trust,
-            TimeProvider.System, request.ExpectedAuthority);
-        foreach (string database in DatabaseInventory.ActiveDatabases)
-        {
-            await gate.ValidateAsync(request.Plan, database, cancellationToken).ConfigureAwait(false);
-        }
+        SignedDeltaExecutionAuthorizationGate gate = await DeltaExecutionAdmission.AdmitAsync(
+            request.Authorization, request.Trust, TimeProvider.System, request.ExpectedAuthority,
+            request.Plan, cancellationToken).ConfigureAwait(false);
         await new PostgreSqlDeltaMetadataProvisioner(new(request.TargetConnectionString, request.ExpectedAuthority))
             .ProvisionAsync(request.Plan, request.Schema, cancellationToken).ConfigureAwait(false);
         await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
