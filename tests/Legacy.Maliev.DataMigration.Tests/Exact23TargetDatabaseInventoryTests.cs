@@ -17,6 +17,14 @@ public sealed class Exact23TargetDatabaseInventoryTests
     }
 
     [Fact]
+    public void Validate_ExactInventoryWithAspireLocalDatabase_Passes()
+    {
+        string[] inventory = [.. DatabaseInventory.ActiveDatabases, "Auth", "legacy_local"];
+
+        Exact23TargetDatabaseInventory.Validate(inventory);
+    }
+
+    [Fact]
     public void Validate_MissingCanonicalDatabase_FailsClosed()
     {
         string[] inventory = [.. DatabaseInventory.ActiveDatabases.Where(database => database != "ContactRequest")];
@@ -31,6 +39,7 @@ public sealed class Exact23TargetDatabaseInventoryTests
     [InlineData("Hangfire")]
     [InlineData("Log")]
     [InlineData("UnexpectedApplicationDatabase")]
+    [InlineData("Legacy_Local")]
     public void Validate_RetiredOrUnknownDatabase_FailsClosed(string unexpected)
     {
         string[] inventory = [.. DatabaseInventory.ActiveDatabases, unexpected];
