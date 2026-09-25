@@ -387,20 +387,21 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     public async Task ApplySchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        IReadOnlyList<TableCopyPlan> schemaTables = [.. plan.Tables, .. ApprovedTargetExtensionManifest.TablesFor(plan)];
         _expectedTableInspections.Clear();
         foreach (TableCopyPlan table in plan.Tables)
         {
             _ = _expectedTableInspections.Add($"{table.TargetSchema}.{table.TargetTable}");
         }
 
-        foreach (string schema in plan.Tables.Select(table => table.TargetSchema).Distinct(StringComparer.Ordinal))
+        foreach (string schema in schemaTables.Select(table => table.TargetSchema).Distinct(StringComparer.Ordinal))
         {
             await ExecuteAsync(
                 $"CREATE SCHEMA IF NOT EXISTS {PostgreSqlShadowTarget.QuoteIdentifier(schema)};",
                 cancellationToken).ConfigureAwait(false);
         }
 
-        foreach (TableCopyPlan table in plan.Tables)
+        foreach (TableCopyPlan table in schemaTables)
         {
             string columns = string.Join(", ", table.OrderedColumns.Select(column =>
             {
@@ -429,7 +430,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                 cancellationToken).ConfigureAwait(false);
         }
 
-        foreach (TableCopyPlan table in plan.Tables)
+        foreach (TableCopyPlan table in schemaTables)
         {
             if (table.PrimaryKey is not null)
             {
@@ -487,12 +488,13 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     public async Task FinalizeSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        IReadOnlyList<TableCopyPlan> schemaTables = [.. plan.Tables, .. ApprovedTargetExtensionManifest.TablesFor(plan)];
         if (_schemaFinalized || _inspectionStarted)
         {
             throw new MigrationExecutionException("shadow_schema_finalization_invalid", "The shadow schema can be finalized exactly once before inspection.");
         }
 
-        foreach (TableCopyPlan table in plan.Tables)
+        foreach (TableCopyPlan table in schemaTables)
         {
             foreach (IdentityCopyPlan identity in table.Identities)
             {
@@ -500,7 +502,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             }
         }
 
-        foreach (TableCopyPlan table in plan.Tables)
+        foreach (TableCopyPlan table in schemaTables)
         {
             foreach (ForeignKeyCopyPlan foreignKey in table.ForeignKeys)
             {
@@ -1207,8 +1209,9 @@ internal static class PostgreSqlSchemaFingerprint
     internal static string ComputeExpected(DatabaseSchemaPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        List<TableShape> tables = [.. plan.Tables.Select(table => new TableShape(table.TargetSchema, table.TargetTable))];
-        List<ColumnShape> columns = [.. plan.Tables.SelectMany(table => table.OrderedColumns.Select((column, ordinal) =>
+        IReadOnlyList<TableCopyPlan> schemaTables = [.. plan.Tables, .. ApprovedTargetExtensionManifest.TablesFor(plan)];
+        List<TableShape> tables = [.. schemaTables.Select(table => new TableShape(table.TargetSchema, table.TargetTable))];
+        List<ColumnShape> columns = [.. schemaTables.SelectMany(table => table.OrderedColumns.Select((column, ordinal) =>
             new ColumnShape(
                 table.TargetSchema,
                 table.TargetTable,
@@ -1222,7 +1225,7 @@ internal static class PostgreSqlSchemaFingerprint
                     PostgreSqlTypePolicy.Validate(table.ColumnTypes[column])),
                 table.GeneratedColumns.SingleOrDefault(item => string.Equals(item.Column, column, StringComparison.Ordinal))?.Expression ?? string.Empty,
                 table.Collations.GetValueOrDefault(column, string.Empty))))];
-        List<ConstraintShape> constraints = [.. plan.Tables.SelectMany(table =>
+        List<ConstraintShape> constraints = [.. schemaTables.SelectMany(table =>
             (table.PrimaryKey is null
                 ? Enumerable.Empty<ConstraintShape>()
                 : [new ConstraintShape(
@@ -1249,7 +1252,7 @@ internal static class PostgreSqlSchemaFingerprint
                 'c',
                 item.Columns,
                 item.Expression))))];
-        List<IndexShape> indexes = [.. plan.Tables.SelectMany(table => table.Indexes.Select(index =>
+        List<IndexShape> indexes = [.. schemaTables.SelectMany(table => table.Indexes.Select(index =>
             new IndexShape(
                 table.TargetSchema,
                 table.TargetTable,
@@ -1264,7 +1267,7 @@ internal static class PostgreSqlSchemaFingerprint
             {
                 NullsNotDistinct = index.Unique && index.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any(),
             }))];
-        List<ForeignKeyShape> foreignKeys = [.. plan.Tables.SelectMany(table => table.ForeignKeys.Select(foreignKey =>
+        List<ForeignKeyShape> foreignKeys = [.. schemaTables.SelectMany(table => table.ForeignKeys.Select(foreignKey =>
             new ForeignKeyShape(
                 table.TargetSchema,
                 table.TargetTable,

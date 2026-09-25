@@ -53,8 +53,13 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                 await AcquireLocksAsync(connection, transaction, binding, schema, cancellationToken).ConfigureAwait(false);
                 await ValidateFenceAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
                 string? replayReconciliationSha256 = await ValidateReplayAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
+                ApprovedTargetExtensionState? extensionState = replayReconciliationSha256 is null
+                    ? await ApprovedTargetExtensionStateInspector.InspectAsync(
+                        connection, transaction, schema, cancellationToken).ConfigureAwait(false)
+                    : null;
                 IReadOnlyDictionary<string, int> upsertOrder = CanonicalForeignKeyOrder.Build(schema);
-                return new PostgreSqlDeltaCanonicalTransaction(connection, transaction, binding, schema, replayReconciliationSha256, upsertOrder,
+                return new PostgreSqlDeltaCanonicalTransaction(connection, transaction, binding, schema, replayReconciliationSha256,
+                    extensionState, upsertOrder,
                     DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(
                         plan.Databases.Single(item => string.Equals(item.Database, database, StringComparison.Ordinal))));
             }
@@ -98,7 +103,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
             _ = await advisory.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        string tables = string.Join(", ", schema.Tables
+        string tables = string.Join(", ", schema.Tables.Concat(ApprovedTargetExtensionManifest.TablesFor(schema))
             .Select(table => Qualified(table.TargetSchema, table.TargetTable))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(value => value, StringComparer.Ordinal));
@@ -202,6 +207,7 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
     CanonicalDeltaTargetBinding binding,
     DatabaseSchemaPlan schema,
     string? replayReconciliationSha256,
+    ApprovedTargetExtensionState? extensionState,
     IReadOnlyDictionary<string, int> upsertOrder,
     string operationsSha256) : IDeltaCanonicalTransaction
 {
@@ -318,6 +324,12 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         IReadOnlyDictionary<string, long> sequences = await inspection
             .InspectSequenceNextValuesAsync(schema, cancellationToken).ConfigureAwait(false);
         ReconciliationDiagnostics.CompareSequences(schema, expected.SequenceNextValues, sequences);
+        if (extensionState is not null)
+        {
+            ApprovedTargetExtensionState observedExtensions = await ApprovedTargetExtensionStateInspector
+                .InspectAsync(connection, transaction, schema, cancellationToken).ConfigureAwait(false);
+            ApprovedTargetExtensionStateInspector.Compare(schema, extensionState, observedExtensions);
+        }
         var observedEvidence = new DatabaseReconciliationEvidence(
             schema.Database,
             schema.SourceSchemaSha256,
