@@ -2,6 +2,17 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class MigrationScriptContractTests
 {
+    [Fact]
+    public void Daily_local_execution_verifies_disposable_proof_before_authorization()
+    {
+        string script = File.ReadAllText(SourcePath("invoke-daily-readonly-delta.ps1"));
+        int proof = script.IndexOf("Invoke-GuardedCommand 'verify-disposable-delta-proof'", StringComparison.Ordinal);
+        int authorization = script.IndexOf("Invoke-GuardedCommand 'authorize-delta'", StringComparison.Ordinal);
+        Assert.True(proof >= 0);
+        Assert.True(authorization > proof);
+        Assert.Contains("daily_delta_disposable_proof_required", script, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("execute-shadow")]
     [InlineData("plan-incremental")]

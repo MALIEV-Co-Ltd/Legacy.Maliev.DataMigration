@@ -48,6 +48,7 @@ public static partial class MigrationConsole
             object result = command switch
             {
                 "plan-delta" => await ProduceDeltaPlanAsync(configuration, environment, runtime, cancellationToken).ConfigureAwait(false),
+                "verify-disposable-delta-proof" => await VerifyDisposableProofAsync(configuration, cancellationToken).ConfigureAwait(false),
                 "authorize-delta" => await ProduceDeltaAuthorizationAsync(configuration, environment, cancellationToken).ConfigureAwait(false),
                 "apply-delta-local" => await ApplyDeltaAsync(configuration, DeltaTargetAuthorityKind.LocalAspire, runtime, cancellationToken).ConfigureAwait(false),
                 "apply-delta-production" => await ApplyDeltaAsync(configuration, DeltaTargetAuthorityKind.ProductionCloudNativePg, runtime, cancellationToken).ConfigureAwait(false),
@@ -170,6 +171,31 @@ public static partial class MigrationConsole
             configuration.AuthorizationExpiresAtUtc.Value, signer);
     }
 
+    private static async Task<object> VerifyDisposableProofAsync(
+        DeltaCommandConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        DeltaSynchronizationPlan localPlan = await ReadProtectedJsonAsync<DeltaSynchronizationPlan>(Required(configuration.PlanPath),
+            "delta_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        DeltaSynchronizationPlan proofPlan = await ReadProtectedJsonAsync<DeltaSynchronizationPlan>(Required(configuration.DisposableProofPlanPath),
+            "delta_proof_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        Exact23DeltaReconciliationResult proofResult = await ReadProtectedJsonAsync<Exact23DeltaReconciliationResult>(
+            Required(configuration.DisposableProofResultPath), "delta_proof_result_unprotected", cancellationToken)
+            .ConfigureAwait(false);
+        FreshSchemaPlan schema = await ReadProtectedJsonAsync<FreshSchemaPlan>(configuration.SchemaPlanPath,
+            "delta_schema_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore trust = await ReadDeltaProofTrustAsync(configuration, cancellationToken)
+            .ConfigureAwait(false);
+        DisposableDeltaProofVerifier.Verify(proofPlan, proofResult, localPlan, schema, trust, DateTimeOffset.UtcNow);
+        return new
+        {
+            schemaVersion = "1.0",
+            localPlanSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(localPlan),
+            proofPlanSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(proofPlan),
+            proofReconciledAtUtc = proofResult.ReconciledAtUtc
+        };
+    }
+
     private static async Task<Exact23DeltaExecutionResult> ApplyDeltaAsync(
         DeltaCommandConfiguration configuration,
         string requiredAuthorityKind,
@@ -270,6 +296,47 @@ public static partial class MigrationConsole
             : throw DeltaInvalid("delta_signing_role_key_reuse");
     }
 
+    private static async Task<ReceiptAttestationTrustStore> ReadDeltaProofTrustAsync(
+        DeltaCommandConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        _ = await ReadDeltaTrustAsync(configuration, cancellationToken).ConfigureAwait(false);
+        if (configuration.DisposableProofPlanKey is null || configuration.DisposableProofEvidenceKey is null)
+        {
+            throw DeltaInvalid("delta_proof_trust_missing");
+        }
+        DeltaTrustedKeyReference[] references =
+        [
+            configuration.PlanKey, configuration.AuthorizationKey, configuration.EvidenceKey,
+            configuration.DisposableProofPlanKey, configuration.DisposableProofEvidenceKey,
+        ];
+        if (references.Select(item => item.KeyId).Distinct(StringComparer.Ordinal).Count() != references.Length)
+        {
+            throw DeltaInvalid("delta_proof_trust_role_reuse");
+        }
+        var keys = new List<TrustedAttestationKey>(references.Length);
+        foreach (DeltaTrustedKeyReference reference in references)
+        {
+            byte[] publicKey = Convert.FromBase64String(await ReadProtectedTextAsync(
+                reference.SubjectPublicKeyInfoPath, "delta_proof_trusted_key_unprotected", cancellationToken)
+                .ConfigureAwait(false));
+            keys.Add(new(reference.KeyId, publicKey));
+        }
+        var trust = new ReceiptAttestationTrustStore(keys);
+        var fingerprints = new List<string>(references.Length + 1) { configuration.BackupKeyFingerprintSha256 };
+        foreach (DeltaTrustedKeyReference reference in references)
+        {
+            if (!trust.TryGetPublicKeyFingerprintSha256(reference.KeyId, out string fingerprint))
+            {
+                throw DeltaInvalid("delta_proof_trust_invalid");
+            }
+            fingerprints.Add(fingerprint);
+        }
+        return fingerprints.All(IsSha256) && fingerprints.Distinct(StringComparer.OrdinalIgnoreCase).Count() == fingerprints.Count
+            ? trust
+            : throw DeltaInvalid("delta_proof_trust_role_reuse");
+    }
+
     private static async Task<P256MigrationEvidenceSigner> ReadDeltaSignerAsync(
         Func<string, string?> environment,
         string variable,
@@ -327,6 +394,10 @@ internal sealed record DeltaCommandConfiguration(
     DeltaTargetAuthority TargetAuthority,
     string? PlanPath = null,
     string? AuthorizationPath = null,
+    string? DisposableProofPlanPath = null,
+    string? DisposableProofResultPath = null,
+    DeltaTrustedKeyReference? DisposableProofPlanKey = null,
+    DeltaTrustedKeyReference? DisposableProofEvidenceKey = null,
     DateTimeOffset? AuthorizationExpiresAtUtc = null,
     bool AllowPlanSigning = false,
     bool AllowAuthorizationSigning = false,

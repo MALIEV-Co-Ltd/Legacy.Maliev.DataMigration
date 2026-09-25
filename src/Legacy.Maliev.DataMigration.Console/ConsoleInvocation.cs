@@ -25,6 +25,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "sign-quotation-schema-baseline",
         "sign-quotation-postgres-snapshot",
         "plan-delta",
+        "verify-disposable-delta-proof",
         "authorize-delta",
         "apply-delta-local",
         "apply-delta-production",

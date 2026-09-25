@@ -6,6 +6,17 @@ table in primary-key order, signs insert/update/reviewed-delete operations,
 then uses the transactional executor, idempotency journal, and post-apply
 reconciliation. It does not use SQL Server Change Tracking or CDC and does not
 make daily SQL Server backups. Read volume is still a full table scan.
+Persistent-local execution additionally requires a fresh, signed exact-23
+reconciliation from an isolated disposable PostgreSQL target. The disposable
+proof must use the same source observation, schema plan, runner digest, and
+baseline provenance and identical per-table operation hashes/counts as the new
+local plan. A changed source row or stale disposable target requires a fresh
+proof. The proof uses a different PostgreSQL system
+identifier and authority ID. A proof older than 12 hours is rejected. Proof
+uses an `aspire://legacy-postgres-main-local/disposable-*` authority, while
+the destination uses `aspire://legacy-postgres-main-local/persistent-*`.
+does not authorize a production apply or permit an existing target to be
+replaced.
 
 The template's baseline `backupManifestSha256` remains provenance of the
 original migrated dataset, not a fresh daily backup. Live plans use schema
@@ -29,7 +40,13 @@ review, including plans containing only inserts or updates.
    backup-manifest hash and backup signer fingerprint, fresh target observation,
    and distinct trusted keys. Set `allowPlanSigning=true`; local automatic
    execution also needs `allowAuthorizationSigning=true` and
-   `allowExecution=true`.
+   `allowExecution=true`. For `-Execute`, set `disposableProofPlanPath` and
+   `disposableProofResultPath` to owner-protected artifacts from a completed
+   disposable exact-23 run. Supply its `disposableProofPlanKey` and
+   `disposableProofEvidenceKey` public-key references as distinct, protected
+   trust roots; do not reuse the persistent-local signing keys. The proof must
+   finish before generating the persistent-local plan. Do not point either
+   field at the persistent local target or an older daily run.
 3. The operator host supplies the existing signing-key file environment
    variables through protected credential projection. The SQL Server login
    needs read-only access and complete metadata visibility; all 23 databases
@@ -49,7 +66,9 @@ $env:LEGACY_MIGRATION_CALLER = 'owner'
 Omit `-Execute` for plan-only. The script creates a unique owner-only run
 directory, validates protected main and exact-head CI, builds in Release with
 warnings as errors, and generates a signed live plan. For local execution it
-signs a short-lived authorization immediately before apply and publishes new
+verifies the signed disposable proof before authorization or any persistent
+PostgreSQL write. A missing, stale, mismatched, or tampered proof stops the run.
+It then signs a short-lived authorization immediately before apply and publishes new
 owner-only plan, authorization, execution, and reconciliation artifacts. On
 failure it stops without retrying or deleting artifacts. Never reuse a run
 directory or an earlier authorization.

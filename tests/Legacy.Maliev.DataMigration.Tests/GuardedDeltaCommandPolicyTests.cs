@@ -10,6 +10,7 @@ public sealed class GuardedDeltaCommandPolicyTests
         Assert.True(GuardedDeltaCommandPolicy.IsAppHostCallable("apply-delta-local"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("apply-delta-production"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("plan-delta"));
+        Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("verify-disposable-delta-proof"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("authorize-delta"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("reconcile-delta"));
     }
@@ -17,6 +18,7 @@ public sealed class GuardedDeltaCommandPolicyTests
     [Theory]
     [InlineData("owner", "apply-delta-production")]
     [InlineData("owner", "authorize-delta")]
+    [InlineData("owner", "verify-disposable-delta-proof")]
     [InlineData("operator", "plan-delta")]
     [InlineData("operator", "apply-delta-local")]
     [InlineData("apphost", "apply-delta-local")]
@@ -30,6 +32,7 @@ public sealed class GuardedDeltaCommandPolicyTests
     [InlineData("apphost", "authorize-delta")]
     [InlineData("operator", "apply-delta-production")]
     [InlineData("operator", "authorize-delta")]
+    [InlineData("operator", "verify-disposable-delta-proof")]
     [InlineData("", "plan-delta")]
     public void PrivilegeEscalationPairs_FailClosed(string caller, string command)
     {
