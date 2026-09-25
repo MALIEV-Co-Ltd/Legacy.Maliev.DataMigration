@@ -131,6 +131,7 @@ public static partial class MigrationConsole
                     return await RunIncrementalBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable, output, error,
                         incrementalRuntime ?? new DefaultIncrementalConsoleRuntime(), cancellationToken).ConfigureAwait(false);
                 case "plan-delta":
+                case "verify-disposable-delta-proof":
                 case "authorize-delta":
                 case "apply-delta-local":
                 case "apply-delta-production":
