@@ -5,6 +5,7 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class DisposableDeltaProofVerifierTests : IDisposable
 {
     private readonly ECDsa _planKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    private readonly ECDsa _localPlanKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _evidenceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
     [Fact]
@@ -70,9 +71,11 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                     PrimaryKey = new("pk_items", ["id"]),
                 }]))]);
         using var planSigner = new P256MigrationEvidenceSigner("proof-plan", _planKey.ExportECPrivateKeyPem());
+        using var localPlanSigner = new P256MigrationEvidenceSigner("local-plan", _localPlanKey.ExportECPrivateKeyPem());
         using var evidenceSigner = new P256MigrationEvidenceSigner("proof-evidence", _evidenceKey.ExportECPrivateKeyPem());
         var trust = new ReceiptAttestationTrustStore(
             [new(planSigner.KeyId, planSigner.ExportSubjectPublicKeyInfo()),
+                new(localPlanSigner.KeyId, localPlanSigner.ExportSubjectPublicKeyInfo()),
                 new(evidenceSigner.KeyId, evidenceSigner.ExportSubjectPublicKeyInfo())]);
         DeltaSynchronizationPlan proofPlan = MakePlan("disposable-proof", Hash('1'), now.AddMinutes(-3));
         DeltaSynchronizationPlan localPlan = MakePlan("persistent-main", Hash('2'), now.AddMinutes(-1),
@@ -104,7 +107,8 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 SourceObservationSha256 = Hash('8'),
                 SourceCaptureCompletedAtUtc = now.AddMinutes(-4),
             };
-            return DeltaSynchronizationPlanProducer.Produce(request, planSigner, created);
+            return DeltaSynchronizationPlanProducer.Produce(request,
+                id.StartsWith("disposable-", StringComparison.Ordinal) ? planSigner : localPlanSigner, created);
         }
     }
 
@@ -116,6 +120,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
     public void Dispose()
     {
         _planKey.Dispose();
+        _localPlanKey.Dispose();
         _evidenceKey.Dispose();
     }
 

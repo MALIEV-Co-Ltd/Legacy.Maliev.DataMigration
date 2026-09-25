@@ -42,7 +42,9 @@ review, including plans containing only inserts or updates.
    execution also needs `allowAuthorizationSigning=true` and
    `allowExecution=true`. For `-Execute`, set `disposableProofPlanPath` and
    `disposableProofResultPath` to owner-protected artifacts from a completed
-   disposable exact-23 run using the same fresh trust bundle. The proof must
+   disposable exact-23 run. Supply its `disposableProofPlanKey` and
+   `disposableProofEvidenceKey` public-key references as distinct, protected
+   trust roots; do not reuse the persistent-local signing keys. The proof must
    finish before generating the persistent-local plan. Do not point either
    field at the persistent local target or an older daily run.
 3. The operator host supplies the existing signing-key file environment
