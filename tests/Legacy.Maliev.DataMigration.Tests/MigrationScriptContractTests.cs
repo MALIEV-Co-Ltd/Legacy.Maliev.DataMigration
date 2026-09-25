@@ -3,6 +3,21 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class MigrationScriptContractTests
 {
     [Fact]
+    public void Production_template_projects_only_current_plan_only_target_authority()
+    {
+        string script = File.ReadAllText(SourcePath("new-production-delta-template.ps1"));
+        Assert.Contains("production_delta_owner_only_root_required", script, StringComparison.Ordinal);
+        Assert.Contains("production_delta_tunnel_identity_invalid", script, StringComparison.Ordinal);
+        Assert.Contains("production_delta_canonical_database_missing", script, StringComparison.Ordinal);
+        Assert.Contains("legacy-postgres-main-rw", script, StringComparison.Ordinal);
+        Assert.Contains("targetObservationSha256", script, StringComparison.Ordinal);
+        Assert.Contains("allowPlanSigning = $true", script, StringComparison.Ordinal);
+        Assert.Contains("allowAuthorizationSigning = $false", script, StringComparison.Ordinal);
+        Assert.Contains("allowExecution = $false", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("Write-Output $password", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Daily_local_execution_verifies_disposable_proof_before_authorization()
     {
         string script = File.ReadAllText(SourcePath("invoke-daily-readonly-delta.ps1"));

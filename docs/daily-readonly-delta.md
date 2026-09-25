@@ -94,6 +94,18 @@ database replacement, or SQL Server configuration change is included.
 
 ## Read-only target gap inspection
 
+After generating the current source schema plan, use
+`scripts/new-production-delta-template.ps1` from clean, exact-head-green
+protected main to project a fresh production target connection and observation
+into a new owner-only key directory. Its loopback tunnel must be the observed
+`maliev-legacy/legacy-postgres-main-rw` port-forward. It verifies cluster
+health, archiving, primary identity, capacity, and all 23 canonical databases.
+Supply the independently verified current source commit with
+`-ExpectedSourceCommitSha`; a stale schema plan is rejected.
+The generated template permits planning only; it cannot sign an execution
+authorization or apply changes. Do not reuse its connection, observation, or
+keys for another attempt.
+
 When a production plan stops on a schema fingerprint mismatch, use a fresh
 owner-protected production template with the same exact-23 source schema plan
 and a fresh target observation, but set a new output path and run
