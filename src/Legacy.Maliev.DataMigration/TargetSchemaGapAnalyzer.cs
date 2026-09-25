@@ -1,0 +1,71 @@
+namespace Legacy.Maliev.DataMigration;
+
+/// <summary>PII-free structural differences used to review additive target schema repairs.</summary>
+public sealed record TargetSchemaGap(
+    string Database,
+    IReadOnlyList<string> MissingTables,
+    IReadOnlyList<string> MissingColumns,
+    IReadOnlyList<string> TargetOnlyTables,
+    IReadOnlyList<string> TargetOnlyColumns)
+{
+    /// <summary>Whether a target differs from the current source-owned table inventory.</summary>
+    public bool HasDifferences => MissingTables.Count != 0 || MissingColumns.Count != 0 ||
+        TargetOnlyTables.Count != 0 || TargetOnlyColumns.Count != 0;
+}
+
+/// <summary>Read-only table and column names observed in one PostgreSQL database.</summary>
+public sealed record ObservedTargetTable(string Schema, string Table, IReadOnlyList<string> Columns);
+
+/// <summary>
+/// Compares names only. A clean result is not a schema fingerprint or permission to apply a delta:
+/// types, constraints, indexes, defaults, and sequences still require the guarded inspector.
+/// </summary>
+public static class TargetSchemaGapAnalyzer
+{
+    /// <summary>Finds missing and target-only objects without discarding target-owned tables.</summary>
+    public static TargetSchemaGap Analyze(DatabaseSchemaPlan desired, IReadOnlyList<ObservedTargetTable> observed)
+    {
+        ArgumentNullException.ThrowIfNull(desired);
+        ArgumentNullException.ThrowIfNull(observed);
+
+        Dictionary<string, TableCopyPlan> planned = desired.Tables.ToDictionary(
+            table => Qualified(table.TargetSchema, table.TargetTable), StringComparer.Ordinal);
+        Dictionary<string, ObservedTargetTable> actual = observed.ToDictionary(
+            table => Qualified(table.Schema, table.Table), StringComparer.Ordinal);
+        if (planned.Count == 0 || desired.Tables.Any(table => table.OrderedColumns.Count == 0) ||
+            observed.Any(table => table.Columns.Distinct(StringComparer.Ordinal).Count() != table.Columns.Count))
+        {
+            throw new ArgumentException("Target schema inventory is incomplete or ambiguous.", nameof(observed));
+        }
+
+        string[] missingTables = [.. planned.Keys.Except(actual.Keys, StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)];
+        string[] targetOnlyTables = [.. actual.Keys.Except(planned.Keys, StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)];
+        var missingColumns = new List<string>();
+        var targetOnlyColumns = new List<string>();
+        foreach ((string tableName, TableCopyPlan table) in planned.OrderBy(item => item.Key, StringComparer.Ordinal))
+        {
+            if (!actual.TryGetValue(tableName, out ObservedTargetTable? target))
+            {
+                continue;
+            }
+
+            missingColumns.AddRange(table.OrderedColumns.Except(target.Columns, StringComparer.Ordinal)
+                .Select(column => $"{tableName}.{column}"));
+            targetOnlyColumns.AddRange(target.Columns.Except(table.OrderedColumns, StringComparer.Ordinal)
+                .Select(column => $"{tableName}.{column}"));
+        }
+
+        return new(desired.Database, missingTables, [.. missingColumns.Order(StringComparer.Ordinal)],
+            targetOnlyTables, [.. targetOnlyColumns.Order(StringComparer.Ordinal)]);
+    }
+
+    private static string Qualified(string schema, string table)
+    {
+        return string.IsNullOrWhiteSpace(schema) || string.IsNullOrWhiteSpace(table) ||
+            schema.Contains('.', StringComparison.Ordinal) || table.Contains('.', StringComparison.Ordinal)
+            ? throw new ArgumentException("Schema and table names must be unambiguous.")
+            : $"{schema}.{table}";
+    }
+}
