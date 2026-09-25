@@ -49,7 +49,17 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 fixture.Schema, fixture.Trust, fixture.Now)).Code);
     }
 
-    private async Task<Fixture> CreateAsync()
+    [Fact]
+    public async Task Rejects_new_rows_after_disposable_proof()
+    {
+        Fixture fixture = await CreateAsync(changedLocalOperations: true);
+
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            DisposableDeltaProofVerifier.Verify(fixture.ProofPlan, fixture.ProofResult,
+                fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now)).Code);
+    }
+
+    private async Task<Fixture> CreateAsync(bool changedLocalOperations = false)
     {
         DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
         FreshSchemaPlan schema = new("2.0", now.AddMinutes(-10), new string('a', 40),
@@ -65,7 +75,8 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             [new(planSigner.KeyId, planSigner.ExportSubjectPublicKeyInfo()),
                 new(evidenceSigner.KeyId, evidenceSigner.ExportSubjectPublicKeyInfo())]);
         DeltaSynchronizationPlan proofPlan = MakePlan("disposable-proof", Hash('1'), now.AddMinutes(-3));
-        DeltaSynchronizationPlan localPlan = MakePlan("persistent-main", Hash('2'), now.AddMinutes(-1));
+        DeltaSynchronizationPlan localPlan = MakePlan("persistent-main", Hash('2'), now.AddMinutes(-1),
+            changedLocalOperations);
         var inspector = new Inspector();
         var coordinator = new Exact23DeltaReconciliationCoordinator(inspector, inspector,
             new Checkpoints(proofPlan, schema), new FixedTime(now.AddMinutes(-2)), evidenceSigner);
@@ -73,14 +84,19 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             CancellationToken.None);
         return new(proofPlan, result, localPlan, schema, trust, now);
 
-        DeltaSynchronizationPlan MakePlan(string id, string systemHash, DateTimeOffset created)
+        DeltaSynchronizationPlan MakePlan(string id, string systemHash, DateTimeOffset created,
+            bool changedOperations = false)
         {
+            CanonicalDeltaOperation[] changed = [new(DeltaOperationKind.Insert, Hash('e'), Hash('f'), null)];
             var request = new DeltaPlanSigningRequest(schema.SourceCommitSha, now.AddMinutes(-5), Hash('3'),
                 SchemaPlanCanonicalizer.ComputeSha256(schema), Hash('4'), "local-aspire",
                 "legacy-postgres-main-local", "generation-1", Hash('5'), Hash('6'), Hash('7'),
                 [.. DatabaseInventory.ActiveDatabases.Select(name => new DeltaDatabasePlan(name,
-                    [new DeltaTablePlan("public.items", 0, 0, 0, 1,
-                        DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256([]), [])]))])
+                    [new DeltaTablePlan("public.items", changedOperations && name == "ContactRequest" ? 1 : 0,
+                        0, 0, changedOperations && name == "ContactRequest" ? 0 : 1,
+                        DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(
+                            changedOperations && name == "ContactRequest" ? changed : []),
+                        changedOperations && name == "ContactRequest" ? changed : [])]))])
             {
                 TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
                     $"aspire://legacy-postgres-main-local/{id}", systemHash),

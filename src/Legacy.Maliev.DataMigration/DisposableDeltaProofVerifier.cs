@@ -60,7 +60,8 @@ public static class DisposableDeltaProofVerifier
                 !proofResult.Databases.Single(item => item.Database == database.Database).Tables
                     .Select(item => item.Table).Order(StringComparer.Ordinal)
                     .SequenceEqual(database.Tables.Select(item => $"{item.TargetSchema}.{item.TargetTable}")
-                        .Order(StringComparer.Ordinal), StringComparer.Ordinal)))
+                        .Order(StringComparer.Ordinal), StringComparer.Ordinal)) ||
+            !MatchingOperations(proofPlan, localPlan))
         {
             throw new DeltaExecutionException("delta_disposable_proof_invalid",
                 "A fresh signed exact-23 disposable reconciliation for the same runner and source is required.");
@@ -73,5 +74,20 @@ public static class DisposableDeltaProofVerifier
             .Select(item => item.Table).Order(StringComparer.Ordinal)
             .SequenceEqual(schema.Tables.Select(item => $"{item.TargetSchema}.{item.TargetTable}")
                 .Order(StringComparer.Ordinal), StringComparer.Ordinal);
+    }
+
+    private static bool MatchingOperations(DeltaSynchronizationPlan proof, DeltaSynchronizationPlan local)
+    {
+        return proof.Databases.Zip(local.Databases).All(pair =>
+            string.Equals(pair.First.Database, pair.Second.Database, StringComparison.Ordinal) &&
+            pair.First.Tables.Count == pair.Second.Tables.Count &&
+            pair.First.Tables.Zip(pair.Second.Tables).All(tables =>
+                string.Equals(tables.First.Table, tables.Second.Table, StringComparison.Ordinal) &&
+                tables.First.InsertCount == tables.Second.InsertCount &&
+                tables.First.UpdateCount == tables.Second.UpdateCount &&
+                tables.First.DeleteCount == tables.Second.DeleteCount &&
+                tables.First.UnchangedCount == tables.Second.UnchangedCount &&
+                string.Equals(tables.First.OperationsSha256, tables.Second.OperationsSha256,
+                    StringComparison.Ordinal)));
     }
 }

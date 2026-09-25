@@ -9,7 +9,9 @@ make daily SQL Server backups. Read volume is still a full table scan.
 Persistent-local execution additionally requires a fresh, signed exact-23
 reconciliation from an isolated disposable PostgreSQL target. The disposable
 proof must use the same source observation, schema plan, runner digest, and
-baseline provenance as the new local plan, but a different PostgreSQL system
+baseline provenance and identical per-table operation hashes/counts as the new
+local plan. A changed source row or stale disposable target requires a fresh
+proof. The proof uses a different PostgreSQL system
 identifier and authority ID. A proof older than 12 hours is rejected. Proof
 uses an `aspire://legacy-postgres-main-local/disposable-*` authority, while
 the destination uses `aspire://legacy-postgres-main-local/persistent-*`.
