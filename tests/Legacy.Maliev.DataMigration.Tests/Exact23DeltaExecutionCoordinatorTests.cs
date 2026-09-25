@@ -45,6 +45,24 @@ public sealed class Exact23DeltaExecutionCoordinatorTests : IDisposable
         Assert.Equal([failureDatabase], source.RolledBack);
     }
 
+    [Fact]
+    public async Task Planned_changes_are_applied_first_but_result_keeps_signed_inventory_order()
+    {
+        DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
+        FreshSchemaPlan schemas = Schemas(now);
+        string activeDatabase = DatabaseInventory.ActiveDatabases[^1];
+        (DeltaSynchronizationPlan plan, ReceiptAttestationTrustStore trust) = Plan(schemas, now, activeDatabase);
+        var source = new Source();
+        var coordinator = new Exact23DeltaExecutionCoordinator(source,
+            _ => Executor(trust, now, failAuthorization: false));
+
+        Exact23DeltaExecutionResult result = await coordinator.ExecuteAsync(plan, schemas, CancellationToken.None);
+
+        Assert.Equal(activeDatabase, source.Begun[0]);
+        Assert.Equal(DatabaseInventory.ActiveDatabases, result.Databases.Select(item => item.Database));
+        Assert.Equal(DatabaseInventory.ActiveDatabases.Count, source.Completed.Count);
+    }
+
     private static DeltaExecutionCoordinator Executor(
         ReceiptAttestationTrustStore trust,
         DateTimeOffset now,
@@ -54,15 +72,22 @@ public sealed class Exact23DeltaExecutionCoordinatorTests : IDisposable
             new UnusedInspector(), trust, new FixedTime(now));
     }
 
-    private (DeltaSynchronizationPlan, ReceiptAttestationTrustStore) Plan(FreshSchemaPlan schemas, DateTimeOffset now)
+    private (DeltaSynchronizationPlan, ReceiptAttestationTrustStore) Plan(
+        FreshSchemaPlan schemas, DateTimeOffset now, string? prioritizedDatabase = null)
     {
         using var signer = new P256MigrationEvidenceSigner("plan", _planKey.ExportECPrivateKeyPem());
-        string operations = DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256([]);
         DeltaSynchronizationPlan plan = DeltaSynchronizationPlanProducer.Produce(new(
             schemas.SourceCommitSha, now.AddMinutes(-1), Hash('a'), SchemaPlanCanonicalizer.ComputeSha256(schemas),
             Hash('b'), "local-aspire", "legacy-postgres-main-local", "generation-1", Hash('c'), Hash('d'), Hash('e'),
-            [.. DatabaseInventory.ActiveDatabases.Select(database => new DeltaDatabasePlan(database,
-                [new("public.items", 0, 0, 0, 0, operations, [])]))])
+            [.. DatabaseInventory.ActiveDatabases.Select(database =>
+            {
+                IReadOnlyList<CanonicalDeltaOperation> operations = database == prioritizedDatabase
+                    ? [new(DeltaOperationKind.Insert, Hash('4'), Hash('5'), null)]
+                    : [];
+                return new DeltaDatabasePlan(database,
+                    [new("public.items", operations.Count, 0, 0, 0,
+                        DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(operations), operations)]);
+            })])
         {
             TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
                 "aspire://legacy-postgres-main-local/test", Hash('f')),

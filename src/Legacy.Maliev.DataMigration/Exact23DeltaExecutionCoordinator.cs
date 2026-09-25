@@ -21,7 +21,11 @@ public sealed class Exact23DeltaExecutionCoordinator(
         ArgumentNullException.ThrowIfNull(schemaPlan);
         ValidateInventory(plan, schemaPlan);
         var results = new List<DeltaDatabaseExecutionResult>(DatabaseInventory.ActiveDatabases.Count);
-        foreach (DatabaseSchemaPlan schema in schemaPlan.Databases)
+        // The live source can accept new rows after planning. Apply databases with
+        // signed changes first, reducing the capture-to-apply window for active data.
+        foreach (DatabaseSchemaPlan schema in schemaPlan.Databases
+            .OrderByDescending(item => plan.Databases.Single(database => database.Database == item.Database)
+                .Tables.Sum(table => checked(table.InsertCount + table.UpdateCount + table.DeleteCount))))
         {
             cancellationToken.ThrowIfCancellationRequested();
             bool snapshotOpen = false;
@@ -52,8 +56,10 @@ public sealed class Exact23DeltaExecutionCoordinator(
             }
         }
 
+        var byDatabase = results.ToDictionary(item => item.Database, StringComparer.Ordinal);
         return new(plan.PlanId, DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan), plan.SourceCutoffUtc,
-            new ReadOnlyCollection<DeltaDatabaseExecutionResult>(results));
+            new ReadOnlyCollection<DeltaDatabaseExecutionResult>(
+                [.. DatabaseInventory.ActiveDatabases.Select(database => byDatabase[database])]));
     }
 
     private static void ValidateInventory(DeltaSynchronizationPlan plan, FreshSchemaPlan schemaPlan)

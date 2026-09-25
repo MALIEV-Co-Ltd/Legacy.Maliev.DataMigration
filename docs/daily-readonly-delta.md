@@ -32,6 +32,11 @@ original migrated dataset, not a fresh daily backup. Live plans use schema
 the source capture start and completion times. Each database uses a separate
 SQL Server snapshot transaction; there is no atomic cross-database cutoff.
 Source or target drift from the signed plan fails closed.
+During apply, databases with more signed row operations run first; the signed
+result is still published in the canonical exact-23 order. This narrows the
+time between capture and apply for recently active databases, but it does not
+make a changing source immutable. New rows arriving before a database's apply
+may still invalidate the plan, requiring a new isolated proof and plan.
 Unattended local execution stops if the plan contains a deletion; deletion
 sets require separate review. Production execution always requires separate
 review, including plans containing only inserts or updates.
