@@ -8,6 +8,11 @@ public sealed class MigrationScriptContractTests
         string script = File.ReadAllText(SourcePath("new-production-delta-template.ps1"));
         Assert.Contains("production_delta_owner_only_root_required", script, StringComparison.Ordinal);
         Assert.Contains("production_delta_tunnel_identity_invalid", script, StringComparison.Ordinal);
+        Assert.Contains("ExecTunnelConfigPath", script, StringComparison.Ordinal);
+        Assert.Contains("production_delta_exec_config_outside_root", script, StringComparison.Ordinal);
+        Assert.Contains("production_delta_exec_config_unprotected", script, StringComparison.Ordinal);
+        Assert.Contains("Assert-ProductionExecTunnelIdentity", script, StringComparison.Ordinal);
+        Assert.Contains("tunnelConfigSha256", script, StringComparison.Ordinal);
         Assert.Contains("production_delta_canonical_database_missing", script, StringComparison.Ordinal);
         Assert.Contains("legacy-postgres-main-rw", script, StringComparison.Ordinal);
         Assert.Contains("targetObservationSha256", script, StringComparison.Ordinal);
@@ -15,6 +20,20 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("allowAuthorizationSigning = $false", script, StringComparison.Ordinal);
         Assert.Contains("allowExecution = $false", script, StringComparison.Ordinal);
         Assert.DoesNotContain("Write-Output $password", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Production_exec_tunnel_configuration_is_create_only_and_identity_bound()
+    {
+        string script = File.ReadAllText(SourcePath("new-production-exec-tunnel-config.ps1"));
+        Assert.Contains("LEGACY_DEPLOY_ENABLED", script, StringComparison.Ordinal);
+        Assert.Contains("production_exec_owner_only_root_required", script, StringComparison.Ordinal);
+        Assert.Contains("Cluster in healthy state", script, StringComparison.Ordinal);
+        Assert.Contains("ContinuousArchiving", script, StringComparison.Ordinal);
+        Assert.Contains("[IO.FileMode]::CreateNew", script, StringComparison.Ordinal);
+        Assert.Contains("clusterUid", script, StringComparison.Ordinal);
+        Assert.Contains("primaryPodUid", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("password", script, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

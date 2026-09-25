@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory = $true)][string]$ExpectedSourceCommitSha,
     [Parameter(Mandatory = $true)][string]$BackupManifestSha256,
     [Parameter(Mandatory = $true)][string]$BackupKeyFingerprintSha256,
-    [int]$Port = 15438
+    [int]$Port = 15438,
+    [string]$ExecTunnelConfigPath
 )
 
 Set-StrictMode -Version Latest
@@ -77,10 +78,36 @@ if ($LASTEXITCODE -ne 0 -or $service.spec.ports[0].port -ne 5432) {
 $listener = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
 if ($listener.Count -ne 1) { throw 'production_delta_loopback_tunnel_missing' }
 $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener[0].OwningProcess)"
-if ($null -eq $process -or $process.Name -cnotmatch '^kubectl(\.exe)?$' -or
-    $process.CommandLine -cnotmatch '[ -]-n maliev-legacy port-forward svc/legacy-postgres-main-rw ' -or
-    $process.CommandLine -cnotmatch " $($Port):5432 --address 127\.0\.0\.1") {
-    throw 'production_delta_tunnel_identity_invalid'
+$transport = 'kubectl-port-forward'
+$tunnelConfigHash = $null
+if ([string]::IsNullOrWhiteSpace($ExecTunnelConfigPath)) {
+    if ($null -eq $process -or $process.Name -cnotmatch '^kubectl(\.exe)?$' -or
+        $process.CommandLine -cnotmatch '[ -]-n maliev-legacy port-forward svc/legacy-postgres-main-rw ' -or
+        $process.CommandLine -cnotmatch " $($Port):5432 --address 127\.0\.0\.1") {
+        throw 'production_delta_tunnel_identity_invalid'
+    }
+}
+else {
+    $execConfigPath = (Resolve-Path -LiteralPath $ExecTunnelConfigPath).Path
+    if (-not $execConfigPath.StartsWith($root + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'production_delta_exec_config_outside_root'
+    }
+    $execAcl = Get-Acl -LiteralPath $execConfigPath
+    $execRules = @($execAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    if ($execAcl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $owner -or
+        @($execRules | Where-Object { $_.IdentityReference -ne $owner -or $_.AccessControlType -ne 'Allow' }).Count -gt 0) {
+        throw 'production_delta_exec_config_unprotected'
+    }
+    if ($null -eq $process) {
+        throw 'production_delta_tunnel_identity_invalid'
+    }
+    $execConfig = Get-Content -LiteralPath $execConfigPath -Raw | ConvertFrom-Json
+    . (Join-Path $PSScriptRoot 'production-exec-tunnel-admission.ps1')
+    Assert-ProductionExecTunnelIdentity -Config $execConfig -Cluster $cluster -Pod $pod `
+        -Process $process -Assembly $assembly -ConfigPath $execConfigPath -Port $Port
+    $transport = 'identity-checked-kubectl-exec'
+    $tunnelConfigHash = (Get-FileHash -LiteralPath $execConfigPath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
 $secret = kubectl -n maliev-legacy get secret legacy-postgres-superuser -o json | ConvertFrom-Json
@@ -147,6 +174,8 @@ $observation = [ordered]@{
     clusterGeneration = $cluster.metadata.generation
     primaryPodUid = $pod.metadata.uid
     systemIdentifierSha256 = $systemHash
+    transport = $transport
+    tunnelConfigSha256 = $tunnelConfigHash
     databases = $databases
     observedAtUtc = $observedAt
 } | ConvertTo-Json -Compress -Depth 5

@@ -32,6 +32,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Validate production exec-tunnel admission
+        shell: pwsh
+        run: ./tests/powershell/production-exec-tunnel-admission.test.ps1
       - name: Validate .NET solution
         uses: MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@6017816fa67f369d785ed30794f002cfd6299af7
         with:
