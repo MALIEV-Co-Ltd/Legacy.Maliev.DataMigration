@@ -48,6 +48,7 @@ public static partial class MigrationConsole
             object result = command switch
             {
                 "plan-delta" => await ProduceDeltaPlanAsync(configuration, environment, runtime, cancellationToken).ConfigureAwait(false),
+                "verify-disposable-delta-proof" => await VerifyDisposableProofAsync(configuration, cancellationToken).ConfigureAwait(false),
                 "authorize-delta" => await ProduceDeltaAuthorizationAsync(configuration, environment, cancellationToken).ConfigureAwait(false),
                 "apply-delta-local" => await ApplyDeltaAsync(configuration, DeltaTargetAuthorityKind.LocalAspire, runtime, cancellationToken).ConfigureAwait(false),
                 "apply-delta-production" => await ApplyDeltaAsync(configuration, DeltaTargetAuthorityKind.ProductionCloudNativePg, runtime, cancellationToken).ConfigureAwait(false),
@@ -168,6 +169,30 @@ public static partial class MigrationConsole
         DateTimeOffset issuedAtUtc = DateTimeOffset.UtcNow;
         return DeltaExecutionAuthorizationProducer.Produce(plan, issuedAtUtc,
             configuration.AuthorizationExpiresAtUtc.Value, signer);
+    }
+
+    private static async Task<object> VerifyDisposableProofAsync(
+        DeltaCommandConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        DeltaSynchronizationPlan localPlan = await ReadProtectedJsonAsync<DeltaSynchronizationPlan>(Required(configuration.PlanPath),
+            "delta_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        DeltaSynchronizationPlan proofPlan = await ReadProtectedJsonAsync<DeltaSynchronizationPlan>(Required(configuration.DisposableProofPlanPath),
+            "delta_proof_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        Exact23DeltaReconciliationResult proofResult = await ReadProtectedJsonAsync<Exact23DeltaReconciliationResult>(
+            Required(configuration.DisposableProofResultPath), "delta_proof_result_unprotected", cancellationToken)
+            .ConfigureAwait(false);
+        FreshSchemaPlan schema = await ReadProtectedJsonAsync<FreshSchemaPlan>(configuration.SchemaPlanPath,
+            "delta_schema_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        DeltaTrustBundle trust = await ReadDeltaTrustAsync(configuration, cancellationToken).ConfigureAwait(false);
+        DisposableDeltaProofVerifier.Verify(proofPlan, proofResult, localPlan, schema, trust.TrustStore, DateTimeOffset.UtcNow);
+        return new
+        {
+            schemaVersion = "1.0",
+            localPlanSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(localPlan),
+            proofPlanSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(proofPlan),
+            proofReconciledAtUtc = proofResult.ReconciledAtUtc
+        };
     }
 
     private static async Task<Exact23DeltaExecutionResult> ApplyDeltaAsync(
@@ -327,6 +352,8 @@ internal sealed record DeltaCommandConfiguration(
     DeltaTargetAuthority TargetAuthority,
     string? PlanPath = null,
     string? AuthorizationPath = null,
+    string? DisposableProofPlanPath = null,
+    string? DisposableProofResultPath = null,
     DateTimeOffset? AuthorizationExpiresAtUtc = null,
     bool AllowPlanSigning = false,
     bool AllowAuthorizationSigning = false,

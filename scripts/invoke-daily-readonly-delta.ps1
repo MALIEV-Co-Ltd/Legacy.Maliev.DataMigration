@@ -147,6 +147,13 @@ if (@($plan.databases | ForEach-Object { $_.tables } | Where-Object { $_.deleteC
     Fail 'daily_delta_delete_review_required'
 }
 
+if ([string]::IsNullOrWhiteSpace($config.delta.disposableProofPlanPath) -or
+    [string]::IsNullOrWhiteSpace($config.delta.disposableProofResultPath)) {
+    Fail 'daily_delta_disposable_proof_required'
+}
+New-PhaseConfig 'proof'
+Invoke-GuardedCommand 'verify-disposable-delta-proof' (Join-Path $runDirectory 'proof-config.json')
+
 # The same protected template and distinct short-lived key produce a per-run authorization.
 # Production and local targets require separate templates and invocations.
 New-PhaseConfig 'authorize'
