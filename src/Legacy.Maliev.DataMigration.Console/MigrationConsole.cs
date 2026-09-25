@@ -113,6 +113,10 @@ public static partial class MigrationConsole
             ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
             switch (invocation.Command)
             {
+                case "cnpg-exec-tunnel":
+                    await CnpgExecTunnel.RunAsync(invocation.ConfigPath, getEnvironmentVariable, output, error,
+                        cancellationToken).ConfigureAwait(false);
+                    return 0;
                 case "plan":
                     await ProducePlanAsync(invocation.ConfigPath, getEnvironmentVariable, cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("plan_complete").ConfigureAwait(false);
