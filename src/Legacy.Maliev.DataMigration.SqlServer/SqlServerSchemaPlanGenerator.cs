@@ -97,7 +97,10 @@ public sealed partial class SqlServerMigrationSource
             tables.Add(table);
         }
 
-        var draft = new DatabaseSchemaPlan(database, "1.0", schema.SchemaSha256, new string('0', 64), tables);
+        var draft = new DatabaseSchemaPlan(database, "1.0", schema.SchemaSha256, new string('0', 64), tables)
+        {
+            TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(database),
+        };
         return draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
     }
 

@@ -113,7 +113,11 @@ public sealed record DatabaseSchemaPlan(
     string TargetSchemaVersion,
     string SourceSchemaSha256,
     string TargetSchemaSha256,
-    IReadOnlyList<TableCopyPlan> Tables);
+    IReadOnlyList<TableCopyPlan> Tables)
+{
+    /// <summary>Reviewed PostgreSQL-only schema profile bound to the signed plan.</summary>
+    public string? TargetExtensionProfile { get; init; }
+}
 
 public sealed record FreshSchemaPlan(
     string SchemaVersion,
@@ -166,6 +170,16 @@ public static partial class SchemaPlanCanonicalizer
 
         foreach (DatabaseSchemaPlan database in plan.Databases)
         {
+            try
+            {
+                _ = ApprovedTargetExtensionManifest.TablesFor(database);
+            }
+            catch (MigrationExecutionException)
+            {
+                errors.Add(new("target_extension_profile_invalid",
+                    $"{database.Database} has an unapproved or overlapping target extension profile."));
+            }
+
             if (!string.Equals(database.TargetSchemaVersion, "1.0", StringComparison.Ordinal))
             {
                 errors.Add(new("target_schema_version_unknown", $"{database.Database} has an unapproved target schema version."));
@@ -446,6 +460,11 @@ public static partial class SchemaPlanCanonicalizer
                         writer.Write(column.Stored);
                     }
                     WriteDictionary(writer, table.Collations);
+                }
+                if (database.TargetExtensionProfile is not null)
+                {
+                    writer.Write((byte)'E');
+                    WriteString(writer, database.TargetExtensionProfile);
                 }
             }
         }

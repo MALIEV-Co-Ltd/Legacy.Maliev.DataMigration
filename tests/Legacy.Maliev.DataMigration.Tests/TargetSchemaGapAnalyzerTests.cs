@@ -45,6 +45,28 @@ public sealed class TargetSchemaGapAnalyzerTests
             [new ObservedTargetTable("public", "Country", ["ID", "ID"])]));
     }
 
+    [Fact]
+    public void ApprovedExtensionsAreDistinguishedFromUnknownAndMissingTargetTables()
+    {
+        DatabaseSchemaPlan desired = new("Material", "1.0", new string('a', 64), new string('b', 64),
+            [new TableCopyPlan("dbo", "Material", "public", "Material", ["ID"], ["ID"])])
+        {
+            TargetExtensionProfile = ApprovedTargetExtensionManifest.MaterialCatalogV1,
+        };
+
+        TargetSchemaGap gap = TargetSchemaGapAnalyzer.Analyze(desired,
+        [
+            new("public", "Material", ["ID"]),
+            new("public", "Country", ["ID", "Name"]),
+            new("public", "Unexpected", ["ID"]),
+        ]);
+
+        Assert.Equal(["public.Country"], gap.ApprovedTargetExtensions);
+        Assert.Equal(["public.Currency"], gap.MissingApprovedTargetExtensions);
+        Assert.Equal(["public.Unexpected"], gap.TargetOnlyTables);
+        Assert.True(gap.HasDifferences);
+    }
+
     private static DatabaseSchemaPlan Plan(params TableCopyPlan[] tables)
     {
         return new("Country", "1.0", new string('a', 64), new string('b', 64), tables);
