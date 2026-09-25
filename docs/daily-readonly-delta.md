@@ -91,3 +91,21 @@ source health, target identity, and credential projection are independently
 reviewed. Production should plan daily and request owner review for the
 separate execution action. No application deployment, traffic change,
 database replacement, or SQL Server configuration change is included.
+
+## Read-only target gap inspection
+
+When a production plan stops on a schema fingerprint mismatch, use a fresh
+owner-protected production template with the same exact-23 source schema plan
+and a fresh target observation, but set a new output path and run
+`inspect-target-schema-gaps --config <protected-config-path>`. The command
+verifies the PostgreSQL system identifier and canonical database inventory,
+then reads table and column names in repeatable-read, read-only transactions.
+It reports missing and target-only objects across all 23 databases without
+altering either source or target. Target-only objects are reported, never
+implicitly deleted or ignored.
+
+This names-only output is a repair-review aid, **not** signed reconciliation,
+an additive DDL authorization, or evidence that types, defaults, constraints,
+indexes, sequences, and rows match. Build and run it only from clean,
+exact-head-green protected main against production; validate any proposed
+additive repair on an isolated copy before a separately reviewed target change.

@@ -48,6 +48,7 @@ public static partial class MigrationConsole
             object result = command switch
             {
                 "plan-delta" => await ProduceDeltaPlanAsync(configuration, environment, runtime, cancellationToken).ConfigureAwait(false),
+                "inspect-target-schema-gaps" => await InspectTargetSchemaGapsAsync(configuration, cancellationToken).ConfigureAwait(false),
                 "verify-disposable-delta-proof" => await VerifyDisposableProofAsync(configuration, cancellationToken).ConfigureAwait(false),
                 "authorize-delta" => await ProduceDeltaAuthorizationAsync(configuration, environment, cancellationToken).ConfigureAwait(false),
                 "apply-delta-local" => await ApplyDeltaAsync(configuration, DeltaTargetAuthorityKind.LocalAspire, runtime, cancellationToken).ConfigureAwait(false),
@@ -416,7 +417,7 @@ internal static class GuardedDeltaCommandPolicy
         bool valid = caller switch
         {
             "owner" => true,
-            "operator" => command is "plan-delta" or "apply-delta-local" or "reconcile-delta",
+            "operator" => command is "plan-delta" or "inspect-target-schema-gaps" or "apply-delta-local" or "reconcile-delta",
             "apphost" => IsAppHostCallable(command),
             _ => false,
         };
@@ -636,7 +637,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         }
     }
 
-    private static async Task VerifyTargetAuthorityAsync(
+    internal static async Task VerifyTargetAuthorityAsync(
         string connectionString,
         DeltaTargetAuthority expected,
         CancellationToken cancellationToken)
