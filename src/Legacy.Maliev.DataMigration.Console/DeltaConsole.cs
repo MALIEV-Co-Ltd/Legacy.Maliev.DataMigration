@@ -574,6 +574,18 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         await VerifyTargetAuthorityAsync(request.TargetConnectionString,
             request.Plan.TargetAuthority ?? throw new DeltaExecutionException("delta_target_authority_invalid", "The delta plan has no target authority."),
             cancellationToken).ConfigureAwait(false);
+        var target = new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString));
+        if (request.Plan.SourceMode == DeltaSourceMode.LiveReadOnly)
+        {
+            var checkpointCoordinator = new Exact23DeltaReconciliationCoordinator(
+                target, target,
+                new PostgreSqlExact23DeltaCheckpointReader(new(request.TargetConnectionString)),
+                TimeProvider.System, request.Signer, checkpointBound: true);
+            Exact23DeltaReconciliationResult checkpointResult = await checkpointCoordinator.ReconcileAsync(
+                request.Plan, request.Schema, cancellationToken).ConfigureAwait(false);
+            await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
+            return checkpointResult;
+        }
         await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
         var opened = new List<string>(DatabaseInventory.ActiveDatabases.Count);
         try
@@ -585,7 +597,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
             }
             var coordinator = new Exact23DeltaReconciliationCoordinator(
                 new SqlServerDeltaReconciliationInspector(source),
-                new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString)),
+                target,
                 new PostgreSqlExact23DeltaCheckpointReader(new(request.TargetConnectionString)),
                 TimeProvider.System,
                 request.Signer);

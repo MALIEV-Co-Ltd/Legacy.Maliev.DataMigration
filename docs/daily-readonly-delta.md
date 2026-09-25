@@ -17,6 +17,14 @@ uses an `aspire://legacy-postgres-main-local/disposable-*` authority, while
 the destination uses `aspire://legacy-postgres-main-local/persistent-*`.
 does not authorize a production apply or permit an existing target to be
 replaced.
+For live-source runs, final reconciliation re-inspects each PostgreSQL table,
+constraint, and sequence and matches its canonical digest to the atomic
+checkpoint written during that database's apply. It does not require mutable
+SQL Server rows or identity counters to remain unchanged after that checkpoint.
+The evidence therefore attests to the 23 recorded per-database cutoffs, not a
+single atomic cross-database snapshot or the source's state at the later
+reconciliation time. Planning and apply still verify the live source identity
+and snapshot/row fingerprints before writing.
 
 The template's baseline `backupManifestSha256` remains provenance of the
 original migrated dataset, not a fresh daily backup. Live plans use schema
