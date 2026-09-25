@@ -63,6 +63,38 @@ public sealed class Exact23DeltaPlanCoordinatorTests : IDisposable
         Assert.Equal(0, rows.Reads);
     }
 
+    [Theory]
+    [InlineData("GoogleAnalyticsOutbox")]
+    [InlineData("QuotationOutcomeOutbox")]
+    public async Task Rejects_unmapped_quotation_outbox_before_reading_rows(string sourceTable)
+    {
+        DateTimeOffset now = DateTimeOffset.Parse("2026-09-08T06:00:00Z", CultureInfo.InvariantCulture);
+        FreshSchemaPlan valid = Schema(now);
+        DatabaseSchemaPlan quotation = valid.Databases.Single(database => database.Database == "Quotation");
+        TableCopyPlan outbox = Table() with
+        {
+            SourceSchema = "dbo",
+            SourceTable = sourceTable,
+            TargetSchema = "public",
+            TargetTable = sourceTable,
+        };
+        DatabaseSchemaPlan revised = quotation with { Tables = [.. quotation.Tables, outbox] };
+        revised = revised with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(revised) };
+        FreshSchemaPlan schema = valid with
+        {
+            Databases = valid.Databases.Select(database => database.Database == "Quotation" ? revised : database).ToArray(),
+        };
+        var rows = new Rows(_ => []);
+        using var signer = new P256MigrationEvidenceSigner("plan", _key.ExportECPrivateKeyPem());
+        var coordinator = new Exact23DeltaPlanCoordinator(rows, rows, signer, new FixedTime(now));
+
+        DeltaPlanException error = await Assert.ThrowsAsync<DeltaPlanException>(() =>
+            coordinator.ProduceAsync(Request(schema, signer, now), CancellationToken.None));
+
+        Assert.Equal("delta_plan_quotation_transformation_required", error.Code);
+        Assert.Equal(0, rows.Reads);
+    }
+
     private static Exact23DeltaPlanRequest Request(FreshSchemaPlan schema, P256MigrationEvidenceSigner signer, DateTimeOffset now)
     {
         string distinct = string.Equals(signer.PublicKeyFingerprintSha256, Hash('e'), StringComparison.OrdinalIgnoreCase) ? Hash('1') : Hash('e');

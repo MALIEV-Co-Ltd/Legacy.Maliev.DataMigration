@@ -1,5 +1,11 @@
 # Daily read-only SQL Server comparison
 
+The planner rejects Quotation source outboxes until their signed dispositions
+are implemented: `QuotationOutcomeOutbox` must be adopted into
+`QuotationAcceptedOutcome`, and `GoogleAnalyticsOutbox` must be preserved in the
+read-only compatibility archive. Neither may be copied as an ordinary public
+table to make a schema fingerprint pass.
+
 `scripts/invoke-daily-readonly-delta.ps1` is a backup-free row comparison path for
 already populated exact-23 PostgreSQL targets. It reads every source and target
 table in primary-key order, signs insert/update/reviewed-delete operations,
