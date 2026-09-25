@@ -28,7 +28,8 @@ public sealed class Exact23DeltaReconciliationCoordinator(
     IDeltaReconciliationInspector target,
     IExact23DeltaCheckpointReader checkpoints,
     TimeProvider timeProvider,
-    P256MigrationEvidenceSigner signer)
+    P256MigrationEvidenceSigner signer,
+    bool checkpointBound = false)
 {
     public async Task<Exact23DeltaReconciliationResult> ReconcileAsync(
         DeltaSynchronizationPlan plan,
@@ -48,8 +49,13 @@ public sealed class Exact23DeltaReconciliationCoordinator(
         foreach (DatabaseSchemaPlan schema in schemaPlan.Databases)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            DatabaseReconciliationEvidence expected = await source.InspectAsync(schema, cancellationToken).ConfigureAwait(false);
+            // A live source can advance after the atomic per-database apply. In that mode the
+            // committed reconciliation hash, not a later source read, is the cutoff authority.
+            DatabaseReconciliationEvidence? expected = checkpointBound
+                ? null
+                : await source.InspectAsync(schema, cancellationToken).ConfigureAwait(false);
             DatabaseReconciliationEvidence observed = await target.InspectAsync(schema, cancellationToken).ConfigureAwait(false);
+            expected ??= observed;
             ValidateShape(schema, expected, observed);
             ReconciliationDiagnostics.CompareSchema(schema.Database, schema.TargetSchemaSha256, observed.TargetSchemaSha256);
             foreach (TableReconciliationEvidence expectedTable in expected.Tables)

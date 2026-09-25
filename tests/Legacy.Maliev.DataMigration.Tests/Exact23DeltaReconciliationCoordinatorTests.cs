@@ -49,6 +49,42 @@ public sealed class Exact23DeltaReconciliationCoordinatorTests : IDisposable
         Assert.Equal("shadow_reconciliation_failed", error.Code);
     }
 
+    [Fact]
+    public async Task Checkpoint_bound_reconciliation_ignores_later_source_identity_advance()
+    {
+        DateTimeOffset now = new(2026, 9, 25, 7, 0, 0, TimeSpan.Zero);
+        FreshSchemaPlan schemas = Schemas(now);
+        DeltaSynchronizationPlan plan = Plan(schemas, now);
+        var advancedSource = new Inspector(schema => Change(Evidence(schema), "sequence"));
+        var target = new Inspector(Evidence);
+        using var signer = Signer();
+        var coordinator = new Exact23DeltaReconciliationCoordinator(advancedSource, target,
+            new Checkpoints(plan, schemas), new FixedTime(now), signer, checkpointBound: true);
+
+        Exact23DeltaReconciliationResult result = await coordinator.ReconcileAsync(plan, schemas, CancellationToken.None);
+
+        Assert.Equal(DatabaseInventory.ActiveDatabases.Count, result.Checkpoints.Count);
+        var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
+        Assert.True(Exact23DeltaReconciliationCoordinator.Verify(result, trust));
+    }
+
+    [Fact]
+    public async Task Checkpoint_bound_reconciliation_rejects_target_sequence_tampering()
+    {
+        DateTimeOffset now = new(2026, 9, 25, 7, 0, 0, TimeSpan.Zero);
+        FreshSchemaPlan schemas = Schemas(now);
+        DeltaSynchronizationPlan plan = Plan(schemas, now);
+        var target = new Inspector(schema => Change(Evidence(schema), "sequence"));
+        using var signer = Signer();
+        var coordinator = new Exact23DeltaReconciliationCoordinator(new Inspector(Evidence), target,
+            new Checkpoints(plan, schemas), new FixedTime(now), signer, checkpointBound: true);
+
+        DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            coordinator.ReconcileAsync(plan, schemas, CancellationToken.None));
+
+        Assert.Equal("delta_reconciliation_checkpoint_invalid", error.Code);
+    }
+
     [Theory]
     [InlineData("missing")]
     [InlineData("foreign")]
