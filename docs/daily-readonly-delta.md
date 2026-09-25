@@ -103,8 +103,12 @@ database replacement, or SQL Server configuration change is included.
 After generating the current source schema plan, use
 `scripts/new-production-delta-template.ps1` from clean, exact-head-green
 protected main to project a fresh production target connection and observation
-into a new owner-only key directory. Its loopback tunnel must be the observed
-`maliev-legacy/legacy-postgres-main-rw` port-forward. It verifies cluster
+into a new owner-only key directory. Its loopback tunnel must be either the
+observed `maliev-legacy/legacy-postgres-main-rw` port-forward or the exact-main
+identity-checked exec tunnel created with
+`scripts/new-production-exec-tunnel-config.ps1` and admitted through
+`-ExecTunnelConfigPath`. The latter is plan-only and cannot authorize or apply
+production rows. Both paths verify cluster
 health, archiving, primary identity, capacity, and all 23 canonical databases.
 Supply the independently verified current source commit with
 `-ExpectedSourceCommitSha`; a stale schema plan is rejected.
