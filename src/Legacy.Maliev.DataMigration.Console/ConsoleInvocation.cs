@@ -32,6 +32,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "reconcile-delta",
         "authorize-canonical-bootstrap",
         "bootstrap-canonical-database",
+        "cnpg-exec-tunnel",
     ];
 
     private static readonly string[] SecretOptionFragments =
