@@ -82,4 +82,27 @@ public sealed class ConsoleCommandContractTests
 
         Assert.Equal("config_reference_required", exception.Code);
     }
+
+    [Fact]
+    public async Task Disposable_proof_command_reaches_the_guarded_delta_boundary()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await MigrationConsole.RunAsync(
+            ["verify-disposable-delta-proof", "--config", "missing-protected-config.json"],
+            output,
+            error,
+            name => name switch
+            {
+                "LEGACY_DEPLOY_ENABLED" => "false",
+                "LEGACY_MIGRATION_CALLER" => "owner",
+                _ => null,
+            },
+            CancellationToken.None);
+
+        Assert.Equal(65, exitCode);
+        Assert.Equal(string.Empty, output.ToString());
+        Assert.Equal("delta_config_unprotected" + Environment.NewLine, error.ToString());
+    }
 }
