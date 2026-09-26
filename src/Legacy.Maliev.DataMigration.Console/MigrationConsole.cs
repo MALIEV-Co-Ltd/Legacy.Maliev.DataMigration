@@ -143,6 +143,10 @@ public static partial class MigrationConsole
                 case "reconcile-delta":
                     return await RunDeltaBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable,
                         output, error, new DefaultGuardedDeltaConsoleRuntime(), cancellationToken).ConfigureAwait(false);
+                case "authorize-target-extension-repair":
+                case "apply-target-extension-repair":
+                    return await RunExtensionRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        getEnvironmentVariable, output, error, cancellationToken).ConfigureAwait(false);
                 case "authorize-canonical-bootstrap":
                 case "bootstrap-canonical-database":
                     return await RunBootstrapBoundaryAsync(
@@ -1355,7 +1359,8 @@ public static partial class MigrationConsole
         SigningRolesCommandConfiguration? SigningRoles = null,
         IncrementalCommandConfiguration? Incremental = null,
         DeltaCommandConfiguration? Delta = null,
-        CanonicalDatabaseBootstrapCommandConfiguration? CanonicalBootstrap = null);
+        CanonicalDatabaseBootstrapCommandConfiguration? CanonicalBootstrap = null,
+        TargetExtensionRepairCommandConfiguration? TargetExtensionRepair = null);
 
     private sealed record QuotationSchemaBaselineCommandConfiguration(
         string PlanPath,
