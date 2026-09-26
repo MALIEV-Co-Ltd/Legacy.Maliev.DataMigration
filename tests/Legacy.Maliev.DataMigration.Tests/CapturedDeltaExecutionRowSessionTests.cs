@@ -5,6 +5,53 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class CapturedDeltaExecutionRowSessionTests
 {
     [Fact]
+    public async Task Local_preflight_replays_signed_rows_and_rejects_changed_target_preimage()
+    {
+        string directory = NewDirectory();
+        try
+        {
+            TableCopyPlan table = Table();
+            byte[] key = RandomNumberGenerator.GetBytes(32);
+            var archive = new DeltaCapturedTableArchive(directory);
+            DeltaCapturedTableArtifact full = await archive.CaptureAsync("Quotation", table,
+                new('a', 64), Rows([Row(1, "new"), Row(2, "updated")]), key, CancellationToken.None);
+            MigrationRow[] originalTarget = [Row(2, "old")];
+            CanonicalTableDelta delta = await CanonicalAsyncDeltaPlanner.PlanAsync(table,
+                archive.ReplayAsync(full, "Quotation", table, new('a', 64), key, CancellationToken.None),
+                Rows(originalTarget), CancellationToken.None);
+            var tablePlan = new DeltaTablePlan(delta.Table, delta.InsertCount, delta.UpdateCount,
+                delta.DeleteCount, delta.UnchangedCount,
+                DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(delta.Operations), delta.Operations);
+            DeltaCapturedTableArtifact selected = await archive.CapturePlannedRowsAsync(full,
+                "Quotation", table, new('a', 64), tablePlan, key, CancellationToken.None);
+            using var captured = new DeltaCapturedTableRowSource(archive, [selected], new('a', 64), key);
+            var database = new DeltaDatabasePlan("Quotation", [tablePlan]);
+            var schema = new DatabaseSchemaPlan("Quotation", "1.0", new('b', 64), new('c', 64), [table]);
+
+            Assert.Equal(2, await PairedLocalTransitionPreflight.VerifyCapturedRowsAsync(database,
+                schema, captured, new InMemoryTarget(originalTarget), CancellationToken.None));
+            DeltaExecutionException changed = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                PairedLocalTransitionPreflight.VerifyCapturedRowsAsync(database, schema, captured,
+                    new InMemoryTarget([Row(2, "changed")]), CancellationToken.None));
+            Assert.Equal("delta_execution_target_row_drift", changed.Code);
+            DeltaExecutionException replayedInsert = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                PairedLocalTransitionPreflight.VerifyCapturedRowsAsync(database, schema, captured,
+                    new InMemoryTarget([Row(1, "already there"), Row(2, "old")]), CancellationToken.None));
+            Assert.Equal("delta_capture_target_drift", replayedInsert.Code);
+            await File.AppendAllTextAsync(Path.Combine(directory, selected.CaptureId.ToString("N") + ".enc"),
+                "tampered");
+            DeltaPlanException changedCapture = await Assert.ThrowsAsync<DeltaPlanException>(() =>
+                PairedLocalTransitionPreflight.VerifyCapturedRowsAsync(database, schema, captured,
+                    new InMemoryTarget(originalTarget), CancellationToken.None));
+            Assert.Equal("delta_capture_artifact_invalid", changedCapture.Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Resolves_only_signed_captured_rows_despite_later_source_insert()
     {
         string directory = NewDirectory();
