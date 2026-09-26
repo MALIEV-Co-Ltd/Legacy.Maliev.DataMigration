@@ -19,6 +19,11 @@ public sealed class Exact23DeltaExecutionCoordinator(
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(schemaPlan);
+        if (plan.SchemaVersion == "1.3")
+        {
+            throw new DeltaPlanException("delta_execution_capture_replay_required",
+                "Captured-source plans cannot execute until authenticated replay is available.");
+        }
         ValidateInventory(plan, schemaPlan);
         var results = new List<DeltaDatabaseExecutionResult>(DatabaseInventory.ActiveDatabases.Count);
         // The live source can accept new rows after planning. Apply databases with
