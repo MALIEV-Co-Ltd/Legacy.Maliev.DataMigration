@@ -8,6 +8,60 @@ namespace Legacy.Maliev.DataMigration;
 /// <summary>Creates only the two reviewed Quotation disposition targets while retaining the exact source-shaped outboxes.</summary>
 public static class QuotationDispositionTargetBootstrap
 {
+    /// <summary>Checks the complete physical preimage without writing to the target.</summary>
+    public static async Task<string> PreflightAsync(DatabaseSchemaPlan plan, string targetConnectionString,
+        string expectedDatabaseName, string expectedSystemIdentifierSha256, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetConnectionString);
+        if (string.IsNullOrWhiteSpace(expectedDatabaseName) || expectedSystemIdentifierSha256.Length != 64 ||
+            !expectedSystemIdentifierSha256.All(Uri.IsHexDigit))
+        {
+            throw Invalid("quotation_target_bootstrap_boundary_invalid");
+        }
+
+        string transitionHash = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(plan, true);
+        if (ReviewedTargets(plan).Length != 2)
+        {
+            throw Invalid("quotation_target_bootstrap_plan_invalid");
+        }
+        var builder = new NpgsqlConnectionStringBuilder(targetConnectionString) { Pooling = false };
+        if (builder.Database != expectedDatabaseName)
+        {
+            throw Invalid("quotation_target_bootstrap_boundary_invalid");
+        }
+
+        await using var connection = new NpgsqlConnection(builder.ConnectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead,
+            cancellationToken).ConfigureAwait(false);
+        await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY;", connection, transaction))
+        {
+            _ = await readOnly.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await VerifyIdentifierAsync(connection, transaction, expectedSystemIdentifierSha256, cancellationToken)
+            .ConfigureAwait(false);
+        HashSet<string> present = await ReadDispositionInventoryAsync(connection, transaction, cancellationToken)
+            .ConfigureAwait(false);
+        int targetCount = ValidateDispositionInventory(present);
+        await using var inspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction,
+            ownsResources: false);
+        string expectedHash = targetCount == 0
+            ? PostgreSqlSchemaFingerprint.ComputeExpectedSourceShape(plan)
+            : transitionHash;
+        if (await inspector.InspectSchemaAsync(plan, cancellationToken).ConfigureAwait(false) != expectedHash)
+        {
+            throw Invalid("quotation_target_bootstrap_schema_drift");
+        }
+        if (targetCount == 2)
+        {
+            await VerifySequencesAsync(connection, transaction, ReviewedTargets(plan), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return targetCount == 0 ? "source-shaped" : "already-current";
+    }
+
     /// <summary>Returns created or already-current after an exact, target-bound schema check.</summary>
     public static async Task<string> ExecuteAsync(DatabaseSchemaPlan plan, string targetConnectionString,
         string expectedDatabaseName, string expectedSystemIdentifierSha256, CancellationToken cancellationToken)
@@ -21,10 +75,7 @@ public static class QuotationDispositionTargetBootstrap
         }
 
         string targetHash = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(plan, true);
-        TableCopyPlan[] targets = ApprovedSourceDispositionManifest.TargetTablesFor(plan)
-            .Where(table => (table.TargetSchema == "legacy_compatibility" && table.TargetTable == "GoogleAnalyticsOutbox") ||
-                            (table.TargetSchema == "public" && table.TargetTable == "QuotationAcceptedOutcome"))
-            .ToArray();
+        TableCopyPlan[] targets = ReviewedTargets(plan);
         if (targets.Length != 2)
         {
             throw Invalid("quotation_target_bootstrap_plan_invalid");
@@ -49,35 +100,9 @@ public static class QuotationDispositionTargetBootstrap
         await VerifyIdentifierAsync(connection, transaction, expectedSystemIdentifierSha256, cancellationToken)
             .ConfigureAwait(false);
 
-        const string inventorySql = """
-            SELECT n.nspname || '.' || c.relname FROM pg_catalog.pg_class AS c
-            JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace
-            WHERE c.relkind IN ('r','p') AND
-                ((n.nspname='public' AND c.relname IN ('GoogleAnalyticsOutbox',
-                    'QuotationOutcomeOutbox', 'QuotationAcceptedOutcome')) OR
-                 (n.nspname='legacy_compatibility' AND c.relname='GoogleAnalyticsOutbox'))
-            ORDER BY n.nspname, c.relname;
-            """;
-        var present = new HashSet<string>(StringComparer.Ordinal);
-        await using (var inventory = new NpgsqlCommand(inventorySql, connection, transaction))
-        await using (NpgsqlDataReader reader = await inventory.ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false))
-        {
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                _ = present.Add(reader.GetString(0));
-            }
-        }
-        if (!present.Contains("public.GoogleAnalyticsOutbox") ||
-            !present.Contains("public.QuotationOutcomeOutbox"))
-        {
-            throw Invalid("quotation_target_bootstrap_retained_set_invalid");
-        }
-        int targetCount = targets.Count(table => present.Contains($"{table.TargetSchema}.{table.TargetTable}"));
-        if (targetCount is not (0 or 2))
-        {
-            throw Invalid("quotation_target_bootstrap_missing_set_invalid");
-        }
+        HashSet<string> present = await ReadDispositionInventoryAsync(connection, transaction, cancellationToken)
+            .ConfigureAwait(false);
+        int targetCount = ValidateDispositionInventory(present);
 
         await using var inspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction,
             ownsResources: false);
@@ -109,6 +134,48 @@ public static class QuotationDispositionTargetBootstrap
         await VerifyPostCommitAsync(plan, targetConnectionString, expectedDatabaseName, expectedSystemIdentifierSha256,
             cancellationToken).ConfigureAwait(false);
         return targetCount == 0 ? "created" : "already-current";
+    }
+
+    private static TableCopyPlan[] ReviewedTargets(DatabaseSchemaPlan plan)
+    {
+        return [.. ApprovedSourceDispositionManifest.TargetTablesFor(plan).Where(table =>
+            (table.TargetSchema == "legacy_compatibility" && table.TargetTable == "GoogleAnalyticsOutbox") ||
+            (table.TargetSchema == "public" && table.TargetTable == "QuotationAcceptedOutcome"))];
+    }
+
+    private static async Task<HashSet<string>> ReadDispositionInventoryAsync(NpgsqlConnection connection,
+        NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        const string inventorySql = """
+            SELECT n.nspname || '.' || c.relname FROM pg_catalog.pg_class AS c
+            JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace
+            WHERE c.relkind IN ('r','p') AND
+                ((n.nspname='public' AND c.relname IN ('GoogleAnalyticsOutbox',
+                    'QuotationOutcomeOutbox', 'QuotationAcceptedOutcome')) OR
+                 (n.nspname='legacy_compatibility' AND c.relname='GoogleAnalyticsOutbox'))
+            ORDER BY n.nspname, c.relname;
+            """;
+        var present = new HashSet<string>(StringComparer.Ordinal);
+        await using var inventory = new NpgsqlCommand(inventorySql, connection, transaction);
+        await using NpgsqlDataReader reader = await inventory.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            _ = present.Add(reader.GetString(0));
+        }
+        return present;
+    }
+
+    private static int ValidateDispositionInventory(HashSet<string> present)
+    {
+        if (!present.Contains("public.GoogleAnalyticsOutbox") ||
+            !present.Contains("public.QuotationOutcomeOutbox"))
+        {
+            throw Invalid("quotation_target_bootstrap_retained_set_invalid");
+        }
+        int targetCount = (present.Contains("legacy_compatibility.GoogleAnalyticsOutbox") ? 1 : 0) +
+            (present.Contains("public.QuotationAcceptedOutcome") ? 1 : 0);
+        return targetCount is 0 or 2 ? targetCount : throw Invalid("quotation_target_bootstrap_missing_set_invalid");
     }
 
     /// <summary>Reopens the target read-only to catch post-commit DDL or identity drift.</summary>

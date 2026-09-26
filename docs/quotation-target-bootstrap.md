@@ -34,6 +34,14 @@ two-table missing set. A new protected
 output path is reserved before any DDL; an attempted apply keeps a pending marker
 on failure. No production target or row-delta authorization is accepted.
 
+Before issuing that signature, authorization opens `Quotation` in a read-only
+repeatable-read transaction. It checks the complete signed physical source
+preimage (or exact already-current transition shape on replay), both retained
+outboxes, the target pair, the system identifier, and target sequences where
+present. Drift or a partially bootstrapped target cannot receive a new DDL
+authorization. Apply still independently rechecks inside its serializable
+transaction before any additive DDL; authorization does not lock future state.
+
 For a disposable authority (`aspire://legacy-postgres-main-local/disposable-*`),
 the apply command requires a distinct protected `evidenceKey` and
 `LEGACY_MIGRATION_QUOTATION_BOOTSTRAP_EVIDENCE_SIGNING_KEY_FILE` before DDL.
@@ -153,15 +161,10 @@ disposable proof and explicit owner review. Any mismatch between the observed
 existing EF-created public outboxes and the signed source shape needs separate
 review; do not weaken the fingerprint or retire the old tables under this
 command. The resulting transition fingerprint is **not** the final signed
-`TargetSchemaSha256`: ordinary row-delta planning still rejects the retained
-outboxes. No row apply, production DDL, or production bootstrap is authorized.
-Retirement or any transition-aware row path requires a separate reviewed
-change and full exact-23 disposable row proof under #100 and #132.
-
-The ordinary delta planner, atomic target transaction, and reconciliation
-explicitly reject the exact retained-outbox transition fingerprint with
-`delta_quotation_transition_row_path_not_authorized`. This diagnostic does not
-authorize retirement or relax the signed final fingerprint: the two old public
-outboxes remain untouched. A future row path must bind its physical transition
-schema in a separate signed contract and prove the exact-23 operation set on a
-disposable target before any persistent or production execution.
+`TargetSchemaSha256`. The separately reviewed schema-1.4 delta row path binds
+that physical transition hash in its signed plan, target fence, atomic apply,
+and reconciliation, with disposable exact-23 row proof. This bootstrap does not
+issue that row authorization or apply rows. Neither path retires, drops, or
+rewrites the two old public outboxes. No persistent-local or production DDL,
+row apply, or cutover is implied by a code merge or disposable proof; each
+requires its own current plan, independent authorization, and reconciliation.
