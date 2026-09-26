@@ -156,4 +156,12 @@ command. The resulting transition fingerprint is **not** the final signed
 `TargetSchemaSha256`: ordinary row-delta planning still rejects the retained
 outboxes. No row apply, production DDL, or production bootstrap is authorized.
 Retirement or any transition-aware row path requires a separate reviewed
-change and full exact-23 disposable row proof under #92.
+change and full exact-23 disposable row proof under #100 and #132.
+
+The ordinary delta planner, atomic target transaction, and reconciliation
+explicitly reject the exact retained-outbox transition fingerprint with
+`delta_quotation_transition_row_path_not_authorized`. This diagnostic does not
+authorize retirement or relax the signed final fingerprint: the two old public
+outboxes remain untouched. A future row path must bind its physical transition
+schema in a separate signed contract and prove the exact-23 operation set on a
+disposable target before any persistent or production execution.

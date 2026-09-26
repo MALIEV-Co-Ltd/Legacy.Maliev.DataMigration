@@ -51,6 +51,15 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
             try
             {
                 await AcquireLocksAsync(connection, transaction, binding, schema, cancellationToken).ConfigureAwait(false);
+                if (schema.Database == "Quotation" &&
+                    schema.SourceDispositionProfile == ApprovedSourceDispositionManifest.QuotationOutboxesV1)
+                {
+                    await using var schemaInspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction,
+                        ownsResources: false);
+                    string observedSchema = await schemaInspector.InspectSchemaAsync(schema, cancellationToken)
+                        .ConfigureAwait(false);
+                    QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, observedSchema);
+                }
                 await ValidateFenceAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
                 string? replayReconciliationSha256 = await ValidateReplayAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
                 ApprovedTargetExtensionState? extensionState = replayReconciliationSha256 is null
@@ -310,7 +319,7 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         await AlignSequencesAsync(expected.SequenceNextValues, cancellationToken).ConfigureAwait(false);
         await using var inspection = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
         string targetSchemaSha256 = await inspection.InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
-        ReconciliationDiagnostics.CompareSchema(schema.Database, schema.TargetSchemaSha256, targetSchemaSha256);
+        QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, targetSchemaSha256);
         var tables = new List<TableReconciliationEvidence>(schema.Tables.Count);
         foreach (TableCopyPlan table in schema.Tables)
         {

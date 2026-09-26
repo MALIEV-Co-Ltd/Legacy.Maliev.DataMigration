@@ -134,6 +134,36 @@ public sealed class ApprovedSourceDispositionManifestTests
             ApprovedSourceDispositionManifest.TargetTablesFor(plan with { SourceTableDispositions = [] }));
     }
 
+    [Fact]
+    public void RetainedOutboxTransition_IsExactButCannotAuthorizeRowDelta()
+    {
+        TableCopyPlan[] tables =
+        [
+            Outbox(CurrentQuotationSourceContract.GoogleAnalyticsOutbox, "PK_GoogleAnalyticsOutbox",
+                "UX_GoogleAnalyticsOutbox_EventKey", uniqueIndex: true),
+            Outbox(CurrentQuotationSourceContract.QuotationOutcomeOutbox, "PK_QuotationOutcomeOutbox",
+                "UQ_QuotationOutcomeOutbox_EventKey", uniqueIndex: false),
+        ];
+        var draft = new DatabaseSchemaPlan("Quotation", "1.0", new string('a', 64), string.Empty, tables)
+        {
+            SourceDispositionProfile = ApprovedSourceDispositionManifest.QuotationOutboxesV1,
+            SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase("Quotation", tables),
+        };
+        DatabaseSchemaPlan schema = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+        string transition = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(schema, true);
+
+        Assert.NotEqual(schema.TargetSchemaSha256, transition);
+        DeltaPlanException retained = Assert.Throws<DeltaPlanException>(() =>
+            QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, transition));
+        Assert.Equal("delta_quotation_transition_row_path_not_authorized", retained.Code);
+        QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, schema.TargetSchemaSha256);
+        _ = Assert.Throws<MigrationExecutionException>(() =>
+            QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, new string('0', 64)));
+        _ = Assert.Throws<MigrationExecutionException>(() =>
+            QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(
+                schema with { TargetSchemaSha256 = new string('1', 64) }, transition));
+    }
+
     internal static TableCopyPlan Outbox(
         SourceTableContract contract, string primaryKeyName, string eventKeyName, bool uniqueIndex)
     {
