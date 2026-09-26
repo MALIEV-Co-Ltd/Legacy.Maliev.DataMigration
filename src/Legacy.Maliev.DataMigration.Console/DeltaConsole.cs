@@ -813,6 +813,25 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         DeltaTargetAuthority expected,
         CancellationToken cancellationToken)
     {
+        await VerifyTargetAuthorityCoreAsync(connectionString, expected, quotationOnlyDisposable: false,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task VerifyQuotationDisposableTargetAuthorityAsync(
+        string connectionString,
+        DeltaTargetAuthority expected,
+        CancellationToken cancellationToken)
+    {
+        await VerifyTargetAuthorityCoreAsync(connectionString, expected, quotationOnlyDisposable: true,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task VerifyTargetAuthorityCoreAsync(
+        string connectionString,
+        DeltaTargetAuthority expected,
+        bool quotationOnlyDisposable,
+        CancellationToken cancellationToken)
+    {
         var builder = new NpgsqlConnectionStringBuilder(connectionString)
         {
             Pooling = false,
@@ -839,6 +858,13 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         {
             databases.Add(reader.GetString(0));
         }
-        Exact23TargetDatabaseInventory.Validate(databases);
+        if (quotationOnlyDisposable)
+        {
+            Exact23TargetDatabaseInventory.ValidateQuotationDisposable(databases, expected);
+        }
+        else
+        {
+            Exact23TargetDatabaseInventory.Validate(databases);
+        }
     }
 }

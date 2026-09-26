@@ -60,4 +60,43 @@ public sealed class Exact23TargetDatabaseInventoryTests
 
         Assert.Equal("delta_target_database_inventory_invalid", failure.Code);
     }
+
+    [Fact]
+    public void QuotationDisposable_AdmitsOnlyItsSingleDatabaseAndDistinctLocalAuthority()
+    {
+        var disposable = new DeltaTargetAuthority("local-aspire",
+            "aspire://legacy-postgres-main-local/disposable-abcdef123456", new string('a', 64));
+
+        Exact23TargetDatabaseInventory.ValidateQuotationDisposable(["Quotation"], disposable);
+        _ = Assert.Throws<DeltaExecutionException>(() => Exact23TargetDatabaseInventory.Validate(["Quotation"]));
+    }
+
+    [Fact]
+    public void QuotationDisposable_RejectsMissingExtraDuplicateRetiredOrWrongCase()
+    {
+        var disposable = new DeltaTargetAuthority("local-aspire",
+            "aspire://legacy-postgres-main-local/disposable-abcdef123456", new string('a', 64));
+
+        foreach (string[] databases in new string[][]
+        {
+            [], ["Quotation", "Customer"], ["Quotation", "Quotation"], ["Hangfire"], ["quotation"]
+        })
+        {
+            DeltaExecutionException failure = Assert.Throws<DeltaExecutionException>(() =>
+                Exact23TargetDatabaseInventory.ValidateQuotationDisposable(databases, disposable));
+            Assert.Equal("delta_target_database_inventory_invalid", failure.Code);
+        }
+    }
+
+    [Theory]
+    [InlineData("local-aspire", "aspire://legacy-postgres-main-local/persistent-abcdef123456")]
+    [InlineData("cloudnativepg", "aspire://legacy-postgres-main-local/disposable-abcdef123456")]
+    public void QuotationDisposable_RejectsNonDisposableOrProductionAuthority(string kind, string authorityId)
+    {
+        var authority = new DeltaTargetAuthority(kind, authorityId, new string('a', 64));
+
+        DeltaExecutionException failure = Assert.Throws<DeltaExecutionException>(() =>
+            Exact23TargetDatabaseInventory.ValidateQuotationDisposable(["Quotation"], authority));
+        Assert.Equal("delta_target_database_inventory_invalid", failure.Code);
+    }
 }

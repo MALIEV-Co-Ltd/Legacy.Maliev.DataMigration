@@ -28,4 +28,22 @@ public static class Exact23TargetDatabaseInventory
                 "The PostgreSQL target database inventory does not match the exact-23 migration contract.");
         }
     }
+
+    /// <summary>Admits only the isolated Quotation copy used for a disposable schema proof.</summary>
+    public static void ValidateQuotationDisposable(IReadOnlyCollection<string> databases,
+        DeltaTargetAuthority authority)
+    {
+        ArgumentNullException.ThrowIfNull(databases);
+        ArgumentNullException.ThrowIfNull(authority);
+        if (!DeltaSynchronizationPlanProducer.ValidAuthority(authority, "local-aspire",
+                "legacy-postgres-main-local") ||
+            !authority.AuthorityId.StartsWith("aspire://legacy-postgres-main-local/disposable-",
+                StringComparison.Ordinal) ||
+            databases.Count != 1 || !string.Equals(databases.Single(), "Quotation", StringComparison.Ordinal))
+        {
+            throw new DeltaExecutionException(
+                "delta_target_database_inventory_invalid",
+                "A disposable Quotation proof requires exactly one Quotation database in its isolated cluster.");
+        }
+    }
 }
