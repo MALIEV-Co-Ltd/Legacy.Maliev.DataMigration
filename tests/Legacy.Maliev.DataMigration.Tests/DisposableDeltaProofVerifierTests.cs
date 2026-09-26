@@ -7,6 +7,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
     private readonly ECDsa _planKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _localPlanKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _evidenceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    private readonly ECDsa _authorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
     [Fact]
     public async Task Fresh_signed_disposable_reconciliation_admits_distinct_local_target()
@@ -242,12 +243,166 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 deletes.LocalPlan, deletes.Schema, deletes.Trust, deletes.Now)).Code);
     }
 
+    [Fact]
+    public async Task Local_transition_authorization_binds_exact_proof_and_target_but_cannot_enter_current_apply()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, matchingInsertOperations: true);
+        using var signer = new P256MigrationEvidenceSigner("local-transition-authorization",
+            _authorizationKey.ExportECPrivateKeyPem());
+        PairedCapturedDeltaPlans plans = new(fixture.ProofPlan, fixture.LocalPlan);
+        DeltaTargetAuthority localAuthority = fixture.LocalPlan.TargetAuthority!;
+        string physicalHash = fixture.LocalPlan.QuotationTransitionSchemaSha256!;
+        PairedLocalTransitionAuthorization authorization =
+            PairedLocalTransitionAuthorizationPolicy.Produce(plans, fixture.ProofResult,
+                fixture.Schema, fixture.Trust, localAuthority,
+                fixture.LocalPlan.TargetObservationSha256, physicalHash,
+                fixture.Now.AddMinutes(-1), fixture.Now.AddMinutes(5), signer);
+
+        void Verify(PairedLocalTransitionAuthorization candidate,
+            PairedCapturedDeltaPlans? pair = null,
+            Exact23DeltaReconciliationResult? result = null,
+            DeltaTargetAuthority? authority = null,
+            string? targetObservation = null,
+            string? schemaHash = null,
+            DateTimeOffset? now = null)
+        {
+            PairedLocalTransitionAuthorizationPolicy.Verify(candidate, pair ?? plans,
+                result ?? fixture.ProofResult, fixture.Schema, fixture.Trust,
+                authority ?? localAuthority,
+                targetObservation ?? fixture.LocalPlan.TargetObservationSha256,
+                schemaHash ?? physicalHash, now ?? fixture.Now);
+        }
+
+        Verify(authorization);
+        Assert.Equal(DeltaSynchronizationPlanCanonicalizer.ComputeSha256(fixture.LocalPlan),
+            authorization.PersistentPlanSha256);
+        Assert.Equal(Exact23DeltaReconciliationCoordinator.ComputeSha256(fixture.ProofResult),
+            authorization.DisposableReconciliationSha256);
+        PairedLocalTransitionAuthorization wrongProofUnsigned = authorization with
+        {
+            DisposableReconciliationSha256 = Hash('f'),
+            AttestationSignature = null,
+        };
+        PairedLocalTransitionAuthorization wrongProofSigned = wrongProofUnsigned with
+        {
+            AttestationSignature = Convert.ToBase64String(signer.Sign(
+                PairedLocalTransitionAuthorizationCanonicalizer.CreatePayload(wrongProofUnsigned))),
+        };
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => Verify(wrongProofSigned)).Code);
+        using var localSigner = new P256MigrationEvidenceSigner("local-plan",
+            _localPlanKey.ExportECPrivateKeyPem());
+        DeltaSynchronizationPlan replayedUnsigned = fixture.LocalPlan with
+        {
+            PlanId = Guid.NewGuid(),
+            AttestationSignature = null,
+        };
+        DeltaSynchronizationPlan replayedPlan = replayedUnsigned with
+        {
+            AttestationSignature = Convert.ToBase64String(localSigner.Sign(
+                DeltaSynchronizationPlanCanonicalizer.CreatePayload(replayedUnsigned))),
+        };
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(replayedPlan,
+            fixture.Trust, fixture.Now));
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => Verify(authorization,
+                pair: new(fixture.ProofPlan, replayedPlan))).Code);
+        PairedLocalTransitionAuthorization earlyUnsigned = authorization with
+        {
+            IssuedAtUtc = fixture.ProofResult.ReconciledAtUtc.AddSeconds(-1),
+            AttestationSignature = null,
+        };
+        PairedLocalTransitionAuthorization earlySigned = earlyUnsigned with
+        {
+            AttestationSignature = Convert.ToBase64String(signer.Sign(
+                PairedLocalTransitionAuthorizationCanonicalizer.CreatePayload(earlyUnsigned))),
+        };
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => Verify(earlySigned)).Code);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => Verify(authorization,
+                result: fixture.ProofResult with { PlanSha256 = Hash('f') })).Code);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => Verify(authorization,
+                authority: localAuthority with { SystemIdentifierSha256 = Hash('f') })).Code);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => Verify(authorization,
+                targetObservation: Hash('f'))).Code);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => Verify(authorization,
+                schemaHash: Hash('f'))).Code);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => Verify(authorization,
+                now: fixture.Now.AddMinutes(6))).Code);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => Verify(authorization,
+                authority: new(DeltaTargetAuthorityKind.ProductionCloudNativePg,
+                    "gke://maliev-website/production-test", Hash('f')))).Code);
+
+        Assert.Equal("delta_execution_authorization_request_invalid",
+            Assert.Throws<DeltaExecutionException>(() => DeltaExecutionAuthorizationProducer.Produce(
+                fixture.LocalPlan, fixture.Now.AddMinutes(-1), fixture.Now.AddMinutes(5), signer)).Code);
+        Assert.Equal("delta_quotation_transition_plan_invalid",
+            Assert.Throws<DeltaPlanException>(() => QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(
+                fixture.LocalPlan, fixture.Schema.Databases.Single(database => database.Database == "Quotation"))).Code);
+        Assert.Equal("delta_quotation_transition_plan_invalid",
+            (await Assert.ThrowsAsync<DeltaPlanException>(() =>
+                new PostgreSqlDeltaMetadataProvisioner(new("Host=should-not-connect",
+                    localAuthority)).ProvisionAsync(fixture.LocalPlan, fixture.Schema,
+                    CancellationToken.None))).Code);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Local_transition_authorization_refuses_signed_delete_or_wrong_transition_hash(
+        bool plannedDeletes, bool wrongTransitionHash)
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, deleteOperations: plannedDeletes,
+            matchingInsertOperations: !plannedDeletes,
+            changedLocalTransitionHash: wrongTransitionHash);
+        using var signer = new P256MigrationEvidenceSigner("local-transition-authorization",
+            _authorizationKey.ExportECPrivateKeyPem());
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(fixture.LocalPlan,
+            fixture.Trust, fixture.Now));
+
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() =>
+                PairedLocalTransitionAuthorizationPolicy.Produce(
+                    new(fixture.ProofPlan, fixture.LocalPlan), fixture.ProofResult,
+                    fixture.Schema, fixture.Trust, fixture.LocalPlan.TargetAuthority!,
+                    fixture.LocalPlan.TargetObservationSha256,
+                    fixture.LocalPlan.QuotationTransitionSchemaSha256!,
+                    fixture.Now.AddMinutes(-1), fixture.Now.AddMinutes(5), signer)).Code);
+    }
+
+    [Fact]
+    public async Task Local_transition_authorization_rejects_reused_disposable_evidence_key()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, matchingInsertOperations: true,
+            reuseProofEvidenceAsAuthorization: true);
+        using var reusedSigner = new P256MigrationEvidenceSigner("proof-evidence",
+            _evidenceKey.ExportECPrivateKeyPem());
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() =>
+                PairedLocalTransitionAuthorizationPolicy.Produce(
+                    new(fixture.ProofPlan, fixture.LocalPlan), fixture.ProofResult,
+                    fixture.Schema, fixture.Trust, fixture.LocalPlan.TargetAuthority!,
+                    fixture.LocalPlan.TargetObservationSha256,
+                    fixture.LocalPlan.QuotationTransitionSchemaSha256!,
+                    fixture.Now.AddMinutes(-1), fixture.Now.AddMinutes(5), reusedSigner)).Code);
+    }
+
     private async Task<Fixture> CreateAsync(bool changedLocalOperations = false,
         bool captured = false, bool changedLocalEvidence = false, bool quotationDisposition = false,
         bool changedLocalTableInventory = false, bool changedLocalArchive = false,
         bool changedLocalCaptureKey = false, bool changedLocalCaptureWindow = false,
         bool deleteOperations = false, bool matchingInsertOperations = false,
-        bool pairedTransition = false, bool changedLocalTransitionHash = false)
+        bool pairedTransition = false, bool changedLocalTransitionHash = false,
+        bool reuseProofEvidenceAsAuthorization = false)
     {
         DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
         TableCopyPlan[] quotationOutboxes =
@@ -281,10 +436,13 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         using var planSigner = new P256MigrationEvidenceSigner("proof-plan", _planKey.ExportECPrivateKeyPem());
         using var localPlanSigner = new P256MigrationEvidenceSigner("local-plan", _localPlanKey.ExportECPrivateKeyPem());
         using var evidenceSigner = new P256MigrationEvidenceSigner("proof-evidence", _evidenceKey.ExportECPrivateKeyPem());
+        using var authorizationSigner = new P256MigrationEvidenceSigner("local-transition-authorization",
+            _authorizationKey.ExportECPrivateKeyPem());
         var trust = new ReceiptAttestationTrustStore(
             [new(planSigner.KeyId, planSigner.ExportSubjectPublicKeyInfo()),
                 new(localPlanSigner.KeyId, localPlanSigner.ExportSubjectPublicKeyInfo()),
-                new(evidenceSigner.KeyId, evidenceSigner.ExportSubjectPublicKeyInfo())]);
+                new(evidenceSigner.KeyId, evidenceSigner.ExportSubjectPublicKeyInfo()),
+                new(authorizationSigner.KeyId, authorizationSigner.ExportSubjectPublicKeyInfo())]);
         DeltaSynchronizationPlan proofPlan = MakePlan("disposable-proof", Hash('1'), now.AddMinutes(-3),
             matchingInsertOperations);
         DeltaSynchronizationPlan localPlan = MakePlan("persistent-main", Hash('2'),
@@ -318,7 +476,9 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                         (changedOperations || deleteOperations) && name == "ContactRequest" ? changed : []))]))];
             var request = new DeltaPlanSigningRequest(schema.SourceCommitSha, now.AddMinutes(-5), Hash('3'),
                 SchemaPlanCanonicalizer.ComputeSha256(schema), Hash('4'), "local-aspire",
-                "legacy-postgres-main-local", "generation-1", Hash('5'), Hash('6'), Hash('7'),
+                "legacy-postgres-main-local", "generation-1", Hash('5'), Hash('6'),
+                reuseProofEvidenceAsAuthorization ? evidenceSigner.PublicKeyFingerprintSha256 :
+                    authorizationSigner.PublicKeyFingerprintSha256,
                 databases)
             {
                 TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
@@ -382,6 +542,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         _planKey.Dispose();
         _localPlanKey.Dispose();
         _evidenceKey.Dispose();
+        _authorizationKey.Dispose();
     }
 
     private sealed record Fixture(DeltaSynchronizationPlan ProofPlan,

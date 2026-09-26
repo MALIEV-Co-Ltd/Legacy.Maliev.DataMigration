@@ -205,4 +205,12 @@ public sealed class Exact23DeltaReconciliationCoordinator(
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(result with { AttestationSignature = null });
         return [.. domain, .. json];
     }
+
+    /// <summary>Canonical digest of the signed receipt content, excluding its signature bytes.</summary>
+    public static string ComputeSha256(Exact23DeltaReconciliationResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(CreatePayload(result)))
+            .ToLowerInvariant();
+    }
 }
