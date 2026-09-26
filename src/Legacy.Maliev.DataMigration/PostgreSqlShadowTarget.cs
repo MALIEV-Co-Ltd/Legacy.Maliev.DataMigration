@@ -1243,7 +1243,7 @@ internal static class PostgreSqlSchemaFingerprint
         return ComputeExpectedTables(plan.Tables);
     }
 
-    private static string ComputeExpectedTables(IReadOnlyList<TableCopyPlan> schemaTables)
+    internal static string ComputeExpectedTables(IReadOnlyList<TableCopyPlan> schemaTables)
     {
         List<TableShape> tables = [.. schemaTables.Select(table => new TableShape(table.TargetSchema, table.TargetTable))];
         List<ColumnShape> columns = [.. schemaTables.SelectMany(table => table.OrderedColumns.Select((column, ordinal) =>
