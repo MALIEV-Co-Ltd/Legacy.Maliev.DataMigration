@@ -100,6 +100,7 @@ public sealed partial class SqlServerMigrationSource
         var draft = new DatabaseSchemaPlan(database, "1.0", schema.SchemaSha256, new string('0', 64), tables)
         {
             TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(database),
+            SourceDispositionProfile = ApprovedSourceDispositionManifest.ProfileForDatabase(database, tables),
         };
         return draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
     }
