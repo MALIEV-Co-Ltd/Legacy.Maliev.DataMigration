@@ -43,8 +43,12 @@ The planner checks that physical hash before reading rows; metadata fencing,
 atomic begin/apply, and exact-23 reconciliation use the same signed hash.
 The source capture still binds the reviewed final target table inventory and
 mapped rows, not the retained public outboxes. A changed physical schema,
-plan hash, target identity, or disposition fails closed. Schema `1.4` cannot
-be paired with or applied to persistent local or production targets. The
+plan hash, target identity, or disposition fails closed. Schema `1.4` can be
+published as a plan-only pair for distinct disposable and persistent-local
+targets. Both physical catalogs must match the reviewed retained-outbox hash
+before and after capture. The persistent plan carries a signed
+`pairedTransitionPlanOnly` marker; existing execution authorization and apply
+paths still reject it, and production remains excluded. The
 disposable integration test creates 23 temporary PostgreSQL databases, applies
 signed rows without deletes, reconciles 23 atomic checkpoints, and confirms
 the original Quotation outbox remains; it is not a live-source cutoff or
@@ -174,10 +178,16 @@ The persistent plan private key is projected only through
 `LEGACY_MIGRATION_PERSISTENT_DELTA_PLAN_SIGNING_KEY_FILE`. The helper creates
 one new capture key and directory, invokes `plan-paired-delta`, and stops
 after one protected JSON artifact containing both separately signed plans.
-It refuses `-Execute`, deletes, production, and Quotation physical-transition
-mode. No current helper promotes that artifact into a persistent-local row
-apply; the independent disposable exact-23 proof and separately reviewed
-schema-1.4 local admission contract are still required.
+It refuses `-Execute`, deletes, and production. With
+`useQuotationPhysicalTransition=true`, the two plans use schema `1.4`, and both
+targets must have the reviewed retained-outbox physical schema. No current
+helper promotes that artifact into a persistent-local row apply. The pure
+zero-delete proof validator can check a later signed disposable exact-23
+reconciliation against the same-capture schema-1.4 pair, including the
+reviewed transition hash; it grants no execution authority. Independent
+disposable apply/reconciliation and a separately reviewed schema-1.4 local
+admission contract are still required.
+The retained public outboxes are never row-delta targets or retired here.
 
 ## Read-only target gap inspection
 

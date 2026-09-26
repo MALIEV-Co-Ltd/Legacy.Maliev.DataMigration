@@ -198,11 +198,56 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now)).Code);
     }
 
+    [Fact]
+    public async Task Signed_schema14_pair_accepts_later_disposable_proof_without_authorizing_local_execution()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, matchingInsertOperations: true);
+        Assert.True(fixture.ProofResult.ReconciledAtUtc > fixture.LocalPlan.CreatedAtUtc);
+        Assert.Equal("1.4", fixture.LocalPlan.SchemaVersion);
+        ZeroDeleteCapturedDeltaProofValidator.Verify(fixture.ProofPlan, fixture.ProofResult,
+            fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now);
+
+        Fixture changedCapture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, matchingInsertOperations: true, changedLocalArchive: true);
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(changedCapture.ProofPlan,
+                changedCapture.ProofResult, changedCapture.LocalPlan, changedCapture.Schema,
+                changedCapture.Trust, changedCapture.Now)).Code);
+        Fixture wrongHash = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, matchingInsertOperations: true, changedLocalTransitionHash: true);
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(wrongHash.LocalPlan,
+            wrongHash.Trust, wrongHash.Now));
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(wrongHash.ProofPlan,
+                wrongHash.ProofResult, wrongHash.LocalPlan, wrongHash.Schema,
+                wrongHash.Trust, wrongHash.Now)).Code);
+        Fixture changedOperations = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, changedLocalOperations: true);
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(changedOperations.ProofPlan,
+                changedOperations.ProofResult, changedOperations.LocalPlan,
+                changedOperations.Schema, changedOperations.Trust, changedOperations.Now)).Code);
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(fixture.ProofPlan,
+                fixture.ProofResult with { PlanSha256 = Hash('9') }, fixture.LocalPlan,
+                fixture.Schema, fixture.Trust, fixture.Now)).Code);
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(fixture.ProofPlan, fixture.ProofResult,
+                fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now.AddHours(13))).Code);
+        Fixture deletes = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, deleteOperations: true);
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(deletes.ProofPlan, deletes.ProofResult,
+                deletes.LocalPlan, deletes.Schema, deletes.Trust, deletes.Now)).Code);
+    }
+
     private async Task<Fixture> CreateAsync(bool changedLocalOperations = false,
         bool captured = false, bool changedLocalEvidence = false, bool quotationDisposition = false,
         bool changedLocalTableInventory = false, bool changedLocalArchive = false,
         bool changedLocalCaptureKey = false, bool changedLocalCaptureWindow = false,
-        bool deleteOperations = false, bool matchingInsertOperations = false)
+        bool deleteOperations = false, bool matchingInsertOperations = false,
+        bool pairedTransition = false, bool changedLocalTransitionHash = false)
     {
         DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
         TableCopyPlan[] quotationOutboxes =
@@ -242,11 +287,13 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 new(evidenceSigner.KeyId, evidenceSigner.ExportSubjectPublicKeyInfo())]);
         DeltaSynchronizationPlan proofPlan = MakePlan("disposable-proof", Hash('1'), now.AddMinutes(-3),
             matchingInsertOperations);
-        DeltaSynchronizationPlan localPlan = MakePlan("persistent-main", Hash('2'), now.AddMinutes(-1),
+        DeltaSynchronizationPlan localPlan = MakePlan("persistent-main", Hash('2'),
+            now.AddMinutes(pairedTransition ? -3 : -1),
             changedLocalOperations || matchingInsertOperations, changedLocalTableInventory);
-        var inspector = new Inspector();
+        var inspector = new Inspector(pairedTransition, schema);
         var coordinator = new Exact23DeltaReconciliationCoordinator(inspector, inspector,
-            new Checkpoints(proofPlan, schema), new FixedTime(now.AddMinutes(-2)), evidenceSigner);
+            new Checkpoints(proofPlan, schema, pairedTransition),
+            new FixedTime(now.AddMinutes(-2)), evidenceSigner);
         Exact23DeltaReconciliationResult result = await coordinator.ReconcileAsync(proofPlan, schema,
             CancellationToken.None);
         return new(proofPlan, result, localPlan, schema, trust, now);
@@ -301,6 +348,12 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                                 CaptureDigest(changedLocalArchive && id == "persistent-main" ? id : "shared", name + tablePlan.Table), Hash('a'),
                                 tablePlan.InsertCount + tablePlan.UpdateCount, tablePlan.OperationsSha256))]);
                     })]) : null,
+                QuotationTransitionSchemaSha256 = pairedTransition
+                    ? changedLocalTransitionHash && id == "persistent-main" ? Hash('f') :
+                        PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(
+                            schema.Databases.Single(item => item.Database == "Quotation"), true)
+                    : null,
+                PairedTransitionPlanOnly = pairedTransition && id == "persistent-main" ? true : null,
             };
             return DeltaSynchronizationPlanProducer.Produce(request,
                 id.StartsWith("disposable-", StringComparison.Ordinal) ? planSigner : localPlanSigner, created);
@@ -335,7 +388,8 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         Exact23DeltaReconciliationResult ProofResult, DeltaSynchronizationPlan LocalPlan,
         FreshSchemaPlan Schema, ReceiptAttestationTrustStore Trust, DateTimeOffset Now);
 
-    private sealed class Inspector : IDeltaReconciliationInspector
+    private sealed class Inspector(bool pairedTransition = false, FreshSchemaPlan? fullSchema = null)
+        : IDeltaReconciliationInspector
     {
         public Task<DatabaseReconciliationEvidence> InspectAsync(DatabaseSchemaPlan schema,
             CancellationToken cancellationToken)
@@ -344,15 +398,20 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 .Select(table => new TableReconciliationEvidence($"{table.TargetSchema}.{table.TargetTable}",
                     1, Hash('c'), Hash('d'), new Dictionary<string, long>(),
                     new Dictionary<string, long>()))];
+            string physicalHash = pairedTransition && schema.Database == "Quotation"
+                ? PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(
+                    fullSchema!.Databases.Single(item => item.Database == "Quotation"), true)
+                : schema.TargetSchemaSha256;
             return Task.FromResult(new DatabaseReconciliationEvidence(schema.Database,
-                schema.SourceSchemaSha256, schema.TargetSchemaSha256, tables)
+                schema.SourceSchemaSha256, physicalHash, tables)
             {
                 TargetExtensionStateSha256 = schema.TargetExtensionProfile is null ? null : Hash('e'),
             });
         }
     }
 
-    private sealed class Checkpoints(DeltaSynchronizationPlan plan, FreshSchemaPlan schema)
+    private sealed class Checkpoints(DeltaSynchronizationPlan plan, FreshSchemaPlan schema,
+        bool pairedTransition = false)
         : IExact23DeltaCheckpointReader
     {
         public Task<IReadOnlyList<DeltaDatabaseCheckpointEvidence>> ReadAsync(
@@ -364,7 +423,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 {
                     DeltaDatabasePlan database = plan.Databases.Single(item => item.Database == name);
                     DatabaseSchemaPlan databaseSchema = schema.Databases.Single(item => item.Database == name);
-                    DatabaseReconciliationEvidence evidence = new Inspector().InspectAsync(databaseSchema,
+                    DatabaseReconciliationEvidence evidence = new Inspector(pairedTransition, schema).InspectAsync(databaseSchema,
                         cancellationToken).GetAwaiter().GetResult();
                     return new DeltaDatabaseCheckpointEvidence(name, plan.PlanId,
                         DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan), plan.SourceCutoffUtc,
