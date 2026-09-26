@@ -173,7 +173,7 @@ public static partial class MigrationConsole
         CancellationToken cancellationToken)
     {
         if (!configuration.AllowPlanSigning || !configuration.UseCapturedSource ||
-            configuration.UseQuotationPhysicalTransition || configuration.PairedPersistentTarget is null ||
+            configuration.PairedPersistentTarget is null ||
             !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(configuration.TargetAuthority) ||
             runtime is not IGuardedPairedDeltaConsoleRuntime pairedRuntime)
         {
@@ -709,6 +709,39 @@ internal static class PairedDeltaTargetIdentityFence
     }
 }
 
+internal static class PairedDeltaTargetPhysicalSchemaFence
+{
+    internal static Task VerifyDatabaseAsync(DatabaseSchemaPlan schema, bool transition,
+        PostgreSqlDeltaReconciliationInspector disposable,
+        PostgreSqlDeltaReconciliationInspector persistent, CancellationToken cancellationToken)
+    {
+        return VerifyDatabaseAsync(schema, transition,
+            disposable.ValidateSchemaAsync, disposable.ValidateQuotationTransitionSchemaAsync,
+            persistent.ValidateSchemaAsync, persistent.ValidateQuotationTransitionSchemaAsync,
+            cancellationToken);
+    }
+
+    internal static async Task VerifyDatabaseAsync(DatabaseSchemaPlan schema, bool transition,
+        Func<DatabaseSchemaPlan, CancellationToken, Task> disposableFinal,
+        Func<DatabaseSchemaPlan, CancellationToken, Task> disposableTransition,
+        Func<DatabaseSchemaPlan, CancellationToken, Task> persistentFinal,
+        Func<DatabaseSchemaPlan, CancellationToken, Task> persistentTransition,
+        CancellationToken cancellationToken)
+    {
+        bool quotationTransition = transition && schema.Database == "Quotation";
+        if (quotationTransition)
+        {
+            await disposableTransition(schema, cancellationToken).ConfigureAwait(false);
+            await persistentTransition(schema, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await disposableFinal(schema, cancellationToken).ConfigureAwait(false);
+            await persistentFinal(schema, cancellationToken).ConfigureAwait(false);
+        }
+    }
+}
+
 internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory? sourceFactory = null) :
     IGuardedDeltaConsoleRuntime, IGuardedPairedDeltaConsoleRuntime
 {
@@ -729,8 +762,9 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
             new(request.PersistentTargetConnectionString));
         foreach (DatabaseSchemaPlan database in request.Schema.Databases)
         {
-            await disposableSchema.ValidateSchemaAsync(database, cancellationToken).ConfigureAwait(false);
-            await persistentSchema.ValidateSchemaAsync(database, cancellationToken).ConfigureAwait(false);
+            await PairedDeltaTargetPhysicalSchemaFence.VerifyDatabaseAsync(database,
+                request.Configuration.UseQuotationPhysicalTransition, disposableSchema, persistentSchema,
+                cancellationToken).ConfigureAwait(false);
         }
         DateTimeOffset cutoff = TimeProvider.System.GetUtcNow();
         await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
@@ -749,6 +783,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
             TargetAuthority = request.Configuration.TargetAuthority,
             SourceMode = DeltaSourceMode.LiveReadOnly,
             SourceObservationSha256 = sourceObservation,
+            UseQuotationPhysicalTransition = request.Configuration.UseQuotationPhysicalTransition,
         };
         Exact23DeltaPlanRequest persistent = disposable with
         {
@@ -773,6 +808,12 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
             request.DisposableTargetConnectionString, request.Configuration.TargetAuthority,
             request.PersistentTargetConnectionString, request.Persistent.TargetAuthority,
             VerifyTargetAuthorityAsync, cancellationToken).ConfigureAwait(false);
+        foreach (DatabaseSchemaPlan database in request.Schema.Databases)
+        {
+            await PairedDeltaTargetPhysicalSchemaFence.VerifyDatabaseAsync(database,
+                request.Configuration.UseQuotationPhysicalTransition, disposableSchema, persistentSchema,
+                cancellationToken).ConfigureAwait(false);
+        }
         var planTrust = new ReceiptAttestationTrustStore(
             [new(request.DisposableSigner.KeyId, request.DisposableSigner.ExportSubjectPublicKeyInfo()),
                 new(request.PersistentSigner.KeyId, request.PersistentSigner.ExportSubjectPublicKeyInfo())]);

@@ -55,11 +55,10 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
                 "Encrypted source capture requires a live read-only comparison and a fresh 256-bit key.");
         }
         if (request.UseQuotationPhysicalTransition &&
-            (persistentRequest is not null ||
-             !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(request.TargetAuthority)))
+            !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(request.TargetAuthority))
         {
             throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
-                "The Quotation physical transition is limited to an unpaired disposable-local capture.");
+                "The Quotation physical transition requires a disposable-local capture.");
         }
         DateTimeOffset preflightUtc = timeProvider.GetUtcNow();
         string keyFingerprint = Convert.ToHexString(SHA256.HashData(captureKey.Span)).ToLowerInvariant();
@@ -80,6 +79,7 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
             (persistentTarget is null || persistentSigner is null ||
              ReferenceEquals(persistentTarget, canonicalTarget) ||
              persistentRequest.SourceMode != DeltaSourceMode.LiveReadOnly ||
+             persistentRequest.UseQuotationPhysicalTransition != request.UseQuotationPhysicalTransition ||
              persistentRequest.SourceCutoffUtc != request.SourceCutoffUtc ||
              persistentRequest.SourceObservationSha256 != request.SourceObservationSha256 ||
              SchemaPlanCanonicalizer.ComputeSha256(persistentRequest.SchemaPlan) !=
@@ -287,6 +287,9 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
                 ? PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(
                     request.SchemaPlan.Databases.Single(database => database.Database == "Quotation"), true)
                 : null,
+            PairedTransitionPlanOnly = request.UseQuotationPhysicalTransition &&
+                DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(request.TargetAuthority)
+                    ? true : null,
         }, planSigner, nowUtc);
     }
 

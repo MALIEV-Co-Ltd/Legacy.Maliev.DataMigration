@@ -112,7 +112,7 @@ $useQuotationPhysicalTransition = $config.delta.ContainsKey('useQuotationPhysica
     $config.delta.useQuotationPhysicalTransition -eq $true
 $targetKind = $config.delta.targetAuthority.kind
 if ($targetKind -notin @('local-aspire', 'production-cloudnativepg')) { Fail 'daily_delta_target_invalid' }
-if ($PlanPaired -and (-not $useCapturedSource -or $useQuotationPhysicalTransition -or
+if ($PlanPaired -and (-not $useCapturedSource -or
     $targetKind -cne 'local-aspire' -or
     -not $config.delta.targetAuthority.authorityId.StartsWith(
         'aspire://legacy-postgres-main-local/disposable-', [StringComparison]::Ordinal) -or
@@ -195,8 +195,9 @@ New-PhaseConfig 'plan'
 if ($PlanPaired) {
     Invoke-GuardedCommand 'plan-paired-delta' (Join-Path $runDirectory 'plan-config.json')
     $pair = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
-    if ($pair.disposable.schemaVersion -cne '1.3' -or
-        $pair.persistent.schemaVersion -cne '1.3' -or
+    $pairedVersion = if ($useQuotationPhysicalTransition) { '1.4' } else { '1.3' }
+    if ($pair.disposable.schemaVersion -cne $pairedVersion -or
+        $pair.persistent.schemaVersion -cne $pairedVersion -or
         @($pair.disposable.databases | ForEach-Object { $_.tables } |
             Where-Object { $_.deleteCount -gt 0 }).Count -gt 0 -or
         @($pair.persistent.databases | ForEach-Object { $_.tables } |
