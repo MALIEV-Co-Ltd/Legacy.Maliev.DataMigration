@@ -80,6 +80,11 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         Fixture separate = await CreateAsync(captured: true, changedLocalArchive: true);
         Assert.True(DeltaSynchronizationPlanVerifier.Verify(separate.LocalPlan, separate.Trust, separate.Now));
 
+        Assert.Equal("delta_paired_plan_publication_invalid", Assert.Throws<DeltaPlanException>(() =>
+            PairedCapturedDeltaPlanPublicationGate.Verify(
+                new(separate.ProofPlan, separate.LocalPlan), separate.Schema,
+                separate.Trust, separate.Now)).Code);
+
         DeltaExecutionException failure = Assert.Throws<DeltaExecutionException>(() =>
             DisposableDeltaProofVerifier.Verify(separate.ProofPlan, separate.ProofResult,
                 separate.LocalPlan, separate.Schema, separate.Trust, separate.Now));
@@ -136,6 +141,8 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             matchingInsertOperations: true);
         Assert.Contains(fixture.ProofPlan.Databases.SelectMany(database => database.Tables),
             table => table.InsertCount == 1);
+        PairedCapturedDeltaPlanPublicationGate.Verify(
+            new(fixture.ProofPlan, fixture.LocalPlan), fixture.Schema, fixture.Trust, fixture.Now);
 
         ZeroDeleteCapturedDeltaProofValidator.Verify(fixture.ProofPlan, fixture.ProofResult,
             fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now);
