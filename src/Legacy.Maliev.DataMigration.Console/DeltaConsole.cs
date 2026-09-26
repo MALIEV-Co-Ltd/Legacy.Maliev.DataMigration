@@ -671,6 +671,7 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         {
             throw new DeltaExecutionException("delta_execution_plan_invalid", "The signed delta plan is invalid or targets another authority.");
         }
+        QuotationDeltaExecutionPreflight.Validate(request.Plan, request.Schema);
         await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
         await VerifyTargetAuthorityAsync(request.TargetConnectionString, request.ExpectedAuthority, cancellationToken)
             .ConfigureAwait(false);
@@ -703,7 +704,8 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
             return new(
                 new PostgreSqlDeltaCanonicalTarget(new(connection, database, request.Plan.TargetGeneration)),
                 capturedSource is null
-                    ? new OrderedDeltaExecutionRowSessionProvider(new SqlServerSnapshotDeltaExecutionRowSource(source), targetRows)
+                    ? new OrderedDeltaExecutionRowSessionProvider(new QuotationMappedDeltaRowSource(
+                        new SqlServerSnapshotDeltaExecutionRowSource(source), request.Schema), targetRows)
                     : new CapturedDeltaExecutionRowSessionProvider(capturedSource, targetRows),
                 gate,
                 capturedSource is null

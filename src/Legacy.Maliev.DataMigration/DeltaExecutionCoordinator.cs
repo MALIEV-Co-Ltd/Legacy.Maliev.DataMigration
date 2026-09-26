@@ -101,16 +101,19 @@ public sealed class DeltaExecutionCoordinator(
         {
             throw Error("delta_execution_schema_invalid", "The signed database schema does not match the requested database.");
         }
-        if (ApprovedSourceDispositionManifest.RequiresQuotationExecution(schema))
+        if (schema.SourceDispositionProfile is null &&
+            ApprovedSourceDispositionManifest.RequiresQuotationExecution(schema))
         {
             throw Error("delta_execution_quotation_transformation_required",
                 "Quotation disposition plans require a reviewed archive/adoption executor and reconciliation path.");
         }
 
+        DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(schema).TargetSchema;
+
         DeltaDatabasePlan databasePlan = plan.Databases.SingleOrDefault(item =>
             string.Equals(item.Database, database, StringComparison.Ordinal)) ??
             throw Error("delta_execution_database_missing", "The signed delta plan does not contain the requested database.");
-        Dictionary<string, TableCopyPlan> schemaTables = schema.Tables.ToDictionary(
+        Dictionary<string, TableCopyPlan> schemaTables = targetSchema.Tables.ToDictionary(
             Qualified,
             StringComparer.Ordinal);
         if (!databasePlan.Tables.Select(table => table.Table).Order(StringComparer.Ordinal)
@@ -122,7 +125,7 @@ public sealed class DeltaExecutionCoordinator(
         await authorization.ValidateAsync(plan, database, cancellationToken).ConfigureAwait(false);
         string planSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
         await using IDeltaCanonicalTransaction transaction = await target.BeginAsync(
-            plan, schema, database, cancellationToken).ConfigureAwait(false);
+            plan, targetSchema, database, cancellationToken).ConfigureAwait(false);
         if (transaction.Disposition == DeltaExecutionDisposition.AlreadyCommitted)
         {
             return new(database, DeltaExecutionDisposition.AlreadyCommitted, 0, planSha256,
@@ -134,7 +137,7 @@ public sealed class DeltaExecutionCoordinator(
             throw Error("delta_execution_state_invalid", "The canonical target returned an invalid initial execution state.");
         }
 
-        IReadOnlyList<TableCopyPlan> ordered = ForeignKeyExecutionOrder.Create(schema.Tables);
+        IReadOnlyList<TableCopyPlan> ordered = ForeignKeyExecutionOrder.Create(targetSchema.Tables);
         var deletes = new Dictionary<string, List<ResolvedDeltaRow>>(StringComparer.Ordinal);
         long applied = 0;
         foreach (TableCopyPlan table in ordered)

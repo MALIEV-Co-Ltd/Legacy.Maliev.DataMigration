@@ -21,10 +21,19 @@ planner now hashes operations against mapped target rows and target table
 names while reading the original SQL Server tables. Its schema-plan hash binds
 the reviewed dispositions and target fingerprint. A table added without a
 matching regenerated target fingerprint invalidates planning before row reads.
-Captured-source planning and all execution remain fail-closed for these
-outboxes; the signed
-plan is review evidence only. Archive/adoption apply, replay, and full
-reconciliation still require separate validation before a live run.
+Live read-only schema-1.2 execution now projects the signed source plan onto
+the reviewed target tables before metadata provisioning or target writes. It
+reads the original SQL Server outboxes, verifies mapped row hashes against the
+signed delta, applies archive/adoption operations in the existing atomic
+per-database transaction, and binds both identity sequences and final
+reconciliation to the target table names. The journal still makes exact-plan
+replay a no-op; changed source rows, target rows, dispositions, or target
+inventory fail closed. The ordinary shadow-copy path remains prohibited.
+Captured-source planning/execution for these outboxes remains prohibited until
+its own mapped capture and replay proof is reviewed. Disposable PostgreSQL
+tests are not authorization for a live apply: fresh target-specific signed
+plans, disposable proof, source/target schema parity, reviewed deletes, and
+the owner approval gate still apply.
 
 `scripts/invoke-daily-readonly-delta.ps1` is a backup-free row comparison path for
 already populated exact-23 PostgreSQL targets. It reads every source and target

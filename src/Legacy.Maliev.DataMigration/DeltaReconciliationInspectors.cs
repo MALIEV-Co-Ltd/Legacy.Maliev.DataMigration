@@ -19,25 +19,31 @@ public sealed class SqlServerDeltaReconciliationInspector(IReadOnlyMigrationSour
             throw new DeltaExecutionException("delta_reconciliation_source_schema_drift",
                 "The restored SQL Server source schema changed after planning.");
         }
-        var tables = new List<TableReconciliationEvidence>(schema.Tables.Count);
-        foreach (TableCopyPlan table in schema.Tables)
+        var binding = new QuotationDeltaExecutionMapping(schema);
+        var tables = new List<TableReconciliationEvidence>(binding.TargetSchema.Tables.Count);
+        foreach (TableCopyPlan table in binding.TargetSchema.Tables)
         {
+            TableCopyPlan sourceTable = binding.SourceTableFor(table);
             using var collector = new TableEvidenceCollector(table);
-            await foreach (MigrationRow row in source.ReadTableImmediatelyAsync(schema.Database, table, cancellationToken)
+            await foreach (MigrationRow row in source.ReadTableImmediatelyAsync(schema.Database, sourceTable, cancellationToken)
                 .WithCancellation(cancellationToken).ConfigureAwait(false))
             {
                 foreach (StreamingLob lob in row.Values.Values.OfType<StreamingLob>())
                 {
                     await lob.ConsumeAsync(Stream.Null, cancellationToken).ConfigureAwait(false);
                 }
-                collector.Append(row);
+                collector.Append(binding.MapRow(table, row));
             }
             TableReconciliationEvidence evidence = collector.Finish() with
             {
-                ForeignKeyOrphanCounts = await source.InspectForeignKeyOrphansAsync(
-                    schema.Database, table, cancellationToken).ConfigureAwait(false),
-                ForeignKeyRelationshipCounts = await source.InspectForeignKeyRelationshipsAsync(
-                    schema.Database, table, cancellationToken).ConfigureAwait(false),
+                ForeignKeyOrphanCounts = table.ForeignKeys.Count == 0
+                    ? new Dictionary<string, long>(StringComparer.Ordinal)
+                    : await source.InspectForeignKeyOrphansAsync(
+                        schema.Database, sourceTable, cancellationToken).ConfigureAwait(false),
+                ForeignKeyRelationshipCounts = table.ForeignKeys.Count == 0
+                    ? new Dictionary<string, long>(StringComparer.Ordinal)
+                    : await source.InspectForeignKeyRelationshipsAsync(
+                        schema.Database, sourceTable, cancellationToken).ConfigureAwait(false),
             };
             if (table.SourceKnownEmpty && evidence.RowCount != 0)
             {
@@ -46,12 +52,12 @@ public sealed class SqlServerDeltaReconciliationInspector(IReadOnlyMigrationSour
             }
             tables.Add(evidence);
         }
-        IReadOnlyDictionary<string, long> sequences = await source.InspectSequenceNextValuesAsync(
+        IReadOnlyDictionary<string, long> sourceSequences = await source.InspectSequenceNextValuesAsync(
             schema.Database, schema, cancellationToken).ConfigureAwait(false);
         return new(schema.Database, schema.SourceSchemaSha256, schema.TargetSchemaSha256,
             new ReadOnlyCollection<TableReconciliationEvidence>(tables))
         {
-            SequenceNextValues = sequences,
+            SequenceNextValues = binding.MapSequences(sourceSequences),
         };
     }
 }
@@ -124,13 +130,14 @@ public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconc
         try
         {
             string schemaSha256 = await inspector.InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
-            var tables = new List<TableReconciliationEvidence>(schema.Tables.Count);
-            foreach (TableCopyPlan table in schema.Tables)
+            DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(schema).TargetSchema;
+            var tables = new List<TableReconciliationEvidence>(targetSchema.Tables.Count);
+            foreach (TableCopyPlan table in targetSchema.Tables)
             {
                 tables.Add(await inspector.InspectTableAsync(table, cancellationToken).ConfigureAwait(false));
             }
             IReadOnlyDictionary<string, long> sequences = await inspector
-                .InspectSequenceNextValuesAsync(schema, cancellationToken).ConfigureAwait(false);
+                .InspectSequenceNextValuesAsync(targetSchema, cancellationToken).ConfigureAwait(false);
             string? extensionStateSha256 = null;
             if (ApprovedTargetExtensionManifest.TablesFor(schema).Count != 0)
             {
