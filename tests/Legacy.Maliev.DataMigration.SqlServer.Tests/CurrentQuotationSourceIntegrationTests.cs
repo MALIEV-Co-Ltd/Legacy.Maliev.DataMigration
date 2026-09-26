@@ -235,6 +235,19 @@ public sealed class CurrentQuotationSourceIntegrationTests
         command.CommandText = "SELECT last_value::text || '|' || is_called::text FROM \"QuotationAcceptedOutcome_ID_seq\";";
         string pristineSequence = (string)(await command.ExecuteScalarAsync())!;
 
+        command.CommandText = "ALTER TABLE public.\"QuotationAcceptedOutcome\" ADD COLUMN \"MigrationDriftProbe\" text;";
+        _ = await command.ExecuteNonQueryAsync();
+        QuotationOutcomeAdoptionException schemaFailure = await Assert.ThrowsAsync<QuotationOutcomeAdoptionException>(() =>
+            PostgreSqlQuotationOutcomeAdopter.AdoptSignedAsync(
+                connection, signed, sourceRows, 57, observation, trust, CancellationToken.None));
+        Assert.Equal("quotation_adoption_target_schema_drift", schemaFailure.Code);
+        command.CommandText = "SELECT COUNT(*) FROM \"QuotationAcceptedOutcome\";";
+        Assert.Equal(0L, (long)(await command.ExecuteScalarAsync())!);
+        command.CommandText = "SELECT last_value::text || '|' || is_called::text FROM \"QuotationAcceptedOutcome_ID_seq\";";
+        Assert.Equal(pristineSequence, (string)(await command.ExecuteScalarAsync())!);
+        command.CommandText = "ALTER TABLE public.\"QuotationAcceptedOutcome\" DROP COLUMN \"MigrationDriftProbe\";";
+        _ = await command.ExecuteNonQueryAsync();
+
         QuotationOutcomeAdoptionContract wrongPartition = QuotationOutcomeAdoptionAttestation.Sign(
             unsigned with
             {

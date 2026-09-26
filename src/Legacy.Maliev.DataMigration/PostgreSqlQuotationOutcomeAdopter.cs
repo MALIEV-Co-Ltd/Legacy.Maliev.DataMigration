@@ -68,13 +68,15 @@ public sealed class PostgreSqlQuotationOutcomeAdopter
             observation with { VerifiedCanonical = contract.Data.ExpectedCanonical },
             trustStore);
         QuotationOutcomeAdoptionResult result = await AdoptAsync(
-            connection, contract.Data, sourceRows, sourceNextIdentity, cancellationToken).ConfigureAwait(false);
+            connection, contract.Data, contract.CanonicalTargetSchemaSha256,
+            sourceRows, sourceNextIdentity, cancellationToken).ConfigureAwait(false);
         return result;
     }
 
     private static async Task<QuotationOutcomeAdoptionResult> AdoptAsync(
         NpgsqlConnection connection,
         QuotationOutcomeDataContract signedData,
+        string expectedSchemaSha256,
         IReadOnlyCollection<QuotationOutcomeSourceRow> sourceRows,
         long sourceNextIdentity,
         CancellationToken cancellationToken)
@@ -86,13 +88,21 @@ public sealed class PostgreSqlQuotationOutcomeAdopter
         }
 
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
-            IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
+            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         await using (var lockCommand = new NpgsqlCommand("SELECT pg_advisory_xact_lock(4861294633252357964);", connection, transaction))
         {
             _ = await lockCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         }
 
         QuotationAcceptedOutcomeImportRow[] existing = await ReadCanonicalAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        string observedSchemaSha256 = await ComputeCanonicalSchemaSha256Async(
+            connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(observedSchemaSha256, expectedSchemaSha256, StringComparison.Ordinal))
+        {
+            throw new QuotationOutcomeAdoptionException(
+                "quotation_adoption_target_schema_drift",
+                "The canonical target schema differs from the signed adoption contract.");
+        }
         QuotationOutcomeImportPlan plan = QuotationOutcomeTransformPlanner.Create(sourceRows, existing, sourceNextIdentity);
         long[] actualInsertIds = plan.Inserts.Select(row => row.ID).Order().ToArray();
         long[] actualReplayIds = plan.AlreadyApplied.Select(row => row.ID).Order().ToArray();
@@ -166,6 +176,14 @@ public sealed class PostgreSqlQuotationOutcomeAdopter
         NpgsqlConnection connection,
         CancellationToken cancellationToken)
     {
+        return await ComputeCanonicalSchemaSha256Async(connection, null, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<string> ComputeCanonicalSchemaSha256Async(
+        NpgsqlConnection connection,
+        NpgsqlTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
         const string sql = """
             SELECT string_agg(fact, E'\n' ORDER BY fact) FROM (
               SELECT 'column|' || a.attnum || '|' || a.attname || '|' || format_type(a.atttypid,a.atttypmod) || '|' || a.attnotnull || '|' || coalesce(pg_get_expr(d.adbin,d.adrelid),'') AS fact
@@ -176,7 +194,7 @@ public sealed class PostgreSqlQuotationOutcomeAdopter
               SELECT 'index|' || indexname || '|' || indexdef FROM pg_indexes WHERE schemaname='public' AND tablename='QuotationAcceptedOutcome'
             ) facts;
             """;
-        await using var command = new NpgsqlCommand(sql, connection);
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
         string facts = (string)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? string.Empty);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(facts))).ToLowerInvariant();
     }
