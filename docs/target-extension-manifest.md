@@ -78,8 +78,8 @@ identity drift fails closed.
 The automated integration fixture has the exact 23 database *names* but only a
 synthetic source-owned `Probe` table in Material. It proves inventory gating
 and repair behavior, **not** the complete current source-owned schema shape.
-The opt-in `FullSchemaTargetExtensionRepairProofTests` fixture takes a freshly
-generated, owner-protected exact-23 live-source schema plan and independently
+The opt-in `FullSchemaTargetExtensionRepairProofTests` fixture takes an
+operator-provided, freshly generated owner-protected exact-23 schema plan and
 creates every planned database shape in a new disposable PostgreSQL 18
 container. It projects Quotation's reviewed archive/adoption target shape,
 leaves Material and QuotationRequest without their approved extensions, and
@@ -91,9 +91,15 @@ Run it only with a fresh key directory and these environment variables:
 `LEGACY_FULL_SCHEMA_EXTENSION_SOURCE_COMMIT`, and
 `LEGACY_FULL_SCHEMA_EXTENSION_PROOF_DIRECTORY`. The proof directory must be
 owner-only and contain the fresh signing helper's `public-manifest.json`;
-the source commit must be independently verified. The test leaves protected,
-PII-free authorization and repair receipts for review and disposes only its
-own container. It does not connect to or inspect the persistent target, copy
+the source commit and source identity must be independently verified against
+the live SQL Server before treating the plan as current. The fixture checks
+plan age, commit binding, database inventory, and approved profiles, but does
+not independently verify source inventory completeness or a schema-plan
+signature; its expected PostgreSQL hashes are derived from the supplied plan.
+The test leaves protected, PII-free authorization and repair receipts for
+review, removes its temporary
+connection and command-config files, and disposes only its own container. It
+does not connect to or inspect the persistent target, copy
 source rows, or grant local DDL authority. A passing branch or CI test is not
 itself reviewed protected-main operational proof.
 This code is not an authorization to change the persistent local target. First

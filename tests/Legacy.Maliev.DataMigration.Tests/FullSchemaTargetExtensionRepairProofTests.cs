@@ -23,6 +23,26 @@ public sealed class FullSchemaTargetExtensionRepairProofFactAttribute : FactAttr
 public sealed class FullSchemaTargetExtensionRepairProofTests
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly string[] RepairDatabases = ["Material", "QuotationRequest"];
+
+    [Fact]
+    public async Task DisposableConnectionWriterPublishesOnlyOwnerReadableBytes()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "extension-writer-" + Guid.NewGuid().ToString("N"));
+        OwnerProtectedDirectory.CreateNew(directory);
+        string path = Path.Combine(directory, "target-disposable-test.connection");
+        try
+        {
+            await WriteOwnerOnlyTextAsync(path, "synthetic-connection");
+            Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(path));
+            Assert.Equal("synthetic-connection", await File.ReadAllTextAsync(path));
+        }
+        finally
+        {
+            File.Delete(path);
+            Directory.Delete(directory);
+        }
+    }
 
     [FullSchemaTargetExtensionRepairProofFact]
     public async Task FreshLiveExact23Schema_RepairsBothExtensionsOnDisposablePostgreSql()
@@ -100,66 +120,91 @@ public sealed class FullSchemaTargetExtensionRepairProofTests
 
         string runId = Guid.NewGuid().ToString("N");
         string targetConnectionPath = Path.Combine(proofDirectory, $"target-disposable-{runId}.connection");
-        await File.WriteAllTextAsync(targetConnectionPath, connectionString);
-        Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(targetConnectionPath));
-        foreach (string databaseName in new[] { "Material", "QuotationRequest" })
+        var temporaryFiles = new List<string> { targetConnectionPath };
+        var cleanupFailures = new List<Exception>();
+        try
         {
-            DatabaseSchemaPlan database = schema.Databases.Single(item => item.Database == databaseName);
-            string missing = TargetExtensionRepairAuthorizationProducer.ExpectedMissingSet(database);
-            TargetSchemaGap gap = await TargetSchemaGapInspector.InspectDatabaseAsync(database,
-                new NpgsqlConnectionStringBuilder(connectionString) { Database = databaseName }.ConnectionString,
-                CancellationToken.None);
-            Assert.Equal(missing, string.Join(';', gap.MissingApprovedTargetExtensions));
-            Assert.Empty(gap.MissingTables);
-            Assert.Empty(gap.MissingColumns);
-            Assert.Empty(gap.TargetOnlyTables);
-            Assert.Empty(gap.TargetOnlyColumns);
+            await WriteOwnerOnlyTextAsync(targetConnectionPath, connectionString);
+            Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(targetConnectionPath));
+            foreach (string databaseName in RepairDatabases)
+            {
+                DatabaseSchemaPlan database = schema.Databases.Single(item => item.Database == databaseName);
+                string missing = TargetExtensionRepairAuthorizationProducer.ExpectedMissingSet(database);
+                TargetSchemaGap gap = await TargetSchemaGapInspector.InspectDatabaseAsync(database,
+                    new NpgsqlConnectionStringBuilder(connectionString) { Database = databaseName }.ConnectionString,
+                    CancellationToken.None);
+                Assert.Equal(missing, string.Join(';', gap.MissingApprovedTargetExtensions));
+                Assert.Empty(gap.MissingTables);
+                Assert.Empty(gap.MissingColumns);
+                Assert.Empty(gap.TargetOnlyTables);
+                Assert.Empty(gap.TargetOnlyColumns);
 
-            string prefix = $"extension-{databaseName}-{runId}";
-            string authorizationPath = Path.Combine(proofDirectory, prefix + "-authorization.json");
-            string receiptPath = Path.Combine(proofDirectory, prefix + "-receipt.json");
-            string authorizeConfigPath = Path.Combine(proofDirectory, prefix + "-authorize-config.json");
-            string applyConfigPath = Path.Combine(proofDirectory, prefix + "-apply-config.json");
-            await File.WriteAllTextAsync(authorizeConfigPath, Config(schemaPath, databaseName,
-                targetConnectionPath, authority, missing, keyId, publicKeyPath, authorizationPath,
-                null, authorize: true, execute: false));
-            await File.WriteAllTextAsync(applyConfigPath, Config(schemaPath, databaseName,
-                targetConnectionPath, authority, missing, keyId, publicKeyPath, receiptPath,
-                authorizationPath, authorize: false, execute: true));
-            Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(authorizeConfigPath));
-            Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(applyConfigPath));
+                string prefix = $"extension-{databaseName}-{runId}";
+                string authorizationPath = Path.Combine(proofDirectory, prefix + "-authorization.json");
+                string receiptPath = Path.Combine(proofDirectory, prefix + "-receipt.json");
+                string authorizeConfigPath = Path.Combine(proofDirectory, prefix + "-authorize-config.json");
+                string applyConfigPath = Path.Combine(proofDirectory, prefix + "-apply-config.json");
+                temporaryFiles.Add(authorizeConfigPath);
+                temporaryFiles.Add(applyConfigPath);
+                await WriteOwnerOnlyTextAsync(authorizeConfigPath, Config(schemaPath, databaseName,
+                    targetConnectionPath, authority, missing, keyId, publicKeyPath, authorizationPath,
+                    null, authorize: true, execute: false));
+                await WriteOwnerOnlyTextAsync(applyConfigPath, Config(schemaPath, databaseName,
+                    targetConnectionPath, authority, missing, keyId, publicKeyPath, receiptPath,
+                    authorizationPath, authorize: false, execute: true));
+                Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(authorizeConfigPath));
+                Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(applyConfigPath));
 
-            using var authorizationError = new StringWriter();
-            int authorized = await MigrationConsole.RunExtensionRepairForTestsAsync(
-                ["authorize-target-extension-repair", "--config", authorizeConfigPath],
-                TextWriter.Null, authorizationError,
-                name => name switch
+                using var authorizationError = new StringWriter();
+                int authorized = await MigrationConsole.RunExtensionRepairForTestsAsync(
+                    ["authorize-target-extension-repair", "--config", authorizeConfigPath],
+                    TextWriter.Null, authorizationError,
+                    name => name switch
+                    {
+                        "LEGACY_DEPLOY_ENABLED" => "false",
+                        "LEGACY_MIGRATION_CALLER" => "owner",
+                        "LEGACY_MIGRATION_EXTENSION_REPAIR_AUTHORIZATION_SIGNING_KEY_FILE" => privateKeyPath,
+                        _ => null,
+                    }, CancellationToken.None);
+                Assert.True(authorized == 0, authorizationError.ToString());
+
+                using var applyError = new StringWriter();
+                int applied = await MigrationConsole.RunExtensionRepairForTestsAsync(
+                    ["apply-target-extension-repair", "--config", applyConfigPath],
+                    TextWriter.Null, applyError,
+                    name => name switch
+                    {
+                        "LEGACY_DEPLOY_ENABLED" => "false",
+                        "LEGACY_MIGRATION_CALLER" => "owner",
+                        _ => null,
+                    }, CancellationToken.None);
+                Assert.True(applied == 0, applyError.ToString());
+                using JsonDocument receipt = JsonDocument.Parse(await File.ReadAllTextAsync(receiptPath));
+                Assert.Equal("created", receipt.RootElement.GetProperty("disposition").GetString());
+                Assert.Equal(database.TargetSchemaSha256,
+                    receipt.RootElement.GetProperty("targetSchemaSha256").GetString());
+                await ApprovedTargetExtensionRepair.VerifyPostCommitAsync(database,
+                    new NpgsqlConnectionStringBuilder(connectionString) { Database = databaseName }.ConnectionString,
+                    systemHash, CancellationToken.None);
+            }
+        }
+        finally
+        {
+            foreach (string path in temporaryFiles)
+            {
+                try
                 {
-                    "LEGACY_DEPLOY_ENABLED" => "false",
-                    "LEGACY_MIGRATION_CALLER" => "owner",
-                    "LEGACY_MIGRATION_EXTENSION_REPAIR_AUTHORIZATION_SIGNING_KEY_FILE" => privateKeyPath,
-                    _ => null,
-                }, CancellationToken.None);
-            Assert.True(authorized == 0, authorizationError.ToString());
-
-            using var applyError = new StringWriter();
-            int applied = await MigrationConsole.RunExtensionRepairForTestsAsync(
-                ["apply-target-extension-repair", "--config", applyConfigPath],
-                TextWriter.Null, applyError,
-                name => name switch
+                    DeleteRunOwnedTemporaryFile(proofDirectory, runId, path);
+                }
+                catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or InvalidOperationException)
                 {
-                    "LEGACY_DEPLOY_ENABLED" => "false",
-                    "LEGACY_MIGRATION_CALLER" => "owner",
-                    _ => null,
-                }, CancellationToken.None);
-            Assert.True(applied == 0, applyError.ToString());
-            using JsonDocument receipt = JsonDocument.Parse(await File.ReadAllTextAsync(receiptPath));
-            Assert.Equal("created", receipt.RootElement.GetProperty("disposition").GetString());
-            Assert.Equal(database.TargetSchemaSha256,
-                receipt.RootElement.GetProperty("targetSchemaSha256").GetString());
-            await ApprovedTargetExtensionRepair.VerifyPostCommitAsync(database,
-                new NpgsqlConnectionStringBuilder(connectionString) { Database = databaseName }.ConnectionString,
-                systemHash, CancellationToken.None);
+                    cleanupFailures.Add(failure);
+                }
+            }
+        }
+        if (cleanupFailures.Count != 0)
+        {
+            throw new AggregateException("Disposable proof credential cleanup failed.", cleanupFailures);
         }
     }
 
@@ -204,5 +249,73 @@ public sealed class FullSchemaTargetExtensionRepairProofTests
         return Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
             ? value
             : throw new InvalidOperationException(name + " is required for the disposable proof.");
+    }
+
+    private static async Task WriteOwnerOnlyTextAsync(string path, string value)
+    {
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+            Options = FileOptions.Asynchronous,
+        };
+        if (!OperatingSystem.IsWindows())
+        {
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        }
+        await using var stream = new FileStream(path, options);
+        if (!OwnerProtectedFilePolicy.IsOwnerOnly(path))
+        {
+            throw new InvalidOperationException("A disposable proof file was not created owner-only.");
+        }
+        byte[] bytes = Encoding.UTF8.GetBytes(value);
+        try
+        {
+            await stream.WriteAsync(bytes);
+            await stream.FlushAsync();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
+    private static void DeleteRunOwnedTemporaryFile(string proofDirectory, string runId, string path)
+    {
+        string root = Path.GetFullPath(proofDirectory).TrimEnd(Path.DirectorySeparatorChar);
+        string fullPath = Path.GetFullPath(path);
+        string fileName = Path.GetFileName(fullPath);
+        bool expectedName = fileName == $"target-disposable-{runId}.connection" ||
+            RepairDatabases.Any(database =>
+                fileName == $"extension-{database}-{runId}-authorize-config.json" ||
+                fileName == $"extension-{database}-{runId}-apply-config.json");
+        if (!string.Equals(Path.GetDirectoryName(fullPath), root, StringComparison.OrdinalIgnoreCase) ||
+            !expectedName)
+        {
+            throw new InvalidOperationException("Disposable proof cleanup path escaped its run-owned file set.");
+        }
+        Exception? lastFailure = null;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                File.Delete(fullPath);
+                if (!File.Exists(fullPath))
+                {
+                    return;
+                }
+                lastFailure = new IOException("Disposable proof cleanup did not remove a temporary file.");
+            }
+            catch (Exception failure) when (failure is IOException or UnauthorizedAccessException)
+            {
+                lastFailure = failure;
+            }
+            if (attempt < 2)
+            {
+                Thread.Sleep(50);
+            }
+        }
+        throw new IOException("Disposable proof cleanup could not remove a temporary file.", lastFailure);
     }
 }
