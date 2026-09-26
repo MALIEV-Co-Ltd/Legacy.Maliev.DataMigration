@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
@@ -17,6 +18,7 @@ public sealed record DeltaCapturedTableArtifact(
 public sealed class DeltaCapturedTableArchive(string protectedDirectory)
 {
     private readonly string _directory = ValidateDirectory(protectedDirectory);
+    private readonly ConcurrentDictionary<Guid, string> _runOwned = new();
 
     public async Task<DeltaCapturedTableArtifact> CaptureAsync(
         string database,
@@ -50,8 +52,10 @@ public sealed class DeltaCapturedTableArchive(string protectedDirectory)
                 bufferSize: 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
             string encryptedSha256 = Convert.ToHexString(await SHA256.HashDataAsync(input, cancellationToken)
                 .ConfigureAwait(false)).ToLowerInvariant();
-            return new(database, qualifiedTable, captureId, schemaPlanSha256.ToLowerInvariant(),
-                encryptedSha256, result.PlaintextSha256, rowCount);
+            return !_runOwned.TryAdd(captureId, encryptedSha256)
+                ? throw Invalid()
+                : new(database, qualifiedTable, captureId, schemaPlanSha256.ToLowerInvariant(),
+                    encryptedSha256, result.PlaintextSha256, rowCount);
         }
         catch
         {
@@ -72,6 +76,18 @@ public sealed class DeltaCapturedTableArchive(string protectedDirectory)
                 yield return row;
             }
         }
+    }
+
+    public void DiscardRunOwned(DeltaCapturedTableArtifact artifact)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        if (!_runOwned.TryGetValue(artifact.CaptureId, out string? digest) ||
+            !FixedHashEquals(digest, artifact.EncryptedSha256))
+        {
+            throw Invalid();
+        }
+        File.Delete(PathFor(artifact.CaptureId));
+        _ = _runOwned.TryRemove(artifact.CaptureId, out _);
     }
 
     public async IAsyncEnumerable<MigrationRow> ReplayAsync(

@@ -142,9 +142,41 @@ public static partial class MigrationConsole
             "delta_source_connection_unprotected", cancellationToken).ConfigureAwait(false);
         string target = await ReadProtectedTextAsync(configuration.TargetConnectionFile,
             "delta_target_connection_unprotected", cancellationToken).ConfigureAwait(false);
-        return await runtime.PlanAsync(new(schema, source, target, configuration,
-            trust.AuthorizationFingerprint, signer), cancellationToken)
-            .ConfigureAwait(false);
+        byte[]? captureKey = null;
+        try
+        {
+            if (configuration.UseCapturedSource)
+            {
+                string directory = Required(configuration.CaptureDirectory);
+                string expected = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configuration.OutputPath))!, "captures");
+                if (!string.Equals(Path.GetFullPath(directory), expected,
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                {
+                    throw DeltaInvalid("delta_capture_directory_invalid");
+                }
+                OwnerProtectedFilePolicy.ValidatePublicationParent(Path.Combine(directory, "capture.enc"));
+                await using FileStream input = OwnerProtectedFilePolicy.OpenRead(
+                    Required(configuration.CaptureKeyFile), "delta_capture_key_unprotected");
+                if (input.Length != 32)
+                {
+                    throw DeltaInvalid("delta_capture_key_invalid");
+                }
+                captureKey = new byte[32];
+                await input.ReadExactlyAsync(captureKey, cancellationToken).ConfigureAwait(false);
+            }
+            return await runtime.PlanAsync(new(schema, source, target, configuration,
+                trust.AuthorizationFingerprint, signer)
+            {
+                CaptureKey = captureKey,
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (captureKey is not null)
+            {
+                CryptographicOperations.ZeroMemory(captureKey);
+            }
+        }
     }
 
     private static async Task<DeltaExecutionAuthorization> ProduceDeltaAuthorizationAsync(
@@ -256,6 +288,13 @@ public static partial class MigrationConsole
         if (configuration.SourceMode is not null and not DeltaSourceMode.LiveReadOnly)
         {
             throw DeltaInvalid("delta_source_mode_invalid");
+        }
+        if (configuration.UseCapturedSource !=
+            (!string.IsNullOrWhiteSpace(configuration.CaptureDirectory) &&
+             !string.IsNullOrWhiteSpace(configuration.CaptureKeyFile)) ||
+            (configuration.UseCapturedSource && configuration.SourceMode != DeltaSourceMode.LiveReadOnly))
+        {
+            throw DeltaInvalid("delta_capture_configuration_invalid");
         }
         if (string.IsNullOrWhiteSpace(configuration.OutputPath) || File.Exists(configuration.OutputPath) || Directory.Exists(configuration.OutputPath))
         {
@@ -403,7 +442,10 @@ internal sealed record DeltaCommandConfiguration(
     bool AllowPlanSigning = false,
     bool AllowAuthorizationSigning = false,
     bool AllowExecution = false,
-    string? SourceMode = null);
+    string? SourceMode = null,
+    bool UseCapturedSource = false,
+    string? CaptureDirectory = null,
+    string? CaptureKeyFile = null);
 
 internal static class GuardedDeltaCommandPolicy
 {
@@ -435,7 +477,10 @@ internal sealed record DeltaPlanRuntimeRequest(
     string TargetConnectionString,
     DeltaCommandConfiguration Configuration,
     string AuthorizationKeyFingerprintSha256,
-    P256MigrationEvidenceSigner Signer);
+    P256MigrationEvidenceSigner Signer)
+{
+    public byte[]? CaptureKey { get; init; }
+}
 
 internal sealed record DeltaApplyRuntimeRequest(
     FreshSchemaPlan Schema,
@@ -480,6 +525,42 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         }
         DateTimeOffset captureStartedAtUtc = live ? TimeProvider.System.GetUtcNow() : request.Configuration.SourceCutoffUtc;
         await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
+        if (request.Configuration.UseCapturedSource)
+        {
+            if (request.CaptureKey is not { Length: 32 } || request.Configuration.CaptureDirectory is null)
+            {
+                throw new DeltaPlanException("delta_capture_configuration_invalid",
+                    "A protected captured-source key and directory are required.");
+            }
+            var captured = new Exact23CapturedDeltaPlanCoordinator(source,
+                new PostgreSqlDeltaRowSource(new(request.TargetConnectionString)),
+                new SqlServerDeltaReconciliationInspector(source),
+                new DeltaCapturedTableArchive(request.Configuration.CaptureDirectory),
+                request.Signer, TimeProvider.System);
+            DeltaCommandConfiguration capturedConfiguration = request.Configuration;
+            DeltaSynchronizationPlan capturedPlan = await captured.ProduceAsync(new(
+                request.Schema,
+                captureStartedAtUtc,
+                capturedConfiguration.BackupManifestSha256,
+                capturedConfiguration.RunnerDigestSha256,
+                capturedConfiguration.TargetNamespace,
+                capturedConfiguration.TargetCluster,
+                capturedConfiguration.TargetGeneration,
+                capturedConfiguration.TargetObservationSha256,
+                capturedConfiguration.BackupKeyFingerprintSha256,
+                request.AuthorizationKeyFingerprintSha256)
+            {
+                TargetAuthority = capturedConfiguration.TargetAuthority,
+                SourceMode = capturedConfiguration.SourceMode,
+                SourceObservationSha256 = sourceObservation,
+            }, request.CaptureKey, cancellationToken).ConfigureAwait(false);
+            return !string.Equals(sourceObservation,
+                await SqlServerLiveSourceObservation.ObserveSha256Async(request.SourceConnectionString,
+                    cancellationToken).ConfigureAwait(false), StringComparison.Ordinal)
+                ? throw new DeltaExecutionException("delta_live_source_drift",
+                    "The live SQL Server source identity changed during captured planning.")
+                : capturedPlan;
+        }
         var opened = new List<string>(DatabaseInventory.ActiveDatabases.Count);
         try
         {

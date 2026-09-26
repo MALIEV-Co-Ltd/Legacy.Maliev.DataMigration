@@ -72,7 +72,7 @@ public sealed class Exact23DeltaPlanCoordinator(
         }, planSigner, nowUtc);
     }
 
-    private static void ValidateInventory(FreshSchemaPlan schema)
+    internal static void ValidateInventory(FreshSchemaPlan schema)
     {
         ArgumentNullException.ThrowIfNull(schema);
         if (!schema.Databases.Select(item => item.Database)
