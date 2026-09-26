@@ -39,6 +39,21 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Insert_arriving_after_plan_rolls_back_the_database_without_a_checkpoint()
+    {
+        Fixture fixture = CreateFixture();
+        fixture.Rows.SourceRows["public.parents"] = [Row(100, "parent-new"), Row(101, "arrived-after-capture")];
+
+        DeltaExecutionException exception = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            fixture.Coordinator.ExecuteDatabaseAsync(fixture.Plan, fixture.Schema, fixture.Database, CancellationToken.None));
+
+        Assert.Equal("delta_execution_operation_mismatch", exception.Code);
+        Assert.False(fixture.Target.Committed);
+        Assert.False(fixture.Target.Checkpointed);
+        Assert.True(fixture.Target.RolledBack);
+    }
+
+    [Fact]
     public async Task Identical_completed_plan_is_a_noop()
     {
         Fixture fixture = CreateFixture(DeltaExecutionDisposition.AlreadyCommitted);
