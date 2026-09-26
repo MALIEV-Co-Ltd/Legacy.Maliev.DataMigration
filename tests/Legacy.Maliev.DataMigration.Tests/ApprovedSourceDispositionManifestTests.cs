@@ -35,10 +35,9 @@ public sealed class ApprovedSourceDispositionManifestTests
                 Assert.Equal("canonical-adoption", adoption.Disposition);
             });
         Assert.All(dispositions, disposition =>
-        {
-            Assert.Equal(CurrentQuotationSourceContract.SourceContractSha256, disposition.SourceContractSha256);
-            Assert.Equal("1.0", disposition.TargetSchemaVersion);
-        });
+            Assert.Equal(CurrentQuotationSourceContract.SourceContractSha256, disposition.SourceContractSha256));
+        Assert.Equal("1.1", dispositions[0].TargetSchemaVersion);
+        Assert.Equal("1.0", dispositions[1].TargetSchemaVersion);
 
         DatabaseSchemaPlan bound = unbound with
         {
@@ -113,8 +112,16 @@ public sealed class ApprovedSourceDispositionManifestTests
         Assert.Equal(["legacy_compatibility.GoogleAnalyticsOutbox", "public.QuotationAcceptedOutcome"],
             target.Select(table => $"{table.TargetSchema}.{table.TargetTable}"));
         TableCopyPlan archive = target[0];
-        Assert.Equal(tables[0].OrderedColumns, archive.OrderedColumns);
-        Assert.Equal(tables[0].ColumnTypes, archive.ColumnTypes);
+        Assert.Equal(tables[0].OrderedColumns,
+            archive.OrderedColumns.Take(tables[0].OrderedColumns.Count));
+        Assert.Equal(5, archive.OrderedColumns.Count - tables[0].OrderedColumns.Count);
+        Assert.Equal(5, archive.CheckConstraints.Count);
+        foreach (string column in ApprovedSourceDispositionManifest.AnalyticsTimestampColumns)
+        {
+            Assert.Equal("smallint", archive.ColumnTypes[$"{column}SubMicrosecondTicks"]);
+            Assert.Equal(tables[0].NullableColumns.Contains(column),
+                archive.NullableColumns.Contains($"{column}SubMicrosecondTicks"));
+        }
         Assert.Equal(tables[0].Identities, archive.Identities);
         TableCopyPlan accepted = target[1];
         Assert.Equal("timestamp without time zone", accepted.ColumnTypes["AcceptedUtc"]);

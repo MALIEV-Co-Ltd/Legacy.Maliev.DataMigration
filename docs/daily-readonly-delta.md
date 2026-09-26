@@ -8,10 +8,16 @@ table to make a schema fingerprint pass.
 The schema plan now signs explicit source-to-target bindings for these two
 tables, including the reviewed source contract hash and target schema version.
 Its expected PostgreSQL fingerprint uses the reviewed target shapes:
-`legacy_compatibility.GoogleAnalyticsOutbox` retains the source table structure,
+`legacy_compatibility.GoogleAnalyticsOutbox` retains the source fields,
 while `public.QuotationAcceptedOutcome` uses the QuotationService EF outcome
 schema, including the sub-microsecond timestamp remainder. It does not expect
 either source-named outbox in `public`.
+The analytics archive adds five checked `smallint` remainder columns for its
+`datetime2(7)` values. The reviewed row mapper splits each source timestamp
+into a PostgreSQL microsecond timestamp and its 0-9 sub-microsecond ticks;
+nullable timestamps keep a null remainder. Disposable PostgreSQL tests prove
+round-trip precision and reject out-of-range remainders. This row mapping is
+not yet connected to signed exact-23 execution or a live archive write.
 Those bindings are review evidence only: they do not authorize outbox row
 execution or relax the planner's fail-closed guard. Adoption, archive apply,
 and full reconciliation still require separate validation before a live run.
