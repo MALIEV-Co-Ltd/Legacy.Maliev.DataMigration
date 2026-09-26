@@ -19,6 +19,7 @@ public sealed class ConsoleCommandContractTests
         "sign-quotation-schema-baseline",
         "sign-quotation-postgres-snapshot",
         "plan-delta",
+        "plan-paired-delta",
         "inspect-target-schema-gaps",
         "verify-disposable-delta-proof",
         "authorize-delta",
