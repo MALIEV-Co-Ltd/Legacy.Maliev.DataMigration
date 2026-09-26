@@ -28,6 +28,8 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "inspect-target-schema-gaps",
         "authorize-target-extension-repair",
         "apply-target-extension-repair",
+        "authorize-quotation-target-bootstrap",
+        "apply-quotation-target-bootstrap",
         "verify-disposable-delta-proof",
         "authorize-delta",
         "apply-delta-local",

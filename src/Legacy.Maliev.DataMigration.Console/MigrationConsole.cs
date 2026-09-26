@@ -147,6 +147,10 @@ public static partial class MigrationConsole
                 case "apply-target-extension-repair":
                     return await RunExtensionRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
                         getEnvironmentVariable, output, error, cancellationToken).ConfigureAwait(false);
+                case "authorize-quotation-target-bootstrap":
+                case "apply-quotation-target-bootstrap":
+                    return await RunQuotationTargetBootstrapBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        getEnvironmentVariable, output, error, cancellationToken).ConfigureAwait(false);
                 case "authorize-canonical-bootstrap":
                 case "bootstrap-canonical-database":
                     return await RunBootstrapBoundaryAsync(
@@ -1360,7 +1364,8 @@ public static partial class MigrationConsole
         IncrementalCommandConfiguration? Incremental = null,
         DeltaCommandConfiguration? Delta = null,
         CanonicalDatabaseBootstrapCommandConfiguration? CanonicalBootstrap = null,
-        TargetExtensionRepairCommandConfiguration? TargetExtensionRepair = null);
+        TargetExtensionRepairCommandConfiguration? TargetExtensionRepair = null,
+        QuotationTargetBootstrapCommandConfiguration? QuotationTargetBootstrap = null);
 
     private sealed record QuotationSchemaBaselineCommandConfiguration(
         string PlanPath,
