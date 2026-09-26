@@ -31,6 +31,14 @@ public sealed class QuotationTargetBootstrapProofTests
             {
                 ReviewedMissingTables = "public.QuotationAcceptedOutcome",
             }, schema, new string('c', 40), persistent, trust, now.AddMinutes(1)));
+            Assert.False(QuotationTargetBootstrapProofVerifier.Verify(proof with
+            {
+                AuthorizationEnvelopeSha256 = new string('f', 64),
+            }, schema, new string('c', 40), persistent, trust, now.AddMinutes(1)));
+            QuotationTargetBootstrapProof replay = QuotationTargetBootstrapProofProducer.Produce(
+                schema, new string('c', 40), disposable, new string('d', 64), "already-current", now, signer);
+            Assert.True(QuotationTargetBootstrapProofVerifier.Verify(replay, schema, new string('c', 40),
+                persistent, trust, now.AddMinutes(1)));
             Assert.Equal("quotation_target_bootstrap_proof_request_invalid",
                 Assert.Throws<MigrationExecutionException>(() => QuotationTargetBootstrapProofProducer.Produce(
                     schema, new string('c', 40), persistent, new string('d', 64), "created", now, signer)).Code);
@@ -90,7 +98,9 @@ public sealed class QuotationTargetBootstrapProofTests
             signer, trust);
     }
 
-    private static DeltaTargetAuthority Authority(string suffix, char identity) =>
-        new(DeltaTargetAuthorityKind.LocalAspire,
+    private static DeltaTargetAuthority Authority(string suffix, char identity)
+    {
+        return new(DeltaTargetAuthorityKind.LocalAspire,
             $"aspire://legacy-postgres-main-local/{suffix}", new string(identity, 64));
+    }
 }

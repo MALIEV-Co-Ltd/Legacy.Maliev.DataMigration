@@ -52,8 +52,11 @@ public static class QuotationTargetBootstrapProofProducer
         return payload;
     }
 
-    private static MigrationExecutionException Invalid() => new("quotation_target_bootstrap_proof_request_invalid",
+    private static MigrationExecutionException Invalid()
+    {
+        return new("quotation_target_bootstrap_proof_request_invalid",
         "A completed, reviewed disposable Quotation bootstrap is required.");
+    }
 }
 
 /// <summary>Admits a fresh disposable proof only for a different persistent local PostgreSQL identity.</summary>

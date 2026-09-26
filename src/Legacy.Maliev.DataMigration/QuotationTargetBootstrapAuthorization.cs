@@ -80,8 +80,10 @@ public static class QuotationTargetBootstrapAuthorizationProducer
         "The Quotation target bootstrap authorization request is invalid.");
     }
 
-    private static bool IsPersistent(DeltaTargetAuthority authority) =>
-        authority.AuthorityId.StartsWith("aspire://legacy-postgres-main-local/persistent-", StringComparison.Ordinal);
+    private static bool IsPersistent(DeltaTargetAuthority authority)
+    {
+        return authority.AuthorityId.StartsWith("aspire://legacy-postgres-main-local/persistent-", StringComparison.Ordinal);
+    }
 }
 
 /// <summary>Verifies the exact local authority, schema, source commit, freshness, and signature.</summary>
