@@ -387,6 +387,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     public async Task ApplySchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        ApprovedSourceDispositionManifest.RequireOrdinarySchemaApplication(plan);
         IReadOnlyList<TableCopyPlan> schemaTables = [.. plan.Tables, .. ApprovedTargetExtensionManifest.TablesFor(plan)];
         _expectedTableInspections.Clear();
         foreach (TableCopyPlan table in plan.Tables)
@@ -488,6 +489,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     public async Task FinalizeSchemaAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        ApprovedSourceDispositionManifest.RequireOrdinarySchemaApplication(plan);
         IReadOnlyList<TableCopyPlan> schemaTables = [.. plan.Tables, .. ApprovedTargetExtensionManifest.TablesFor(plan)];
         if (_schemaFinalized || _inspectionStarted)
         {
@@ -1209,7 +1211,8 @@ internal static class PostgreSqlSchemaFingerprint
     internal static string ComputeExpected(DatabaseSchemaPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        IReadOnlyList<TableCopyPlan> schemaTables = [.. plan.Tables, .. ApprovedTargetExtensionManifest.TablesFor(plan)];
+        IReadOnlyList<TableCopyPlan> schemaTables =
+            [.. ApprovedSourceDispositionManifest.TargetTablesFor(plan), .. ApprovedTargetExtensionManifest.TablesFor(plan)];
         List<TableShape> tables = [.. schemaTables.Select(table => new TableShape(table.TargetSchema, table.TargetTable))];
         List<ColumnShape> columns = [.. schemaTables.SelectMany(table => table.OrderedColumns.Select((column, ordinal) =>
             new ColumnShape(

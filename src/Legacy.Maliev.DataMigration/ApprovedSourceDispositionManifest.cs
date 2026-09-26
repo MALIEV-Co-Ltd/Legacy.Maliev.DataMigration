@@ -26,6 +26,71 @@ internal static class ApprovedSourceDispositionManifest
         ];
     }
 
+    internal static IReadOnlyList<TableCopyPlan> TargetTablesFor(DatabaseSchemaPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        Validate(plan);
+        if (plan.SourceDispositionProfile is null)
+        {
+            return plan.Tables;
+        }
+
+        TableCopyPlan analytics = plan.Tables.Single(table =>
+            string.Equals(table.SourceSchema, "dbo", StringComparison.Ordinal) &&
+            string.Equals(table.SourceTable, "GoogleAnalyticsOutbox", StringComparison.Ordinal));
+        return
+        [
+            .. plan.Tables.Where(table => !IsOutbox(table)),
+            analytics with { SourceSchema = "disposition", TargetSchema = "legacy_compatibility" },
+            AcceptedOutcome(),
+        ];
+    }
+
+    internal static void RequireOrdinarySchemaApplication(DatabaseSchemaPlan plan)
+    {
+        Validate(plan);
+        if (plan.SourceDispositionProfile is not null)
+        {
+            throw new MigrationExecutionException("source_disposition_schema_application_not_ready",
+                "Quotation outboxes require archive/adoption execution; an ordinary shadow copy cannot create their target schema.");
+        }
+    }
+
+    private static TableCopyPlan AcceptedOutcome()
+    {
+        return new("disposition", "QuotationOutcomeOutbox", "public", "QuotationAcceptedOutcome",
+            ["ID", "EventKey", "QuotationID", "SourceRequestID", "SourceJourneyID", "AcceptedUtc",
+                "AcceptanceOrigin", "AcceptedUtcSubMicrosecondTicks"], ["ID"])
+        {
+            ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["ID"] = "bigint",
+                ["EventKey"] = "character varying(128)",
+                ["QuotationID"] = "integer",
+                ["SourceRequestID"] = "integer",
+                ["SourceJourneyID"] = "uuid",
+                ["AcceptedUtc"] = "timestamp without time zone",
+                ["AcceptanceOrigin"] = "character varying(16)",
+                ["AcceptedUtcSubMicrosecondTicks"] = "smallint",
+            },
+            NullableColumns = ["SourceRequestID", "SourceJourneyID"],
+            Identities = [new IdentityCopyPlan("ID", 1, 1, 1, false)],
+            PrimaryKey = new PrimaryKeyCopyPlan("PK_QuotationAcceptedOutcome", ["ID"]),
+            Indexes =
+            [
+                new("IX_QuotationAcceptedOutcome_AcceptedUtc", ["AcceptedUtc"], false),
+                new("IX_QuotationAcceptedOutcome_EventKey", ["EventKey"], true),
+                new("IX_QuotationAcceptedOutcome_QuotationID", ["QuotationID"], false),
+                new("IX_QuotationAcceptedOutcome_SourceJourneyID", ["SourceJourneyID"], false),
+                new("IX_QuotationAcceptedOutcome_SourceRequestID", ["SourceRequestID"], false),
+            ],
+            DefaultExpressions = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["AcceptedUtcSubMicrosecondTicks"] = "0",
+            },
+        };
+    }
+
     internal static string? ProfileForDatabase(string database, IReadOnlyList<TableCopyPlan> tables)
     {
         ArgumentNullException.ThrowIfNull(tables);
