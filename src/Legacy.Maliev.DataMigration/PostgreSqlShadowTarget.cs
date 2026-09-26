@@ -1423,6 +1423,26 @@ internal static class QuotationCheckPredicateCompatibility
     internal static string Canonicalize(PostgreSqlSchemaFingerprint.ConstraintShape constraint)
     {
         string normalized = SchemaExpressionCanonicalizer.Canonicalize(constraint.Expression);
+        if (constraint.Kind == 'c' && constraint.Schema == "legacy_compatibility" &&
+            constraint.Table == "GoogleAnalyticsOutbox")
+        {
+            foreach (string timestamp in ApprovedSourceDispositionManifest.AnalyticsTimestampColumns)
+            {
+                string column = $"{timestamp}SubMicrosecondTicks";
+                if (constraint.Name != $"CK_GoogleAnalyticsOutbox_{column}")
+                {
+                    continue;
+                }
+
+                string sourceRange = $"\"{column}\" >= 0 AND \"{column}\" <= 9";
+                string catalogRange = $"((\"{column}\" >= 0) AND (\"{column}\" <= 9))";
+                string compactRange = Compact(normalized);
+                return compactRange == Compact(SchemaExpressionCanonicalizer.Canonicalize(sourceRange)) ||
+                    compactRange == Compact(SchemaExpressionCanonicalizer.Canonicalize(catalogRange))
+                    ? SchemaExpressionCanonicalizer.Canonicalize(sourceRange)
+                    : normalized;
+            }
+        }
         if (constraint.Kind != 'c' || constraint.Schema != "public" ||
             !Known.TryGetValue((constraint.Table, constraint.Name), out var approved))
         {

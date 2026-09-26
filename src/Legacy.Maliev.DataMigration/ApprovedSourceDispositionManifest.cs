@@ -20,7 +20,7 @@ internal static class ApprovedSourceDispositionManifest
         return
         [
             new("dbo", "GoogleAnalyticsOutbox", "read-only-archive", "legacy_compatibility",
-                "GoogleAnalyticsOutbox", contractSha, "1.0"),
+                "GoogleAnalyticsOutbox", contractSha, "1.1"),
             new("dbo", "QuotationOutcomeOutbox", "canonical-adoption", "public",
                 "QuotationAcceptedOutcome", contractSha, "1.0"),
         ];
@@ -41,9 +41,51 @@ internal static class ApprovedSourceDispositionManifest
         return
         [
             .. plan.Tables.Where(table => !IsOutbox(table)),
-            analytics with { SourceSchema = "disposition", TargetSchema = "legacy_compatibility" },
+            AnalyticsArchive(analytics),
             AcceptedOutcome(),
         ];
+    }
+
+    internal static IReadOnlyList<string> AnalyticsTimestampColumns { get; } =
+        ["OccurredUtc", "NextAttemptUtc", "LeaseUntilUtc", "SentUtc", "FailedUtc"];
+
+    private static TableCopyPlan AnalyticsArchive(TableCopyPlan source)
+    {
+        string[] remainders = [.. AnalyticsTimestampColumns.Select(column => $"{column}SubMicrosecondTicks")];
+        var types = new Dictionary<string, string>(source.ColumnTypes, StringComparer.Ordinal);
+        var defaults = new Dictionary<string, string>(source.DefaultExpressions, StringComparer.Ordinal);
+        var nullable = new List<string>(source.NullableColumns);
+        foreach (string column in AnalyticsTimestampColumns)
+        {
+            string remainder = $"{column}SubMicrosecondTicks";
+            types[column] = "timestamp without time zone";
+            types.Add(remainder, "smallint");
+            if (source.NullableColumns.Contains(column, StringComparer.Ordinal))
+            {
+                nullable.Add(remainder);
+            }
+            else
+            {
+                defaults.Add(remainder, "0");
+            }
+        }
+
+        return source with
+        {
+            SourceSchema = "disposition",
+            TargetSchema = "legacy_compatibility",
+            OrderedColumns = [.. source.OrderedColumns, .. remainders],
+            ColumnTypes = types,
+            NullableColumns = nullable,
+            DefaultExpressions = defaults,
+            CheckConstraints =
+            [
+                .. source.CheckConstraints,
+                .. remainders.Select(column => new CheckConstraintCopyPlan(
+                    $"CK_GoogleAnalyticsOutbox_{column}",
+                    $"\"{column}\" >= 0 AND \"{column}\" <= 9") { Columns = [column] }),
+            ],
+        };
     }
 
     internal static void RequireOrdinarySchemaApplication(DatabaseSchemaPlan plan)
