@@ -116,6 +116,18 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
                 [new(persistentSigner.KeyId, persistentSigner.ExportSubjectPublicKeyInfo())]);
             Assert.True(DeltaSynchronizationPlanVerifier.Verify(paired.Disposable, disposableTrust, Now()));
             Assert.True(DeltaSynchronizationPlanVerifier.Verify(paired.Persistent, persistentTrust, Now()));
+            var pairedTrust = new ReceiptAttestationTrustStore(
+                [new(disposableSigner.KeyId, disposableSigner.ExportSubjectPublicKeyInfo()),
+                    new(persistentSigner.KeyId, persistentSigner.ExportSubjectPublicKeyInfo())]);
+            PairedCapturedDeltaPlanPublicationGate.Verify(paired, schema, pairedTrust, Now());
+            Assert.Equal("delta_paired_plan_publication_invalid", Assert.Throws<DeltaPlanException>(() =>
+                PairedCapturedDeltaPlanPublicationGate.Verify(paired with
+                {
+                    Persistent = paired.Persistent with { SourceObservationSha256 = new string('0', 64) },
+                }, schema, pairedTrust, Now())).Code);
+            Assert.Equal("delta_paired_plan_publication_invalid", Assert.Throws<DeltaPlanException>(() =>
+                PairedCapturedDeltaPlanPublicationGate.Verify(paired, schema, pairedTrust,
+                    Now().AddHours(13))).Code);
             DeltaPlanException wrongKey = Assert.Throws<DeltaPlanException>(() =>
                 DeltaCapturedTableRowSource.FromSignedPlan(archive, paired.Persistent,
                     persistentTrust, Now(), RandomNumberGenerator.GetBytes(32)));
@@ -128,6 +140,18 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
                 rows.Add(row);
             }
             Assert.Equal(1, Assert.Single(rows).Values["id"]);
+            Guid captureId = paired.Persistent.SourceCaptureManifest!.Databases
+                .Single(binding => binding.Database == "Quotation").Tables.Single().CaptureId;
+            string capturePath = Path.Combine(directory, $"{captureId:N}.enc");
+            byte[] encrypted = await File.ReadAllBytesAsync(capturePath);
+            encrypted[^1] ^= 1;
+            await File.WriteAllBytesAsync(capturePath, encrypted);
+            DeltaPlanException replayFailure = await Assert.ThrowsAsync<DeltaPlanException>(async () =>
+            {
+                await foreach (MigrationRow _ in replay.ReadOrderedAsync("Quotation", Table(),
+                    CancellationToken.None)) { }
+            });
+            Assert.Equal("delta_capture_artifact_invalid", replayFailure.Code);
         }
         finally
         {
@@ -158,6 +182,70 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
 
             Assert.Equal("delta_capture_paired_operations_mismatch", failure.Code);
             _ = Assert.Single(source.Begun);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Paired_publication_rejects_signed_matching_delete_operations()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-delete-tests", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
+        try
+        {
+            FreshSchemaPlan schema = Schema();
+            using var disposableSigner = new P256MigrationEvidenceSigner("paired-delete-disposable",
+                _key.ExportECPrivateKeyPem());
+            using var persistentKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var persistentSigner = new P256MigrationEvidenceSigner("paired-delete-persistent",
+                persistentKey.ExportECPrivateKeyPem());
+            var coordinator = new Exact23CapturedDeltaPlanCoordinator(new LiveSource(),
+                new EmptyTarget(containsExtraRow: true), new SourceEvidence(),
+                new DeltaCapturedTableArchive(directory), disposableSigner, new FixedTime());
+            PairedCapturedDeltaPlans paired = await coordinator.ProducePairedAsync(Request(schema),
+                PersistentRequest(schema), new EmptyTarget(containsExtraRow: true),
+                persistentSigner, RandomNumberGenerator.GetBytes(32), CancellationToken.None);
+            Assert.Contains(paired.Disposable.Databases.SelectMany(database => database.Tables),
+                table => table.DeleteCount > 0);
+            var trust = new ReceiptAttestationTrustStore(
+                [new(disposableSigner.KeyId, disposableSigner.ExportSubjectPublicKeyInfo()),
+                    new(persistentSigner.KeyId, persistentSigner.ExportSubjectPublicKeyInfo())]);
+            Assert.Equal("delta_paired_plan_publication_invalid", Assert.Throws<DeltaPlanException>(() =>
+                PairedCapturedDeltaPlanPublicationGate.Verify(paired, schema, trust, Now())).Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Paired_capture_rolls_back_source_snapshot_on_evidence_failure()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-rollback-tests", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
+        try
+        {
+            FreshSchemaPlan schema = Schema();
+            var source = new LiveSource();
+            using var disposableSigner = new P256MigrationEvidenceSigner("paired-rollback-disposable",
+                _key.ExportECPrivateKeyPem());
+            using var persistentKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var persistentSigner = new P256MigrationEvidenceSigner("paired-rollback-persistent",
+                persistentKey.ExportECPrivateKeyPem());
+            var coordinator = new Exact23CapturedDeltaPlanCoordinator(source, new EmptyTarget(),
+                new FailingEvidence(), new DeltaCapturedTableArchive(directory), disposableSigner,
+                new FixedTime());
+
+            _ = await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.ProducePairedAsync(
+                Request(schema), PersistentRequest(schema), new EmptyTarget(), persistentSigner,
+                RandomNumberGenerator.GetBytes(32), CancellationToken.None));
+            _ = Assert.Single(source.Begun);
+            Assert.Empty(source.Completed);
+            Assert.Equal(source.Begun, source.RolledBack);
         }
         finally
         {
@@ -1075,6 +1163,7 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         private readonly HashSet<string> _open = new(StringComparer.Ordinal);
         public List<string> Begun { get; } = [];
         public List<string> Completed { get; } = [];
+        public List<string> RolledBack { get; } = [];
 
         public int LiveRowCount(string database)
         {
@@ -1099,6 +1188,7 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         public Task RollbackDatabaseSnapshotAsync(string database, CancellationToken cancellationToken)
         {
             _ = _open.Remove(database);
+            RolledBack.Add(database);
             return Task.CompletedTask;
         }
 
@@ -1150,7 +1240,17 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         }
     }
 
-    private sealed class EmptyTarget(bool containsSourceRow = false) : IDeltaDatabaseSnapshotRowSource
+    private sealed class FailingEvidence : IDeltaReconciliationInspector
+    {
+        public Task<DatabaseReconciliationEvidence> InspectAsync(DatabaseSchemaPlan schema,
+            CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException("Synthetic source evidence failure.");
+        }
+    }
+
+    private sealed class EmptyTarget(bool containsSourceRow = false, bool containsExtraRow = false)
+        : IDeltaDatabaseSnapshotRowSource
     {
         private string? _database;
 
@@ -1182,6 +1282,10 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
             if (containsSourceRow)
             {
                 yield return Row(1);
+            }
+            if (containsExtraRow)
+            {
+                yield return Row(2);
             }
         }
     }

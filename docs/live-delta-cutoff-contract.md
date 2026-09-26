@@ -107,6 +107,20 @@ plans from the *same* encrypted capture and independently prove the full
 exact-23 disposable apply, rollback, replay, and reconciliation. Two ordinary
 daily runs generate different capture IDs and cannot satisfy that proof.
 Persistent-local row DML remains disabled; production is unchanged.
+The owner-only `plan-paired-delta` console command is a plan-only bridge to the
+existing `ProducePairedAsync` coordinator. Its protected config supplies the
+disposable target in the ordinary `delta` fields and a separate
+`pairedPersistentTarget` with its own connection-file path, target identity,
+observation, generation, and three distinct public-key references. The
+persistent plan private-key path comes only from
+`LEGACY_MIGRATION_PERSISTENT_DELTA_PLAN_SIGNING_KEY_FILE`. The command reads
+both PostgreSQL identities and all 23 schemas, captures SQL Server once into
+the protected run directory, plans both targets from that capture, verifies
+the signed plans and matching operations/capture bindings, rejects deletes,
+and publishes one owner-protected JSON pair. It issues no execution
+authorization and makes no target write. It rejects the retained-outbox
+schema-1.4 physical transition, which still needs a separate reviewed
+target-bound contract and disposable proof before any persistent row apply.
 The daily helper still creates a fresh run-owned capture and rejects
 schema-1.3 persistent `-Execute`; the console independently rejects it as
 well. An operator must not copy or re-sign a disposable plan into a persistent

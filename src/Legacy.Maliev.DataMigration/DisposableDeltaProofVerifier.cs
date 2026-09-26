@@ -77,7 +77,7 @@ public static class DisposableDeltaProofVerifier
                 .Select(item => item.Table).Order(StringComparer.Ordinal).SequenceEqual(expected, StringComparer.Ordinal);
     }
 
-    private static bool MatchingOperations(DeltaSynchronizationPlan proof, DeltaSynchronizationPlan local)
+    internal static bool MatchingOperations(DeltaSynchronizationPlan proof, DeltaSynchronizationPlan local)
     {
         return proof.Databases.Zip(local.Databases).All(pair =>
             string.Equals(pair.First.Database, pair.Second.Database, StringComparison.Ordinal) &&
@@ -92,7 +92,7 @@ public static class DisposableDeltaProofVerifier
                     StringComparison.Ordinal)));
     }
 
-    private static bool MatchingCapturedSourceEvidence(
+    internal static bool MatchingCapturedSourceEvidence(
         DeltaSynchronizationPlan proof, DeltaSynchronizationPlan local)
     {
         return proof.SchemaVersion == local.SchemaVersion &&

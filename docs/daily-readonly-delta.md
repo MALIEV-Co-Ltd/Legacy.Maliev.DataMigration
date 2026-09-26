@@ -165,6 +165,20 @@ reviewed. Production should plan daily and request owner review for the
 separate execution action. No application deployment, traffic change,
 database replacement, or SQL Server configuration change is included.
 
+For a plan-only paired capture, the owner may use `-PlanPaired` with a fresh
+owner-protected template containing `useCapturedSource=true`, a disposable
+local target in the ordinary `delta` fields, and `pairedPersistentTarget`
+containing a distinct local target identity, observation, connection-file
+path, generation, and plan/authorization/evidence public-key references.
+The persistent plan private key is projected only through
+`LEGACY_MIGRATION_PERSISTENT_DELTA_PLAN_SIGNING_KEY_FILE`. The helper creates
+one new capture key and directory, invokes `plan-paired-delta`, and stops
+after one protected JSON artifact containing both separately signed plans.
+It refuses `-Execute`, deletes, production, and Quotation physical-transition
+mode. No current helper promotes that artifact into a persistent-local row
+apply; the independent disposable exact-23 proof and separately reviewed
+schema-1.4 local admission contract are still required.
+
 ## Read-only target gap inspection
 
 After generating the current source schema plan, use

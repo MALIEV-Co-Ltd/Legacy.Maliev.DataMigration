@@ -8,6 +8,7 @@ namespace Legacy.Maliev.DataMigration.Console;
 public static partial class MigrationConsole
 {
     private const string DeltaPlanSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_DELTA_PLAN_SIGNING_KEY_FILE";
+    private const string PairedPlanSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_PERSISTENT_DELTA_PLAN_SIGNING_KEY_FILE";
     private const string DeltaAuthorizationSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_DELTA_AUTHORIZATION_SIGNING_KEY_FILE";
     private const string DeltaEvidenceSigningKeyEnvironmentVariable = "LEGACY_MIGRATION_DELTA_EVIDENCE_SIGNING_KEY_FILE";
 
@@ -48,6 +49,7 @@ public static partial class MigrationConsole
             object result = command switch
             {
                 "plan-delta" => await ProduceDeltaPlanAsync(configuration, environment, runtime, cancellationToken).ConfigureAwait(false),
+                "plan-paired-delta" => await ProducePairedDeltaPlansAsync(configuration, environment, runtime, cancellationToken).ConfigureAwait(false),
                 "inspect-target-schema-gaps" => await InspectTargetSchemaGapsAsync(configuration, cancellationToken).ConfigureAwait(false),
                 "verify-disposable-delta-proof" => await VerifyDisposableProofAsync(configuration, cancellationToken).ConfigureAwait(false),
                 "authorize-delta" => await ProduceDeltaAuthorizationAsync(configuration, environment, cancellationToken).ConfigureAwait(false),
@@ -161,6 +163,96 @@ public static partial class MigrationConsole
             {
                 CryptographicOperations.ZeroMemory(captureKey);
             }
+        }
+    }
+
+    private static async Task<PairedCapturedDeltaPlans> ProducePairedDeltaPlansAsync(
+        DeltaCommandConfiguration configuration,
+        Func<string, string?> environment,
+        IGuardedDeltaConsoleRuntime runtime,
+        CancellationToken cancellationToken)
+    {
+        if (!configuration.AllowPlanSigning || !configuration.UseCapturedSource ||
+            configuration.UseQuotationPhysicalTransition || configuration.PairedPersistentTarget is null ||
+            !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(configuration.TargetAuthority) ||
+            runtime is not IGuardedPairedDeltaConsoleRuntime pairedRuntime)
+        {
+            throw DeltaInvalid("delta_paired_plan_request_invalid");
+        }
+        PairedPersistentDeltaTarget persistent = configuration.PairedPersistentTarget;
+        if (persistent.TargetAuthority.Kind != DeltaTargetAuthorityKind.LocalAspire ||
+            !persistent.TargetAuthority.AuthorityId.StartsWith(
+                "aspire://legacy-postgres-main-local/persistent-", StringComparison.Ordinal) ||
+            !DeltaSynchronizationPlanProducer.ValidAuthority(persistent.TargetAuthority,
+                persistent.TargetNamespace, persistent.TargetCluster))
+        {
+            throw DeltaInvalid("delta_paired_plan_target_invalid");
+        }
+        FreshSchemaPlan schema = await ReadProtectedJsonAsync<FreshSchemaPlan>(configuration.SchemaPlanPath,
+            "delta_schema_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        DeltaTrustBundle disposableTrust = await ReadDeltaTrustAsync(configuration, cancellationToken)
+            .ConfigureAwait(false);
+        DeltaTrustedKeyReference[] persistentKeys =
+            [persistent.PlanKey, persistent.AuthorizationKey, persistent.EvidenceKey];
+        DeltaTrustedKeyReference[] allKeys =
+            [configuration.PlanKey, configuration.AuthorizationKey, configuration.EvidenceKey, .. persistentKeys];
+        if (allKeys.Select(key => key.KeyId).Distinct(StringComparer.Ordinal).Count() != allKeys.Length)
+        {
+            throw DeltaInvalid("delta_paired_plan_key_reuse");
+        }
+        var publicKeys = new List<TrustedAttestationKey>(persistentKeys.Length);
+        foreach (DeltaTrustedKeyReference key in persistentKeys)
+        {
+            publicKeys.Add(new(key.KeyId, Convert.FromBase64String(await ReadProtectedTextAsync(
+                key.SubjectPublicKeyInfoPath, "delta_paired_plan_key_unprotected", cancellationToken)
+                .ConfigureAwait(false))));
+        }
+        var persistentTrust = new ReceiptAttestationTrustStore(publicKeys);
+        var fingerprints = new List<string>
+        {
+            configuration.BackupKeyFingerprintSha256,
+            disposableTrust.PlanFingerprint,
+            disposableTrust.AuthorizationFingerprint,
+            disposableTrust.EvidenceFingerprint,
+        };
+        foreach (DeltaTrustedKeyReference key in persistentKeys)
+        {
+            if (!persistentTrust.TryGetPublicKeyFingerprintSha256(key.KeyId, out string fingerprint))
+            {
+                throw DeltaInvalid("delta_paired_plan_key_invalid");
+            }
+            fingerprints.Add(fingerprint);
+        }
+        if (!fingerprints.All(IsSha256) ||
+            fingerprints.Distinct(StringComparer.OrdinalIgnoreCase).Count() != fingerprints.Count)
+        {
+            throw DeltaInvalid("delta_paired_plan_key_reuse");
+        }
+        using P256MigrationEvidenceSigner disposableSigner = await ReadDeltaSignerAsync(environment,
+            DeltaPlanSigningKeyEnvironmentVariable, configuration.PlanKey.KeyId,
+            disposableTrust.PlanFingerprint, "delta_plan_signing_key_unprotected", cancellationToken)
+            .ConfigureAwait(false);
+        using P256MigrationEvidenceSigner persistentSigner = await ReadDeltaSignerAsync(environment,
+            PairedPlanSigningKeyEnvironmentVariable, persistent.PlanKey.KeyId,
+            fingerprints[4], "delta_paired_plan_signing_key_unprotected", cancellationToken)
+            .ConfigureAwait(false);
+        string source = await ReadProtectedTextAsync(configuration.SourceConnectionFile,
+            "delta_source_connection_unprotected", cancellationToken).ConfigureAwait(false);
+        string disposableTarget = await ReadProtectedTextAsync(configuration.TargetConnectionFile,
+            "delta_target_connection_unprotected", cancellationToken).ConfigureAwait(false);
+        string persistentTarget = await ReadProtectedTextAsync(persistent.TargetConnectionFile,
+            "delta_paired_target_connection_unprotected", cancellationToken).ConfigureAwait(false);
+        byte[] captureKey = await ReadCaptureKeyAsync(configuration, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await pairedRuntime.PlanPairedAsync(new(schema, source, disposableTarget,
+                persistentTarget, configuration, persistent, disposableTrust.AuthorizationFingerprint,
+                fingerprints[5], disposableSigner, persistentSigner, captureKey), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(captureKey);
         }
     }
 
@@ -331,6 +423,10 @@ public static partial class MigrationConsole
 
     private static void ValidateDeltaConfiguration(string command, DeltaCommandConfiguration configuration)
     {
+        if (configuration.PairedPersistentTarget is not null && command != "plan-paired-delta")
+        {
+            throw DeltaInvalid("delta_paired_plan_command_invalid");
+        }
         if (configuration.SourceMode is not null and not DeltaSourceMode.LiveReadOnly)
         {
             throw DeltaInvalid("delta_source_mode_invalid");
@@ -498,7 +594,19 @@ internal sealed record DeltaCommandConfiguration(
     bool UseCapturedSource = false,
     string? CaptureDirectory = null,
     string? CaptureKeyFile = null,
-    bool UseQuotationPhysicalTransition = false);
+    bool UseQuotationPhysicalTransition = false,
+    PairedPersistentDeltaTarget? PairedPersistentTarget = null);
+
+internal sealed record PairedPersistentDeltaTarget(
+    string TargetConnectionFile,
+    DeltaTrustedKeyReference PlanKey,
+    DeltaTrustedKeyReference AuthorizationKey,
+    DeltaTrustedKeyReference EvidenceKey,
+    string TargetNamespace,
+    string TargetCluster,
+    string TargetGeneration,
+    string TargetObservationSha256,
+    DeltaTargetAuthority TargetAuthority);
 
 internal static class GuardedDeltaCommandPolicy
 {
@@ -565,9 +673,113 @@ internal interface IGuardedDeltaConsoleRuntime
     Task<Exact23DeltaReconciliationResult> ReconcileAsync(DeltaReconcileRuntimeRequest request, CancellationToken cancellationToken);
 }
 
-internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory? sourceFactory = null) : IGuardedDeltaConsoleRuntime
+internal sealed record DeltaPairedPlanRuntimeRequest(
+    FreshSchemaPlan Schema,
+    string SourceConnectionString,
+    string DisposableTargetConnectionString,
+    string PersistentTargetConnectionString,
+    DeltaCommandConfiguration Configuration,
+    PairedPersistentDeltaTarget Persistent,
+    string DisposableAuthorizationKeyFingerprintSha256,
+    string PersistentAuthorizationKeyFingerprintSha256,
+    P256MigrationEvidenceSigner DisposableSigner,
+    P256MigrationEvidenceSigner PersistentSigner,
+    byte[] CaptureKey);
+
+internal interface IGuardedPairedDeltaConsoleRuntime
+{
+    Task<PairedCapturedDeltaPlans> PlanPairedAsync(DeltaPairedPlanRuntimeRequest request,
+        CancellationToken cancellationToken);
+}
+
+internal static class PairedDeltaTargetIdentityFence
+{
+    internal static async Task<PairedCapturedDeltaPlans> VerifyAfterPlanningAsync(
+        PairedCapturedDeltaPlans plans,
+        string disposableConnection,
+        DeltaTargetAuthority disposableAuthority,
+        string persistentConnection,
+        DeltaTargetAuthority persistentAuthority,
+        Func<string, DeltaTargetAuthority, CancellationToken, Task> verify,
+        CancellationToken cancellationToken)
+    {
+        await verify(disposableConnection, disposableAuthority, cancellationToken).ConfigureAwait(false);
+        await verify(persistentConnection, persistentAuthority, cancellationToken).ConfigureAwait(false);
+        return plans;
+    }
+}
+
+internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory? sourceFactory = null) :
+    IGuardedDeltaConsoleRuntime, IGuardedPairedDeltaConsoleRuntime
 {
     private readonly IMigrationSourceFactory _sourceFactory = sourceFactory ?? new SqlServerMigrationSourceFactory();
+
+    public async Task<PairedCapturedDeltaPlans> PlanPairedAsync(DeltaPairedPlanRuntimeRequest request,
+        CancellationToken cancellationToken)
+    {
+        string sourceObservation = await SqlServerLiveSourceObservation.ObserveSha256Async(
+            request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
+        await VerifyTargetAuthorityAsync(request.DisposableTargetConnectionString,
+            request.Configuration.TargetAuthority, cancellationToken).ConfigureAwait(false);
+        await VerifyTargetAuthorityAsync(request.PersistentTargetConnectionString,
+            request.Persistent.TargetAuthority, cancellationToken).ConfigureAwait(false);
+        var disposableSchema = new PostgreSqlDeltaReconciliationInspector(
+            new(request.DisposableTargetConnectionString));
+        var persistentSchema = new PostgreSqlDeltaReconciliationInspector(
+            new(request.PersistentTargetConnectionString));
+        foreach (DatabaseSchemaPlan database in request.Schema.Databases)
+        {
+            await disposableSchema.ValidateSchemaAsync(database, cancellationToken).ConfigureAwait(false);
+            await persistentSchema.ValidateSchemaAsync(database, cancellationToken).ConfigureAwait(false);
+        }
+        DateTimeOffset cutoff = TimeProvider.System.GetUtcNow();
+        await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
+        var coordinator = new Exact23CapturedDeltaPlanCoordinator(source,
+            new PostgreSqlDeltaRowSource(new(request.DisposableTargetConnectionString)),
+            new SqlServerDeltaReconciliationInspector(source),
+            new DeltaCapturedTableArchive(request.Configuration.CaptureDirectory!),
+            request.DisposableSigner, TimeProvider.System);
+        Exact23DeltaPlanRequest disposable = new(request.Schema, cutoff,
+            request.Configuration.BackupManifestSha256, request.Configuration.RunnerDigestSha256,
+            request.Configuration.TargetNamespace, request.Configuration.TargetCluster,
+            request.Configuration.TargetGeneration, request.Configuration.TargetObservationSha256,
+            request.Configuration.BackupKeyFingerprintSha256,
+            request.DisposableAuthorizationKeyFingerprintSha256)
+        {
+            TargetAuthority = request.Configuration.TargetAuthority,
+            SourceMode = DeltaSourceMode.LiveReadOnly,
+            SourceObservationSha256 = sourceObservation,
+        };
+        Exact23DeltaPlanRequest persistent = disposable with
+        {
+            TargetNamespace = request.Persistent.TargetNamespace,
+            TargetCluster = request.Persistent.TargetCluster,
+            TargetGeneration = request.Persistent.TargetGeneration,
+            TargetObservationSha256 = request.Persistent.TargetObservationSha256,
+            ExecutionAuthorizationKeyFingerprintSha256 =
+                request.PersistentAuthorizationKeyFingerprintSha256,
+            TargetAuthority = request.Persistent.TargetAuthority,
+        };
+        PairedCapturedDeltaPlans plans = await coordinator.ProducePairedAsync(disposable, persistent,
+            new PostgreSqlDeltaRowSource(new(request.PersistentTargetConnectionString)),
+            request.PersistentSigner, request.CaptureKey, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(sourceObservation, await SqlServerLiveSourceObservation.ObserveSha256Async(
+            request.SourceConnectionString, cancellationToken).ConfigureAwait(false), StringComparison.Ordinal))
+        {
+            throw new DeltaExecutionException("delta_live_source_drift",
+                "The live SQL Server source identity changed during paired captured planning.");
+        }
+        plans = await PairedDeltaTargetIdentityFence.VerifyAfterPlanningAsync(plans,
+            request.DisposableTargetConnectionString, request.Configuration.TargetAuthority,
+            request.PersistentTargetConnectionString, request.Persistent.TargetAuthority,
+            VerifyTargetAuthorityAsync, cancellationToken).ConfigureAwait(false);
+        var planTrust = new ReceiptAttestationTrustStore(
+            [new(request.DisposableSigner.KeyId, request.DisposableSigner.ExportSubjectPublicKeyInfo()),
+                new(request.PersistentSigner.KeyId, request.PersistentSigner.ExportSubjectPublicKeyInfo())]);
+        PairedCapturedDeltaPlanPublicationGate.Verify(plans, request.Schema, planTrust,
+            TimeProvider.System.GetUtcNow());
+        return plans;
+    }
 
     public async Task<DeltaSynchronizationPlan> PlanAsync(DeltaPlanRuntimeRequest request, CancellationToken cancellationToken)
     {

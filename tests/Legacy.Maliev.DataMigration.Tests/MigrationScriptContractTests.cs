@@ -64,6 +64,21 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("daily_delta_quotation_transition_disposable_only", script, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Daily_paired_capture_is_owner_only_plan_only_and_stops_before_authorization()
+    {
+        string script = File.ReadAllText(SourcePath("invoke-daily-readonly-delta.ps1"));
+        Assert.Contains("[switch]$PlanPaired", script, StringComparison.Ordinal);
+        Assert.Contains("daily_delta_paired_plan_only", script, StringComparison.Ordinal);
+        Assert.Contains("daily_delta_paired_requires_owner", script, StringComparison.Ordinal);
+        Assert.Contains("daily_delta_paired_request_invalid", script, StringComparison.Ordinal);
+        Assert.Contains("daily_delta_paired_command_required", script, StringComparison.Ordinal);
+        Assert.Contains("Invoke-GuardedCommand 'plan-paired-delta'", script, StringComparison.Ordinal);
+        int pairedReturn = script.IndexOf("daily_delta_paired_plans_ready_for_review", StringComparison.Ordinal);
+        int authorization = script.IndexOf("Invoke-GuardedCommand 'authorize-delta'", StringComparison.Ordinal);
+        Assert.True(pairedReturn >= 0 && authorization > pairedReturn);
+    }
+
     [Theory]
     [InlineData("execute-shadow")]
     [InlineData("plan-incremental")]
