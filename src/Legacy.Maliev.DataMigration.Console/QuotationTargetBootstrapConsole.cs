@@ -96,8 +96,16 @@ public static partial class MigrationConsole
             }
             string target = await ReadProtectedTextAsync(config.TargetConnectionFile,
                 "quotation_target_bootstrap_connection_unprotected", cancellationToken).ConfigureAwait(false);
-            await DefaultGuardedDeltaConsoleRuntime.VerifyTargetAuthorityAsync(target, config.TargetAuthority,
-                cancellationToken).ConfigureAwait(false);
+            if (persistent)
+            {
+                await DefaultGuardedDeltaConsoleRuntime.VerifyTargetAuthorityAsync(target, config.TargetAuthority,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await DefaultGuardedDeltaConsoleRuntime.VerifyQuotationDisposableTargetAuthorityAsync(
+                    target, config.TargetAuthority, cancellationToken).ConfigureAwait(false);
+            }
             byte[] publicKey = Convert.FromBase64String(await ReadProtectedTextAsync(
                 config.AuthorizationKey.SubjectPublicKeyInfoPath,
                 "quotation_target_bootstrap_trust_unprotected", cancellationToken).ConfigureAwait(false));
