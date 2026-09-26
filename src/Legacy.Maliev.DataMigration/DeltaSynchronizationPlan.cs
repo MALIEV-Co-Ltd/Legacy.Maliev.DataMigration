@@ -49,6 +49,7 @@ public sealed record DeltaPlanSigningRequest(
     public DateTimeOffset? SourceCaptureCompletedAtUtc { get; init; }
     public DeltaSourceCaptureManifest? SourceCaptureManifest { get; init; }
     public string? QuotationTransitionSchemaSha256 { get; init; }
+    public bool? PairedTransitionPlanOnly { get; init; }
 }
 
 public sealed record DeltaSynchronizationPlan(
@@ -81,6 +82,8 @@ public sealed record DeltaSynchronizationPlan(
     public DeltaSourceCaptureManifest? SourceCaptureManifest { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? QuotationTransitionSchemaSha256 { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? PairedTransitionPlanOnly { get; init; }
 }
 
 public sealed class DeltaPlanException(string code, string message) : Exception(message)
@@ -207,6 +210,7 @@ public static partial class DeltaSynchronizationPlanProducer
             SourceCaptureCompletedAtUtc = request.SourceCaptureCompletedAtUtc,
             SourceCaptureManifest = request.SourceCaptureManifest,
             QuotationTransitionSchemaSha256 = request.QuotationTransitionSchemaSha256,
+            PairedTransitionPlanOnly = request.PairedTransitionPlanOnly,
         };
         return unsigned with
         {
@@ -250,12 +254,18 @@ public static partial class DeltaSynchronizationPlanProducer
             request.SourceCutoffUtc, request.SourceCaptureCompletedAtUtc, nowUtc);
 
         ValidateDatabases(request.Databases);
-        if (request.QuotationTransitionSchemaSha256 is not null &&
+        if (request.PairedTransitionPlanOnly is not null and not true ||
+            (request.PairedTransitionPlanOnly == true &&
+                (request.QuotationTransitionSchemaSha256 is null ||
+                 !IsPersistentLocalAuthority(request.TargetAuthority))) ||
+            (request.QuotationTransitionSchemaSha256 is not null &&
             (!Sha256().IsMatch(request.QuotationTransitionSchemaSha256) ||
-             request.SourceCaptureManifest is null || !IsDisposableLocalAuthority(request.TargetAuthority)))
+             request.SourceCaptureManifest is null ||
+             (!IsDisposableLocalAuthority(request.TargetAuthority) &&
+             !(request.PairedTransitionPlanOnly == true && IsPersistentLocalAuthority(request.TargetAuthority))))))
         {
             throw Error("delta_quotation_transition_plan_invalid",
-                "The Quotation physical transition requires a captured disposable-local plan and a signed schema hash.");
+                "The Quotation physical transition requires a captured disposable-local plan or a paired-only persistent plan with a signed schema hash.");
         }
         if (request.SourceCaptureManifest is not null)
         {
@@ -309,6 +319,13 @@ public static partial class DeltaSynchronizationPlanProducer
         return authority is { Kind: DeltaTargetAuthorityKind.LocalAspire } &&
             authority.AuthorityId.StartsWith(
                 "aspire://legacy-postgres-main-local/disposable-", StringComparison.Ordinal);
+    }
+
+    public static bool IsPersistentLocalAuthority(DeltaTargetAuthority? authority)
+    {
+        return authority is { Kind: DeltaTargetAuthorityKind.LocalAspire } &&
+            authority.AuthorityId.StartsWith(
+                "aspire://legacy-postgres-main-local/persistent-", StringComparison.Ordinal);
     }
 
     internal static void ValidateDatabases(IReadOnlyList<DeltaDatabasePlan> databases)
@@ -412,9 +429,15 @@ public static class DeltaSynchronizationPlanVerifier
             if (plan.SchemaVersion == "1.1" != (plan.SourceMode is null) ||
                 (plan.SchemaVersion is "1.3" or "1.4") != (plan.SourceCaptureManifest is not null) ||
                 plan.SchemaVersion == "1.4" != (plan.QuotationTransitionSchemaSha256 is not null) ||
+                plan.PairedTransitionPlanOnly is not null and not true ||
+                 (plan.PairedTransitionPlanOnly == true &&
+                    (plan.SchemaVersion != "1.4" ||
+                     !DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(plan.TargetAuthority))) ||
                 (plan.SchemaVersion == "1.4" &&
                  (!Hashes(plan.QuotationTransitionSchemaSha256!) ||
-                  !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(plan.TargetAuthority))) ||
+                  (!DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(plan.TargetAuthority) &&
+                  !(plan.PairedTransitionPlanOnly == true &&
+                    DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(plan.TargetAuthority))))) ||
                 plan.SchemaVersion != "1.1" != (plan.SourceMode == DeltaSourceMode.LiveReadOnly))
             {
                 return false;

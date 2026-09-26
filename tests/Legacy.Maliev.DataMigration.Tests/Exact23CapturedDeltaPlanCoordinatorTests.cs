@@ -160,6 +160,114 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
     }
 
     [Fact]
+    public async Task Paired_quotation_transition_binds_retained_outboxes_without_admitting_persistent_apply()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-transition-tests",
+            Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
+        try
+        {
+            FreshSchemaPlan schema = QuotationSchema();
+            var source = new QuotationSource(schema);
+            using var disposableSigner = new P256MigrationEvidenceSigner("transition-disposable",
+                _key.ExportECPrivateKeyPem());
+            using var persistentKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var persistentSigner = new P256MigrationEvidenceSigner("transition-persistent",
+                persistentKey.ExportECPrivateKeyPem());
+            using var authorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var authorizer = new P256MigrationEvidenceSigner("transition-authorization",
+                authorizationKey.ExportECPrivateKeyPem());
+            var coordinator = new Exact23CapturedDeltaPlanCoordinator(source, new EmptyTarget(),
+                new QuotationEvidence(source), new DeltaCapturedTableArchive(directory),
+                disposableSigner, new FixedTime());
+            Exact23DeltaPlanRequest disposable = Request(schema) with
+            {
+                UseQuotationPhysicalTransition = true,
+                ExecutionAuthorizationKeyFingerprintSha256 = authorizer.PublicKeyFingerprintSha256,
+            };
+            Exact23DeltaPlanRequest persistent = PersistentRequest(schema) with
+            {
+                UseQuotationPhysicalTransition = true,
+                ExecutionAuthorizationKeyFingerprintSha256 = authorizer.PublicKeyFingerprintSha256,
+            };
+
+            PairedCapturedDeltaPlans plans = await coordinator.ProducePairedAsync(disposable, persistent,
+                new EmptyTarget(), persistentSigner, RandomNumberGenerator.GetBytes(32),
+                CancellationToken.None);
+            var trust = new ReceiptAttestationTrustStore(
+            [
+                new(disposableSigner.KeyId, disposableSigner.ExportSubjectPublicKeyInfo()),
+                new(persistentSigner.KeyId, persistentSigner.ExportSubjectPublicKeyInfo()),
+            ]);
+            PairedCapturedDeltaPlanPublicationGate.Verify(plans, schema, trust, Now());
+            Assert.Equal("1.4", plans.Disposable.SchemaVersion);
+            Assert.Equal("1.4", plans.Persistent.SchemaVersion);
+            Assert.Null(plans.Disposable.PairedTransitionPlanOnly);
+            Assert.True(plans.Persistent.PairedTransitionPlanOnly);
+            Assert.Same(plans.Disposable.SourceCaptureManifest, plans.Persistent.SourceCaptureManifest);
+            string expected = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(
+                schema.Databases.Single(database => database.Database == "Quotation"), true);
+            Assert.Equal(expected, plans.Disposable.QuotationTransitionSchemaSha256);
+            Assert.Equal(expected, plans.Persistent.QuotationTransitionSchemaSha256);
+            Assert.Equal(["legacy_compatibility.GoogleAnalyticsOutbox", "public.QuotationAcceptedOutcome"],
+                plans.Persistent.Databases.Single(database => database.Database == "Quotation")
+                    .Tables.Select(table => table.Table));
+            Assert.All(plans.Persistent.Databases.SelectMany(database => database.Tables),
+                table => Assert.Equal(0, table.DeleteCount));
+            Assert.Equal("delta_execution_authorization_request_invalid",
+                Assert.Throws<DeltaExecutionException>(() => DeltaExecutionAuthorizationProducer.Produce(
+                    plans.Persistent, Now().AddMinutes(-1), Now().AddMinutes(5), authorizer)).Code);
+
+            DeltaSynchronizationPlan wrongUnsigned = plans.Persistent with
+            {
+                QuotationTransitionSchemaSha256 = Hash('0'),
+                AttestationSignature = null,
+            };
+            DeltaSynchronizationPlan wrongSigned = wrongUnsigned with
+            {
+                AttestationSignature = Convert.ToBase64String(persistentSigner.Sign(
+                    DeltaSynchronizationPlanCanonicalizer.CreatePayload(wrongUnsigned))),
+            };
+            Assert.True(DeltaSynchronizationPlanVerifier.Verify(wrongSigned, trust, Now()));
+            Assert.Equal("delta_paired_plan_publication_invalid", Assert.Throws<DeltaPlanException>(() =>
+                PairedCapturedDeltaPlanPublicationGate.Verify(plans with { Persistent = wrongSigned },
+                    schema, trust, Now())).Code);
+            DeltaSynchronizationPlan separateArchiveUnsigned = plans.Persistent with
+            {
+                SourceCaptureManifest = plans.Persistent.SourceCaptureManifest! with
+                {
+                    EncryptionKeyFingerprintSha256 = Hash('0'),
+                },
+                AttestationSignature = null,
+            };
+            DeltaSynchronizationPlan separateArchive = separateArchiveUnsigned with
+            {
+                AttestationSignature = Convert.ToBase64String(persistentSigner.Sign(
+                    DeltaSynchronizationPlanCanonicalizer.CreatePayload(separateArchiveUnsigned))),
+            };
+            Assert.True(DeltaSynchronizationPlanVerifier.Verify(separateArchive, trust, Now()));
+            Assert.Equal("delta_paired_plan_publication_invalid", Assert.Throws<DeltaPlanException>(() =>
+                PairedCapturedDeltaPlanPublicationGate.Verify(plans with { Persistent = separateArchive },
+                    schema, trust, Now())).Code);
+            Assert.Equal("delta_paired_plan_publication_invalid", Assert.Throws<DeltaPlanException>(() =>
+                PairedCapturedDeltaPlanPublicationGate.Verify(plans with
+                {
+                    Persistent = plans.Persistent with { SourceObservationSha256 = Hash('0') },
+                }, schema, trust, Now())).Code);
+            Assert.Equal("delta_capture_paired_preflight_invalid", (await Assert.ThrowsAsync<DeltaPlanException>(() =>
+                coordinator.ProducePairedAsync(disposable, persistent with
+                {
+                    UseQuotationPhysicalTransition = false,
+                }, new EmptyTarget(), persistentSigner, RandomNumberGenerator.GetBytes(32),
+                    CancellationToken.None))).Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Paired_planning_rejects_target_drift_without_issuing_either_plan()
     {
         string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-drift-tests", Guid.NewGuid().ToString("N"));

@@ -17,6 +17,27 @@ public static class DisposableDeltaProofVerifier
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(trust);
 
+        bool pairedTransition = proofPlan.SchemaVersion == "1.4" &&
+            localPlan.SchemaVersion == "1.4" && localPlan.PairedTransitionPlanOnly == true;
+        if ((proofPlan.SchemaVersion == "1.4" || localPlan.SchemaVersion == "1.4") && !pairedTransition)
+        {
+            throw new DeltaExecutionException("delta_disposable_proof_invalid",
+                "The schema-1.4 proof requires a separately signed paired-only persistent plan.");
+        }
+        if (pairedTransition)
+        {
+            try
+            {
+                PairedCapturedDeltaPlanPublicationGate.Verify(new(proofPlan, localPlan),
+                    schema, trust, nowUtc);
+            }
+            catch (DeltaPlanException)
+            {
+                throw new DeltaExecutionException("delta_disposable_proof_invalid",
+                    "The schema-1.4 proof must match a reviewed signed zero-delete capture pair.");
+            }
+        }
+
         if (nowUtc.Offset != TimeSpan.Zero ||
             !DeltaSynchronizationPlanVerifier.Verify(proofPlan, trust, nowUtc) ||
             !DeltaSynchronizationPlanVerifier.Verify(localPlan, trust, nowUtc) ||
@@ -49,7 +70,8 @@ public static class DisposableDeltaProofVerifier
             string.Equals(proofPlan.TargetAuthority.AuthorityId,
                 localPlan.TargetAuthority.AuthorityId, StringComparison.Ordinal) ||
             proofResult.ReconciledAtUtc > nowUtc ||
-            proofResult.ReconciledAtUtc > localPlan.CreatedAtUtc ||
+            (!pairedTransition && proofResult.ReconciledAtUtc > localPlan.CreatedAtUtc) ||
+            (pairedTransition && proofResult.ReconciledAtUtc < localPlan.CreatedAtUtc) ||
             nowUtc - proofResult.ReconciledAtUtc > TimeSpan.FromHours(12) ||
             proofPlan.Databases.Count != DatabaseInventory.ActiveDatabases.Count ||
             proofResult.Databases.Count != DatabaseInventory.ActiveDatabases.Count ||

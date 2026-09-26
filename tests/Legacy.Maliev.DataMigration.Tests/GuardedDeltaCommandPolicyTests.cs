@@ -114,6 +114,39 @@ public sealed class GuardedDeltaCommandPolicyTests
         Assert.Equal(changedDisposable ? ["disposable"] : ["disposable", "persistent"], observed);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Paired_transition_post_capture_fence_rejects_either_changed_physical_preimage(
+        bool changedDisposable)
+    {
+        DatabaseSchemaPlan quotation = new("Quotation", "1.0", new string('a', 64),
+            new string('b', 64), []);
+        var observed = new List<string>();
+        Task Final(DatabaseSchemaPlan schema, CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException("The final-schema path must not be used.");
+        }
+
+        Task Transition(string target, DatabaseSchemaPlan schema, CancellationToken cancellationToken)
+        {
+            observed.Add(target);
+            return target == "disposable" == changedDisposable
+                ? throw new DeltaPlanException("delta_schema_drift",
+                    "The retained-outbox physical schema changed after capture.")
+                : Task.CompletedTask;
+        }
+
+        DeltaPlanException failure = await Assert.ThrowsAsync<DeltaPlanException>(() =>
+            PairedDeltaTargetPhysicalSchemaFence.VerifyDatabaseAsync(quotation, true,
+                Final, (schema, ct) => Transition("disposable", schema, ct),
+                Final, (schema, ct) => Transition("persistent", schema, ct),
+                CancellationToken.None));
+
+        Assert.Equal("delta_schema_drift", failure.Code);
+        Assert.Equal(changedDisposable ? ["disposable"] : ["disposable", "persistent"], observed);
+    }
+
     [Fact]
     public async Task Paired_command_projects_two_distinct_signers_and_one_capture_without_apply()
     {
@@ -227,12 +260,15 @@ public sealed class GuardedDeltaCommandPolicyTests
                     {
                         "LEGACY_DEPLOY_ENABLED" => "false",
                         "LEGACY_MIGRATION_CALLER" => "owner",
-                        _ => throw new InvalidOperationException("Transition must stop before key projection."),
+                        "LEGACY_MIGRATION_DELTA_PLAN_SIGNING_KEY_FILE" => disposablePrivatePath,
+                        "LEGACY_MIGRATION_PERSISTENT_DELTA_PLAN_SIGNING_KEY_FILE" => persistentPrivatePath,
+                        _ => null,
                     }, runtime, CancellationToken.None);
                 Assert.Equal(65, rejected);
-                Assert.Equal("delta_paired_plan_request_invalid" + Environment.NewLine,
+                Assert.Equal("paired_runtime_probe_stop" + Environment.NewLine,
                     transitionError.ToString());
-                Assert.Equal(1, runtime.PlanCalls);
+                Assert.Equal(2, runtime.PlanCalls);
+                Assert.True(runtime.LastTransition);
             }
             finally
             {
@@ -275,11 +311,13 @@ public sealed class GuardedDeltaCommandPolicyTests
     {
         public int PlanCalls { get; private set; }
         public int ApplyCalls { get; private set; }
+        public bool LastTransition { get; private set; }
 
         public Task<PairedCapturedDeltaPlans> PlanPairedAsync(DeltaPairedPlanRuntimeRequest request,
             CancellationToken cancellationToken)
         {
             PlanCalls++;
+            LastTransition = request.Configuration.UseQuotationPhysicalTransition;
             Assert.Equal("source-placeholder", request.SourceConnectionString);
             Assert.Equal("disposable-placeholder", request.DisposableTargetConnectionString);
             Assert.Equal("persistent-placeholder", request.PersistentTargetConnectionString);

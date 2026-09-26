@@ -3,7 +3,7 @@ namespace Legacy.Maliev.DataMigration;
 /// <summary>
 /// Validates a captured exact-23 disposable proof for a zero-delete persistent-local plan.
 /// This is a proof prerequisite, not authorization to run the Quotation physical transition
-/// against persistent local PostgreSQL; schema-1.4 remains disposable-only.
+/// against persistent local PostgreSQL; schema-1.4 execution remains disposable-only.
 /// </summary>
 public static class ZeroDeleteCapturedDeltaProofValidator
 {
@@ -13,7 +13,8 @@ public static class ZeroDeleteCapturedDeltaProofValidator
         FreshSchemaPlan schema, IReceiptAttestationTrustStore trust, DateTimeOffset nowUtc)
     {
         DisposableDeltaProofVerifier.Verify(proofPlan, proofResult, localPlan, schema, trust, nowUtc);
-        if (proofPlan.SchemaVersion != "1.3" || localPlan.SchemaVersion != "1.3" ||
+        if (proofPlan.SchemaVersion is not ("1.3" or "1.4") ||
+            localPlan.SchemaVersion != proofPlan.SchemaVersion ||
             proofPlan.SourceCaptureManifest is null || localPlan.SourceCaptureManifest is null ||
             proofPlan.Databases.SelectMany(database => database.Tables).Any(table => table.DeleteCount != 0) ||
             localPlan.Databases.SelectMany(database => database.Tables).Any(table => table.DeleteCount != 0))

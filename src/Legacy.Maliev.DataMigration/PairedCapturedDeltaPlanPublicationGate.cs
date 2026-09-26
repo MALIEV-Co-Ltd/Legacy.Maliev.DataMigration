@@ -22,7 +22,9 @@ public static class PairedCapturedDeltaPlanPublicationGate
             nowUtc - persistent.CreatedAtUtc > TimeSpan.FromHours(12) ||
             !DeltaSynchronizationPlanVerifier.Verify(disposable, trust, nowUtc) ||
             !DeltaSynchronizationPlanVerifier.Verify(persistent, trust, nowUtc) ||
-            disposable.SchemaVersion != "1.3" || persistent.SchemaVersion != "1.3" ||
+            disposable.SchemaVersion is not ("1.3" or "1.4") ||
+            persistent.SchemaVersion != disposable.SchemaVersion ||
+            !MatchesTransition(schema, disposable, persistent) ||
             disposable.SourceCaptureManifest is null || persistent.SourceCaptureManifest is null ||
             disposable.Databases.Count != DatabaseInventory.ActiveDatabases.Count ||
             persistent.Databases.Count != DatabaseInventory.ActiveDatabases.Count ||
@@ -72,5 +74,37 @@ public static class PairedCapturedDeltaPlanPublicationGate
             persistent.Databases.Single(database => database.Database == schema.Database).Tables
                 .Select(table => table.Table).Order(StringComparer.Ordinal)
                 .SequenceEqual(expected, StringComparer.Ordinal);
+    }
+
+    private static bool MatchesTransition(FreshSchemaPlan schema,
+        DeltaSynchronizationPlan disposable, DeltaSynchronizationPlan persistent)
+    {
+        if (disposable.SchemaVersion == "1.3")
+        {
+            return disposable.QuotationTransitionSchemaSha256 is null &&
+                persistent.QuotationTransitionSchemaSha256 is null &&
+                disposable.PairedTransitionPlanOnly is null &&
+                persistent.PairedTransitionPlanOnly is null;
+        }
+
+        DatabaseSchemaPlan? quotation = schema.Databases.SingleOrDefault(database =>
+            database.Database == "Quotation");
+        if (quotation is null || disposable.PairedTransitionPlanOnly is not null ||
+            persistent.PairedTransitionPlanOnly != true)
+        {
+            return false;
+        }
+        try
+        {
+            string expected = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(quotation, true);
+            return DeltaSynchronizationPlanProducer.FixedHashEquals(
+                    disposable.QuotationTransitionSchemaSha256 ?? string.Empty, expected) &&
+                DeltaSynchronizationPlanProducer.FixedHashEquals(
+                    persistent.QuotationTransitionSchemaSha256 ?? string.Empty, expected);
+        }
+        catch (MigrationExecutionException)
+        {
+            return false;
+        }
     }
 }
