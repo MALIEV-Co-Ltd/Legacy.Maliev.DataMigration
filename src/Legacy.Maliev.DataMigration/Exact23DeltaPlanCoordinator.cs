@@ -34,12 +34,31 @@ public sealed class Exact23DeltaPlanCoordinator(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var tables = new List<DeltaTablePlan>(database.Tables.Count);
-            foreach (TableCopyPlan table in database.Tables.OrderBy(
+            QuotationDispositionRowMapper? mapper = database.SourceDispositionProfile is null
+                ? null : new QuotationDispositionRowMapper(database);
+            foreach (TableCopyPlan table in ApprovedSourceDispositionManifest.TargetTablesFor(database).OrderBy(
                 item => $"{item.TargetSchema}.{item.TargetTable}", StringComparer.Ordinal))
             {
+                TableCopyPlan sourceTable = table.SourceSchema == "disposition"
+                    ? database.Tables.Single(source =>
+                        string.Equals(source.SourceSchema, "dbo", StringComparison.Ordinal) &&
+                        string.Equals(source.SourceTable, table.SourceTable, StringComparison.Ordinal))
+                    : table;
+                IAsyncEnumerable<MigrationRow> sourceRows = restoredSource.ReadOrderedAsync(
+                    database.Database, sourceTable, cancellationToken);
+                if (mapper is not null && table.SourceSchema == "disposition" &&
+                    table.TargetSchema == "legacy_compatibility" && table.TargetTable == "GoogleAnalyticsOutbox")
+                {
+                    sourceRows = MapRows(sourceRows, mapper.MapAnalytics, cancellationToken);
+                }
+                else if (mapper is not null && table.SourceSchema == "disposition" &&
+                    table.TargetSchema == "public" && table.TargetTable == "QuotationAcceptedOutcome")
+                {
+                    sourceRows = MapRows(sourceRows, mapper.MapOutcome, cancellationToken);
+                }
                 CanonicalTableDelta delta = await CanonicalAsyncDeltaPlanner.PlanAsync(
                     table,
-                    restoredSource.ReadOrderedAsync(database.Database, table, cancellationToken),
+                    sourceRows,
                     canonicalTarget.ReadOrderedAsync(database.Database, table, cancellationToken),
                     cancellationToken).ConfigureAwait(false);
                 tables.Add(new(delta.Table, delta.InsertCount, delta.UpdateCount, delta.DeleteCount,
@@ -72,6 +91,17 @@ public sealed class Exact23DeltaPlanCoordinator(
         }, planSigner, nowUtc);
     }
 
+    private static async IAsyncEnumerable<MigrationRow> MapRows(
+        IAsyncEnumerable<MigrationRow> rows,
+        Func<MigrationRow, MigrationRow> map,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (MigrationRow row in rows.WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            yield return map(row);
+        }
+    }
+
     internal static void ValidateInventory(FreshSchemaPlan schema)
     {
         ArgumentNullException.ThrowIfNull(schema);
@@ -84,13 +114,17 @@ public sealed class Exact23DeltaPlanCoordinator(
         }
         DatabaseSchemaPlan quotation = schema.Databases.Single(database =>
             string.Equals(database.Database, "Quotation", StringComparison.Ordinal));
-        if (quotation.Tables.Any(table =>
+        if (quotation.SourceDispositionProfile is null && quotation.Tables.Any(table =>
             string.Equals(table.SourceSchema, "dbo", StringComparison.OrdinalIgnoreCase) &&
             (string.Equals(table.SourceTable, "GoogleAnalyticsOutbox", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(table.SourceTable, "QuotationOutcomeOutbox", StringComparison.OrdinalIgnoreCase))))
         {
             throw new DeltaPlanException("delta_plan_quotation_transformation_required",
                 "Quotation source outboxes require signed archive/adoption dispositions before row-level delta planning.");
+        }
+        foreach (DatabaseSchemaPlan database in schema.Databases)
+        {
+            ApprovedSourceDispositionManifest.Validate(database);
         }
         if (schema.Databases.Any(database => !string.Equals(
                 database.TargetSchemaSha256,

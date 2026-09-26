@@ -26,6 +26,11 @@ public sealed class Exact23DeltaExecutionCoordinator(
                 "Captured-source plans require the authenticated replay execution path.");
         }
         ValidateInventory(plan, schemaPlan);
+        if (schemaPlan.Databases.Any(ApprovedSourceDispositionManifest.RequiresQuotationExecution))
+        {
+            throw new DeltaExecutionException("delta_execution_quotation_transformation_required",
+                "Quotation disposition plans require a reviewed archive/adoption executor and reconciliation path.");
+        }
         var results = new List<DeltaDatabaseExecutionResult>(DatabaseInventory.ActiveDatabases.Count);
         // The live source can accept new rows after planning. Apply databases with
         // signed changes first, reducing the capture-to-apply window for active data.

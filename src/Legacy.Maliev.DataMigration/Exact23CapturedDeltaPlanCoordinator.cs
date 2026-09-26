@@ -38,6 +38,11 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
                 "The live source, target authority, cutoff, or capture key roles are invalid.");
         }
         Exact23DeltaPlanCoordinator.ValidateInventory(request.SchemaPlan);
+        if (request.SchemaPlan.Databases.Any(ApprovedSourceDispositionManifest.RequiresQuotationExecution))
+        {
+            throw new DeltaPlanException("delta_capture_quotation_transformation_required",
+                "Captured Quotation outboxes require disposition-aware capture and replay before planning.");
+        }
         string schemaPlanSha256 = SchemaPlanCanonicalizer.ComputeSha256(request.SchemaPlan);
         var databasePlans = new List<DeltaDatabasePlan>(DatabaseInventory.ActiveDatabases.Count);
         var bindings = new List<DeltaDatabaseCaptureBinding>(DatabaseInventory.ActiveDatabases.Count);

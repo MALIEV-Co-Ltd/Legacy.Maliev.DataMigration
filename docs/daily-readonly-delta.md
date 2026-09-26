@@ -1,7 +1,7 @@
 # Daily read-only SQL Server comparison
 
-The planner rejects Quotation source outboxes until their signed dispositions
-are implemented: `QuotationOutcomeOutbox` must be adopted into
+The live read-only planner accepts Quotation source outboxes only with their
+reviewed, signed dispositions: `QuotationOutcomeOutbox` must be adopted into
 `QuotationAcceptedOutcome`, and `GoogleAnalyticsOutbox` must be preserved in the
 read-only compatibility archive. Neither may be copied as an ordinary public
 table to make a schema fingerprint pass.
@@ -16,11 +16,15 @@ The analytics archive adds five checked `smallint` remainder columns for its
 `datetime2(7)` values. The reviewed row mapper splits each source timestamp
 into a PostgreSQL microsecond timestamp and its 0-9 sub-microsecond ticks;
 nullable timestamps keep a null remainder. Disposable PostgreSQL tests prove
-round-trip precision and reject out-of-range remainders. This row mapping is
-not yet connected to signed exact-23 execution or a live archive write.
-Those bindings are review evidence only: they do not authorize outbox row
-execution or relax the planner's fail-closed guard. Adoption, archive apply,
-and full reconciliation still require separate validation before a live run.
+round-trip precision and reject out-of-range remainders. The live read-only
+planner now hashes operations against mapped target rows and target table
+names while reading the original SQL Server tables. Its schema-plan hash binds
+the reviewed dispositions and target fingerprint. A table added without a
+matching regenerated target fingerprint invalidates planning before row reads.
+Captured-source planning and all execution remain fail-closed for these
+outboxes; the signed
+plan is review evidence only. Archive/adoption apply, replay, and full
+reconciliation still require separate validation before a live run.
 
 `scripts/invoke-daily-readonly-delta.ps1` is a backup-free row comparison path for
 already populated exact-23 PostgreSQL targets. It reads every source and target
