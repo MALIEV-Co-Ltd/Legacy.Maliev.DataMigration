@@ -68,7 +68,8 @@ public sealed class PostgreSqlDeltaRowSource(PostgreSqlDeltaRowSourceOptions opt
                         column,
                         await reader.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false)
                             ? null
-                            : ReadValue(reader, ordinal, table.SourceColumnTypes[column]));
+                            : ReadValue(reader, ordinal, table.SourceColumnTypes.TryGetValue(column, out string? sourceType)
+                                ? sourceType : table.ColumnTypes[column]));
                 }
                 yield return new MigrationRow(values);
             }

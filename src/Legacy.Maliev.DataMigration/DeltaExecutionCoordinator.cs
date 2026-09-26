@@ -101,6 +101,11 @@ public sealed class DeltaExecutionCoordinator(
         {
             throw Error("delta_execution_schema_invalid", "The signed database schema does not match the requested database.");
         }
+        if (ApprovedSourceDispositionManifest.RequiresQuotationExecution(schema))
+        {
+            throw Error("delta_execution_quotation_transformation_required",
+                "Quotation disposition plans require a reviewed archive/adoption executor and reconciliation path.");
+        }
 
         DeltaDatabasePlan databasePlan = plan.Databases.SingleOrDefault(item =>
             string.Equals(item.Database, database, StringComparison.Ordinal)) ??

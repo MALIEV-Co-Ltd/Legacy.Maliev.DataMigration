@@ -49,6 +49,12 @@ internal static class ApprovedSourceDispositionManifest
     internal static IReadOnlyList<string> AnalyticsTimestampColumns { get; } =
         ["OccurredUtc", "NextAttemptUtc", "LeaseUntilUtc", "SentUtc", "FailedUtc"];
 
+    internal static bool RequiresQuotationExecution(DatabaseSchemaPlan plan)
+    {
+        return string.Equals(plan.Database, "Quotation", StringComparison.Ordinal) &&
+            (plan.SourceDispositionProfile is not null || plan.Tables.Any(IsOutbox));
+    }
+
     private static TableCopyPlan AnalyticsArchive(TableCopyPlan source)
     {
         string[] remainders = [.. AnalyticsTimestampColumns.Select(column => $"{column}SubMicrosecondTicks")];
