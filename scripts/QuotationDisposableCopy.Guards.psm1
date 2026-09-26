@@ -1,5 +1,13 @@
 Set-StrictMode -Version Latest
 
+function ConvertTo-QuotationCopyConnection([string]$Value) {
+    $builder = [System.Data.Common.DbConnectionStringBuilder]::new()
+    # PowerShell's dynamic member binder can create a "ConnectionString" key
+    # instead of assigning the CLR property; call the setter explicitly.
+    $builder.set_ConnectionString($Value)
+    return $builder
+}
+
 function Assert-QuotationCopyName([string]$Name) {
     if ($Name -cnotmatch '^legacy-quotation-proof-[a-z0-9]{12,32}$') {
         throw 'quotation_copy_name_invalid'
@@ -71,7 +79,8 @@ function Remove-QuotationCopyContainerEnvFile([string]$RunDirectory, [string]$Pa
     Remove-Item -LiteralPath $Path -Force
 }
 
-Export-ModuleMember -Function Assert-QuotationCopyName, Assert-QuotationCopyIdentity,
+Export-ModuleMember -Function ConvertTo-QuotationCopyConnection,
+    Assert-QuotationCopyName, Assert-QuotationCopyIdentity,
     Assert-QuotationCopyPort, Assert-QuotationCopySourceContainer,
     Assert-QuotationCopyContainer, Assert-QuotationCopyVolume,
     Remove-QuotationCopyContainerEnvFile

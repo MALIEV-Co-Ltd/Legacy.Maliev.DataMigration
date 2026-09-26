@@ -117,8 +117,8 @@ Assert-OwnerOnly $SourceConnectionFile
 foreach ($path in @($receiptPath, $dumpPath, $connectionPath, $environmentPath)) {
     if (Test-Path -LiteralPath $path) { throw 'quotation_copy_output_exists' }
 }
-$source = [System.Data.Common.DbConnectionStringBuilder]::new()
-$source.ConnectionString = Get-Content -LiteralPath $SourceConnectionFile -Raw
+$source = ConvertTo-QuotationCopyConnection ([string](
+    Get-Content -LiteralPath $SourceConnectionFile -Raw))
 if ([string]$source['Host'] -cne '127.0.0.1' -or
     [string]$source['Database'] -cne 'postgres' -or
     [string]::IsNullOrWhiteSpace([string]$source['Username']) -or
