@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using Legacy.Maliev.DataMigration.Console;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -8,6 +10,117 @@ namespace Legacy.Maliev.DataMigration.Tests;
 [Collection(PostgreSqlAdapterTestGroup.Name)]
 public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFixture fixture)
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    [Fact]
+    public async Task DisposableAuthorization_RejectsPhysicalDriftBeforeSigningOrDdl()
+    {
+        await using var container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await container.StartAsync();
+        string admin = container.GetConnectionString();
+        await ExecuteAsync(admin, "CREATE DATABASE \"Quotation\";");
+        string connection = new NpgsqlConnectionStringBuilder(admin) { Database = "Quotation" }.ConnectionString;
+        DatabaseSchemaPlan quotation = QuotationPlan();
+        DatabaseSchemaPlan sourceShape = quotation with
+        {
+            Database = "QuotationBootstrapFixture",
+            SourceDispositionProfile = null,
+            SourceTableDispositions = [],
+        };
+        await using (var db = new NpgsqlConnection(connection))
+        {
+            await db.OpenAsync();
+            await using var tx = await db.BeginTransactionAsync();
+            await using var writer = new PostgreSqlWholeDatabaseTransaction(db, tx, ownsResources: false);
+            await writer.ApplySchemaAsync(sourceShape, CancellationToken.None);
+            await writer.FinalizeSchemaAsync(sourceShape, CancellationToken.None);
+            await tx.CommitAsync();
+        }
+        var authority = new DeltaTargetAuthority(DeltaTargetAuthorityKind.LocalAspire,
+            "aspire://legacy-postgres-main-local/disposable-quotation-preflight", await IdentityAsync(connection));
+        FreshSchemaPlan schema = new("2.0", DateTimeOffset.UtcNow, new string('a', 40),
+            [.. DatabaseInventory.ActiveDatabases.Select(name => name == "Quotation" ? quotation :
+                new DatabaseSchemaPlan(name, "1.0", new string('a', 64), new string('a', 64), []))]);
+        string root = Path.Combine(Path.GetTempPath(), $"quotation-bootstrap-preflight-{Guid.NewGuid():N}");
+        OwnerProtectedDirectory.CreateNew(root);
+        try
+        {
+            string schemaPath = Path.Combine(root, "schema.json");
+            string connectionPath = Path.Combine(root, "connection.txt");
+            string signerPath = Path.Combine(root, "signer.pem");
+            string trustPath = Path.Combine(root, "trust.b64");
+            string configPath = Path.Combine(root, "config.json");
+            string authorizationPath = Path.Combine(root, "authorization.json");
+            using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            await File.WriteAllTextAsync(schemaPath, JsonSerializer.Serialize(schema, JsonOptions));
+            await File.WriteAllTextAsync(connectionPath, admin);
+            await File.WriteAllTextAsync(signerPath, key.ExportECPrivateKeyPem());
+            await File.WriteAllTextAsync(trustPath, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()));
+            await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
+            {
+                quotationTargetBootstrap = new
+                {
+                    schemaPlanPath = schemaPath,
+                    targetConnectionFile = connectionPath,
+                    targetAuthority = authority,
+                    authorizationKey = new { keyId = "quotation-preflight-test", subjectPublicKeyInfoPath = trustPath },
+                    outputPath = authorizationPath,
+                    authorizationExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(10),
+                    allowAuthorizationSigning = true,
+                    allowExecution = false,
+                },
+            }, JsonOptions));
+            foreach (string path in new[] { schemaPath, connectionPath, signerPath, trustPath, configPath })
+            {
+                if (!OperatingSystem.IsWindows())
+                {
+                    File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                }
+            }
+
+            await ExecuteAsync(connection,
+                "ALTER TABLE public.\"QuotationOutcomeOutbox\" ADD COLUMN \"UnexpectedDrift\" integer;");
+            using var error = new StringWriter();
+            int rejected = await MigrationConsole.RunQuotationTargetBootstrapForTestsAsync(
+                ["authorize-quotation-target-bootstrap", "--config", configPath], TextWriter.Null, error,
+                name => name switch
+                {
+                    "LEGACY_DEPLOY_ENABLED" => "false",
+                    "LEGACY_MIGRATION_CALLER" => "owner",
+                    "LEGACY_MIGRATION_QUOTATION_BOOTSTRAP_AUTHORIZATION_SIGNING_KEY_FILE" => signerPath,
+                    _ => null,
+                }, CancellationToken.None);
+            Assert.Equal(65, rejected);
+            Assert.Equal("quotation_target_bootstrap_schema_drift" + Environment.NewLine, error.ToString());
+            Assert.False(File.Exists(authorizationPath));
+            Assert.Null(await TextOrNullAsync(connection,
+                "SELECT to_regclass('legacy_compatibility.\"GoogleAnalyticsOutbox\"')::text;"));
+            Assert.Null(await TextOrNullAsync(connection,
+                "SELECT to_regclass('public.\"QuotationAcceptedOutcome\"')::text;"));
+
+            await ExecuteAsync(connection, "ALTER TABLE public.\"QuotationOutcomeOutbox\" DROP COLUMN \"UnexpectedDrift\";");
+            using var successError = new StringWriter();
+            int authorized = await MigrationConsole.RunQuotationTargetBootstrapForTestsAsync(
+                ["authorize-quotation-target-bootstrap", "--config", configPath], TextWriter.Null, successError,
+                name => name switch
+                {
+                    "LEGACY_DEPLOY_ENABLED" => "false",
+                    "LEGACY_MIGRATION_CALLER" => "owner",
+                    "LEGACY_MIGRATION_QUOTATION_BOOTSTRAP_AUTHORIZATION_SIGNING_KEY_FILE" => signerPath,
+                    _ => null,
+                }, CancellationToken.None);
+            Assert.Equal(0, authorized);
+            Assert.Equal(string.Empty, successError.ToString());
+            Assert.True(File.Exists(authorizationPath));
+            Assert.Null(await TextOrNullAsync(connection,
+                "SELECT to_regclass('legacy_compatibility.\"GoogleAnalyticsOutbox\"')::text;"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Bootstrap_AddsOnlyReviewedTargets_AndPreservesRetainedRows()
     {
@@ -16,7 +129,15 @@ public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFi
         try
         {
             string identity = await IdentityAsync(connection);
+            Assert.Equal("source-shaped", await QuotationDispositionTargetBootstrap.PreflightAsync(
+                plan, connection, shadow.Name, identity, CancellationToken.None));
+            Assert.Null(await TextOrNullAsync(connection,
+                "SELECT to_regclass('legacy_compatibility.\"GoogleAnalyticsOutbox\"')::text;"));
+            Assert.Null(await TextOrNullAsync(connection,
+                "SELECT to_regclass('public.\"QuotationAcceptedOutcome\"')::text;"));
             Assert.Equal("created", await QuotationDispositionTargetBootstrap.ExecuteAsync(
+                plan, connection, shadow.Name, identity, CancellationToken.None));
+            Assert.Equal("already-current", await QuotationDispositionTargetBootstrap.PreflightAsync(
                 plan, connection, shadow.Name, identity, CancellationToken.None));
             Assert.Equal("already-current", await QuotationDispositionTargetBootstrap.ExecuteAsync(
                 plan, connection, shadow.Name, identity, CancellationToken.None));
@@ -202,6 +323,10 @@ public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFi
         {
             await ExecuteAsync(connection, ddl);
             string identity = await IdentityAsync(connection);
+            MigrationExecutionException preflight = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                QuotationDispositionTargetBootstrap.PreflightAsync(plan, connection, shadow.Name,
+                    identity, CancellationToken.None));
+            Assert.Equal(code, preflight.Code);
             MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
                 QuotationDispositionTargetBootstrap.ExecuteAsync(plan, connection, shadow.Name,
                     identity, CancellationToken.None));
@@ -227,6 +352,10 @@ public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFi
                 QuotationDispositionTargetBootstrap.ExecuteAsync(plan, connection, shadow.Name,
                     new string('0', 64), CancellationToken.None));
             Assert.Equal("quotation_target_bootstrap_identity_invalid", identity.Code);
+            MigrationExecutionException preflightIdentity = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                QuotationDispositionTargetBootstrap.PreflightAsync(plan, connection, shadow.Name,
+                    new string('0', 64), CancellationToken.None));
+            Assert.Equal("quotation_target_bootstrap_identity_invalid", preflightIdentity.Code);
             string validIdentity = await IdentityAsync(connection);
             MigrationExecutionException planError = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
                 QuotationDispositionTargetBootstrap.ExecuteAsync(plan with { TargetSchemaSha256 = new string('0', 64) },

@@ -133,6 +133,14 @@ public static partial class MigrationConsole
                     throw new MigrationConsoleException("quotation_target_bootstrap_signing_disabled",
                         "DDL authorization signing is disabled.");
                 }
+                var quotationConnection = new NpgsqlConnectionStringBuilder(target)
+                {
+                    Database = "Quotation",
+                    Pooling = false,
+                };
+                _ = await QuotationDispositionTargetBootstrap.PreflightAsync(database,
+                    quotationConnection.ConnectionString, "Quotation", config.TargetAuthority.SystemIdentifierSha256,
+                    cancellationToken).ConfigureAwait(false);
                 string signerPath = environment(QuotationBootstrapSignerEnvironmentVariable) ??
                     throw new MigrationConsoleException("quotation_target_bootstrap_signer_missing",
                         "The protected DDL signer reference is required.");
