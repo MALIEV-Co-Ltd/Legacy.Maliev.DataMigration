@@ -189,6 +189,19 @@ disposable apply/reconciliation and a separately reviewed schema-1.4 local
 admission contract are still required.
 The retained public outboxes are never row-delta targets or retired here.
 
+The separately signed `PairedLocalTransitionAuthorization` is an offline
+admission-review contract only. It binds the persistent plan, disposable plan,
+signed disposable exact-23 reconciliation, reviewed transition hash, fresh
+persistent-local identity, target observation, and a 15-minute authorization
+window. The verifier rechecks the zero-delete same-capture proof and observed
+target values. It is not recognized by `authorize-delta`, `apply-delta-local`,
+metadata provisioning, or the atomic executor; those paths still reject a
+persistent schema-1.4 plan before any write. A later reviewed operator workflow
+must verify this contract before metadata, replay the encrypted captured rows,
+check row preimages inside each serializable transaction, preserve the old
+public outboxes, and reconcile all 23 checkpoints. No production transition
+authority is defined.
+
 ## Read-only target gap inspection
 
 After generating the current source schema plan, use
