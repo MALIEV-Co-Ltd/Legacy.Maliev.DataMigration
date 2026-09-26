@@ -60,7 +60,22 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now)).Code);
     }
 
-    private async Task<Fixture> CreateAsync(bool changedLocalOperations = false)
+    [Fact]
+    public async Task Captured_proof_requires_identical_full_source_evidence_not_only_matching_operations()
+    {
+        Fixture matching = await CreateAsync(captured: true);
+        DisposableDeltaProofVerifier.Verify(matching.ProofPlan, matching.ProofResult,
+            matching.LocalPlan, matching.Schema, matching.Trust, matching.Now);
+
+        Fixture drifted = await CreateAsync(captured: true, changedLocalEvidence: true);
+        DeltaExecutionException failure = Assert.Throws<DeltaExecutionException>(() =>
+            DisposableDeltaProofVerifier.Verify(drifted.ProofPlan, drifted.ProofResult,
+                drifted.LocalPlan, drifted.Schema, drifted.Trust, drifted.Now));
+        Assert.Equal("delta_disposable_proof_invalid", failure.Code);
+    }
+
+    private async Task<Fixture> CreateAsync(bool changedLocalOperations = false,
+        bool captured = false, bool changedLocalEvidence = false)
     {
         DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
         FreshSchemaPlan schema = new("2.0", now.AddMinutes(-10), new string('a', 40),
@@ -91,25 +106,52 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             bool changedOperations = false)
         {
             CanonicalDeltaOperation[] changed = [new(DeltaOperationKind.Insert, Hash('e'), Hash('f'), null)];
+            DeltaDatabasePlan[] databases = [.. DatabaseInventory.ActiveDatabases.Select(name => new DeltaDatabasePlan(name,
+                [new DeltaTablePlan("public.items", changedOperations && name == "ContactRequest" ? 1 : 0,
+                    0, 0, changedOperations && name == "ContactRequest" ? 0 : 1,
+                    DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(
+                        changedOperations && name == "ContactRequest" ? changed : []),
+                    changedOperations && name == "ContactRequest" ? changed : [])]))];
             var request = new DeltaPlanSigningRequest(schema.SourceCommitSha, now.AddMinutes(-5), Hash('3'),
                 SchemaPlanCanonicalizer.ComputeSha256(schema), Hash('4'), "local-aspire",
                 "legacy-postgres-main-local", "generation-1", Hash('5'), Hash('6'), Hash('7'),
-                [.. DatabaseInventory.ActiveDatabases.Select(name => new DeltaDatabasePlan(name,
-                    [new DeltaTablePlan("public.items", changedOperations && name == "ContactRequest" ? 1 : 0,
-                        0, 0, changedOperations && name == "ContactRequest" ? 0 : 1,
-                        DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(
-                            changedOperations && name == "ContactRequest" ? changed : []),
-                        changedOperations && name == "ContactRequest" ? changed : [])]))])
+                databases)
             {
                 TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
                     $"aspire://legacy-postgres-main-local/{id}", systemHash),
                 SourceMode = DeltaSourceMode.LiveReadOnly,
                 SourceObservationSha256 = Hash('8'),
                 SourceCaptureCompletedAtUtc = now.AddMinutes(-4),
+                SourceCaptureManifest = captured ? new(Hash('0'),
+                    [.. DatabaseInventory.ActiveDatabases.Select(name =>
+                    {
+                        DatabaseSchemaPlan databaseSchema = schema.Databases.Single(item => item.Database == name);
+                        DeltaTablePlan tablePlan = databases.Single(item => item.Database == name).Tables.Single();
+                        DatabaseReconciliationEvidence evidence = new Inspector().InspectAsync(databaseSchema,
+                            CancellationToken.None).GetAwaiter().GetResult();
+                        if (changedLocalEvidence && id == "persistent-main" && name == "ContactRequest")
+                        {
+                            evidence = evidence with
+                            {
+                                Tables = [evidence.Tables[0] with { ContentSha256 = Hash('e') }],
+                            };
+                        }
+                        return new DeltaDatabaseCaptureBinding(name, now.AddMinutes(-4).AddSeconds(-30),
+                            now.AddMinutes(-4).AddSeconds(-10), evidence,
+                            [new DeltaTableCaptureBinding("public.items", Guid.NewGuid(),
+                                CaptureDigest(id, name), Hash('a'), tablePlan.InsertCount + tablePlan.UpdateCount,
+                                tablePlan.OperationsSha256)]);
+                    })]) : null,
             };
             return DeltaSynchronizationPlanProducer.Produce(request,
                 id.StartsWith("disposable-", StringComparison.Ordinal) ? planSigner : localPlanSigner, created);
         }
+    }
+
+    private static string CaptureDigest(string id, string database)
+    {
+        return Convert.ToHexString(SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(id + ":" + database))).ToLowerInvariant();
     }
 
     private static string Hash(char value)

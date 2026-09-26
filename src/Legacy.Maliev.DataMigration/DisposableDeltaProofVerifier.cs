@@ -61,7 +61,8 @@ public static class DisposableDeltaProofVerifier
                     .Select(item => item.Table).Order(StringComparer.Ordinal)
                     .SequenceEqual(database.Tables.Select(item => $"{item.TargetSchema}.{item.TargetTable}")
                         .Order(StringComparer.Ordinal), StringComparer.Ordinal)) ||
-            !MatchingOperations(proofPlan, localPlan))
+            !MatchingOperations(proofPlan, localPlan) ||
+            !MatchingCapturedSourceEvidence(proofPlan, localPlan))
         {
             throw new DeltaExecutionException("delta_disposable_proof_invalid",
                 "A fresh signed exact-23 disposable reconciliation for the same runner and source is required.");
@@ -89,5 +90,20 @@ public static class DisposableDeltaProofVerifier
                 tables.First.UnchangedCount == tables.Second.UnchangedCount &&
                 string.Equals(tables.First.OperationsSha256, tables.Second.OperationsSha256,
                     StringComparison.Ordinal)));
+    }
+
+    private static bool MatchingCapturedSourceEvidence(
+        DeltaSynchronizationPlan proof, DeltaSynchronizationPlan local)
+    {
+        return proof.SchemaVersion == local.SchemaVersion &&
+            (proof.SchemaVersion != "1.3" ||
+                (proof.SourceCaptureManifest is { } proofCapture &&
+                 local.SourceCaptureManifest is { } localCapture &&
+                 proofCapture.Databases.Zip(localCapture.Databases)
+                     .All(pair => string.Equals(pair.First.Database, pair.Second.Database, StringComparison.Ordinal) &&
+                         string.Equals(
+                             DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(pair.First.SourceReconciliation),
+                             DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(pair.Second.SourceReconciliation),
+                             StringComparison.Ordinal))));
     }
 }
