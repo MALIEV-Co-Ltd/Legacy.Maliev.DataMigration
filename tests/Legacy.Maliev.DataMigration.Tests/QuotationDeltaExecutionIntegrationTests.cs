@@ -29,7 +29,7 @@ public sealed class QuotationDeltaExecutionIntegrationTests(PostgreSqlAdapterFix
     }
 
     [Fact]
-    public void Preflight_rejects_unbound_target_inventory_and_captured_replay()
+    public void Preflight_rejects_unbound_target_inventory_and_accepts_captured_mapping()
     {
         DateTimeOffset now = new(2026, 9, 26, 8, 0, 0, TimeSpan.Zero);
         DatabaseSchemaPlan schema = Schema();
@@ -42,9 +42,7 @@ public sealed class QuotationDeltaExecutionIntegrationTests(PostgreSqlAdapterFix
             binding.MapRow(binding.TargetSchema.Tables[1], OutcomeRow()), signer, now);
 
         QuotationDeltaExecutionPreflight.Validate(plan, all);
-        Assert.Equal("delta_execution_quotation_transformation_required",
-            Assert.Throws<DeltaExecutionException>(() => QuotationDeltaExecutionPreflight.Validate(
-                plan with { SchemaVersion = "1.3" }, all)).Code);
+        QuotationDeltaExecutionPreflight.Validate(plan with { SchemaVersion = "1.3" }, all);
         DeltaSynchronizationPlan wrongTable = plan with
         {
             Databases = plan.Databases.Select(database => database.Database == "Quotation"

@@ -106,7 +106,7 @@ public static class QuotationDeltaExecutionPreflight
         {
             return;
         }
-        if (plan.SchemaVersion != "1.2" ||
+        if (plan.SchemaVersion is not ("1.2" or "1.3") ||
             !plan.Databases.Select(database => database.Database).SequenceEqual(
                 DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
             !schemaPlan.Databases.Select(database => database.Database).SequenceEqual(
@@ -115,7 +115,7 @@ public static class QuotationDeltaExecutionPreflight
             !string.Equals(plan.SchemaPlanSha256, SchemaPlanCanonicalizer.ComputeSha256(schemaPlan), StringComparison.Ordinal))
         {
             throw new DeltaExecutionException("delta_execution_quotation_transformation_required",
-                "Captured or unbound Quotation disposition execution is not supported.");
+                "Unbound Quotation disposition execution is not supported.");
         }
         foreach (DatabaseSchemaPlan schema in schemaPlan.Databases)
         {

@@ -38,17 +38,13 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
                 "The live source, target authority, cutoff, or capture key roles are invalid.");
         }
         Exact23DeltaPlanCoordinator.ValidateInventory(request.SchemaPlan);
-        if (request.SchemaPlan.Databases.Any(ApprovedSourceDispositionManifest.RequiresQuotationExecution))
-        {
-            throw new DeltaPlanException("delta_capture_quotation_transformation_required",
-                "Captured Quotation outboxes require disposition-aware capture and replay before planning.");
-        }
         string schemaPlanSha256 = SchemaPlanCanonicalizer.ComputeSha256(request.SchemaPlan);
         var databasePlans = new List<DeltaDatabasePlan>(DatabaseInventory.ActiveDatabases.Count);
         var bindings = new List<DeltaDatabaseCaptureBinding>(DatabaseInventory.ActiveDatabases.Count);
         foreach (DatabaseSchemaPlan schema in request.SchemaPlan.Databases)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var mapping = new QuotationDeltaExecutionMapping(schema);
             DateTimeOffset startedAtUtc = timeProvider.GetUtcNow();
             var fullCaptures = new Dictionary<string, DeltaCapturedTableArtifact>(StringComparer.Ordinal);
             DatabaseReconciliationEvidence sourceEvidence;
@@ -72,9 +68,15 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
                     !DeltaSynchronizationPlanProducer.FixedHashEquals(
                         sourceEvidence.TargetSchemaSha256, schema.TargetSchemaSha256) ||
                     sourceEvidence.Tables.Count != fullCaptures.Count ||
-                    sourceEvidence.Tables.Any(table =>
-                        !fullCaptures.TryGetValue(table.Table, out DeltaCapturedTableArtifact? capture) ||
-                        capture.RowCount != table.RowCount))
+                    sourceEvidence.Tables.Any(evidence =>
+                    {
+                        TableCopyPlan? target = mapping.TargetSchema.Tables.SingleOrDefault(table =>
+                            Qualified(table) == evidence.Table);
+                        return target is null ||
+                            !fullCaptures.TryGetValue(Qualified(mapping.SourceTableFor(target)),
+                                out DeltaCapturedTableArtifact? capture) ||
+                            capture.RowCount != evidence.RowCount;
+                    }))
                 {
                     throw new DeltaPlanException("delta_capture_source_evidence_mismatch",
                         "The source snapshot reconciliation does not match its encrypted table captures.");
@@ -100,11 +102,21 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
             }
 
             DateTimeOffset completedAtUtc = timeProvider.GetUtcNow();
-            var tablePlans = new List<DeltaTablePlan>(schema.Tables.Count);
-            var tableBindings = new List<DeltaTableCaptureBinding>(schema.Tables.Count);
-            foreach (TableCopyPlan table in OrderedTables(schema))
+            var tablePlans = new List<DeltaTablePlan>(mapping.TargetSchema.Tables.Count);
+            var tableBindings = new List<DeltaTableCaptureBinding>(mapping.TargetSchema.Tables.Count);
+            foreach (TableCopyPlan table in OrderedTables(mapping.TargetSchema))
             {
-                DeltaCapturedTableArtifact full = fullCaptures[Qualified(table)];
+                TableCopyPlan sourceTable = mapping.SourceTableFor(table);
+                DeltaCapturedTableArtifact sourceFull = fullCaptures[Qualified(sourceTable)];
+                DeltaCapturedTableArtifact full = sourceTable == table ? sourceFull :
+                    await archive.CaptureAsync(schema.Database, table, schemaPlanSha256,
+                        MapRows(archive.ReplayAsync(sourceFull, schema.Database, sourceTable,
+                            schemaPlanSha256, captureKey, cancellationToken), mapping, table, cancellationToken),
+                        captureKey, cancellationToken).ConfigureAwait(false);
+                if (sourceFull != full)
+                {
+                    archive.DiscardRunOwned(sourceFull);
+                }
                 CanonicalTableDelta delta = await CanonicalAsyncDeltaPlanner.PlanAsync(table,
                     archive.ReplayAsync(full, schema.Database, table, schemaPlanSha256,
                         captureKey, cancellationToken),
@@ -151,6 +163,18 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
     private static IEnumerable<TableCopyPlan> OrderedTables(DatabaseSchemaPlan schema)
     {
         return schema.Tables.OrderBy(Qualified, StringComparer.Ordinal);
+    }
+
+    private static async IAsyncEnumerable<MigrationRow> MapRows(
+        IAsyncEnumerable<MigrationRow> rows,
+        QuotationDeltaExecutionMapping mapping,
+        TableCopyPlan target,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (MigrationRow row in rows.WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            yield return mapping.MapRow(target, row);
+        }
     }
 
     private static string Qualified(TableCopyPlan table)
