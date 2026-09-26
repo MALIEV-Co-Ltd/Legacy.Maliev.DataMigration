@@ -84,7 +84,10 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 {
                     ColumnTypes = new Dictionary<string, string> { ["id"] = "integer" },
                     PrimaryKey = new("pk_items", ["id"]),
-                }]))]);
+                }])
+            {
+                TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(name),
+            })]);
         using var planSigner = new P256MigrationEvidenceSigner("proof-plan", _planKey.ExportECPrivateKeyPem());
         using var localPlanSigner = new P256MigrationEvidenceSigner("local-plan", _localPlanKey.ExportECPrivateKeyPem());
         using var evidenceSigner = new P256MigrationEvidenceSigner("proof-evidence", _evidenceKey.ExportECPrivateKeyPem());
@@ -178,7 +181,10 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             var table = new TableReconciliationEvidence("public.items", 1, Hash('c'), Hash('d'),
                 new Dictionary<string, long>(), new Dictionary<string, long>());
             return Task.FromResult(new DatabaseReconciliationEvidence(schema.Database,
-                schema.SourceSchemaSha256, schema.TargetSchemaSha256, [table]));
+                schema.SourceSchemaSha256, schema.TargetSchemaSha256, [table])
+            {
+                TargetExtensionStateSha256 = schema.TargetExtensionProfile is null ? null : Hash('e'),
+            });
         }
     }
 

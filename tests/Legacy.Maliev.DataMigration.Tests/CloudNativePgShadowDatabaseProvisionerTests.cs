@@ -206,12 +206,18 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
     public async Task CancelledCreate_WaitsForPostAndPreservesLateExactResource()
     {
         await File.WriteAllTextAsync(_tokenFile, "test-token");
-        var handler = new ReconciledDatabaseHandler { PostCompletionDelay = TimeSpan.FromMilliseconds(150) };
+        var postStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePost = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new ReconciledDatabaseHandler { PostStarted = postStarted, ReleasePost = releasePost };
         using var provisioner = Create(handler);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(25));
+        using var cancellation = new CancellationTokenSource();
 
-        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => provisioner.ProvisionWithConnectionsDisabledAsync(
-            CreateShadow(), "legacy_migration_shadow_test", cancellation.Token));
+        Task create = provisioner.ProvisionWithConnectionsDisabledAsync(
+            CreateShadow(), "legacy_migration_shadow_test", cancellation.Token);
+        _ = await postStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cancellation.Cancel();
+        releasePost.SetResult(true);
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => create);
 
         Assert.True(handler.PostCompleted);
         Assert.False(handler.Deleted);
@@ -227,11 +233,22 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
     public async Task CancelledCreate_LaterPostFailureRetainsPrimaryAndSafeSecondary()
     {
         await File.WriteAllTextAsync(_tokenFile, "test-token");
-        var handler = new ReconciledDatabaseHandler { PostCompletionDelay = TimeSpan.FromMilliseconds(150), ThrowAfterPost = true };
+        var postStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePost = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new ReconciledDatabaseHandler
+        {
+            PostStarted = postStarted,
+            ReleasePost = releasePost,
+            ThrowAfterPost = true,
+        };
         using var provisioner = Create(handler);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(25));
-        OperationCanceledException primary = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => provisioner.ProvisionWithConnectionsDisabledAsync(
-            CreateShadow(), "legacy_migration_shadow_test", cancellation.Token));
+        using var cancellation = new CancellationTokenSource();
+        Task create = provisioner.ProvisionWithConnectionsDisabledAsync(
+            CreateShadow(), "legacy_migration_shadow_test", cancellation.Token);
+        _ = await postStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cancellation.Cancel();
+        releasePost.SetResult(true);
+        OperationCanceledException primary = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => create);
         Assert.Equal(nameof(HttpRequestException), primary.Data["shadow_post_completion_failure"]);
         Assert.True(handler.PostCompleted);
         Assert.False(handler.Deleted);
@@ -321,7 +338,9 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
 
         public int HiddenGetResponsesAfterPost { get; init; }
 
-        public TimeSpan PostCompletionDelay { get; init; }
+        public TaskCompletionSource<bool>? PostStarted { get; init; }
+
+        public TaskCompletionSource<bool>? ReleasePost { get; init; }
 
         public bool PostCompleted { get; private set; }
 
@@ -353,9 +372,10 @@ public sealed class CloudNativePgShadowDatabaseProvisionerTests : IDisposable
                 $"{request.Headers.Authorization?.Scheme} {request.Headers.Authorization?.Parameter}"));
             if (request.Method == HttpMethod.Post)
             {
-                if (PostCompletionDelay > TimeSpan.Zero)
+                _ = PostStarted?.TrySetResult(true);
+                if (ReleasePost is not null)
                 {
-                    await Task.Delay(PostCompletionDelay, cancellationToken);
+                    _ = await ReleasePost.Task.WaitAsync(cancellationToken);
                 }
 
                 _resource = JsonNode.Parse(await request.Content!.ReadAsStringAsync(cancellationToken))!.AsObject();

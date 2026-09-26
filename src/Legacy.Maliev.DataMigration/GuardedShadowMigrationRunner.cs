@@ -73,6 +73,8 @@ public sealed record DatabaseReconciliationEvidence(
 {
     public IReadOnlyDictionary<string, long> SequenceNextValues { get; init; } =
         new ReadOnlyDictionary<string, long>(new Dictionary<string, long>(StringComparer.Ordinal));
+
+    public string? TargetExtensionStateSha256 { get; init; }
 }
 
 public sealed record MigratedShadowDatabase(

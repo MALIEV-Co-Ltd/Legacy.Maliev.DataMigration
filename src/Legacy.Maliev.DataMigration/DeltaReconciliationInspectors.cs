@@ -131,11 +131,19 @@ public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconc
             }
             IReadOnlyDictionary<string, long> sequences = await inspector
                 .InspectSequenceNextValuesAsync(schema, cancellationToken).ConfigureAwait(false);
+            string? extensionStateSha256 = null;
+            if (ApprovedTargetExtensionManifest.TablesFor(schema).Count != 0)
+            {
+                ApprovedTargetExtensionState extensionState = await ApprovedTargetExtensionStateInspector
+                    .InspectAsync(connection, transaction, schema, cancellationToken).ConfigureAwait(false);
+                extensionStateSha256 = ApprovedTargetExtensionStateInspector.ComputeSha256(schema, extensionState);
+            }
             await inspector.RollbackAsync(cancellationToken).ConfigureAwait(false);
             return new(schema.Database, schema.SourceSchemaSha256, schemaSha256,
                 new ReadOnlyCollection<TableReconciliationEvidence>(tables))
             {
                 SequenceNextValues = sequences,
+                TargetExtensionStateSha256 = extensionStateSha256,
             };
         }
         catch

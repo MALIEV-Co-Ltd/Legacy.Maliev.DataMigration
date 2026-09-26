@@ -39,7 +39,9 @@ public sealed class Exact23DeltaReconciliationCoordinator(
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(schemaPlan);
         if (!plan.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
-            !schemaPlan.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
+            !schemaPlan.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
+            schemaPlan.Databases.Any(database => !string.Equals(database.TargetExtensionProfile,
+                ApprovedTargetExtensionManifest.ProfileForDatabase(database.Database), StringComparison.Ordinal)))
         {
             throw new DeltaExecutionException("delta_reconciliation_inventory_invalid",
                 "Post-delta reconciliation requires the exact ordered active database inventory.");
@@ -71,7 +73,7 @@ public sealed class Exact23DeltaReconciliationCoordinator(
         IReadOnlyList<DeltaDatabaseCheckpointEvidence> checkpointEvidence = await checkpoints
             .ReadAsync(plan, schemaPlan, cancellationToken).ConfigureAwait(false);
         ValidateCheckpoints(plan, reconciled, checkpointEvidence, reconciledAtUtc);
-        var unsigned = new Exact23DeltaReconciliationResult("1.1", plan.PlanId,
+        var unsigned = new Exact23DeltaReconciliationResult("1.2", plan.PlanId,
             DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan), plan.SourceCutoffUtc,
             reconciledAtUtc, new ReadOnlyCollection<DatabaseReconciliationEvidence>(reconciled), signer.KeyId, null)
         {
@@ -128,6 +130,7 @@ public sealed class Exact23DeltaReconciliationCoordinator(
             !string.Equals(observed.Database, schema.Database, StringComparison.Ordinal) ||
             !string.Equals(expected.SourceSchemaSha256, schema.SourceSchemaSha256, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(observed.SourceSchemaSha256, schema.SourceSchemaSha256, StringComparison.OrdinalIgnoreCase) ||
+            !ValidExtensionState(schema, observed.TargetExtensionStateSha256) ||
             !expected.Tables.Select(item => item.Table).Order(StringComparer.Ordinal).SequenceEqual(tables, StringComparer.Ordinal) ||
             !observed.Tables.Select(item => item.Table).Order(StringComparer.Ordinal).SequenceEqual(tables, StringComparer.Ordinal))
         {
@@ -144,9 +147,12 @@ public sealed class Exact23DeltaReconciliationCoordinator(
         ArgumentNullException.ThrowIfNull(trust);
         try
         {
-            bool valid = result.SchemaVersion == "1.1" && result.PlanId != Guid.Empty &&
+            bool valid = result.SchemaVersion == "1.2" && result.PlanId != Guid.Empty &&
                 result.SourceCutoffUtc.Offset == TimeSpan.Zero && result.ReconciledAtUtc.Offset == TimeSpan.Zero &&
                 result.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) &&
+                result.Databases.All(database => ApprovedTargetExtensionManifest.ProfileForDatabase(database.Database) is null
+                    ? database.TargetExtensionStateSha256 is null
+                    : database.TargetExtensionStateSha256 is { } digest && Fixed(digest, digest)) &&
                 result.Checkpoints.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) &&
                 result.Checkpoints.Count == DatabaseInventory.ActiveDatabases.Count &&
                 result.Checkpoints.All(checkpoint => checkpoint.PlanId == result.PlanId &&
@@ -171,6 +177,13 @@ public sealed class Exact23DeltaReconciliationCoordinator(
             System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
                 System.Text.Encoding.ASCII.GetBytes(left.ToLowerInvariant()),
                 System.Text.Encoding.ASCII.GetBytes(right.ToLowerInvariant()));
+    }
+
+    private static bool ValidExtensionState(DatabaseSchemaPlan schema, string? sha256)
+    {
+        return schema.TargetExtensionProfile is null
+            ? sha256 is null
+            : sha256 is not null && Fixed(sha256, sha256);
     }
 
     private static bool SameTimestamp(DateTimeOffset left, DateTimeOffset right)

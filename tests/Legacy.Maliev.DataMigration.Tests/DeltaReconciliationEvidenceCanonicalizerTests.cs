@@ -28,6 +28,25 @@ public sealed class DeltaReconciliationEvidenceCanonicalizerTests
             DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(changed));
     }
 
+    [Fact]
+    public void ComputeSha256_TargetExtensionState_ChangesCheckpointBinding()
+    {
+        DatabaseReconciliationEvidence baseline = Evidence(reverse: false);
+        DatabaseReconciliationEvidence withExtension = baseline with
+        {
+            TargetExtensionStateSha256 = new string('a', 64),
+        };
+        DatabaseReconciliationEvidence changedExtension = withExtension with
+        {
+            TargetExtensionStateSha256 = new string('b', 64),
+        };
+
+        Assert.NotEqual(DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(baseline),
+            DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(withExtension));
+        Assert.NotEqual(DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(withExtension),
+            DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(changedExtension));
+    }
+
     private static DatabaseReconciliationEvidence Evidence(bool reverse)
     {
         string[] names = reverse ? ["public.second", "public.first"] : ["public.first", "public.second"];
