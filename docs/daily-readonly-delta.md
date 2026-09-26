@@ -173,6 +173,12 @@ then reads table and column names in repeatable-read, read-only transactions.
 It reports missing and target-only objects across all 23 databases without
 altering either source or target. Target-only objects are reported, never
 implicitly deleted or ignored.
+For Quotation's reviewed outbox dispositions, expected names and columns are
+those of `legacy_compatibility.GoogleAnalyticsOutbox` and
+`public.QuotationAcceptedOutcome`, not the original source-shaped public
+outboxes. If those old public outboxes remain, the report lists them as
+`targetOnlyTables` and also labels them `retainedSourceTransitionTables`;
+this is a transition diagnostic, not an instruction to drop them.
 
 This names-only output is a repair-review aid, **not** signed reconciliation,
 an additive DDL authorization, or evidence that types, defaults, constraints,

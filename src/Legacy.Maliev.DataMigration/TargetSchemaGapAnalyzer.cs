@@ -14,7 +14,10 @@ public sealed record TargetSchemaGap(
     /// <summary>Approved PostgreSQL-only tables absent from the target.</summary>
     public IReadOnlyList<string> MissingApprovedTargetExtensions { get; init; } = [];
 
-    /// <summary>Whether a target differs from the current source-owned table inventory.</summary>
+    /// <summary>Retained source-shaped tables superseded by reviewed target dispositions; diagnostic only.</summary>
+    public IReadOnlyList<string> RetainedSourceTransitionTables { get; init; } = [];
+
+    /// <summary>Whether observed names differ from the reviewed target inventory.</summary>
     public bool HasDifferences => MissingTables.Count != 0 || MissingColumns.Count != 0 ||
         TargetOnlyTables.Count != 0 || TargetOnlyColumns.Count != 0 ||
         MissingApprovedTargetExtensions.Count != 0;
@@ -35,13 +38,14 @@ public static class TargetSchemaGapAnalyzer
         ArgumentNullException.ThrowIfNull(desired);
         ArgumentNullException.ThrowIfNull(observed);
 
-        Dictionary<string, TableCopyPlan> planned = desired.Tables.ToDictionary(
+        IReadOnlyList<TableCopyPlan> targetTables = ApprovedSourceDispositionManifest.TargetTablesFor(desired);
+        Dictionary<string, TableCopyPlan> planned = targetTables.ToDictionary(
             table => Qualified(table.TargetSchema, table.TargetTable), StringComparer.Ordinal);
         Dictionary<string, ObservedTargetTable> actual = observed.ToDictionary(
             table => Qualified(table.Schema, table.Table), StringComparer.Ordinal);
         HashSet<string> approved = [.. ApprovedTargetExtensionManifest.TablesFor(desired)
             .Select(table => Qualified(table.TargetSchema, table.TargetTable))];
-        if (planned.Count == 0 || desired.Tables.Any(table => table.OrderedColumns.Count == 0) ||
+        if (planned.Count == 0 || targetTables.Any(table => table.OrderedColumns.Count == 0) ||
             observed.Any(table => table.Columns.Distinct(StringComparer.Ordinal).Count() != table.Columns.Count))
         {
             throw new ArgumentException("Target schema inventory is incomplete or ambiguous.", nameof(observed));
@@ -52,6 +56,11 @@ public static class TargetSchemaGapAnalyzer
         string[] targetOnlyTables = [.. actual.Keys.Except(planned.Keys, StringComparer.Ordinal)
             .Except(approved, StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)];
+        string[] retainedSourceTransitionTables = desired.SourceDispositionProfile is null ? [] :
+            [.. desired.Tables.Select(table => Qualified(table.TargetSchema, table.TargetTable))
+                .Except(planned.Keys, StringComparer.Ordinal)
+                .Intersect(targetOnlyTables, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)];
         string[] approvedPresent = [.. approved.Intersect(actual.Keys, StringComparer.Ordinal).Order(StringComparer.Ordinal)];
         string[] approvedMissing = [.. approved.Except(actual.Keys, StringComparer.Ordinal).Order(StringComparer.Ordinal)];
         var missingColumns = new List<string>();
@@ -74,6 +83,7 @@ public static class TargetSchemaGapAnalyzer
         {
             ApprovedTargetExtensions = approvedPresent,
             MissingApprovedTargetExtensions = approvedMissing,
+            RetainedSourceTransitionTables = retainedSourceTransitionTables,
         };
     }
 
