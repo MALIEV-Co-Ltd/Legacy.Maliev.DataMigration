@@ -529,6 +529,29 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
             Assert.True(DeltaSynchronizationPlanVerifier.Verify(plan, trust, DateTimeOffset.UtcNow));
             Assert.All(plan.Databases.SelectMany(database => database.Tables), table => Assert.Equal(0, table.DeleteCount));
             QuotationDeltaExecutionPreflight.Validate(plan, schemaPlan);
+            DeltaSynchronizationPlan wrongUnsigned = plan with
+            {
+                QuotationTransitionSchemaSha256 = Hash('0'),
+                AttestationSignature = null,
+            };
+            DeltaSynchronizationPlan wrongSigned = wrongUnsigned with
+            {
+                AttestationSignature = Convert.ToBase64String(signer.Sign(
+                    DeltaSynchronizationPlanCanonicalizer.CreatePayload(wrongUnsigned))),
+            };
+            Assert.True(DeltaSynchronizationPlanVerifier.Verify(wrongSigned, trust, DateTimeOffset.UtcNow));
+            Assert.Equal("delta_quotation_transition_plan_invalid", Assert.Throws<DeltaPlanException>(() =>
+                QuotationDeltaExecutionPreflight.Validate(wrongSigned, schemaPlan)).Code);
+            Assert.Equal("delta_quotation_transition_plan_invalid", (await Assert.ThrowsAsync<DeltaPlanException>(() =>
+                new PostgreSqlDeltaMetadataProvisioner(new(admin, authority)).ProvisionAsync(wrongSigned,
+                    schemaPlan, CancellationToken.None))).Code);
+            await using (var db = new NpgsqlConnection(quotationConnection))
+            {
+                await db.OpenAsync();
+                await using var metadata = new NpgsqlCommand(
+                    "SELECT to_regclass('legacy_migration_internal.delta_journal')::text;", db);
+                Assert.Null(await metadata.ExecuteScalarAsync() as string);
+            }
             await new PostgreSqlDeltaMetadataProvisioner(new(admin, authority)).ProvisionAsync(plan,
                 schemaPlan, CancellationToken.None);
             DeltaExecutionAuthorization authorization = DeltaExecutionAuthorizationProducer.Produce(plan,
@@ -551,16 +574,9 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
                     new SignedCapturedSourceReconciliationInspector(plan, schemaPlan, trust, TimeProvider.System),
                     trust, TimeProvider.System);
             }
-            DeltaSynchronizationPlan tamperedHash = plan with
-            {
-                QuotationTransitionSchemaSha256 = Hash('0'),
-            };
-            Assert.False(DeltaSynchronizationPlanVerifier.Verify(tamperedHash, trust, DateTimeOffset.UtcNow));
-            Assert.Equal("delta_quotation_transition_plan_invalid", Assert.Throws<DeltaPlanException>(() =>
-                QuotationDeltaExecutionPreflight.Validate(tamperedHash, schemaPlan)).Code);
             Assert.Equal("delta_quotation_transition_plan_invalid", (await Assert.ThrowsAsync<DeltaPlanException>(() =>
                 new Exact23DeltaExecutionCoordinator(source, Executor, capturedSourceReplay: true)
-                    .ExecuteAsync(tamperedHash, schemaPlan, CancellationToken.None))).Code);
+                    .ExecuteAsync(wrongSigned, schemaPlan, CancellationToken.None))).Code);
             await using (var db = new NpgsqlConnection(quotationConnection))
             {
                 await db.OpenAsync();
