@@ -16,6 +16,15 @@ inventory, schema fingerprint, per-database capture time, and operation hash.
 There must be no plaintext spill of customer rows or large values. Unchanged
 rows need not be retained; deletions bind the observed target key and row hash.
 
+For schema-1.3 planning, each database's encrypted SQL Server capture is closed
+before comparing it to PostgreSQL. The target comparison then holds one
+read-only repeatable-read PostgreSQL snapshot across all tables in that
+database. Its MVCC view is established when the transaction opens, so a target
+write between table scans cannot mix target cutoffs in one signed operation set.
+The source and target cutoffs are distinct, not a distributed transaction or an
+atomic cross-database snapshot. A later target change still fails the guarded
+transactional apply/reconciliation; a later source change is deferred.
+
 Apply must independently verify the captured artifact and every staged row's
 key and canonical fingerprint against the signed plan. It must verify the
 current PostgreSQL target identity, schema, and pre-apply row fingerprints

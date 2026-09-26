@@ -231,6 +231,30 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
                 new AllowAuthorization(),
                 new SignedCapturedSourceReconciliationInspector(plan, schemaPlan, trust, new FixedTime()),
                 trust, new FixedTime());
+            await using (var connection = new NpgsqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using var insert = new NpgsqlCommand(
+                    "INSERT INTO public.\"QuotationAcceptedOutcome\" " +
+                    "(\"ID\", \"EventKey\", \"QuotationID\", \"AcceptedUtc\", " +
+                    "\"AcceptanceOrigin\", \"AcceptedUtcSubMicrosecondTicks\") " +
+                    "VALUES (99, 'synthetic-target-churn', 41, '2026-09-26 12:34:56', 'customer', 0);",
+                    connection);
+                _ = await insert.ExecuteNonQueryAsync();
+            }
+            _ = await Assert.ThrowsAnyAsync<Exception>(() => coordinator.ExecuteDatabaseAsync(
+                plan, sourceSchema, database, CancellationToken.None));
+            await using (var connection = new NpgsqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using var check = new NpgsqlCommand(
+                    "SELECT count(*) FROM legacy_migration_internal.delta_journal;", connection);
+                Assert.Equal(0L, Convert.ToInt64(await check.ExecuteScalarAsync(),
+                    System.Globalization.CultureInfo.InvariantCulture));
+                await using var delete = new NpgsqlCommand(
+                    "DELETE FROM public.\"QuotationAcceptedOutcome\" WHERE \"ID\" = 99;", connection);
+                _ = await delete.ExecuteNonQueryAsync();
+            }
             DeltaDatabaseExecutionResult applied = await coordinator.ExecuteDatabaseAsync(
                 plan, sourceSchema, database, CancellationToken.None);
             Assert.Equal(DeltaExecutionDisposition.Committed, applied.Disposition);
@@ -252,6 +276,91 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
             _ = await drop.ExecuteNonQueryAsync();
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task Target_database_snapshot_defers_concurrent_writes_across_table_reads()
+    {
+        const string database = "DeltaTargetSnapshot";
+        await using var administrative = new NpgsqlConnection(fixture.ConnectionString);
+        await administrative.OpenAsync();
+        await using (var create = new NpgsqlCommand("CREATE DATABASE \"DeltaTargetSnapshot\" TEMPLATE template0;",
+            administrative))
+        {
+            _ = await create.ExecuteNonQueryAsync();
+        }
+        try
+        {
+            string connectionString = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+            {
+                Database = database,
+                Pooling = false,
+            }.ConnectionString;
+            await using (var connection = new NpgsqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using var setup = new NpgsqlCommand(
+                    "CREATE TABLE public.\"items_a\" (\"id\" integer PRIMARY KEY); " +
+                    "CREATE TABLE public.\"items_b\" (\"id\" integer PRIMARY KEY); " +
+                    "INSERT INTO public.\"items_a\" VALUES (1); " +
+                    "INSERT INTO public.\"items_b\" VALUES (1);", connection);
+                _ = await setup.ExecuteNonQueryAsync();
+            }
+            var target = new PostgreSqlDeltaRowSource(new(fixture.ConnectionString));
+            TableCopyPlan first = SnapshotTable("items_a");
+            TableCopyPlan second = SnapshotTable("items_b");
+            await target.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
+            try
+            {
+                int[] before = await IdsAsync(target, database, first);
+                Assert.Equal([1], before);
+                await using (var writer = new NpgsqlConnection(connectionString))
+                {
+                    await writer.OpenAsync();
+                    await using var insert = new NpgsqlCommand("INSERT INTO public.\"items_b\" VALUES (2);", writer);
+                    _ = await insert.ExecuteNonQueryAsync();
+                }
+                int[] stable = await IdsAsync(target, database, second);
+                Assert.Equal([1], stable);
+                await target.CompleteDatabaseSnapshotAsync(database, CancellationToken.None);
+            }
+            catch
+            {
+                await target.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
+                throw;
+            }
+            int[] advanced = await IdsAsync(target, database, second);
+            Assert.Equal([1, 2], advanced);
+            await target.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
+            Assert.Equal("delta_target_snapshot_database_invalid", (await Assert.ThrowsAsync<DeltaPlanningException>(
+                async () => await IdsAsync(target, "other", second))).Code);
+            await target.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
+        }
+        finally
+        {
+            await using var drop = new NpgsqlCommand(
+                "DROP DATABASE IF EXISTS \"DeltaTargetSnapshot\" WITH (FORCE);", administrative);
+            _ = await drop.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static TableCopyPlan SnapshotTable(string name)
+    {
+        return new("dbo", name, "public", name, ["id"], ["id"])
+        {
+            ColumnTypes = new Dictionary<string, string> { ["id"] = "integer" },
+            PrimaryKey = new PrimaryKeyCopyPlan($"pk_{name}", ["id"]),
+        };
+    }
+
+    private static async Task<int[]> IdsAsync(PostgreSqlDeltaRowSource source, string database, TableCopyPlan table)
+    {
+        var ids = new List<int>();
+        await foreach (MigrationRow row in source.ReadOrderedAsync(database, table, CancellationToken.None))
+        {
+            ids.Add((int)row.Values["id"]!);
+        }
+        return [.. ids];
     }
 
     [Theory]
@@ -612,8 +721,31 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         }
     }
 
-    private sealed class EmptyTarget : IDeltaOrderedRowSource
+    private sealed class EmptyTarget : IDeltaDatabaseSnapshotRowSource
     {
+        private string? _database;
+
+        public Task BeginDatabaseSnapshotAsync(string database, CancellationToken cancellationToken)
+        {
+            Assert.Null(_database);
+            _database = database;
+            return Task.CompletedTask;
+        }
+
+        public Task CompleteDatabaseSnapshotAsync(string database, CancellationToken cancellationToken)
+        {
+            Assert.Equal(database, _database);
+            _database = null;
+            return Task.CompletedTask;
+        }
+
+        public Task RollbackDatabaseSnapshotAsync(string database, CancellationToken cancellationToken)
+        {
+            Assert.Equal(database, _database);
+            _database = null;
+            return Task.CompletedTask;
+        }
+
         public async IAsyncEnumerable<MigrationRow> ReadOrderedAsync(string database, TableCopyPlan table,
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
