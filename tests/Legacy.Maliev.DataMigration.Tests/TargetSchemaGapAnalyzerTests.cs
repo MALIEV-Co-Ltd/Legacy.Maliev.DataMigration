@@ -67,6 +67,81 @@ public sealed class TargetSchemaGapAnalyzerTests
         Assert.True(gap.HasDifferences);
     }
 
+    [Fact]
+    public void Observed_source_shaped_quotation_outboxes_are_transition_objects_not_reviewed_targets()
+    {
+        DatabaseSchemaPlan desired = ReviewedQuotationPlan();
+        TargetSchemaGap gap = TargetSchemaGapAnalyzer.Analyze(desired,
+        [
+            new("public", "GoogleAnalyticsOutbox", ["ID"]),
+            new("public", "QuotationOutcomeOutbox", ["ID"]),
+        ]);
+
+        Assert.Equal(["legacy_compatibility.GoogleAnalyticsOutbox", "public.QuotationAcceptedOutcome"],
+            gap.MissingTables);
+        Assert.Equal(["public.GoogleAnalyticsOutbox", "public.QuotationOutcomeOutbox"],
+            gap.TargetOnlyTables);
+        Assert.Equal(gap.TargetOnlyTables, gap.RetainedSourceTransitionTables);
+        Assert.True(gap.HasDifferences);
+    }
+
+    [Fact]
+    public void Reviewed_quotation_targets_present_do_not_report_source_shaped_outboxes_as_missing()
+    {
+        DatabaseSchemaPlan desired = ReviewedQuotationPlan();
+        ObservedTargetTable[] observed = [.. ApprovedSourceDispositionManifest.TargetTablesFor(desired)
+            .Select(table => new ObservedTargetTable(table.TargetSchema, table.TargetTable, table.OrderedColumns))];
+
+        TargetSchemaGap gap = TargetSchemaGapAnalyzer.Analyze(desired, observed);
+
+        Assert.False(gap.HasDifferences);
+        Assert.Empty(gap.RetainedSourceTransitionTables);
+    }
+
+    [Fact]
+    public void Ordinary_exact_23_names_still_match_and_approved_extensions_stay_separate()
+    {
+        foreach (string database in DatabaseInventory.ActiveDatabases)
+        {
+            var source = new TableCopyPlan("dbo", "Probe", "public", "Probe", ["ID"], ["ID"]);
+            var desired = new DatabaseSchemaPlan(database, "1.0", new string('a', 64),
+                new string('b', 64), [source])
+            {
+                TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(database),
+            };
+            ObservedTargetTable[] observed =
+            [
+                new("public", "Probe", ["ID"]),
+                .. ApprovedTargetExtensionManifest.TablesFor(desired)
+                    .Select(table => new ObservedTargetTable(table.TargetSchema, table.TargetTable,
+                        table.OrderedColumns)),
+            ];
+
+            TargetSchemaGap gap = TargetSchemaGapAnalyzer.Analyze(desired, observed);
+
+            Assert.False(gap.HasDifferences);
+            Assert.Empty(gap.RetainedSourceTransitionTables);
+            Assert.Equal(ApprovedTargetExtensionManifest.TablesFor(desired).Count,
+                gap.ApprovedTargetExtensions.Count);
+        }
+    }
+
+    private static DatabaseSchemaPlan ReviewedQuotationPlan()
+    {
+        TableCopyPlan[] tables =
+        [
+            ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.GoogleAnalyticsOutbox,
+                "PK_GoogleAnalyticsOutbox", "UX_GoogleAnalyticsOutbox_EventKey", uniqueIndex: true),
+            ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.QuotationOutcomeOutbox,
+                "PK_QuotationOutcomeOutbox", "UQ_QuotationOutcomeOutbox_EventKey", uniqueIndex: false),
+        ];
+        return new DatabaseSchemaPlan("Quotation", "1.0", new string('a', 64), new string('b', 64), tables)
+        {
+            SourceDispositionProfile = ApprovedSourceDispositionManifest.QuotationOutboxesV1,
+            SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase("Quotation", tables),
+        };
+    }
+
     private static DatabaseSchemaPlan Plan(params TableCopyPlan[] tables)
     {
         return new("Country", "1.0", new string('a', 64), new string('b', 64), tables);
