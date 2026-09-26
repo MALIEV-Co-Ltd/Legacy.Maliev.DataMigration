@@ -44,6 +44,68 @@ fixed missing set, authorization envelope digest, result, and completion time.
 The same command may return `already-current` on exact replay. A failed or
 uncertain run leaves its pending marker; do not infer success from it.
 
+## Isolated disposable Quotation copy
+
+`scripts/new-quotation-disposable-copy.ps1` creates a **new independent**
+PostgreSQL 18 cluster for a disposable transition proof; it never creates a
+shadow database inside persistent Aspire. It is an owner-operated, local-only
+tool, not a production backup or a migration authorization. Do not run it until
+the protected-main exact-head checks are green and the owner has reviewed the
+current persistent container, volume, system identifier, and Quotation state.
+
+Create a fresh owner-only, non-link run directory on a protected local disk.
+Keep the existing persistent connection in a separate owner-only connection
+file pointing to its loopback-published `postgres` database; do not place a
+password on a command line. Supply the full inspected persistent container ID,
+the independently observed SHA-256 of its `pg_control_system()` identifier, a
+digest-pinned `postgres:18@sha256:...` image, and a never-used
+`legacy-quotation-proof-<12-32 lowercase alphanumeric>` name. The helper
+requires the persistent `legacy-maliev-exact23-postgres-data` volume and exact
+loopback binding, performs a read-only serializable-deferrable logical dump of
+only `Quotation` into the protected run directory, then restores into its own
+labelled volume/container bound to `127.0.0.1` on a Docker-assigned port. It
+rejects equal source/copy PostgreSQL system identifiers. It writes a protected
+target connection file and PII-free identity/dump-hash receipt; the dump and
+connection file are sensitive and must remain owner-only. Errors are coded,
+without dumping SQL, connection strings, or PostgreSQL stderr to logs.
+
+```powershell
+& ./scripts/new-quotation-disposable-copy.ps1 -Action Create `
+  -RunDirectory <owner-only-new-run-directory> `
+  -Name legacy-quotation-proof-<unique-lowercase-id> `
+  -SourceContainerId <full-observed-persistent-container-id> `
+  -ExpectedSourceSystemIdentifierSha256 <independently-observed-sha256> `
+  -SourceConnectionFile <owner-only-persistent-loopback-connection-file> `
+  -ImageReference postgres:18@sha256:<reviewed-image-digest>
+```
+
+The helper does not create or sign a schema plan, authorization, or transition
+proof. Verify the copy's receipt and observed authority separately. Use the
+fresh exact-23 source schema plan and the protected `Quotation` bootstrap config
+below with `targetConnectionFile` set to this copy's generated connection file
+and `targetAuthority` set to the independently verified
+`aspire://legacy-postgres-main-local/disposable-*` authority and receipt system
+hash. Then run `authorize-quotation-target-bootstrap` with a distinct protected
+authorization signer, review its output, and run `apply-quotation-target-bootstrap`
+with a distinct protected evidence signer. Each step needs a new output path.
+The disposable command itself validates the complete pre-DDL source shape and
+will reject a copied EF-created outbox if it differs structurally from the signed
+source plan. A names-only inventory is not a fingerprint or DDL permission.
+
+After recording and reviewing the signed disposable proof, remove **only** the
+copy resources using the receipt-bound cleanup. Cleanup verifies the exact
+container ID, fresh nonce labels, volume mount, and exclusive volume use before Docker
+removal. It leaves the protected dump, receipt, and connection file for explicit
+owner retention/disposal policy; never point cleanup at persistent Aspire. A
+failed/incomplete create has no `copy-complete` receipt and must stop for manual
+ownership review, not automatic deletion or reuse.
+
+```powershell
+& ./scripts/new-quotation-disposable-copy.ps1 -Action Cleanup `
+  -RunDirectory <same-owner-only-run-directory> `
+  -Name legacy-quotation-proof-<same-id>
+```
+
 Persistent local Aspire (`aspire://legacy-postgres-main-local/persistent-*`)
 requires that protected proof and its independent public `disposableProofKey`
 on both authorization and apply. The proof must be no older than 12 hours,
