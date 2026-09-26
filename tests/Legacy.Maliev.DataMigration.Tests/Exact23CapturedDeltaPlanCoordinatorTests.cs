@@ -79,6 +79,125 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
     }
 
     [Fact]
+    public async Task Paired_targets_share_one_source_capture_despite_later_source_inserts()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-capture-tests", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
+        try
+        {
+            FreshSchemaPlan schema = Schema();
+            var source = new LiveSource();
+            var archive = new DeltaCapturedTableArchive(directory);
+            byte[] captureKey = RandomNumberGenerator.GetBytes(32);
+            using var disposableSigner = new P256MigrationEvidenceSigner("paired-disposable", _key.ExportECPrivateKeyPem());
+            using var persistentKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var persistentSigner = new P256MigrationEvidenceSigner("paired-persistent",
+                persistentKey.ExportECPrivateKeyPem());
+            var coordinator = new Exact23CapturedDeltaPlanCoordinator(source, new EmptyTarget(),
+                new SourceEvidence(), archive, disposableSigner, new FixedTime());
+
+            PairedCapturedDeltaPlans paired = await coordinator.ProducePairedAsync(Request(schema),
+                PersistentRequest(schema), new EmptyTarget(), persistentSigner, captureKey,
+                CancellationToken.None);
+
+            Assert.Equal(23, source.Begun.Count);
+            Assert.All(source.Completed, database => Assert.Equal(2, source.LiveRowCount(database)));
+            Assert.Equal("1.3", paired.Disposable.SchemaVersion);
+            Assert.Equal("1.3", paired.Persistent.SchemaVersion);
+            Assert.NotEqual(DeltaSynchronizationPlanCanonicalizer.ComputeSha256(paired.Disposable),
+                DeltaSynchronizationPlanCanonicalizer.ComputeSha256(paired.Persistent));
+            Assert.Same(paired.Disposable.SourceCaptureManifest, paired.Persistent.SourceCaptureManifest);
+            Assert.All(paired.Disposable.Databases.Zip(paired.Persistent.Databases), pair =>
+                Assert.Equal(pair.First.Tables[0].OperationsSha256, pair.Second.Tables[0].OperationsSha256));
+            var disposableTrust = new ReceiptAttestationTrustStore(
+                [new(disposableSigner.KeyId, disposableSigner.ExportSubjectPublicKeyInfo())]);
+            var persistentTrust = new ReceiptAttestationTrustStore(
+                [new(persistentSigner.KeyId, persistentSigner.ExportSubjectPublicKeyInfo())]);
+            Assert.True(DeltaSynchronizationPlanVerifier.Verify(paired.Disposable, disposableTrust, Now()));
+            Assert.True(DeltaSynchronizationPlanVerifier.Verify(paired.Persistent, persistentTrust, Now()));
+            DeltaPlanException wrongKey = Assert.Throws<DeltaPlanException>(() =>
+                DeltaCapturedTableRowSource.FromSignedPlan(archive, paired.Persistent,
+                    persistentTrust, Now(), RandomNumberGenerator.GetBytes(32)));
+            Assert.Equal("delta_capture_key_mismatch", wrongKey.Code);
+            using DeltaCapturedTableRowSource replay = DeltaCapturedTableRowSource.FromSignedPlan(
+                archive, paired.Persistent, persistentTrust, Now(), captureKey);
+            var rows = new List<MigrationRow>();
+            await foreach (MigrationRow row in replay.ReadOrderedAsync("Quotation", Table(), CancellationToken.None))
+            {
+                rows.Add(row);
+            }
+            Assert.Equal(1, Assert.Single(rows).Values["id"]);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Paired_planning_rejects_target_drift_without_issuing_either_plan()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-drift-tests", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
+        try
+        {
+            FreshSchemaPlan schema = Schema();
+            using var disposableSigner = new P256MigrationEvidenceSigner("paired-drift-disposable", _key.ExportECPrivateKeyPem());
+            using var persistentKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var persistentSigner = new P256MigrationEvidenceSigner("paired-drift-persistent",
+                persistentKey.ExportECPrivateKeyPem());
+            var source = new LiveSource();
+            var coordinator = new Exact23CapturedDeltaPlanCoordinator(source, new EmptyTarget(),
+                new SourceEvidence(), new DeltaCapturedTableArchive(directory), disposableSigner, new FixedTime());
+
+            DeltaPlanException failure = await Assert.ThrowsAsync<DeltaPlanException>(() =>
+                coordinator.ProducePairedAsync(Request(schema), PersistentRequest(schema),
+                    new EmptyTarget(containsSourceRow: true), persistentSigner,
+                    RandomNumberGenerator.GetBytes(32), CancellationToken.None));
+
+            Assert.Equal("delta_capture_paired_operations_mismatch", failure.Code);
+            _ = Assert.Single(source.Begun);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Paired_planning_rejects_a_reused_target_identity_before_source_reads()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-identity-tests", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
+        try
+        {
+            FreshSchemaPlan schema = Schema();
+            var source = new LiveSource();
+            using var disposableSigner = new P256MigrationEvidenceSigner("paired-identity-disposable", _key.ExportECPrivateKeyPem());
+            using var persistentKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var persistentSigner = new P256MigrationEvidenceSigner("paired-identity-persistent",
+                persistentKey.ExportECPrivateKeyPem());
+            var coordinator = new Exact23CapturedDeltaPlanCoordinator(source, new EmptyTarget(),
+                new SourceEvidence(), new DeltaCapturedTableArchive(directory), disposableSigner, new FixedTime());
+            Exact23DeltaPlanRequest reused = PersistentRequest(schema) with
+            {
+                TargetAuthority = Request(schema).TargetAuthority,
+            };
+
+            DeltaPlanException failure = await Assert.ThrowsAsync<DeltaPlanException>(() =>
+                coordinator.ProducePairedAsync(Request(schema), reused, new EmptyTarget(),
+                    persistentSigner, RandomNumberGenerator.GetBytes(32), CancellationToken.None));
+
+            Assert.Equal("delta_capture_paired_preflight_invalid", failure.Code);
+            Assert.Empty(source.Begun);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Quotation_outboxes_capture_reviewed_targets_and_replay_exact_timestamp_ticks()
     {
         string directory = Path.Combine(Path.GetTempPath(), "legacy-quotation-capture-tests", Guid.NewGuid().ToString("N"));
@@ -592,6 +711,17 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         };
     }
 
+    private static Exact23DeltaPlanRequest PersistentRequest(FreshSchemaPlan schema)
+    {
+        return Request(schema) with
+        {
+            TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
+                "aspire://legacy-postgres-main-local/persistent-capture-test", Hash('8')),
+            TargetObservationSha256 = Hash('7'),
+            TargetGeneration = "generation-2",
+        };
+    }
+
     private static FreshSchemaPlan Schema()
     {
         return new("2.0", Now(), new string('1', 40), [.. DatabaseInventory.ActiveDatabases.Select(database =>
@@ -721,7 +851,7 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         }
     }
 
-    private sealed class EmptyTarget : IDeltaDatabaseSnapshotRowSource
+    private sealed class EmptyTarget(bool containsSourceRow = false) : IDeltaDatabaseSnapshotRowSource
     {
         private string? _database;
 
@@ -750,7 +880,10 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             await Task.Yield();
-            yield break;
+            if (containsSourceRow)
+            {
+                yield return Row(1);
+            }
         }
     }
 

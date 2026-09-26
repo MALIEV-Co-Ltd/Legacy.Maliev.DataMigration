@@ -58,6 +58,22 @@ It is not proof that the deterministic capture design has been implemented.
 
 ## Capture codec status
 
+The library's `Exact23CapturedDeltaPlanCoordinator.ProducePairedAsync` can now
+plan a disposable local target and a persistent local target from one retained,
+owner-protected full per-database source capture. It completes the SQL Server
+snapshot before either PostgreSQL comparison, gives each target its own
+database snapshot, and rejects any difference in the table operation counts,
+hashes, or signed row operations. Only after both comparisons agree does it
+select changed source rows into one encrypted capture manifest shared by the
+two separately signed, target-bound plans. Later SQL Server rows are deferred;
+different target rows stop paired planning without issuing either plan. The
+API requires distinct local target system identities and plan-signing keys.
+
+This is a planner/library contract, not an operator execution path. The daily
+helper and console still reject schema-1.3 persistent or production apply.
+Disposable live-write integration, rollback/replay proof, and a protected
+archive handoff remain prerequisites to any persistent execution approval.
+
 `DeltaCapturedRowCodec` provides a bounded encrypted row stream for the
 capture/replay path. It preserves SQL scalar types and single-pass large values,
 binds the table identity in the authenticated archive context, and rejects
