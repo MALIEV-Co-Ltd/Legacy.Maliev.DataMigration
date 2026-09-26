@@ -55,12 +55,7 @@ public static class DisposableDeltaProofVerifier
             proofResult.Databases.Count != DatabaseInventory.ActiveDatabases.Count ||
             !schema.Databases.Select(item => item.Database)
                 .SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
-            schema.Databases.Any(database =>
-                !MatchesTables(database, proofPlan) || !MatchesTables(database, localPlan) ||
-                !proofResult.Databases.Single(item => item.Database == database.Database).Tables
-                    .Select(item => item.Table).Order(StringComparer.Ordinal)
-                    .SequenceEqual(database.Tables.Select(item => $"{item.TargetSchema}.{item.TargetTable}")
-                        .Order(StringComparer.Ordinal), StringComparer.Ordinal)) ||
+            schema.Databases.Any(database => !MatchesTables(database, proofPlan, localPlan, proofResult)) ||
             !MatchingOperations(proofPlan, localPlan) ||
             !MatchingCapturedSourceEvidence(proofPlan, localPlan))
         {
@@ -69,12 +64,17 @@ public static class DisposableDeltaProofVerifier
         }
     }
 
-    private static bool MatchesTables(DatabaseSchemaPlan schema, DeltaSynchronizationPlan plan)
+    private static bool MatchesTables(DatabaseSchemaPlan schema, DeltaSynchronizationPlan proofPlan,
+        DeltaSynchronizationPlan localPlan, Exact23DeltaReconciliationResult proofResult)
     {
-        return plan.Databases.Single(item => item.Database == schema.Database).Tables
-            .Select(item => item.Table).Order(StringComparer.Ordinal)
-            .SequenceEqual(schema.Tables.Select(item => $"{item.TargetSchema}.{item.TargetTable}")
-                .Order(StringComparer.Ordinal), StringComparer.Ordinal);
+        string[] expected = [.. new QuotationDeltaExecutionMapping(schema).TargetSchema.Tables
+            .Select(item => $"{item.TargetSchema}.{item.TargetTable}").Order(StringComparer.Ordinal)];
+        return proofPlan.Databases.Single(item => item.Database == schema.Database).Tables
+                .Select(item => item.Table).Order(StringComparer.Ordinal).SequenceEqual(expected, StringComparer.Ordinal) &&
+            localPlan.Databases.Single(item => item.Database == schema.Database).Tables
+                .Select(item => item.Table).Order(StringComparer.Ordinal).SequenceEqual(expected, StringComparer.Ordinal) &&
+            proofResult.Databases.Single(item => item.Database == schema.Database).Tables
+                .Select(item => item.Table).Order(StringComparer.Ordinal).SequenceEqual(expected, StringComparer.Ordinal);
     }
 
     private static bool MatchingOperations(DeltaSynchronizationPlan proof, DeltaSynchronizationPlan local)

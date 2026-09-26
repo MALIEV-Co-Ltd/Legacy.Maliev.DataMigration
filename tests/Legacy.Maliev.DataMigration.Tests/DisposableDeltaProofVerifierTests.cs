@@ -74,19 +74,66 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         Assert.Equal("delta_disposable_proof_invalid", failure.Code);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Reviewed_quotation_disposition_admits_signed_target_inventory(bool captured)
+    {
+        Fixture fixture = await CreateAsync(captured: captured, quotationDisposition: true);
+        Assert.Equal(captured ? "1.3" : "1.2", fixture.ProofPlan.SchemaVersion);
+        Assert.Equal(["legacy_compatibility.GoogleAnalyticsOutbox", "public.QuotationAcceptedOutcome"],
+            fixture.ProofPlan.Databases.Single(database => database.Database == "Quotation")
+                .Tables.Select(table => table.Table));
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(fixture.ProofPlan, fixture.Trust, fixture.Now));
+        Assert.True(Exact23DeltaReconciliationCoordinator.Verify(fixture.ProofResult, fixture.Trust));
+
+        DisposableDeltaProofVerifier.Verify(fixture.ProofPlan, fixture.ProofResult,
+            fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now);
+    }
+
+    [Fact]
+    public async Task Reviewed_quotation_disposition_rejects_signed_unexpected_local_target()
+    {
+        Fixture fixture = await CreateAsync(quotationDisposition: true, changedLocalTableInventory: true);
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(fixture.LocalPlan, fixture.Trust, fixture.Now));
+
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            DisposableDeltaProofVerifier.Verify(fixture.ProofPlan, fixture.ProofResult,
+                fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now)).Code);
+    }
+
     private async Task<Fixture> CreateAsync(bool changedLocalOperations = false,
-        bool captured = false, bool changedLocalEvidence = false)
+        bool captured = false, bool changedLocalEvidence = false, bool quotationDisposition = false,
+        bool changedLocalTableInventory = false)
     {
         DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
+        TableCopyPlan[] quotationOutboxes =
+        [
+            ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.GoogleAnalyticsOutbox,
+                "PK_GoogleAnalyticsOutbox", "UX_GoogleAnalyticsOutbox_EventKey", uniqueIndex: true),
+            ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.QuotationOutcomeOutbox,
+                "PK_QuotationOutcomeOutbox", "UQ_QuotationOutcomeOutbox_EventKey", uniqueIndex: false),
+        ];
         FreshSchemaPlan schema = new("2.0", now.AddMinutes(-10), new string('a', 40),
-            [.. DatabaseInventory.ActiveDatabases.Select(name => new DatabaseSchemaPlan(name, "1.0",
-                Hash('a'), Hash('b'), [new TableCopyPlan("dbo", "items", "public", "items", ["id"], ["id"])
+            [.. DatabaseInventory.ActiveDatabases.Select(name =>
+            {
+                bool disposed = quotationDisposition && name == "Quotation";
+                var database = new DatabaseSchemaPlan(name, "1.0",
+                Hash('a'), Hash('b'), disposed ? quotationOutboxes : [new TableCopyPlan("dbo", "items", "public", "items", ["id"], ["id"])
                 {
                     ColumnTypes = new Dictionary<string, string> { ["id"] = "integer" },
                     PrimaryKey = new("pk_items", ["id"]),
                 }])
-            {
-                TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(name),
+                {
+                    TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(name),
+                    SourceDispositionProfile = disposed ? ApprovedSourceDispositionManifest.QuotationOutboxesV1 : null,
+                    SourceTableDispositions = disposed
+                        ? ApprovedSourceDispositionManifest.DispositionsForDatabase(name, quotationOutboxes) : [],
+                };
+                return disposed ? database with
+                {
+                    TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(database),
+                } : database;
             })]);
         using var planSigner = new P256MigrationEvidenceSigner("proof-plan", _planKey.ExportECPrivateKeyPem());
         using var localPlanSigner = new P256MigrationEvidenceSigner("local-plan", _localPlanKey.ExportECPrivateKeyPem());
@@ -97,7 +144,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 new(evidenceSigner.KeyId, evidenceSigner.ExportSubjectPublicKeyInfo())]);
         DeltaSynchronizationPlan proofPlan = MakePlan("disposable-proof", Hash('1'), now.AddMinutes(-3));
         DeltaSynchronizationPlan localPlan = MakePlan("persistent-main", Hash('2'), now.AddMinutes(-1),
-            changedLocalOperations);
+            changedLocalOperations, changedLocalTableInventory);
         var inspector = new Inspector();
         var coordinator = new Exact23DeltaReconciliationCoordinator(inspector, inspector,
             new Checkpoints(proofPlan, schema), new FixedTime(now.AddMinutes(-2)), evidenceSigner);
@@ -106,15 +153,19 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         return new(proofPlan, result, localPlan, schema, trust, now);
 
         DeltaSynchronizationPlan MakePlan(string id, string systemHash, DateTimeOffset created,
-            bool changedOperations = false)
+            bool changedOperations = false, bool changedTableInventory = false)
         {
             CanonicalDeltaOperation[] changed = [new(DeltaOperationKind.Insert, Hash('e'), Hash('f'), null)];
             DeltaDatabasePlan[] databases = [.. DatabaseInventory.ActiveDatabases.Select(name => new DeltaDatabasePlan(name,
-                [new DeltaTablePlan("public.items", changedOperations && name == "ContactRequest" ? 1 : 0,
-                    0, 0, changedOperations && name == "ContactRequest" ? 0 : 1,
-                    DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(
-                        changedOperations && name == "ContactRequest" ? changed : []),
-                    changedOperations && name == "ContactRequest" ? changed : [])]))];
+                [.. new QuotationDeltaExecutionMapping(schema.Databases.Single(item => item.Database == name))
+                    .TargetSchema.Tables.Select(table => new DeltaTablePlan(
+                        changedTableInventory && name == "Quotation" && table.TargetTable == "QuotationAcceptedOutcome"
+                            ? "public.QuotationOutcomeOutbox" : $"{table.TargetSchema}.{table.TargetTable}",
+                        changedOperations && name == "ContactRequest" ? 1 : 0,
+                        0, 0, changedOperations && name == "ContactRequest" ? 0 : 1,
+                        DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(
+                            changedOperations && name == "ContactRequest" ? changed : []),
+                        changedOperations && name == "ContactRequest" ? changed : []))]))];
             var request = new DeltaPlanSigningRequest(schema.SourceCommitSha, now.AddMinutes(-5), Hash('3'),
                 SchemaPlanCanonicalizer.ComputeSha256(schema), Hash('4'), "local-aspire",
                 "legacy-postgres-main-local", "generation-1", Hash('5'), Hash('6'), Hash('7'),
@@ -129,7 +180,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                     [.. DatabaseInventory.ActiveDatabases.Select(name =>
                     {
                         DatabaseSchemaPlan databaseSchema = schema.Databases.Single(item => item.Database == name);
-                        DeltaTablePlan tablePlan = databases.Single(item => item.Database == name).Tables.Single();
+                        DeltaDatabasePlan databasePlan = databases.Single(item => item.Database == name);
                         DatabaseReconciliationEvidence evidence = new Inspector().InspectAsync(databaseSchema,
                             CancellationToken.None).GetAwaiter().GetResult();
                         if (changedLocalEvidence && id == "persistent-main" && name == "ContactRequest")
@@ -141,9 +192,9 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                         }
                         return new DeltaDatabaseCaptureBinding(name, now.AddMinutes(-4).AddSeconds(-30),
                             now.AddMinutes(-4).AddSeconds(-10), evidence,
-                            [new DeltaTableCaptureBinding("public.items", Guid.NewGuid(),
-                                CaptureDigest(id, name), Hash('a'), tablePlan.InsertCount + tablePlan.UpdateCount,
-                                tablePlan.OperationsSha256)]);
+                            [.. databasePlan.Tables.Select(tablePlan => new DeltaTableCaptureBinding(tablePlan.Table,
+                                Guid.NewGuid(), CaptureDigest(id, name + tablePlan.Table), Hash('a'),
+                                tablePlan.InsertCount + tablePlan.UpdateCount, tablePlan.OperationsSha256))]);
                     })]) : null,
             };
             return DeltaSynchronizationPlanProducer.Produce(request,
@@ -178,10 +229,12 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         public Task<DatabaseReconciliationEvidence> InspectAsync(DatabaseSchemaPlan schema,
             CancellationToken cancellationToken)
         {
-            var table = new TableReconciliationEvidence("public.items", 1, Hash('c'), Hash('d'),
-                new Dictionary<string, long>(), new Dictionary<string, long>());
+            TableReconciliationEvidence[] tables = [.. new QuotationDeltaExecutionMapping(schema).TargetSchema.Tables
+                .Select(table => new TableReconciliationEvidence($"{table.TargetSchema}.{table.TargetTable}",
+                    1, Hash('c'), Hash('d'), new Dictionary<string, long>(),
+                    new Dictionary<string, long>()))];
             return Task.FromResult(new DatabaseReconciliationEvidence(schema.Database,
-                schema.SourceSchemaSha256, schema.TargetSchemaSha256, [table])
+                schema.SourceSchemaSha256, schema.TargetSchemaSha256, tables)
             {
                 TargetExtensionStateSha256 = schema.TargetExtensionProfile is null ? null : Hash('e'),
             });
