@@ -8,6 +8,24 @@ internal static class ApprovedSourceDispositionManifest
 {
     internal const string QuotationOutboxesV1 = "quotation-outboxes-v1";
 
+    internal static IReadOnlyList<SourceTableDisposition> DispositionsForDatabase(
+        string database, IReadOnlyList<TableCopyPlan> tables)
+    {
+        if (ProfileForDatabase(database, tables) is null)
+        {
+            return [];
+        }
+
+        string contractSha = CurrentQuotationSourceContract.SourceContractSha256;
+        return
+        [
+            new("dbo", "GoogleAnalyticsOutbox", "read-only-archive", "legacy_compatibility",
+                "GoogleAnalyticsOutbox", contractSha, "1.0"),
+            new("dbo", "QuotationOutcomeOutbox", "canonical-adoption", "public",
+                "QuotationAcceptedOutcome", contractSha, "1.0"),
+        ];
+    }
+
     internal static string? ProfileForDatabase(string database, IReadOnlyList<TableCopyPlan> tables)
     {
         ArgumentNullException.ThrowIfNull(tables);
@@ -31,7 +49,8 @@ internal static class ApprovedSourceDispositionManifest
         ArgumentNullException.ThrowIfNull(plan);
         if (plan.SourceDispositionProfile is null)
         {
-            if (string.Equals(plan.Database, "Quotation", StringComparison.Ordinal) && plan.Tables.Any(IsOutbox))
+            if (plan.SourceTableDispositions.Count != 0 ||
+                (string.Equals(plan.Database, "Quotation", StringComparison.Ordinal) && plan.Tables.Any(IsOutbox)))
             {
                 throw Invalid();
             }
@@ -46,6 +65,11 @@ internal static class ApprovedSourceDispositionManifest
         }
 
         ValidateQuotationOutboxes(plan.Tables);
+        if (!plan.SourceTableDispositions.SequenceEqual(
+            DispositionsForDatabase(plan.Database, plan.Tables)))
+        {
+            throw Invalid();
+        }
     }
 
     private static bool IsOutbox(TableCopyPlan table)

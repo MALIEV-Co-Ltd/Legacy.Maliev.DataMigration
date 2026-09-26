@@ -120,7 +120,19 @@ public sealed record DatabaseSchemaPlan(
 
     /// <summary>Reviewed source tables requiring a non-default migration disposition.</summary>
     public string? SourceDispositionProfile { get; init; }
+
+    /// <summary>Explicit source-to-target bindings for reviewed non-default table dispositions.</summary>
+    public IReadOnlyList<SourceTableDisposition> SourceTableDispositions { get; init; } = [];
 }
+
+public sealed record SourceTableDisposition(
+    string SourceSchema,
+    string SourceTable,
+    string Disposition,
+    string TargetSchema,
+    string TargetTable,
+    string SourceContractSha256,
+    string TargetSchemaVersion);
 
 public sealed record FreshSchemaPlan(
     string SchemaVersion,
@@ -483,6 +495,21 @@ public static partial class SchemaPlanCanonicalizer
                 {
                     writer.Write((byte)'D');
                     WriteString(writer, database.SourceDispositionProfile);
+                }
+                if (database.SourceTableDispositions.Count != 0)
+                {
+                    writer.Write((byte)'M');
+                    writer.Write(database.SourceTableDispositions.Count);
+                    foreach (SourceTableDisposition disposition in database.SourceTableDispositions)
+                    {
+                        WriteString(writer, disposition.SourceSchema);
+                        WriteString(writer, disposition.SourceTable);
+                        WriteString(writer, disposition.Disposition);
+                        WriteString(writer, disposition.TargetSchema);
+                        WriteString(writer, disposition.TargetTable);
+                        WriteString(writer, disposition.SourceContractSha256);
+                        WriteString(writer, disposition.TargetSchemaVersion);
+                    }
                 }
             }
         }
