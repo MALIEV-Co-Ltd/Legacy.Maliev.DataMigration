@@ -38,6 +38,14 @@ original migrated dataset, not a fresh daily backup. Live plans use schema
 the source capture start and completion times. Each database uses a separate
 SQL Server snapshot transaction; there is no atomic cross-database cutoff.
 Source or target drift from the signed plan fails closed.
+The optional `useCapturedSource=true` mode is plan-only. It creates a fresh
+owner-protected encrypted capture in the run directory and signs schema `1.3`
+with per-database capture windows and selected changed-row bindings. Captured
+rows are taken inside each database snapshot, so later source inserts cannot
+silently change the planned row stream. The daily helper creates a new 32-byte
+capture key and run-owned files; do not supply paths from an earlier run.
+`-Execute` rejects this mode until a separate guarded executor and disposable
+proof are validated. A signed captured plan alone is not data parity.
 During apply, databases with more signed row operations run first; the signed
 result is still published in the canonical exact-23 order. This narrows the
 time between capture and apply for recently active databases, but it does not

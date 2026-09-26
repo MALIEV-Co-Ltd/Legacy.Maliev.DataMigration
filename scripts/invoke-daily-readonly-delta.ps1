@@ -105,12 +105,39 @@ if ($Execute -and $targetKind -eq 'production-cloudnativepg') {
 if ($Execute -and ($config.delta.allowAuthorizationSigning -ne $true -or $config.delta.allowExecution -ne $true)) {
     Fail 'daily_delta_local_execution_not_authorized'
 }
+if ($Execute -and $config.delta.useCapturedSource -eq $true) {
+    Fail 'daily_delta_captured_execution_not_proven'
+}
 $runId = [Guid]::NewGuid().ToString('N')
 $runDirectory = Join-Path $root "daily-delta-$runId"
 $null = New-Item -ItemType Directory -Path $runDirectory -ErrorAction Stop
 $acl = Get-Acl -LiteralPath $root
 Set-Acl -LiteralPath $runDirectory -AclObject $acl
 Assert-OwnerOnlyDirectory $runDirectory
+
+if ($config.delta.useCapturedSource -eq $true) {
+    if (-not [string]::IsNullOrWhiteSpace($config.delta.captureDirectory) -or
+        -not [string]::IsNullOrWhiteSpace($config.delta.captureKeyFile)) {
+        Fail 'daily_delta_stale_capture_material_invalid'
+    }
+    $captureDirectory = Join-Path $runDirectory 'captures'
+    $null = New-Item -ItemType Directory -Path $captureDirectory -ErrorAction Stop
+    Set-Acl -LiteralPath $captureDirectory -AclObject $acl
+    Assert-OwnerOnlyDirectory $captureDirectory
+    $captureKeyFile = Join-Path $runDirectory 'capture-key.bin'
+    $captureKey = [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+    try {
+        $keyStream = [IO.FileStream]::new($captureKeyFile, [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $keyStream.Write($captureKey); $keyStream.Flush($true) } finally { $keyStream.Dispose() }
+    }
+    finally {
+        [Security.Cryptography.CryptographicOperations]::ZeroMemory($captureKey)
+    }
+    Assert-OwnerOnlyFile $captureKeyFile
+    $config.delta.captureDirectory = $captureDirectory
+    $config.delta.captureKeyFile = $captureKeyFile
+}
 
 $consoleProject = Join-Path $repository 'src\Legacy.Maliev.DataMigration.Console\Legacy.Maliev.DataMigration.Console.csproj'
 & dotnet build $consoleProject -c Release -warnaserror
@@ -134,7 +161,8 @@ function New-PhaseConfig([string]$Phase) {
 New-PhaseConfig 'plan'
 Invoke-GuardedCommand 'plan-delta' (Join-Path $runDirectory 'plan-config.json')
 $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
-if ($plan.schemaVersion -cne '1.2' -or $plan.sourceMode -cne 'live-readonly-comparison' -or
+$expectedVersion = if ($config.delta.useCapturedSource -eq $true) { '1.3' } else { '1.2' }
+if ($plan.schemaVersion -cne $expectedVersion -or $plan.sourceMode -cne 'live-readonly-comparison' -or
     $plan.sourceObservationSha256 -notmatch '^[0-9a-f]{64}$') {
     Fail 'daily_delta_live_plan_invalid'
 }

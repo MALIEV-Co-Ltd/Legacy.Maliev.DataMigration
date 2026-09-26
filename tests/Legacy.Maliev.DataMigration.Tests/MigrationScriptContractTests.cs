@@ -47,6 +47,18 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("daily_delta_disposable_proof_required", script, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Daily_captured_source_is_plan_only_with_fresh_protected_material()
+    {
+        string script = File.ReadAllText(SourcePath("invoke-daily-readonly-delta.ps1"));
+        Assert.Contains("daily_delta_captured_execution_not_proven", script, StringComparison.Ordinal);
+        Assert.Contains("daily_delta_stale_capture_material_invalid", script, StringComparison.Ordinal);
+        Assert.Contains("[IO.FileMode]::CreateNew", script, StringComparison.Ordinal);
+        Assert.Contains("RandomNumberGenerator]::GetBytes(32)", script, StringComparison.Ordinal);
+        Assert.Contains("Assert-OwnerOnlyFile $captureKeyFile", script, StringComparison.Ordinal);
+        Assert.Contains("{ '1.3' } else { '1.2' }", script, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("execute-shadow")]
     [InlineData("plan-incremental")]
