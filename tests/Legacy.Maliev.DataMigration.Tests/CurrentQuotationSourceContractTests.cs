@@ -117,7 +117,7 @@ public sealed class CurrentQuotationSourceContractTests
     }
 
     [Fact]
-    public void SignedContract_BindsLosslessMappingArchiveIsolationAndEfFirstDmlOnlyAdoption()
+    public void SignedContract_BindsLosslessMappingArchiveIsolationAndTransactionalIdentityRestart()
     {
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         QuotationOutcomeAdoptionContract unsigned = CurrentQuotationSourceContract.CreateAdoptionContract(
@@ -142,14 +142,17 @@ public sealed class CurrentQuotationSourceContractTests
         Assert.True(signed.AnalyticsArchive.ReadOnly);
         Assert.False(signed.AnalyticsArchive.RuntimeWorkerEnabled);
         Assert.False(signed.AnalyticsArchive.DirectGoogleAnalyticsCredentialsAllowed);
-        Assert.Equal("ef-schema-first-dml-only", signed.Adoption.Mode);
-        Assert.False(signed.Adoption.ImporterMayExecuteDdl);
+        Assert.Equal("ef-schema-first-dml-and-transactional-identity-restart-only", signed.Adoption.Mode);
+        Assert.False(signed.Adoption.ImporterMayExecuteSchemaDdl);
+        Assert.True(signed.Adoption.TransactionalIdentityRestartOnly);
         Assert.Equal(2, signed.Data!.Source.RowCount);
         Assert.Equal(43, signed.Data.Source.NextIdentity);
         Assert.Equal([41L, 42L], signed.Data.InsertIds);
 
         Assert.False(QuotationOutcomeAdoptionAttestation.Verify(
             signed with { CanonicalTargetSchemaSha256 = new string('c', 64) }, trust));
+        Assert.False(QuotationOutcomeAdoptionAttestation.Verify(
+            signed with { Adoption = signed.Adoption with { TransactionalIdentityRestartOnly = false } }, trust));
     }
 
     [Fact]
@@ -162,7 +165,7 @@ public sealed class CurrentQuotationSourceContractTests
             contract.SourceContractSha256,
             TargetSchemaSha256,
             CanonicalSchemaCreatedByEf: true,
-            ImporterExecutedDdl: false,
+            ImporterExecutedSchemaDdl: false,
             AnalyticsArchivePrivileges: ["SELECT"],
             RuntimeWorkerConfigured: false,
             DirectGoogleAnalyticsCredentialsConfigured: false)
@@ -177,7 +180,7 @@ public sealed class CurrentQuotationSourceContractTests
             valid with { SourceContractSha256 = new string('0', 64) },
             valid with { CanonicalTargetSchemaSha256 = new string('0', 64) },
             valid with { CanonicalSchemaCreatedByEf = false },
-            valid with { ImporterExecutedDdl = true },
+            valid with { ImporterExecutedSchemaDdl = true },
             valid with { AnalyticsArchivePrivileges = ["SELECT", "UPDATE"] },
             valid with { RuntimeWorkerConfigured = true },
             valid with { DirectGoogleAnalyticsCredentialsConfigured = true },
@@ -188,6 +191,11 @@ public sealed class CurrentQuotationSourceContractTests
                 QuotationOutcomeAdoptionValidator.Validate(contract, drift));
             Assert.Equal("quotation_adoption_drift", failure.Code);
         }
+
+        QuotationOutcomeAdoptionException unauthorizedRestart = Assert.Throws<QuotationOutcomeAdoptionException>(() =>
+            QuotationOutcomeAdoptionValidator.Validate(
+                contract with { Adoption = contract.Adoption with { TransactionalIdentityRestartOnly = false } }, valid));
+        Assert.Equal("quotation_adoption_drift", unauthorizedRestart.Code);
     }
 
     [Fact]

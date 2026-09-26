@@ -202,7 +202,10 @@ public sealed record AnalyticsArchiveContract(
     bool RuntimeWorkerEnabled,
     bool DirectGoogleAnalyticsCredentialsAllowed);
 
-public sealed record QuotationOutcomeAdoptionMode(string Mode, bool ImporterMayExecuteDdl);
+public sealed record QuotationOutcomeAdoptionMode(
+    string Mode,
+    bool ImporterMayExecuteSchemaDdl,
+    bool TransactionalIdentityRestartOnly);
 
 public sealed record QuotationOutcomeInventoryContract(long RowCount, string ContentSha256, long NextIdentity);
 
@@ -235,7 +238,7 @@ public sealed record QuotationAdoptionObservation(
     string SourceContractSha256,
     string CanonicalTargetSchemaSha256,
     bool CanonicalSchemaCreatedByEf,
-    bool ImporterExecutedDdl,
+    bool ImporterExecutedSchemaDdl,
     IReadOnlyList<string> AnalyticsArchivePrivileges,
     bool RuntimeWorkerConfigured,
     bool DirectGoogleAnalyticsCredentialsConfigured)
@@ -260,7 +263,9 @@ public static class QuotationOutcomeAdoptionValidator
         if (!string.Equals(observation.SourceCommitSha, contract.SourceCommitSha, StringComparison.Ordinal) ||
             !FixedTimeShaEquals(observation.SourceContractSha256, contract.SourceContractSha256) ||
             !FixedTimeShaEquals(observation.CanonicalTargetSchemaSha256, contract.CanonicalTargetSchemaSha256) ||
-            !observation.CanonicalSchemaCreatedByEf || observation.ImporterExecutedDdl || !archiveIsSelectOnly ||
+            !observation.CanonicalSchemaCreatedByEf || observation.ImporterExecutedSchemaDdl || !archiveIsSelectOnly ||
+            contract.Adoption != new QuotationOutcomeAdoptionMode(
+                "ef-schema-first-dml-and-transactional-identity-restart-only", false, true) ||
             observation.RuntimeWorkerConfigured || observation.DirectGoogleAnalyticsCredentialsConfigured ||
             contract.Data is null || observation.VerifiedCanonical is null ||
             observation.VerifiedCanonical != contract.Data.ExpectedCanonical)
@@ -283,7 +288,7 @@ public static class QuotationOutcomeAdoptionValidator
 
 public static class QuotationOutcomeAdoptionAttestation
 {
-    private const string DomainSeparator = "Legacy.Maliev.DataMigration.QuotationOutcomeAdoption.v1";
+    private const string DomainSeparator = "Legacy.Maliev.DataMigration.QuotationOutcomeAdoption.v2";
 
     public static QuotationOutcomeAdoptionContract Sign(QuotationOutcomeAdoptionContract contract, ECDsa signer)
     {
@@ -341,7 +346,8 @@ public static class QuotationOutcomeAdoptionAttestation
         writer.Write(contract.AnalyticsArchive.RuntimeWorkerEnabled);
         writer.Write(contract.AnalyticsArchive.DirectGoogleAnalyticsCredentialsAllowed);
         Write(writer, contract.Adoption.Mode);
-        writer.Write(contract.Adoption.ImporterMayExecuteDdl);
+        writer.Write(contract.Adoption.ImporterMayExecuteSchemaDdl);
+        writer.Write(contract.Adoption.TransactionalIdentityRestartOnly);
         writer.Write(contract.Data is not null);
         if (contract.Data is not null)
         {
@@ -460,7 +466,7 @@ public static class CurrentQuotationSourceContract
             PreserveNextIdentity: true,
             SynthesizeMissingAcceptedQuotations: false,
             new("legacy_compatibility.GoogleAnalyticsOutbox", true, false, false),
-            new("ef-schema-first-dml-only", false))
+            new("ef-schema-first-dml-and-transactional-identity-restart-only", false, true))
         {
             Data = new(
                 inventory,

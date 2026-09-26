@@ -235,6 +235,20 @@ public sealed class CurrentQuotationSourceIntegrationTests
         command.CommandText = "SELECT last_value::text || '|' || is_called::text FROM \"QuotationAcceptedOutcome_ID_seq\";";
         string pristineSequence = (string)(await command.ExecuteScalarAsync())!;
 
+        await using (NpgsqlTransaction restartTransaction = await connection.BeginTransactionAsync())
+        {
+            await using var restart = new NpgsqlCommand(
+                "ALTER SEQUENCE public.\"QuotationAcceptedOutcome_ID_seq\" RESTART WITH 999;",
+                connection, restartTransaction);
+            _ = await restart.ExecuteNonQueryAsync();
+            await using var readRestarted = new NpgsqlCommand(
+                "SELECT last_value::text || '|' || is_called::text FROM \"QuotationAcceptedOutcome_ID_seq\";",
+                connection, restartTransaction);
+            Assert.Equal("999|false", (string)(await readRestarted.ExecuteScalarAsync())!);
+            await restartTransaction.RollbackAsync();
+        }
+        Assert.Equal(pristineSequence, (string)(await command.ExecuteScalarAsync())!);
+
         command.CommandText = "ALTER TABLE public.\"QuotationAcceptedOutcome\" ADD COLUMN \"MigrationDriftProbe\" text;";
         _ = await command.ExecuteNonQueryAsync();
         QuotationOutcomeAdoptionException schemaFailure = await Assert.ThrowsAsync<QuotationOutcomeAdoptionException>(() =>
