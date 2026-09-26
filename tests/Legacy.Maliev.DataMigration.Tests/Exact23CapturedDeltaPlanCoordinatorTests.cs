@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using Npgsql;
+using Testcontainers.PostgreSql;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -288,8 +289,11 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         }
     }
 
-    [Fact]
-    public async Task Captured_quotation_replay_commits_and_is_idempotent_on_disposable_postgres()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Captured_quotation_replay_commits_and_is_idempotent_on_disposable_postgres(
+        bool retainSourceOutboxes)
     {
         const string database = "Quotation";
         string directory = Path.Combine(Path.GetTempPath(), "legacy-quotation-postgres-tests", Guid.NewGuid().ToString("N"));
@@ -315,9 +319,31 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
                 await connection.OpenAsync();
                 await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync();
                 await using var writer = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
-                await writer.ApplySchemaAsync(targetSchema, CancellationToken.None);
-                await writer.FinalizeSchemaAsync(targetSchema, CancellationToken.None);
+                DatabaseSchemaPlan physicalSeed = retainSourceOutboxes
+                    ? sourceSchema with
+                    {
+                        Database = "QuotationBootstrapFixture",
+                        SourceDispositionProfile = null,
+                        SourceTableDispositions = [],
+                    }
+                    : targetSchema;
+                await writer.ApplySchemaAsync(physicalSeed, CancellationToken.None);
+                await writer.FinalizeSchemaAsync(physicalSeed, CancellationToken.None);
                 await transaction.CommitAsync();
+            }
+            if (retainSourceOutboxes)
+            {
+                await using var connection = new NpgsqlConnection(connectionString);
+                await connection.OpenAsync();
+                await using (var insert = new NpgsqlCommand(
+                    "INSERT INTO public.\"QuotationOutcomeOutbox\" " +
+                    "(\"ID\", \"EventKey\", \"QuotationID\", \"AcceptedUtc\", \"AcceptanceOrigin\") " +
+                    "VALUES (99, 'retained-before-delta', 41, '2026-09-26 12:34:56', 'customer');", connection))
+                {
+                    _ = await insert.ExecuteNonQueryAsync();
+                }
+                Assert.Equal("created", await QuotationDispositionTargetBootstrap.ExecuteAsync(sourceSchema,
+                    connectionString, database, await IdentityAsync(connectionString), CancellationToken.None));
             }
             var source = new QuotationSource(schemaPlan);
             var archive = new DeltaCapturedTableArchive(directory);
@@ -331,7 +357,9 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
             DeltaSynchronizationPlan plan = await planner.ProduceAsync(Request(schemaPlan) with
             {
                 ExecutionAuthorizationKeyFingerprintSha256 = authorizer.PublicKeyFingerprintSha256,
+                UseQuotationPhysicalTransition = retainSourceOutboxes,
             }, key, CancellationToken.None);
+            Assert.Equal(retainSourceOutboxes ? "1.4" : "1.3", plan.SchemaVersion);
             var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
             await using (var connection = new NpgsqlConnection(connectionString))
             {
@@ -383,9 +411,19 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
             Assert.Equal(DeltaExecutionDisposition.AlreadyCommitted, again.Disposition);
             Assert.Equal(0, again.AppliedOperations);
             DatabaseReconciliationEvidence actual = await new PostgreSqlDeltaReconciliationInspector(
-                new(fixture.ConnectionString)).InspectAsync(sourceSchema, CancellationToken.None);
+                new(fixture.ConnectionString) { Plan = plan }).InspectAsync(sourceSchema, CancellationToken.None);
             DatabaseReconciliationEvidence expected = await new QuotationEvidence(source).InspectAsync(
                 sourceSchema, CancellationToken.None);
+            if (retainSourceOutboxes)
+            {
+                expected = expected with { TargetSchemaSha256 = plan.QuotationTransitionSchemaSha256! };
+                await using var connection = new NpgsqlConnection(connectionString);
+                await connection.OpenAsync();
+                await using var count = new NpgsqlCommand(
+                    "SELECT count(*) FROM public.\"QuotationOutcomeOutbox\" WHERE \"ID\" = 99;", connection);
+                Assert.Equal(1L, Convert.ToInt64(await count.ExecuteScalarAsync(),
+                    System.Globalization.CultureInfo.InvariantCulture));
+            }
             Assert.Equal(DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(expected),
                 DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(actual));
         }
@@ -393,6 +431,199 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         {
             await using var drop = new NpgsqlCommand("DROP DATABASE IF EXISTS \"Quotation\" WITH (FORCE);", administrative);
             _ = await drop.ExecuteNonQueryAsync();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Signed_transition_reconciles_exact23_disposable_row_apply_without_retiring_outboxes()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-exact23-transition-tests", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
+        await using var container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        try
+        {
+            await container.StartAsync();
+            string admin = container.GetConnectionString();
+            FreshSchemaPlan schemaPlan = QuotationSchema();
+            DatabaseSchemaPlan quotation = schemaPlan.Databases.Single(item => item.Database == "Quotation");
+            foreach (DatabaseSchemaPlan schema in schemaPlan.Databases)
+            {
+                await using (var connection = new NpgsqlConnection(admin))
+                {
+                    await connection.OpenAsync();
+                    await using var command = new NpgsqlCommand($"CREATE DATABASE \"{schema.Database}\" TEMPLATE template0;", connection);
+                    _ = await command.ExecuteNonQueryAsync();
+                }
+                string databaseConnection = new NpgsqlConnectionStringBuilder(admin)
+                {
+                    Database = schema.Database,
+                    Pooling = false,
+                }.ConnectionString;
+                await using var db = new NpgsqlConnection(databaseConnection);
+                await db.OpenAsync();
+                await using var transaction = await db.BeginTransactionAsync();
+                await using var writer = new PostgreSqlWholeDatabaseTransaction(db, transaction, ownsResources: false);
+                DatabaseSchemaPlan seed = schema.Database == "Quotation"
+                    ? schema with
+                    {
+                        Database = "QuotationBootstrapFixture",
+                        SourceDispositionProfile = null,
+                        SourceTableDispositions = [],
+                    }
+                    : schema;
+                await writer.ApplySchemaAsync(seed, CancellationToken.None);
+                await writer.FinalizeSchemaAsync(seed, CancellationToken.None);
+                await transaction.CommitAsync();
+            }
+            string quotationConnection = new NpgsqlConnectionStringBuilder(admin)
+            {
+                Database = "Quotation",
+                Pooling = false,
+            }.ConnectionString;
+            await using (var db = new NpgsqlConnection(quotationConnection))
+            {
+                await db.OpenAsync();
+                await using var insert = new NpgsqlCommand(
+                    "INSERT INTO public.\"QuotationOutcomeOutbox\" " +
+                    "(\"ID\", \"EventKey\", \"QuotationID\", \"AcceptedUtc\", \"AcceptanceOrigin\") " +
+                    "VALUES (99, 'retained-exact23', 41, '2026-09-26 12:34:56', 'customer');", db);
+                _ = await insert.ExecuteNonQueryAsync();
+            }
+            Assert.Equal("created", await QuotationDispositionTargetBootstrap.ExecuteAsync(quotation,
+                quotationConnection, "Quotation", await IdentityAsync(quotationConnection), CancellationToken.None));
+
+            var source = new QuotationSource(schemaPlan);
+            var archive = new DeltaCapturedTableArchive(directory);
+            byte[] captureKey = RandomNumberGenerator.GetBytes(32);
+            using var planKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var signer = new P256MigrationEvidenceSigner("exact23-transition-plan", planKey.ExportECPrivateKeyPem());
+            using var authorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var authorizer = new P256MigrationEvidenceSigner("exact23-transition-authorization",
+                authorizationKey.ExportECPrivateKeyPem());
+            using var evidenceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var evidenceSigner = new P256MigrationEvidenceSigner("exact23-transition-evidence",
+                evidenceKey.ExportECPrivateKeyPem());
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            DeltaTargetAuthority authority = new(DeltaTargetAuthorityKind.LocalAspire,
+                "aspire://legacy-postgres-main-local/disposable-exact23-transition",
+                await IdentityAsync(quotationConnection));
+            Exact23DeltaPlanRequest planningRequest = Request(schemaPlan) with
+            {
+                SourceCutoffUtc = now.AddMinutes(-5),
+                TargetAuthority = authority,
+                ExecutionAuthorizationKeyFingerprintSha256 = authorizer.PublicKeyFingerprintSha256,
+                UseQuotationPhysicalTransition = true,
+            };
+            var planner = new Exact23CapturedDeltaPlanCoordinator(source, new EmptyTarget(),
+                new QuotationEvidence(source), archive, signer, TimeProvider.System);
+            DeltaSynchronizationPlan plan = await planner.ProduceAsync(planningRequest, captureKey,
+                CancellationToken.None);
+            var trust = new ReceiptAttestationTrustStore(
+            [
+                new(signer.KeyId, signer.ExportSubjectPublicKeyInfo()),
+                new(authorizer.KeyId, authorizer.ExportSubjectPublicKeyInfo()),
+                new(evidenceSigner.KeyId, evidenceSigner.ExportSubjectPublicKeyInfo()),
+            ]);
+            Assert.Equal("1.4", plan.SchemaVersion);
+            Assert.True(DeltaSynchronizationPlanVerifier.Verify(plan, trust, DateTimeOffset.UtcNow));
+            Assert.All(plan.Databases.SelectMany(database => database.Tables), table => Assert.Equal(0, table.DeleteCount));
+            QuotationDeltaExecutionPreflight.Validate(plan, schemaPlan);
+            await new PostgreSqlDeltaMetadataProvisioner(new(admin, authority)).ProvisionAsync(plan,
+                schemaPlan, CancellationToken.None);
+            DeltaExecutionAuthorization authorization = DeltaExecutionAuthorizationProducer.Produce(plan,
+                now.AddMinutes(-1), now.AddMinutes(10), authorizer);
+            var gate = new SignedDeltaExecutionAuthorizationGate(authorization, trust,
+                TimeProvider.System, authority);
+            using DeltaCapturedTableRowSource replay = DeltaCapturedTableRowSource.FromSignedPlan(
+                archive, plan, trust, DateTimeOffset.UtcNow, captureKey);
+            var targetRows = new PostgreSqlDeltaRowSource(new(admin));
+            DeltaExecutionCoordinator Executor(string database)
+            {
+                string connection = new NpgsqlConnectionStringBuilder(admin)
+                {
+                    Database = database,
+                    Pooling = false,
+                }.ConnectionString;
+                return new(new PostgreSqlDeltaCanonicalTarget(new(connection, database,
+                        plan.TargetGeneration)),
+                    new CapturedDeltaExecutionRowSessionProvider(replay, targetRows), gate,
+                    new SignedCapturedSourceReconciliationInspector(plan, schemaPlan, trust, TimeProvider.System),
+                    trust, TimeProvider.System);
+            }
+            DeltaSynchronizationPlan tamperedHash = plan with
+            {
+                QuotationTransitionSchemaSha256 = Hash('0'),
+            };
+            Assert.False(DeltaSynchronizationPlanVerifier.Verify(tamperedHash, trust, DateTimeOffset.UtcNow));
+            Assert.Equal("delta_quotation_transition_plan_invalid", Assert.Throws<DeltaPlanException>(() =>
+                QuotationDeltaExecutionPreflight.Validate(tamperedHash, schemaPlan)).Code);
+            Assert.Equal("delta_quotation_transition_plan_invalid", (await Assert.ThrowsAsync<DeltaPlanException>(() =>
+                new Exact23DeltaExecutionCoordinator(source, Executor, capturedSourceReplay: true)
+                    .ExecuteAsync(tamperedHash, schemaPlan, CancellationToken.None))).Code);
+            await using (var db = new NpgsqlConnection(quotationConnection))
+            {
+                await db.OpenAsync();
+                await using var journal = new NpgsqlCommand(
+                    "SELECT count(*) FROM legacy_migration_internal.delta_journal;", db);
+                Assert.Equal(0L, Convert.ToInt64(await journal.ExecuteScalarAsync(),
+                    System.Globalization.CultureInfo.InvariantCulture));
+            }
+            await using (var db = new NpgsqlConnection(quotationConnection))
+            {
+                await db.OpenAsync();
+                await using var drift = new NpgsqlCommand(
+                    "ALTER TABLE public.\"QuotationOutcomeOutbox\" ADD COLUMN \"UnexpectedDrift\" integer;", db);
+                _ = await drift.ExecuteNonQueryAsync();
+            }
+            MigrationExecutionException changedPhysical = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                new Exact23DeltaExecutionCoordinator(source, Executor, capturedSourceReplay: true)
+                    .ExecuteAsync(plan, schemaPlan, CancellationToken.None));
+            Assert.Equal("shadow_reconciliation_failed", changedPhysical.Code);
+            await using (var db = new NpgsqlConnection(quotationConnection))
+            {
+                await db.OpenAsync();
+                await using var journal = new NpgsqlCommand(
+                    "SELECT count(*) FROM legacy_migration_internal.delta_journal;", db);
+                Assert.Equal(0L, Convert.ToInt64(await journal.ExecuteScalarAsync(),
+                    System.Globalization.CultureInfo.InvariantCulture));
+                await using var restore = new NpgsqlCommand(
+                    "ALTER TABLE public.\"QuotationOutcomeOutbox\" DROP COLUMN \"UnexpectedDrift\";", db);
+                _ = await restore.ExecuteNonQueryAsync();
+            }
+            Exact23DeltaExecutionResult applied = await new Exact23DeltaExecutionCoordinator(source,
+                Executor, capturedSourceReplay: true).ExecuteAsync(plan, schemaPlan, CancellationToken.None);
+            Assert.Equal(23, applied.Databases.Count);
+            Assert.Equal(24, applied.Databases.Sum(database => database.AppliedOperations));
+            Assert.All(applied.Databases, database => Assert.Equal(DeltaExecutionDisposition.Committed,
+                database.Disposition));
+            var reconciliation = new Exact23DeltaReconciliationCoordinator(
+                new SignedCapturedSourceReconciliationInspector(plan, schemaPlan, trust, TimeProvider.System),
+                new PostgreSqlDeltaReconciliationInspector(new(admin) { Plan = plan }),
+                new PostgreSqlExact23DeltaCheckpointReader(new(admin)), TimeProvider.System, evidenceSigner);
+            Exact23DeltaReconciliationResult result = await reconciliation.ReconcileAsync(plan,
+                schemaPlan, CancellationToken.None);
+            Assert.Equal(23, result.Databases.Count);
+            Assert.True(Exact23DeltaReconciliationCoordinator.Verify(result, trust));
+            await using (var db = new NpgsqlConnection(quotationConnection))
+            {
+                await db.OpenAsync();
+                await using var retained = new NpgsqlCommand(
+                    "SELECT count(*) FROM public.\"QuotationOutcomeOutbox\" WHERE \"ID\"=99;", db);
+                Assert.Equal(1L, Convert.ToInt64(await retained.ExecuteScalarAsync(),
+                    System.Globalization.CultureInfo.InvariantCulture));
+                await using var adopted = new NpgsqlCommand(
+                    "SELECT count(*) FROM public.\"QuotationAcceptedOutcome\";", db);
+                Assert.Equal(1L, Convert.ToInt64(await adopted.ExecuteScalarAsync(),
+                    System.Globalization.CultureInfo.InvariantCulture));
+                await using var archived = new NpgsqlCommand(
+                    "SELECT count(*) FROM legacy_compatibility.\"GoogleAnalyticsOutbox\";", db);
+                Assert.Equal(1L, Convert.ToInt64(await archived.ExecuteScalarAsync(),
+                    System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
+        finally
+        {
             Directory.Delete(directory, recursive: true);
         }
     }
@@ -567,6 +798,7 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
                     ? ApprovedSourceDispositionManifest.QuotationOutboxesV1 : null,
                 SourceTableDispositions = database == "Quotation"
                     ? ApprovedSourceDispositionManifest.DispositionsForDatabase(database, outboxes) : [],
+                TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(database),
             };
             return draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
         })]);
@@ -790,6 +1022,16 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
     private static string Hash(char value)
     {
         return new(value, 64);
+    }
+
+    private static async Task<string> IdentityAsync(string connectionString)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("SELECT system_identifier::text FROM pg_control_system();", connection);
+        string identity = (string)(await command.ExecuteScalarAsync() ?? throw new InvalidOperationException());
+        return Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity)))
+            .ToLowerInvariant();
     }
 
     private static DateTimeOffset Now()

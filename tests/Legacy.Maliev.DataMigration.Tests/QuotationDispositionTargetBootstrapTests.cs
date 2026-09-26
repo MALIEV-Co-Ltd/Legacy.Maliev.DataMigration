@@ -99,6 +99,58 @@ public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFi
         Assert.Equal("quotation_target_bootstrap_plan_invalid", tampered.Code);
         Assert.Null(await TextOrNullAsync(connection,
             "SELECT to_regclass('legacy_migration_internal.delta_journal')::text;"));
+
+        DeltaSynchronizationPlan transitionPlan = plan with
+        {
+            SchemaVersion = "1.4",
+            TargetNamespace = "local-aspire",
+            TargetCluster = "legacy-postgres-main-local",
+            TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
+                "aspire://legacy-postgres-main-local/disposable-quotation-atomic", await IdentityAsync(connection)),
+            QuotationTransitionSchemaSha256 =
+                PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(schema, true),
+            SourceCaptureManifest = new DeltaSourceCaptureManifest(new string('a', 64), []),
+        };
+        await using (var db = new NpgsqlConnection(connection))
+        {
+            await db.OpenAsync();
+            await using var tx = await db.BeginTransactionAsync();
+            DeltaPlanException changedHash = await Assert.ThrowsAsync<DeltaPlanException>(() =>
+                PostgreSqlDeltaMetadataProvisioner.ProvisionDatabaseAsync(db, tx,
+                    transitionPlan with { QuotationTransitionSchemaSha256 = new string('0', 64) },
+                    schema, CancellationToken.None));
+            Assert.Equal("delta_quotation_transition_plan_invalid", changedHash.Code);
+            await tx.RollbackAsync();
+        }
+        Assert.Null(await TextOrNullAsync(connection,
+            "SELECT to_regclass('legacy_migration_internal.delta_journal')::text;"));
+        await using (var db = new NpgsqlConnection(connection))
+        {
+            await db.OpenAsync();
+            await using var tx = await db.BeginTransactionAsync();
+            await PostgreSqlDeltaMetadataProvisioner.ProvisionDatabaseAsync(db, tx, transitionPlan,
+                schema, CancellationToken.None);
+            await tx.CommitAsync();
+        }
+        Assert.Equal(transitionPlan.QuotationTransitionSchemaSha256,
+            await TextOrNullAsync(connection,
+                "SELECT target_schema_sha256 FROM legacy_migration_internal.delta_fence WHERE database_name='Quotation';"));
+        await using (IDeltaCanonicalTransaction accepted = await target.BeginAsync(
+            transitionPlan, schema, "Quotation", CancellationToken.None))
+        {
+            Assert.NotNull(accepted);
+        }
+        Assert.Equal(1L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM public.\"QuotationOutcomeOutbox\" WHERE \"ID\"=7;"));
+        Assert.Equal(0L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM legacy_migration_internal.delta_journal;"));
+        await ExecuteAsync(connection,
+            "ALTER TABLE public.\"QuotationOutcomeOutbox\" ADD COLUMN \"UnexpectedDrift\" integer;");
+        MigrationExecutionException physicalDrift = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+            target.BeginAsync(transitionPlan, schema, "Quotation", CancellationToken.None));
+        Assert.Equal("shadow_reconciliation_failed", physicalDrift.Code);
+        Assert.Equal(0L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM legacy_migration_internal.delta_journal;"));
     }
 
     [Fact]

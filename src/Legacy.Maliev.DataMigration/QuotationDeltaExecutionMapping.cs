@@ -106,7 +106,7 @@ public static class QuotationDeltaExecutionPreflight
         {
             return;
         }
-        if (plan.SchemaVersion is not ("1.2" or "1.3") ||
+        if (plan.SchemaVersion is not ("1.2" or "1.3" or "1.4") ||
             !plan.Databases.Select(database => database.Database).SequenceEqual(
                 DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
             !schemaPlan.Databases.Select(database => database.Database).SequenceEqual(
@@ -119,6 +119,7 @@ public static class QuotationDeltaExecutionPreflight
         }
         foreach (DatabaseSchemaPlan schema in schemaPlan.Databases)
         {
+            _ = QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema);
             if (schema.SourceDispositionProfile is null &&
                 ApprovedSourceDispositionManifest.RequiresQuotationExecution(schema))
             {

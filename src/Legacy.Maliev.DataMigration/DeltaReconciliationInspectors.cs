@@ -62,7 +62,10 @@ public sealed class SqlServerDeltaReconciliationInspector(IReadOnlyMigrationSour
     }
 }
 
-public sealed record PostgreSqlDeltaReconciliationInspectorOptions(string AdministrativeConnectionString);
+public sealed record PostgreSqlDeltaReconciliationInspectorOptions(string AdministrativeConnectionString)
+{
+    public DeltaSynchronizationPlan? Plan { get; init; }
+}
 
 public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconciliationInspectorOptions options)
     : IDeltaReconciliationInspector
@@ -112,6 +115,21 @@ public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconc
         QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, observed);
     }
 
+    public async Task ValidateQuotationTransitionSchemaAsync(
+        DatabaseSchemaPlan schema,
+        CancellationToken cancellationToken)
+    {
+        if (schema.Database != "Quotation" ||
+            schema.SourceDispositionProfile != ApprovedSourceDispositionManifest.QuotationOutboxesV1)
+        {
+            throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
+                "Only the reviewed Quotation disposition can use the physical transition schema.");
+        }
+        string expected = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(schema, true);
+        string observed = await InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
+        ReconciliationDiagnostics.CompareSchema(schema.Database, expected, observed);
+    }
+
     public async Task<DatabaseReconciliationEvidence> InspectAsync(
         DatabaseSchemaPlan schema,
         CancellationToken cancellationToken)
@@ -130,7 +148,14 @@ public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconc
         try
         {
             string schemaSha256 = await inspector.InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
-            QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, schemaSha256);
+            if (options.Plan is null)
+            {
+                QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, schemaSha256);
+            }
+            else
+            {
+                QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(options.Plan, schema, schemaSha256);
+            }
             DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(schema).TargetSchema;
             var tables = new List<TableReconciliationEvidence>(targetSchema.Tables.Count);
             foreach (TableCopyPlan table in targetSchema.Tables)

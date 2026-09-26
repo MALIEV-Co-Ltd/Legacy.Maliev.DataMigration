@@ -28,7 +28,12 @@ public sealed class PostgreSqlDeltaMetadataProvisioner(PostgreSqlDeltaMetadataPr
         }
         QuotationDeltaExecutionPreflight.Validate(plan, schemaPlan);
 
-        foreach (DatabaseSchemaPlan schema in schemaPlan.Databases)
+        // Reject a changed retained-outbox schema before creating metadata in any
+        // other database. Recheck under the Quotation transaction below.
+        IEnumerable<DatabaseSchemaPlan> provisionOrder = plan.SchemaVersion == "1.4"
+            ? schemaPlan.Databases.OrderByDescending(schema => schema.Database == "Quotation")
+            : schemaPlan.Databases;
+        foreach (DatabaseSchemaPlan schema in provisionOrder)
         {
             var builder = new NpgsqlConnectionStringBuilder(options.AdministrativeConnectionString)
             {
@@ -59,6 +64,14 @@ public sealed class PostgreSqlDeltaMetadataProvisioner(PostgreSqlDeltaMetadataPr
         DatabaseSchemaPlan schema,
         CancellationToken cancellationToken)
     {
+        if (plan.SchemaVersion == "1.4" && schema.Database == "Quotation")
+        {
+            await using var schemaInspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction,
+                ownsResources: false);
+            string observedSchema = await schemaInspector.InspectSchemaAsync(schema, cancellationToken)
+                .ConfigureAwait(false);
+            QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema, observedSchema);
+        }
         await ExecuteAsync(connection, transaction, """
             CREATE SCHEMA IF NOT EXISTS legacy_migration_internal;
             CREATE TABLE IF NOT EXISTS legacy_migration_internal.delta_fence(
@@ -107,7 +120,8 @@ public sealed class PostgreSqlDeltaMetadataProvisioner(PostgreSqlDeltaMetadataPr
             """, connection, transaction);
         _ = fence.Parameters.AddWithValue(schema.Database);
         _ = fence.Parameters.AddWithValue(plan.SchemaPlanSha256);
-        _ = fence.Parameters.AddWithValue(schema.TargetSchemaSha256);
+        _ = fence.Parameters.AddWithValue(
+            QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema));
         _ = fence.Parameters.AddWithValue(plan.TargetGeneration);
         _ = fence.Parameters.AddWithValue(plan.TargetObservationSha256);
         _ = await fence.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

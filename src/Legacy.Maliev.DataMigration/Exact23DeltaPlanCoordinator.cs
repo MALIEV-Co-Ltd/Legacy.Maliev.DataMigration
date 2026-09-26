@@ -15,6 +15,7 @@ public sealed record Exact23DeltaPlanRequest(
     public DeltaTargetAuthority? TargetAuthority { get; init; }
     public string? SourceMode { get; init; }
     public string? SourceObservationSha256 { get; init; }
+    public bool UseQuotationPhysicalTransition { get; init; }
 }
 
 public sealed class Exact23DeltaPlanCoordinator(

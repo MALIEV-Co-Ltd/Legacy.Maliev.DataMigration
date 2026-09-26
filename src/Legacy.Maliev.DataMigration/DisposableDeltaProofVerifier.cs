@@ -96,7 +96,8 @@ public static class DisposableDeltaProofVerifier
         DeltaSynchronizationPlan proof, DeltaSynchronizationPlan local)
     {
         return proof.SchemaVersion == local.SchemaVersion &&
-            (proof.SchemaVersion != "1.3" ||
+            proof.QuotationTransitionSchemaSha256 == local.QuotationTransitionSchemaSha256 &&
+            (proof.SchemaVersion is not ("1.3" or "1.4") ||
                 (proof.SourceCaptureManifest is { } proofCapture &&
                  local.SourceCaptureManifest is { } localCapture &&
                  string.Equals(proofCapture.EncryptionKeyFingerprintSha256,
