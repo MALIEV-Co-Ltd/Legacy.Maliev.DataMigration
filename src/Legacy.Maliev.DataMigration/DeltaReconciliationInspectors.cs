@@ -109,7 +109,7 @@ public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconc
         CancellationToken cancellationToken)
     {
         string observed = await InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
-        ReconciliationDiagnostics.CompareSchema(schema.Database, schema.TargetSchemaSha256, observed);
+        QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, observed);
     }
 
     public async Task<DatabaseReconciliationEvidence> InspectAsync(
@@ -130,6 +130,7 @@ public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconc
         try
         {
             string schemaSha256 = await inspector.InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
+            QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, schemaSha256);
             DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(schema).TargetSchema;
             var tables = new List<TableReconciliationEvidence>(targetSchema.Tables.Count);
             foreach (TableCopyPlan table in targetSchema.Tables)

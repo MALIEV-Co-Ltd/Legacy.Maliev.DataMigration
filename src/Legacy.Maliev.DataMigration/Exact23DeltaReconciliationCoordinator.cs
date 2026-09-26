@@ -62,7 +62,7 @@ public sealed class Exact23DeltaReconciliationCoordinator(
             expected ??= observed;
             DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(schema).TargetSchema;
             ValidateShape(schema, targetSchema, expected, observed);
-            ReconciliationDiagnostics.CompareSchema(schema.Database, schema.TargetSchemaSha256, observed.TargetSchemaSha256);
+            QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, observed.TargetSchemaSha256);
             foreach (TableReconciliationEvidence expectedTable in expected.Tables)
             {
                 ReconciliationDiagnostics.CompareTable(schema.Database, expectedTable,
