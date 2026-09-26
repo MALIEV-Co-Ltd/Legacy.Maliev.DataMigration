@@ -54,6 +54,13 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
             throw new DeltaPlanException("delta_capture_request_invalid",
                 "Encrypted source capture requires a live read-only comparison and a fresh 256-bit key.");
         }
+        if (request.UseQuotationPhysicalTransition &&
+            (persistentRequest is not null ||
+             !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(request.TargetAuthority)))
+        {
+            throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
+                "The Quotation physical transition is limited to an unpaired disposable-local capture.");
+        }
         DateTimeOffset preflightUtc = timeProvider.GetUtcNow();
         string keyFingerprint = Convert.ToHexString(SHA256.HashData(captureKey.Span)).ToLowerInvariant();
         if (request.SourceCutoffUtc.Offset != TimeSpan.Zero || request.SourceCutoffUtc > preflightUtc ||
@@ -276,6 +283,10 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
             SourceObservationSha256 = request.SourceObservationSha256,
             SourceCaptureCompletedAtUtc = nowUtc,
             SourceCaptureManifest = manifest,
+            QuotationTransitionSchemaSha256 = request.UseQuotationPhysicalTransition
+                ? PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(
+                    request.SchemaPlan.Databases.Single(database => database.Database == "Quotation"), true)
+                : null,
         }, planSigner, nowUtc);
     }
 

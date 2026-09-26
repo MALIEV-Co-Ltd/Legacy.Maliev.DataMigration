@@ -20,7 +20,7 @@ public sealed class Exact23DeltaExecutionCoordinator(
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(schemaPlan);
-        if (plan.SchemaVersion == "1.3" != capturedSourceReplay)
+        if ((plan.SchemaVersion is "1.3" or "1.4") != capturedSourceReplay)
         {
             throw new DeltaPlanException("delta_execution_capture_replay_required",
                 "Captured-source plans require the authenticated replay execution path.");

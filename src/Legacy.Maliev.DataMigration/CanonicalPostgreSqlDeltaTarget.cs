@@ -26,7 +26,9 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         ArgumentNullException.ThrowIfNull(schema);
         string planSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
         var binding = new CanonicalDeltaTargetBinding(plan.PlanId, planSha256, plan.SourceCutoffUtc, database,
-            plan.SchemaPlanSha256, schema.TargetSchemaSha256, plan.TargetGeneration, plan.TargetObservationSha256);
+            plan.SchemaPlanSha256,
+            QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema),
+            plan.TargetGeneration, plan.TargetObservationSha256);
         ValidateBinding(binding);
 
         var builder = new NpgsqlConnectionStringBuilder(options.ConnectionString);
@@ -51,14 +53,13 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
             try
             {
                 await AcquireLocksAsync(connection, transaction, binding, schema, cancellationToken).ConfigureAwait(false);
-                if (schema.Database == "Quotation" &&
-                    schema.SourceDispositionProfile == ApprovedSourceDispositionManifest.QuotationOutboxesV1)
+                if (schema.Database == "Quotation")
                 {
                     await using var schemaInspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction,
                         ownsResources: false);
                     string observedSchema = await schemaInspector.InspectSchemaAsync(schema, cancellationToken)
                         .ConfigureAwait(false);
-                    QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, observedSchema);
+                    QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema, observedSchema);
                 }
                 await ValidateFenceAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
                 string? replayReconciliationSha256 = await ValidateReplayAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
@@ -319,7 +320,7 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         await AlignSequencesAsync(expected.SequenceNextValues, cancellationToken).ConfigureAwait(false);
         await using var inspection = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
         string targetSchemaSha256 = await inspection.InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
-        QuotationDeltaPhysicalSchemaGuard.RequireFinalSchema(schema, targetSchemaSha256);
+        ReconciliationDiagnostics.CompareSchema(schema.Database, binding.TargetSchemaSha256, targetSchemaSha256);
         var tables = new List<TableReconciliationEvidence>(schema.Tables.Count);
         foreach (TableCopyPlan table in schema.Tables)
         {

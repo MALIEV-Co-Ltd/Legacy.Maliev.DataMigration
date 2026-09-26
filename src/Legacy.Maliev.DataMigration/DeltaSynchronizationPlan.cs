@@ -48,6 +48,7 @@ public sealed record DeltaPlanSigningRequest(
     public string? SourceObservationSha256 { get; init; }
     public DateTimeOffset? SourceCaptureCompletedAtUtc { get; init; }
     public DeltaSourceCaptureManifest? SourceCaptureManifest { get; init; }
+    public string? QuotationTransitionSchemaSha256 { get; init; }
 }
 
 public sealed record DeltaSynchronizationPlan(
@@ -78,6 +79,8 @@ public sealed record DeltaSynchronizationPlan(
     public DateTimeOffset? SourceCaptureCompletedAtUtc { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DeltaSourceCaptureManifest? SourceCaptureManifest { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? QuotationTransitionSchemaSha256 { get; init; }
 }
 
 public sealed class DeltaPlanException(string code, string message) : Exception(message)
@@ -91,6 +94,7 @@ public static class DeltaSynchronizationPlanCanonicalizer
     {
         return plan.SchemaVersion switch
         {
+            "1.4" => "legacy-maliev-exact23-delta-plan-v1.4\0"u8,
             "1.3" => "legacy-maliev-exact23-delta-plan-v1.3\0"u8,
             "1.2" => "legacy-maliev-exact23-delta-plan-v1.2\0"u8,
             _ => "legacy-maliev-exact23-delta-plan-v1.1\0"u8,
@@ -177,7 +181,8 @@ public static partial class DeltaSynchronizationPlanProducer
         ArgumentNullException.ThrowIfNull(signer);
         ValidateRequest(request, signer, nowUtc);
         var unsigned = new DeltaSynchronizationPlan(
-            request.SourceCaptureManifest is not null ? "1.3" :
+            request.QuotationTransitionSchemaSha256 is not null ? "1.4" :
+                request.SourceCaptureManifest is not null ? "1.3" :
                 request.SourceMode == DeltaSourceMode.LiveReadOnly ? "1.2" : "1.1",
             Guid.NewGuid(),
             request.SourceCommitSha,
@@ -201,6 +206,7 @@ public static partial class DeltaSynchronizationPlanProducer
             SourceObservationSha256 = request.SourceObservationSha256,
             SourceCaptureCompletedAtUtc = request.SourceCaptureCompletedAtUtc,
             SourceCaptureManifest = request.SourceCaptureManifest,
+            QuotationTransitionSchemaSha256 = request.QuotationTransitionSchemaSha256,
         };
         return unsigned with
         {
@@ -244,6 +250,13 @@ public static partial class DeltaSynchronizationPlanProducer
             request.SourceCutoffUtc, request.SourceCaptureCompletedAtUtc, nowUtc);
 
         ValidateDatabases(request.Databases);
+        if (request.QuotationTransitionSchemaSha256 is not null &&
+            (!Sha256().IsMatch(request.QuotationTransitionSchemaSha256) ||
+             request.SourceCaptureManifest is null || !IsDisposableLocalAuthority(request.TargetAuthority)))
+        {
+            throw Error("delta_quotation_transition_plan_invalid",
+                "The Quotation physical transition requires a captured disposable-local plan and a signed schema hash.");
+        }
         if (request.SourceCaptureManifest is not null)
         {
             if (request.SourceMode != DeltaSourceMode.LiveReadOnly || request.SourceCaptureCompletedAtUtc is null)
@@ -289,6 +302,13 @@ public static partial class DeltaSynchronizationPlanProducer
                     authority.AuthorityId.StartsWith("aspire://legacy-postgres-main-local/", StringComparison.Ordinal),
                 _ => false,
             };
+    }
+
+    public static bool IsDisposableLocalAuthority(DeltaTargetAuthority? authority)
+    {
+        return authority is { Kind: DeltaTargetAuthorityKind.LocalAspire } &&
+            authority.AuthorityId.StartsWith(
+                "aspire://legacy-postgres-main-local/disposable-", StringComparison.Ordinal);
     }
 
     internal static void ValidateDatabases(IReadOnlyList<DeltaDatabasePlan> databases)
@@ -371,7 +391,7 @@ public static class DeltaSynchronizationPlanVerifier
         ArgumentNullException.ThrowIfNull(trust);
         try
         {
-            if (plan.SchemaVersion is not ("1.1" or "1.2" or "1.3") ||
+            if (plan.SchemaVersion is not ("1.1" or "1.2" or "1.3" or "1.4") ||
                 plan.PlanId == Guid.Empty || nowUtc.Offset != TimeSpan.Zero || plan.CreatedAtUtc.Offset != TimeSpan.Zero ||
                 plan.CreatedAtUtc > nowUtc || plan.SourceCutoffUtc > plan.CreatedAtUtc ||
                 nowUtc - plan.SourceCutoffUtc > GuardedRunnerPolicy.MaximumBackupReceiptAge ||
@@ -390,7 +410,11 @@ public static class DeltaSynchronizationPlanVerifier
                 plan.SourceObservationSha256, plan.SourceCutoffUtc,
                 plan.SourceCaptureCompletedAtUtc, nowUtc);
             if (plan.SchemaVersion == "1.1" != (plan.SourceMode is null) ||
-                plan.SchemaVersion == "1.3" != (plan.SourceCaptureManifest is not null) ||
+                (plan.SchemaVersion is "1.3" or "1.4") != (plan.SourceCaptureManifest is not null) ||
+                plan.SchemaVersion == "1.4" != (plan.QuotationTransitionSchemaSha256 is not null) ||
+                (plan.SchemaVersion == "1.4" &&
+                 (!Hashes(plan.QuotationTransitionSchemaSha256!) ||
+                  !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(plan.TargetAuthority))) ||
                 plan.SchemaVersion != "1.1" != (plan.SourceMode == DeltaSourceMode.LiveReadOnly))
             {
                 return false;

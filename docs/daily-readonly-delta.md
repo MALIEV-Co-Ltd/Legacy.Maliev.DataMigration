@@ -34,6 +34,21 @@ archive/adoption mapping to encrypted snapshot rows and target-shaped signed
 operations. The operator console allows captured-source apply only for its
 guarded disposable authority; persistent targets still fail closed pending the
 full exact-23 disposable proof and operator review.
+When both reviewed target tables have been added but the two original public
+outboxes are retained, the target has a distinct physical schema. An explicit
+`useQuotationPhysicalTransition=true` opt-in with `useCapturedSource=true`
+signs schema `1.4` and the derived retained-outbox physical fingerprint.
+It is accepted only for an isolated `disposable-*` local Aspire authority.
+The planner checks that physical hash before reading rows; metadata fencing,
+atomic begin/apply, and exact-23 reconciliation use the same signed hash.
+The source capture still binds the reviewed final target table inventory and
+mapped rows, not the retained public outboxes. A changed physical schema,
+plan hash, target identity, or disposition fails closed. Schema `1.4` cannot
+be paired with or applied to persistent local or production targets. The
+disposable integration test creates 23 temporary PostgreSQL databases, applies
+signed rows without deletes, reconciles 23 atomic checkpoints, and confirms
+the original Quotation outbox remains; it is not a live-source cutoff or
+authorization for any persistent target write.
 Component tests are not authorization for a live apply: fresh target-specific signed
 plans, disposable proof, source/target schema parity, reviewed deletes, and
 the owner approval gate still apply.
@@ -70,7 +85,7 @@ original migrated dataset, not a fresh daily backup. Live plans use schema
 the source capture start and completion times. Each database uses a separate
 SQL Server snapshot transaction; there is no atomic cross-database cutoff.
 Source or target drift from the signed plan fails closed.
-The optional `useCapturedSource=true` mode is plan-only. It creates a fresh
+The optional `useCapturedSource=true` mode creates a fresh
 owner-protected encrypted capture in the run directory and signs schema `1.3`
 with per-database capture windows and selected changed-row bindings. Captured
 rows are taken inside each database snapshot, so later source inserts cannot
@@ -91,6 +106,10 @@ may still invalidate the plan, requiring a new isolated proof and plan.
 Schema `1.3` disposable execution instead replays its signed encrypted source
 capture and reconciles each PostgreSQL transaction against the captured
 database evidence. Later SQL Server inserts belong to a subsequent daily run.
+Schema `1.4` uses the same replay path but requires the separately signed
+Quotation physical-transition hash and a disposable-local target. The
+default remains schema `1.3`; the transition flag is never inferred from
+observed drift or a successful additive bootstrap.
 Unattended local execution stops if the plan contains a deletion; deletion
 sets require separate review. Production execution always requires separate
 review, including plans containing only inserts or updates.

@@ -108,6 +108,8 @@ public sealed class DeltaExecutionCoordinator(
                 "Quotation disposition plans require a reviewed archive/adoption executor and reconciliation path.");
         }
 
+        _ = QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema);
+
         DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(schema).TargetSchema;
 
         DeltaDatabasePlan databasePlan = plan.Databases.SingleOrDefault(item =>

@@ -101,8 +101,20 @@ if ($config.delta.ContainsKey('useCapturedSource') -and $config.delta.useCapture
     Fail 'daily_delta_capture_mode_invalid'
 }
 $useCapturedSource = $config.delta.ContainsKey('useCapturedSource') -and $config.delta.useCapturedSource -eq $true
+if ($config.delta.ContainsKey('useQuotationPhysicalTransition') -and
+    $config.delta.useQuotationPhysicalTransition -isnot [bool]) {
+    Fail 'daily_delta_quotation_transition_mode_invalid'
+}
+$useQuotationPhysicalTransition = $config.delta.ContainsKey('useQuotationPhysicalTransition') -and
+    $config.delta.useQuotationPhysicalTransition -eq $true
 $targetKind = $config.delta.targetAuthority.kind
 if ($targetKind -notin @('local-aspire', 'production-cloudnativepg')) { Fail 'daily_delta_target_invalid' }
+if ($useQuotationPhysicalTransition -and
+    (-not $useCapturedSource -or $targetKind -cne 'local-aspire' -or
+     -not $config.delta.targetAuthority.authorityId.StartsWith(
+        'aspire://legacy-postgres-main-local/disposable-', [StringComparison]::Ordinal))) {
+    Fail 'daily_delta_quotation_transition_disposable_only'
+}
 if ($Execute -and $targetKind -eq 'production-cloudnativepg') {
     Fail 'daily_delta_production_requires_separate_plan_review'
 }
@@ -169,7 +181,7 @@ function New-PhaseConfig([string]$Phase) {
 New-PhaseConfig 'plan'
 Invoke-GuardedCommand 'plan-delta' (Join-Path $runDirectory 'plan-config.json')
 $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
-$expectedVersion = if ($useCapturedSource) { '1.3' } else { '1.2' }
+$expectedVersion = if ($useQuotationPhysicalTransition) { '1.4' } elseif ($useCapturedSource) { '1.3' } else { '1.2' }
 if ($plan.schemaVersion -cne $expectedVersion -or $plan.sourceMode -cne 'live-readonly-comparison' -or
     $plan.sourceObservationSha256 -notmatch '^[0-9a-f]{64}$') {
     Fail 'daily_delta_live_plan_invalid'

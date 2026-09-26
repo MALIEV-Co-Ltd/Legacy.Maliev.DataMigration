@@ -13,7 +13,7 @@ public sealed class SignedCapturedSourceReconciliationInspector(
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(schema);
-        if (plan.SchemaVersion != "1.3" || plan.SourceCaptureManifest is null ||
+        if (plan.SchemaVersion is not ("1.3" or "1.4") || plan.SourceCaptureManifest is null ||
             !DeltaSynchronizationPlanVerifier.Verify(plan, trust, timeProvider.GetUtcNow()) ||
             !DeltaSynchronizationPlanProducer.FixedHashEquals(plan.SchemaPlanSha256,
                 SchemaPlanCanonicalizer.ComputeSha256(schemaPlan)))

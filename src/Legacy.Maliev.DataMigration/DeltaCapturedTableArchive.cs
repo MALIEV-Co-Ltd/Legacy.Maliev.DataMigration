@@ -303,7 +303,7 @@ public sealed class DeltaCapturedTableRowSource : IDeltaOrderedRowSource, IDispo
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(trust);
         DeltaSourceCaptureManifest? manifest = plan.SourceCaptureManifest;
-        if (plan.SchemaVersion != "1.3" || manifest is null || rootKey.Length != 32 ||
+        if (plan.SchemaVersion is not ("1.3" or "1.4") || manifest is null || rootKey.Length != 32 ||
             !DeltaSynchronizationPlanVerifier.Verify(plan, trust, nowUtc))
         {
             throw new DeltaPlanException("delta_capture_plan_invalid", "A current trusted captured-source plan is required.");

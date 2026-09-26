@@ -201,6 +201,48 @@ public sealed class SignedDeltaPlanTests : IDisposable
         Assert.False(DeltaSynchronizationPlanVerifier.Verify(plan with { SchemaVersion = "1.2" }, trust, Now()));
     }
 
+    [Fact]
+    public void Signed_transition_hash_requires_captured_disposable_authority_and_rejects_tampering()
+    {
+        using var signer = new P256MigrationEvidenceSigner("transition-plan", _key.ExportECPrivateKeyPem());
+        DeltaPlanSigningRequest captured = CapturedRequest();
+        DeltaPlanSigningRequest request = captured with
+        {
+            TargetNamespace = "local-aspire",
+            TargetCluster = "legacy-postgres-main-local",
+            TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
+                "aspire://legacy-postgres-main-local/disposable-transition-test", new('7', 64)),
+            QuotationTransitionSchemaSha256 = new('8', 64),
+        };
+        DeltaSynchronizationPlan plan = DeltaSynchronizationPlanProducer.Produce(request, signer, Now());
+        var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
+
+        Assert.Equal("1.4", plan.SchemaVersion);
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(plan, trust, Now()));
+        Assert.False(DeltaSynchronizationPlanVerifier.Verify(plan with
+        {
+            QuotationTransitionSchemaSha256 = new('9', 64),
+        }, trust, Now()));
+        Assert.False(DeltaSynchronizationPlanVerifier.Verify(plan with { SchemaVersion = "1.3" }, trust, Now()));
+        Assert.False(DeltaSynchronizationPlanVerifier.Verify(plan with
+        {
+            TargetAuthority = plan.TargetAuthority! with
+            {
+                AuthorityId = "aspire://legacy-postgres-main-local/persistent-transition-test",
+            },
+        }, trust, Now()));
+        Assert.Equal("delta_quotation_transition_plan_invalid", Assert.Throws<DeltaPlanException>(() =>
+            DeltaSynchronizationPlanProducer.Produce(request with
+            {
+                TargetAuthority = request.TargetAuthority! with
+                {
+                    AuthorityId = "aspire://legacy-postgres-main-local/persistent-transition-test",
+                },
+            }, signer, Now())).Code);
+        Assert.Equal("delta_quotation_transition_plan_invalid", Assert.Throws<DeltaPlanException>(() =>
+            DeltaSynchronizationPlanProducer.Produce(request with { SourceCaptureManifest = null }, signer, Now())).Code);
+    }
+
     [Theory]
     [InlineData("missing-database")]
     [InlineData("duplicate-capture-id")]
