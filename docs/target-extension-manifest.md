@@ -93,7 +93,8 @@ Run it only with a fresh key directory and these environment variables:
 owner-only and contain the fresh signing helper's `public-manifest.json`;
 the source commit and source identity must be independently verified against
 the live SQL Server before treating the plan as current. The fixture checks
-plan age, commit binding, database inventory, and approved profiles, but does
+plan age (no older than two hours or more than five minutes in the future),
+commit binding, database inventory, and approved profiles, but does
 not independently verify source inventory completeness or a schema-plan
 signature; its expected PostgreSQL hashes are derived from the supplied plan.
 The test leaves protected, PII-free authorization and repair receipts for

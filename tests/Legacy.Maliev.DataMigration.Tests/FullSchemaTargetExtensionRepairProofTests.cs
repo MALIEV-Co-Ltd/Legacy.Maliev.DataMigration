@@ -1,4 +1,5 @@
 using System.Data;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -44,6 +45,18 @@ public sealed class FullSchemaTargetExtensionRepairProofTests
         }
     }
 
+    [Theory]
+    [InlineData(-121, false)]
+    [InlineData(-120, true)]
+    [InlineData(0, true)]
+    [InlineData(5, true)]
+    [InlineData(6, false)]
+    public void SourcePlanFreshnessRejectsStaleAndFutureCapture(int offsetMinutes, bool expected)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        Assert.Equal(expected, IsFreshSourcePlan(now.AddMinutes(offsetMinutes), now));
+    }
+
     [FullSchemaTargetExtensionRepairProofFact]
     public async Task FreshLiveExact23Schema_RepairsBothExtensionsOnDisposablePostgreSql()
     {
@@ -58,7 +71,8 @@ public sealed class FullSchemaTargetExtensionRepairProofTests
             await File.ReadAllTextAsync(schemaPath), JsonOptions)!;
         Assert.Equal("2.0", schema.SchemaVersion);
         Assert.Equal(sourceCommit, schema.SourceCommitSha);
-        Assert.True(DateTimeOffset.UtcNow - schema.CapturedAtUtc < TimeSpan.FromHours(2));
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        Assert.True(IsFreshSourcePlan(schema.CapturedAtUtc, now));
         Assert.True(schema.Databases.Select(database => database.Database)
             .SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal));
         Assert.All(schema.Databases, database => Assert.NotEmpty(database.Tables));
@@ -122,6 +136,7 @@ public sealed class FullSchemaTargetExtensionRepairProofTests
         string targetConnectionPath = Path.Combine(proofDirectory, $"target-disposable-{runId}.connection");
         var temporaryFiles = new List<string> { targetConnectionPath };
         var cleanupFailures = new List<Exception>();
+        Exception? proofFailure = null;
         try
         {
             await WriteOwnerOnlyTextAsync(targetConnectionPath, connectionString);
@@ -188,6 +203,10 @@ public sealed class FullSchemaTargetExtensionRepairProofTests
                     systemHash, CancellationToken.None);
             }
         }
+        catch (Exception failure)
+        {
+            proofFailure = failure;
+        }
         finally
         {
             foreach (string path in temporaryFiles)
@@ -202,9 +221,18 @@ public sealed class FullSchemaTargetExtensionRepairProofTests
                 }
             }
         }
+        if (proofFailure is not null && cleanupFailures.Count != 0)
+        {
+            throw new AggregateException("Disposable proof and credential cleanup failed.",
+                [proofFailure, .. cleanupFailures]);
+        }
         if (cleanupFailures.Count != 0)
         {
             throw new AggregateException("Disposable proof credential cleanup failed.", cleanupFailures);
+        }
+        if (proofFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(proofFailure).Throw();
         }
     }
 
@@ -219,6 +247,11 @@ public sealed class FullSchemaTargetExtensionRepairProofTests
             }
             : database with { TargetExtensionProfile = null };
         return fixture with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(fixture) };
+    }
+
+    private static bool IsFreshSourcePlan(DateTimeOffset capturedAtUtc, DateTimeOffset nowUtc)
+    {
+        return capturedAtUtc >= nowUtc.AddHours(-2) && capturedAtUtc <= nowUtc.AddMinutes(5);
     }
 
     private static string Config(string schemaPath, string database, string targetConnectionPath,
