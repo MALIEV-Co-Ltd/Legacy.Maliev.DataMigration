@@ -117,6 +117,9 @@ public sealed record DatabaseSchemaPlan(
 {
     /// <summary>Reviewed PostgreSQL-only schema profile bound to the signed plan.</summary>
     public string? TargetExtensionProfile { get; init; }
+
+    /// <summary>Reviewed source tables requiring a non-default migration disposition.</summary>
+    public string? SourceDispositionProfile { get; init; }
 }
 
 public sealed record FreshSchemaPlan(
@@ -178,6 +181,16 @@ public static partial class SchemaPlanCanonicalizer
             {
                 errors.Add(new("target_extension_profile_invalid",
                     $"{database.Database} has an unapproved or overlapping target extension profile."));
+            }
+
+            try
+            {
+                ApprovedSourceDispositionManifest.Validate(database);
+            }
+            catch (MigrationExecutionException)
+            {
+                errors.Add(new("source_disposition_profile_invalid",
+                    $"{database.Database} has an unapproved source table disposition."));
             }
 
             if (!string.Equals(database.TargetSchemaVersion, "1.0", StringComparison.Ordinal))
@@ -465,6 +478,11 @@ public static partial class SchemaPlanCanonicalizer
                 {
                     writer.Write((byte)'E');
                     WriteString(writer, database.TargetExtensionProfile);
+                }
+                if (database.SourceDispositionProfile is not null)
+                {
+                    writer.Write((byte)'D');
+                    WriteString(writer, database.SourceDispositionProfile);
                 }
             }
         }

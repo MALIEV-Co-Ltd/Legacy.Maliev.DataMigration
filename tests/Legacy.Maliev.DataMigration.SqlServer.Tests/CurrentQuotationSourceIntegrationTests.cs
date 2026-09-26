@@ -78,6 +78,8 @@ public sealed class CurrentQuotationSourceIntegrationTests
         await source.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
         DatabaseSchemaPlan plan = await source.GenerateDatabasePlanAsync(database, CancellationToken.None);
         Assert.Equal(3, plan.Tables.Count);
+        Assert.Equal(ApprovedSourceDispositionManifest.QuotationOutboxesV1,
+            ApprovedSourceDispositionManifest.ProfileForDatabase("Quotation", plan.Tables));
         AssertTable(plan, CurrentQuotationSourceContract.GoogleAnalyticsOutbox);
         AssertTable(plan, CurrentQuotationSourceContract.QuotationOutcomeOutbox);
         TableCopyPlan quotation = Assert.Single(plan.Tables, table => table.SourceTable == "Quotation");
