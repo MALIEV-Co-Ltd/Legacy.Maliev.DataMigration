@@ -324,11 +324,13 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         IReadOnlyDictionary<string, long> sequences = await inspection
             .InspectSequenceNextValuesAsync(schema, cancellationToken).ConfigureAwait(false);
         ReconciliationDiagnostics.CompareSequences(schema, expected.SequenceNextValues, sequences);
-        if (extensionState is not null)
+        string? extensionStateSha256 = null;
+        if (extensionState is not null && ApprovedTargetExtensionManifest.TablesFor(schema).Count != 0)
         {
             ApprovedTargetExtensionState observedExtensions = await ApprovedTargetExtensionStateInspector
                 .InspectAsync(connection, transaction, schema, cancellationToken).ConfigureAwait(false);
             ApprovedTargetExtensionStateInspector.Compare(schema, extensionState, observedExtensions);
+            extensionStateSha256 = ApprovedTargetExtensionStateInspector.ComputeSha256(schema, observedExtensions);
         }
         var observedEvidence = new DatabaseReconciliationEvidence(
             schema.Database,
@@ -337,6 +339,7 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
             tables.AsReadOnly())
         {
             SequenceNextValues = sequences,
+            TargetExtensionStateSha256 = extensionStateSha256,
         };
         _reconciliationSha256 = DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(observedEvidence);
         return _reconciliationSha256;

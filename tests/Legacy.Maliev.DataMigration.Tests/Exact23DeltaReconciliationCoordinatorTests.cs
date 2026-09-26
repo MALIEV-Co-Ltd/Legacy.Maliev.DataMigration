@@ -86,6 +86,34 @@ public sealed class Exact23DeltaReconciliationCoordinatorTests : IDisposable
     }
 
     [Theory]
+    [InlineData(false, "delta_reconciliation_shape_invalid")]
+    [InlineData(true, "delta_reconciliation_checkpoint_invalid")]
+    public async Task Checkpoint_bound_reconciliation_rejects_missing_or_changed_extension_state(
+        bool changed, string expectedCode)
+    {
+        DateTimeOffset now = new(2026, 9, 25, 7, 0, 0, TimeSpan.Zero);
+        FreshSchemaPlan schemas = Schemas(now);
+        schemas = schemas with
+        {
+            Databases = [.. schemas.Databases.Select(schema => schema.Database == "Material"
+                ? schema with { TargetExtensionProfile = ApprovedTargetExtensionManifest.MaterialCatalogV1 }
+                : schema)],
+        };
+        DeltaSynchronizationPlan plan = Plan(schemas, now);
+        var target = new Inspector(schema => schema.Database == "Material"
+            ? Evidence(schema) with { TargetExtensionStateSha256 = changed ? Hash('f') : null }
+            : Evidence(schema));
+        using var signer = Signer();
+        var coordinator = new Exact23DeltaReconciliationCoordinator(new Inspector(Evidence), target,
+            new Checkpoints(plan, schemas), new FixedTime(now), signer, checkpointBound: true);
+
+        DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            coordinator.ReconcileAsync(plan, schemas, CancellationToken.None));
+
+        Assert.Equal(expectedCode, error.Code);
+    }
+
+    [Theory]
     [InlineData("missing")]
     [InlineData("foreign")]
     [InlineData("plan")]
@@ -130,13 +158,17 @@ public sealed class Exact23DeltaReconciliationCoordinatorTests : IDisposable
         return new(schema.Database, schema.SourceSchemaSha256, schema.TargetSchemaSha256, [table])
         {
             SequenceNextValues = new Dictionary<string, long> { ["public.items.id"] = 2 },
+            TargetExtensionStateSha256 = schema.TargetExtensionProfile is null ? null : Hash('e'),
         };
     }
 
     private static FreshSchemaPlan Schemas(DateTimeOffset now)
     {
         return new("2.0", now, new string('1', 40), [.. DatabaseInventory.ActiveDatabases.Select(name =>
-            new DatabaseSchemaPlan(name, "1.0", Hash('a'), Hash('b'), [Table()]))]);
+            new DatabaseSchemaPlan(name, "1.0", Hash('a'), Hash('b'), [Table()])
+            {
+                TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(name),
+            })]);
     }
 
     private static TableCopyPlan Table()

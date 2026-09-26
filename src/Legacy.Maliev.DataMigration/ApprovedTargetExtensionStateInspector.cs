@@ -56,4 +56,28 @@ internal static class ApprovedTargetExtensionStateInspector
         ReconciliationDiagnostics.CompareSequences(schema with { Tables = extensions },
             expected.SequenceNextValues, observed.SequenceNextValues);
     }
+
+    internal static string ComputeSha256(DatabaseSchemaPlan schema, ApprovedTargetExtensionState state)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(state);
+        IReadOnlyList<TableCopyPlan> extensions = ApprovedTargetExtensionManifest.TablesFor(schema);
+        string[] expectedSequences = [.. extensions.SelectMany(table => table.Identities.Select(identity =>
+            $"{table.TargetSchema}.{table.TargetTable}.{identity.Column}")).Order(StringComparer.Ordinal)];
+        if (extensions.Count == 0 || state.Tables.Count != extensions.Count ||
+            !state.Tables.Select(table => table.Table).SequenceEqual(
+                extensions.Select(table => $"{table.TargetSchema}.{table.TargetTable}"), StringComparer.Ordinal) ||
+            !state.SequenceNextValues.Keys.Order(StringComparer.Ordinal).SequenceEqual(expectedSequences, StringComparer.Ordinal))
+        {
+            throw new MigrationExecutionException("target_extension_state_invalid",
+                "The approved target extension state does not cover its signed table inventory.");
+        }
+
+        var evidence = new DatabaseReconciliationEvidence(
+            schema.Database, schema.SourceSchemaSha256, schema.TargetSchemaSha256, state.Tables)
+        {
+            SequenceNextValues = state.SequenceNextValues,
+        };
+        return DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(evidence);
+    }
 }

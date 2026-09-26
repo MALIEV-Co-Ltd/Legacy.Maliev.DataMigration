@@ -283,7 +283,10 @@ public sealed class Exact23LocalDeltaFinalizationTests : IDisposable
     private static FreshSchemaPlan Schemas(DateTimeOffset now)
     {
         return new("2.0", now, new string('1', 40), [.. DatabaseInventory.ActiveDatabases.Select(database =>
-            new DatabaseSchemaPlan(database, "1.0", Hash('a'), Hash('b'), [Table()]))]);
+            new DatabaseSchemaPlan(database, "1.0", Hash('a'), Hash('b'), [Table()])
+            {
+                TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(database),
+            })]);
     }
 
     private static DeltaSynchronizationPlan PlanFor(FreshSchemaPlan schemas, DateTimeOffset now)
@@ -314,7 +317,10 @@ public sealed class Exact23LocalDeltaFinalizationTests : IDisposable
     {
         var table = new TableReconciliationEvidence("public.items", 1, Hash('c'), Hash('d'),
             new Dictionary<string, long> { ["id"] = 0 }, new Dictionary<string, long>());
-        return new(schema.Database, schema.SourceSchemaSha256, schema.TargetSchemaSha256, [table]);
+        return new(schema.Database, schema.SourceSchemaSha256, schema.TargetSchemaSha256, [table])
+        {
+            TargetExtensionStateSha256 = schema.TargetExtensionProfile is null ? null : Hash('e'),
+        };
     }
 
     private static string Hash(char value)

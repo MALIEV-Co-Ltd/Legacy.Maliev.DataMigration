@@ -28,6 +28,11 @@ public static class DeltaReconciliationEvidenceCanonicalizer
                 WriteCounts(writer, table.ForeignKeyRelationshipCounts);
             }
             WriteCounts(writer, evidence.SequenceNextValues);
+            if (evidence.TargetExtensionStateSha256 is not null)
+            {
+                writer.Write((byte)1);
+                Write(writer, evidence.TargetExtensionStateSha256.ToLowerInvariant());
+            }
         }
 
         return Convert.ToHexString(SHA256.HashData(stream.ToArray())).ToLowerInvariant();

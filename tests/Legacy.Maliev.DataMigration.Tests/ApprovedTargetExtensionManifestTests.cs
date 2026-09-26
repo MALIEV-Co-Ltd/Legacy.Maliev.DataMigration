@@ -40,6 +40,7 @@ public sealed class ApprovedTargetExtensionManifestTests(PostgreSqlAdapterFixtur
                     .InspectAsync(connection, stateTransaction, plan, CancellationToken.None);
                 originalExtensionState = before;
                 ApprovedTargetExtensionStateInspector.Compare(plan, before, before);
+                string beforeSha256 = ApprovedTargetExtensionStateInspector.ComputeSha256(plan, before);
                 string insert = database == "Material"
                     ? "INSERT INTO public.\"Country\" (\"Name\") VALUES ('Synthetic');"
                     : $"INSERT INTO public.\"RequestCreateIdempotency\" (\"KeyHash\", \"Fingerprint\", \"RequestID\") VALUES ('{new string('a', 64)}', '{new string('b', 64)}', 1);";
@@ -49,6 +50,7 @@ public sealed class ApprovedTargetExtensionManifestTests(PostgreSqlAdapterFixtur
                 }
                 ApprovedTargetExtensionState after = await ApprovedTargetExtensionStateInspector
                     .InspectAsync(connection, stateTransaction, plan, CancellationToken.None);
+                Assert.NotEqual(beforeSha256, ApprovedTargetExtensionStateInspector.ComputeSha256(plan, after));
                 _ = Assert.Throws<MigrationExecutionException>(() =>
                     ApprovedTargetExtensionStateInspector.Compare(plan, before, after));
                 await stateTransaction.RollbackAsync();
@@ -63,6 +65,9 @@ public sealed class ApprovedTargetExtensionManifestTests(PostgreSqlAdapterFixtur
                 await using var sequenceTransaction = await sequenceConnection.BeginTransactionAsync();
                 ApprovedTargetExtensionState sequenceAdvanced = await ApprovedTargetExtensionStateInspector
                     .InspectAsync(sequenceConnection, sequenceTransaction, plan, CancellationToken.None);
+                Assert.NotEqual(
+                    ApprovedTargetExtensionStateInspector.ComputeSha256(plan, originalExtensionState),
+                    ApprovedTargetExtensionStateInspector.ComputeSha256(plan, sequenceAdvanced));
                 _ = Assert.Throws<MigrationExecutionException>(() =>
                     ApprovedTargetExtensionStateInspector.Compare(plan, originalExtensionState, sequenceAdvanced));
                 await sequenceTransaction.RollbackAsync();
