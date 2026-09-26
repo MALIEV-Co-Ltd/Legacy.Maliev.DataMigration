@@ -1,0 +1,206 @@
+using System.Security.Cryptography;
+using System.Text;
+using Npgsql;
+
+namespace Legacy.Maliev.DataMigration.Tests;
+
+[Collection(PostgreSqlAdapterTestGroup.Name)]
+public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFixture fixture)
+{
+    [Fact]
+    public async Task Bootstrap_AddsOnlyReviewedTargets_AndPreservesRetainedRows()
+    {
+        (PostgreSqlShadowTarget target, ShadowDatabase shadow, DatabaseSchemaPlan plan, string connection) =
+            await CreateSourceShapedAsync();
+        try
+        {
+            string identity = await IdentityAsync(connection);
+            Assert.Equal("created", await QuotationDispositionTargetBootstrap.ExecuteAsync(
+                plan, connection, shadow.Name, identity, CancellationToken.None));
+            Assert.Equal("already-current", await QuotationDispositionTargetBootstrap.ExecuteAsync(
+                plan, connection, shadow.Name, identity, CancellationToken.None));
+            Assert.Equal(1L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM public.\"QuotationOutcomeOutbox\" WHERE \"ID\"=7;"));
+            Assert.Equal(0L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM public.\"QuotationAcceptedOutcome\";"));
+            Assert.Equal(0L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM legacy_compatibility.\"GoogleAnalyticsOutbox\";"));
+            await using var db = new NpgsqlConnection(connection);
+            await db.OpenAsync();
+            await using var transaction = await db.BeginTransactionAsync();
+            var inspector = new PostgreSqlWholeDatabaseTransaction(db, transaction, ownsResources: false);
+            Assert.Equal(PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(plan, true),
+                await inspector.InspectSchemaAsync(plan, CancellationToken.None));
+            await transaction.RollbackAsync();
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Theory]
+    [InlineData("CREATE TABLE public.\"Unexpected\" (\"ID\" integer);", "quotation_target_bootstrap_schema_drift")]
+    [InlineData("CREATE TABLE public.\"QuotationAcceptedOutcome\" (\"ID\" bigint);", "quotation_target_bootstrap_missing_set_invalid")]
+    [InlineData("ALTER TABLE public.\"QuotationOutcomeOutbox\" ADD \"Drift\" integer;", "quotation_target_bootstrap_schema_drift")]
+    public async Task Bootstrap_RejectsDriftWithoutCreatingTargets(string ddl, string code)
+    {
+        (PostgreSqlShadowTarget target, ShadowDatabase shadow, DatabaseSchemaPlan plan, string connection) =
+            await CreateSourceShapedAsync();
+        try
+        {
+            await ExecuteAsync(connection, ddl);
+            string identity = await IdentityAsync(connection);
+            MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                QuotationDispositionTargetBootstrap.ExecuteAsync(plan, connection, shadow.Name,
+                    identity, CancellationToken.None));
+            Assert.Equal(code, failure.Code);
+            Assert.Equal(0L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n " +
+                "ON n.oid=c.relnamespace WHERE n.nspname='legacy_compatibility' AND c.relname='GoogleAnalyticsOutbox';"));
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Bootstrap_RejectsWrongTargetIdentityAndSignedPlan()
+    {
+        (PostgreSqlShadowTarget target, ShadowDatabase shadow, DatabaseSchemaPlan plan, string connection) =
+            await CreateSourceShapedAsync();
+        try
+        {
+            MigrationExecutionException identity = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                QuotationDispositionTargetBootstrap.ExecuteAsync(plan, connection, shadow.Name,
+                    new string('0', 64), CancellationToken.None));
+            Assert.Equal("quotation_target_bootstrap_identity_invalid", identity.Code);
+            string validIdentity = await IdentityAsync(connection);
+            MigrationExecutionException planError = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                QuotationDispositionTargetBootstrap.ExecuteAsync(plan with { TargetSchemaSha256 = new string('0', 64) },
+                    connection, shadow.Name, validIdentity, CancellationToken.None));
+            Assert.Equal("quotation_target_bootstrap_plan_invalid", planError.Code);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Bootstrap_RejectsMissingRetainedTableAndPostCommitSequenceDrift()
+    {
+        (PostgreSqlShadowTarget target, ShadowDatabase shadow, DatabaseSchemaPlan plan, string connection) =
+            await CreateSourceShapedAsync();
+        try
+        {
+            string identity = await IdentityAsync(connection);
+            await ExecuteAsync(connection, "DROP TABLE public.\"GoogleAnalyticsOutbox\";");
+            MigrationExecutionException missing = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                QuotationDispositionTargetBootstrap.ExecuteAsync(plan, connection, shadow.Name,
+                    identity, CancellationToken.None));
+            Assert.Equal("quotation_target_bootstrap_retained_set_invalid", missing.Code);
+            // Restore the exact source shape only inside the disposable database.
+            DatabaseSchemaPlan sourceTable = plan with
+            {
+                Database = "QuotationBootstrapFixture",
+                Tables = [plan.Tables.Single(table => table.SourceTable == "GoogleAnalyticsOutbox")],
+                SourceDispositionProfile = null,
+                SourceTableDispositions = [],
+            };
+            await using (var db = new NpgsqlConnection(connection))
+            {
+                await db.OpenAsync();
+                await using var tx = await db.BeginTransactionAsync();
+                var writer = new PostgreSqlWholeDatabaseTransaction(db, tx, ownsResources: false);
+                await writer.ApplySchemaAsync(sourceTable, CancellationToken.None);
+                await writer.FinalizeSchemaAsync(sourceTable, CancellationToken.None);
+                await tx.CommitAsync();
+            }
+            Assert.Equal("created", await QuotationDispositionTargetBootstrap.ExecuteAsync(plan,
+                connection, shadow.Name, identity, CancellationToken.None));
+            await ExecuteAsync(connection,
+                "ALTER SEQUENCE public.\"QuotationAcceptedOutcome_ID_seq\" INCREMENT BY 2;");
+            MigrationExecutionException sequence = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                QuotationDispositionTargetBootstrap.VerifyPostCommitAsync(plan, connection, shadow.Name,
+                    identity, CancellationToken.None));
+            Assert.Equal("quotation_target_bootstrap_sequence_drift", sequence.Code);
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    private async Task<(PostgreSqlShadowTarget, ShadowDatabase, DatabaseSchemaPlan, string)> CreateSourceShapedAsync()
+    {
+        TableCopyPlan[] tables =
+        [
+            ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.GoogleAnalyticsOutbox,
+                "PK_GoogleAnalyticsOutbox", "UX_GoogleAnalyticsOutbox_EventKey", uniqueIndex: true),
+            ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.QuotationOutcomeOutbox,
+                "PK_QuotationOutcomeOutbox", "UQ_QuotationOutcomeOutbox_EventKey", uniqueIndex: false),
+        ];
+        var draft = new DatabaseSchemaPlan("Quotation", "1.0", new string('a', 64), new string('0', 64), tables)
+        {
+            SourceDispositionProfile = ApprovedSourceDispositionManifest.QuotationOutboxesV1,
+            SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase("Quotation", tables),
+        };
+        DatabaseSchemaPlan plan = draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+        PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
+        ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync("Quotation",
+            $"legacy_shadow_quote_bootstrap_{Guid.NewGuid():N}", Guid.NewGuid().ToString("D"), CancellationToken.None);
+        DatabaseSchemaPlan sourceShape = plan with
+        {
+            Database = "QuotationBootstrapFixture",
+            SourceDispositionProfile = null,
+            SourceTableDispositions = [],
+        };
+        await using (IPostgreSqlWholeDatabaseTransaction transaction =
+            await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None))
+        {
+            await transaction.ApplySchemaAsync(sourceShape, CancellationToken.None);
+            await transaction.FinalizeSchemaAsync(sourceShape, CancellationToken.None);
+            _ = await transaction.InspectSchemaAsync(sourceShape, CancellationToken.None);
+            foreach (TableCopyPlan table in tables)
+            {
+                _ = await transaction.InspectTableAsync(table, CancellationToken.None);
+            }
+            await transaction.CommitAsync(CancellationToken.None);
+        }
+        string connection = new NpgsqlConnectionStringBuilder(fixture.ShadowAdminConnectionString)
+        {
+            Database = shadow.Name,
+        }.ConnectionString;
+        await ExecuteAsync(connection,
+            "INSERT INTO public.\"QuotationOutcomeOutbox\" (\"ID\", \"EventKey\", \"QuotationID\", \"AcceptedUtc\", \"AcceptanceOrigin\") " +
+            "VALUES (7, 'synthetic-7', 42, '2026-09-26 12:00:00', 'customer');");
+        return (target, shadow, plan, connection);
+    }
+
+    private static async Task<string> IdentityAsync(string connection)
+    {
+        await using var db = new NpgsqlConnection(connection);
+        await db.OpenAsync();
+        await using var command = new NpgsqlCommand("SELECT system_identifier::text FROM pg_control_system();", db);
+        string value = (string)(await command.ExecuteScalarAsync() ?? throw new InvalidOperationException());
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+    }
+
+    private static async Task ExecuteAsync(string connection, string sql)
+    {
+        await using var db = new NpgsqlConnection(connection);
+        await db.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, db);
+        _ = await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<long> ScalarAsync(string connection, string sql)
+    {
+        await using var db = new NpgsqlConnection(connection);
+        await db.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, db);
+        return (long)(await command.ExecuteScalarAsync() ?? throw new InvalidOperationException());
+    }
+}
