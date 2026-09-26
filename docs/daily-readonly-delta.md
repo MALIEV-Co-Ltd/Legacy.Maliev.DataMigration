@@ -5,6 +5,11 @@ are implemented: `QuotationOutcomeOutbox` must be adopted into
 `QuotationAcceptedOutcome`, and `GoogleAnalyticsOutbox` must be preserved in the
 read-only compatibility archive. Neither may be copied as an ordinary public
 table to make a schema fingerprint pass.
+The schema plan now signs explicit source-to-target bindings for these two
+tables, including the reviewed source contract hash and target schema version.
+Those bindings are review evidence only: they do not authorize outbox row
+execution or relax the planner's fail-closed guard. Adoption, archive apply,
+and full reconciliation still require separate validation before a live run.
 
 `scripts/invoke-daily-readonly-delta.ps1` is a backup-free row comparison path for
 already populated exact-23 PostgreSQL targets. It reads every source and target

@@ -101,6 +101,7 @@ public sealed partial class SqlServerMigrationSource
         {
             TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(database),
             SourceDispositionProfile = ApprovedSourceDispositionManifest.ProfileForDatabase(database, tables),
+            SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase(database, tables),
         };
         return draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
     }

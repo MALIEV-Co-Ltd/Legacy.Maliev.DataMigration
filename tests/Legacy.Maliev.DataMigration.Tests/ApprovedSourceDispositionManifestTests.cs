@@ -19,7 +19,32 @@ public sealed class ApprovedSourceDispositionManifestTests
             () => ApprovedSourceDispositionManifest.Validate(unbound));
         Assert.Equal("source_disposition_profile_invalid", missing.Code);
 
-        DatabaseSchemaPlan bound = unbound with { SourceDispositionProfile = profile };
+        IReadOnlyList<SourceTableDisposition> dispositions =
+            ApprovedSourceDispositionManifest.DispositionsForDatabase("Quotation", tables);
+        Assert.Collection(dispositions,
+            archive =>
+            {
+                Assert.Equal("dbo.GoogleAnalyticsOutbox", $"{archive.SourceSchema}.{archive.SourceTable}");
+                Assert.Equal("legacy_compatibility.GoogleAnalyticsOutbox", $"{archive.TargetSchema}.{archive.TargetTable}");
+                Assert.Equal("read-only-archive", archive.Disposition);
+            },
+            adoption =>
+            {
+                Assert.Equal("dbo.QuotationOutcomeOutbox", $"{adoption.SourceSchema}.{adoption.SourceTable}");
+                Assert.Equal("public.QuotationAcceptedOutcome", $"{adoption.TargetSchema}.{adoption.TargetTable}");
+                Assert.Equal("canonical-adoption", adoption.Disposition);
+            });
+        Assert.All(dispositions, disposition =>
+        {
+            Assert.Equal(CurrentQuotationSourceContract.SourceContractSha256, disposition.SourceContractSha256);
+            Assert.Equal("1.0", disposition.TargetSchemaVersion);
+        });
+
+        DatabaseSchemaPlan bound = unbound with
+        {
+            SourceDispositionProfile = profile,
+            SourceTableDispositions = dispositions,
+        };
         ApprovedSourceDispositionManifest.Validate(bound);
         var unsigned = new FreshSchemaPlan("2.0", DateTimeOffset.UtcNow, new string('c', 40), [unbound]);
         Assert.NotEqual(SchemaPlanCanonicalizer.ComputeSha256(unsigned),
@@ -29,6 +54,18 @@ public sealed class ApprovedSourceDispositionManifestTests
             bound with { Database = "Customer" }));
         _ = Assert.Throws<MigrationExecutionException>(() => ApprovedSourceDispositionManifest.Validate(
             bound with { SourceDispositionProfile = "unreviewed" }));
+        _ = Assert.Throws<MigrationExecutionException>(() => ApprovedSourceDispositionManifest.Validate(
+            bound with { SourceTableDispositions = [dispositions[1], dispositions[0]] }));
+        _ = Assert.Throws<MigrationExecutionException>(() => ApprovedSourceDispositionManifest.Validate(
+            bound with { SourceTableDispositions = [dispositions[0] with { TargetSchema = "public" }, dispositions[1]] }));
+        _ = Assert.Throws<MigrationExecutionException>(() => ApprovedSourceDispositionManifest.Validate(
+            bound with { SourceTableDispositions = [dispositions[0], dispositions[1] with { SourceContractSha256 = new string('0', 64) }] }));
+        DatabaseSchemaPlan altered = bound with
+        {
+            SourceTableDispositions = [dispositions[0] with { TargetTable = "GoogleAnalyticsOutboxCopy" }, dispositions[1]],
+        };
+        Assert.NotEqual(SchemaPlanCanonicalizer.ComputeSha256(unsigned with { Databases = [bound] }),
+            SchemaPlanCanonicalizer.ComputeSha256(unsigned with { Databases = [altered] }));
     }
 
     [Fact]
