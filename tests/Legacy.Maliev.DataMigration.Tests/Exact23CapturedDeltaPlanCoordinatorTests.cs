@@ -520,6 +520,35 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         }
     }
 
+    [Theory]
+    [InlineData("GoogleAnalyticsOutbox", false)]
+    [InlineData("QuotationAcceptedOutcome", false)]
+    [InlineData("GoogleAnalyticsOutbox", true)]
+    public async Task Captured_quotation_rejects_same_count_mapped_evidence_drift_before_signing(
+        string driftTable, bool driftNullCount)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-quotation-drift-tests", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
+        try
+        {
+            FreshSchemaPlan schema = QuotationSchema();
+            var source = new QuotationSource(schema);
+            using var signer = new P256MigrationEvidenceSigner("quotation-content-drift", _key.ExportECPrivateKeyPem());
+            var coordinator = new Exact23CapturedDeltaPlanCoordinator(source, new EmptyTarget(),
+                new QuotationEvidence(source, driftTable: driftTable, driftNullCount: driftNullCount),
+                new DeltaCapturedTableArchive(directory), signer, new FixedTime());
+
+            DeltaPlanException failure = await Assert.ThrowsAsync<DeltaPlanException>(() => coordinator.ProduceAsync(
+                Request(schema), RandomNumberGenerator.GetBytes(32), CancellationToken.None));
+
+            Assert.Equal("delta_capture_source_evidence_mismatch", failure.Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static FreshSchemaPlan QuotationSchema()
     {
         TableCopyPlan[] outboxes =
@@ -649,7 +678,8 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         }
     }
 
-    private sealed class QuotationEvidence(QuotationSource source, bool omitOutcomeEvidence = false)
+    private sealed class QuotationEvidence(QuotationSource source, bool omitOutcomeEvidence = false,
+        string? driftTable = null, bool driftNullCount = false)
         : IDeltaReconciliationInspector
     {
         public Task<DatabaseReconciliationEvidence> InspectAsync(DatabaseSchemaPlan schema,
@@ -665,7 +695,18 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
                 {
                     collector.Append(mapping.MapRow(target, row));
                 }
-                return collector.Finish();
+                TableReconciliationEvidence evidence = collector.Finish();
+                if (schema.Database != "Quotation" || target.TargetTable != driftTable)
+                {
+                    return evidence;
+                }
+                if (!driftNullCount)
+                {
+                    return evidence with { ContentSha256 = Hash('f') };
+                }
+                var nullCounts = new Dictionary<string, long>(evidence.NullCounts, StringComparer.Ordinal);
+                nullCounts["EventKey"]++;
+                return evidence with { NullCounts = nullCounts };
             })];
             return Task.FromResult(new DatabaseReconciliationEvidence(schema.Database,
                 schema.SourceSchemaSha256, schema.TargetSchemaSha256, tables)

@@ -178,6 +178,28 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
                 {
                     archive.DiscardRunOwned(sourceFull);
                 }
+                if (table.SourceSchema == "disposition")
+                {
+                    using var collector = new TableEvidenceCollector(table);
+                    await foreach (MigrationRow row in archive.ReplayAsync(full, schema.Database, table,
+                        schemaPlanSha256, captureKey, cancellationToken).ConfigureAwait(false))
+                    {
+                        collector.Append(row);
+                    }
+                    TableReconciliationEvidence captured = collector.Finish();
+                    TableReconciliationEvidence observed = sourceEvidence.Tables.Single(evidence =>
+                        string.Equals(evidence.Table, Qualified(table), StringComparison.Ordinal));
+                    if (captured.RowCount != observed.RowCount ||
+                        !DeltaSynchronizationPlanProducer.FixedHashEquals(captured.ContentSha256, observed.ContentSha256) ||
+                        !DeltaSynchronizationPlanProducer.FixedHashEquals(captured.AggregateSha256, observed.AggregateSha256) ||
+                        captured.NullCounts.Count != observed.NullCounts.Count ||
+                        captured.NullCounts.Any(pair => !observed.NullCounts.TryGetValue(pair.Key, out long count) ||
+                            count != pair.Value))
+                    {
+                        throw new DeltaPlanException("delta_capture_source_evidence_mismatch",
+                            "The reviewed Quotation target rows differ from independent source reconciliation.");
+                    }
+                }
                 targetFullCaptures.Add(Qualified(table), full);
             }
             IReadOnlyList<DeltaTablePlan> tablePlans = await PlanTargetAsync(canonicalTarget, mapping.TargetSchema,
