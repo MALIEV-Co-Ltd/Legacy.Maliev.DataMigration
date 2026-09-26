@@ -129,10 +129,73 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now)).Code);
     }
 
+    [Fact]
+    public async Task Zero_delete_validator_admits_signed_same_capture_and_distinct_target()
+    {
+        Fixture fixture = await CreateAsync(captured: true, quotationDisposition: true,
+            matchingInsertOperations: true);
+        Assert.Contains(fixture.ProofPlan.Databases.SelectMany(database => database.Tables),
+            table => table.InsertCount == 1);
+
+        ZeroDeleteCapturedDeltaProofValidator.Verify(fixture.ProofPlan, fixture.ProofResult,
+            fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now);
+    }
+
+    [Fact]
+    public async Task Zero_delete_validator_rejects_uncaptured_pair()
+    {
+        Fixture fixture = await CreateAsync();
+
+        Assert.Equal("delta_zero_delete_captured_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(fixture.ProofPlan, fixture.ProofResult,
+                fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now)).Code);
+    }
+
+    [Fact]
+    public async Task Zero_delete_validator_rejects_tampered_or_stale_proof()
+    {
+        Fixture fixture = await CreateAsync(captured: true);
+
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(fixture.ProofPlan,
+                fixture.ProofResult with { PlanSha256 = Hash('9') }, fixture.LocalPlan,
+                fixture.Schema, fixture.Trust, fixture.Now)).Code);
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(fixture.ProofPlan, fixture.ProofResult,
+                fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now.AddHours(13))).Code);
+    }
+
+    [Fact]
+    public async Task Zero_delete_validator_rejects_a_signed_matched_delete()
+    {
+        Fixture fixture = await CreateAsync(captured: true, deleteOperations: true);
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(fixture.ProofPlan, fixture.Trust, fixture.Now));
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(fixture.LocalPlan, fixture.Trust, fixture.Now));
+
+        Assert.Equal("delta_zero_delete_captured_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(fixture.ProofPlan, fixture.ProofResult,
+                fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now)).Code);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Zero_delete_validator_rejects_changed_capture_or_operations(
+        bool changedArchive, bool changedOperations)
+    {
+        Fixture fixture = await CreateAsync(captured: true,
+            changedLocalArchive: changedArchive, changedLocalOperations: changedOperations);
+
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            ZeroDeleteCapturedDeltaProofValidator.Verify(fixture.ProofPlan, fixture.ProofResult,
+                fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now)).Code);
+    }
+
     private async Task<Fixture> CreateAsync(bool changedLocalOperations = false,
         bool captured = false, bool changedLocalEvidence = false, bool quotationDisposition = false,
         bool changedLocalTableInventory = false, bool changedLocalArchive = false,
-        bool changedLocalCaptureKey = false, bool changedLocalCaptureWindow = false)
+        bool changedLocalCaptureKey = false, bool changedLocalCaptureWindow = false,
+        bool deleteOperations = false, bool matchingInsertOperations = false)
     {
         DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
         TableCopyPlan[] quotationOutboxes =
@@ -170,9 +233,10 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             [new(planSigner.KeyId, planSigner.ExportSubjectPublicKeyInfo()),
                 new(localPlanSigner.KeyId, localPlanSigner.ExportSubjectPublicKeyInfo()),
                 new(evidenceSigner.KeyId, evidenceSigner.ExportSubjectPublicKeyInfo())]);
-        DeltaSynchronizationPlan proofPlan = MakePlan("disposable-proof", Hash('1'), now.AddMinutes(-3));
+        DeltaSynchronizationPlan proofPlan = MakePlan("disposable-proof", Hash('1'), now.AddMinutes(-3),
+            matchingInsertOperations);
         DeltaSynchronizationPlan localPlan = MakePlan("persistent-main", Hash('2'), now.AddMinutes(-1),
-            changedLocalOperations, changedLocalTableInventory);
+            changedLocalOperations || matchingInsertOperations, changedLocalTableInventory);
         var inspector = new Inspector();
         var coordinator = new Exact23DeltaReconciliationCoordinator(inspector, inspector,
             new Checkpoints(proofPlan, schema), new FixedTime(now.AddMinutes(-2)), evidenceSigner);
@@ -183,17 +247,21 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         DeltaSynchronizationPlan MakePlan(string id, string systemHash, DateTimeOffset created,
             bool changedOperations = false, bool changedTableInventory = false)
         {
-            CanonicalDeltaOperation[] changed = [new(DeltaOperationKind.Insert, Hash('e'), Hash('f'), null)];
+            CanonicalDeltaOperation[] changed = [new(
+                deleteOperations ? DeltaOperationKind.Delete : DeltaOperationKind.Insert,
+                Hash('e'), deleteOperations ? null : Hash('f'),
+                deleteOperations ? Hash('f') : null)];
             DeltaDatabasePlan[] databases = [.. DatabaseInventory.ActiveDatabases.Select(name => new DeltaDatabasePlan(name,
                 [.. new QuotationDeltaExecutionMapping(schema.Databases.Single(item => item.Database == name))
                     .TargetSchema.Tables.Select(table => new DeltaTablePlan(
                         changedTableInventory && name == "Quotation" && table.TargetTable == "QuotationAcceptedOutcome"
                             ? "public.QuotationOutcomeOutbox" : $"{table.TargetSchema}.{table.TargetTable}",
-                        changedOperations && name == "ContactRequest" ? 1 : 0,
-                        0, 0, changedOperations && name == "ContactRequest" ? 0 : 1,
+                        changedOperations && name == "ContactRequest" && !deleteOperations ? 1 : 0,
+                        0, deleteOperations && name == "ContactRequest" ? 1 : 0,
+                        changedOperations && name == "ContactRequest" ? 0 : 1,
                         DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(
-                            changedOperations && name == "ContactRequest" ? changed : []),
-                        changedOperations && name == "ContactRequest" ? changed : []))]))];
+                            (changedOperations || deleteOperations) && name == "ContactRequest" ? changed : []),
+                        (changedOperations || deleteOperations) && name == "ContactRequest" ? changed : []))]))];
             var request = new DeltaPlanSigningRequest(schema.SourceCommitSha, now.AddMinutes(-5), Hash('3'),
                 SchemaPlanCanonicalizer.ComputeSha256(schema), Hash('4'), "local-aspire",
                 "legacy-postgres-main-local", "generation-1", Hash('5'), Hash('6'), Hash('7'),

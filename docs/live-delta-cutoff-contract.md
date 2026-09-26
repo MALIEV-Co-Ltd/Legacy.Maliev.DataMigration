@@ -98,6 +98,15 @@ remain in force. Separately recapturing SQL Server after disposable proof is
 not an acceptable persistent-local plan: daytime writes can change the cutoff.
 
 This is a fail-closed prerequisite, not permission for persistent execution.
+`ZeroDeleteCapturedDeltaProofValidator` adds an explicit no-delete check on top
+of the signed, same-capture exact-23 proof gate. It accepts only matching
+schema-1.3 captured plans with zero deletions in both plans. It does not
+authorize schema-1.4 Quotation transition rows or perform any apply. A
+protected-main operator workflow must still construct both target-specific
+plans from the *same* encrypted capture and independently prove the full
+exact-23 disposable apply, rollback, replay, and reconciliation. Two ordinary
+daily runs generate different capture IDs and cannot satisfy that proof.
+Persistent-local row DML remains disabled; production is unchanged.
 The daily helper still creates a fresh run-owned capture and rejects
 schema-1.3 persistent `-Execute`; the console independently rejects it as
 well. An operator must not copy or re-sign a disposable plan into a persistent
