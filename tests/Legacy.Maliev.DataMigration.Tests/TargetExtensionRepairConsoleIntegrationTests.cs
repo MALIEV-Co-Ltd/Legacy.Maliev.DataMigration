@@ -93,6 +93,22 @@ public sealed class TargetExtensionRepairConsoleIntegrationTests
                 }, CancellationToken.None);
             Assert.Equal(0, authorized);
             Assert.Equal(string.Empty, authorizeError.ToString());
+            string originalAuthorization = await File.ReadAllTextAsync(authorizationPath);
+            using (var reusedError = new StringWriter())
+            {
+                int reused = await MigrationConsole.RunExtensionRepairForTestsAsync(
+                    ["authorize-target-extension-repair", "--config", authorizeConfigPath],
+                    TextWriter.Null, reusedError,
+                    name => name switch
+                    {
+                        "LEGACY_DEPLOY_ENABLED" => "false",
+                        "LEGACY_MIGRATION_CALLER" => "owner",
+                        "LEGACY_MIGRATION_EXTENSION_REPAIR_AUTHORIZATION_SIGNING_KEY_FILE" => keyPath,
+                        _ => null,
+                    }, CancellationToken.None);
+                Assert.NotEqual(0, reused);
+                Assert.Equal(originalAuthorization, await File.ReadAllTextAsync(authorizationPath));
+            }
 
             await File.WriteAllTextAsync(receiptPath, "occupied");
             using (var occupiedError = new StringWriter())
@@ -115,6 +131,41 @@ public sealed class TargetExtensionRepairConsoleIntegrationTests
             }
             File.Delete(receiptPath);
 
+            string pendingPath = Path.Combine(root, "pending-receipt.json");
+            string pendingConfigPath = Path.Combine(root, "pending-config.json");
+            await File.WriteAllTextAsync(pendingConfigPath, Config(schemaPath, connectionPath, publicPath,
+                authority, pendingPath, authorizationPath, authorize: false, execute: true));
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(pendingConfigPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            await using (var driftConnection = new NpgsqlConnection(materialBuilder.ConnectionString))
+            {
+                await driftConnection.OpenAsync();
+                await using var drift = new NpgsqlCommand("CREATE TABLE public.\"Unexpected\" (\"ID\" integer);", driftConnection);
+                _ = await drift.ExecuteNonQueryAsync();
+            }
+            using (var driftError = new StringWriter())
+            {
+                int blocked = await MigrationConsole.RunExtensionRepairForTestsAsync(
+                    ["apply-target-extension-repair", "--config", pendingConfigPath],
+                    TextWriter.Null, driftError,
+                    name => name switch
+                    {
+                        "LEGACY_DEPLOY_ENABLED" => "false",
+                        "LEGACY_MIGRATION_CALLER" => "owner",
+                        _ => null,
+                    }, CancellationToken.None);
+                Assert.NotEqual(0, blocked);
+                Assert.Contains("\"pending\"", await File.ReadAllTextAsync(pendingPath));
+            }
+            await using (var driftConnection = new NpgsqlConnection(materialBuilder.ConnectionString))
+            {
+                await driftConnection.OpenAsync();
+                await using var drift = new NpgsqlCommand("DROP TABLE public.\"Unexpected\";", driftConnection);
+                _ = await drift.ExecuteNonQueryAsync();
+            }
+
             using var applyOutput = new StringWriter();
             using var applyError = new StringWriter();
             int applied = await MigrationConsole.RunExtensionRepairForTestsAsync(
@@ -129,6 +180,16 @@ public sealed class TargetExtensionRepairConsoleIntegrationTests
             Assert.Equal(0, applied);
             Assert.Equal(string.Empty, applyError.ToString());
             Assert.Contains("\"created\"", await File.ReadAllTextAsync(receiptPath));
+            using (JsonDocument authorizationJson = JsonDocument.Parse(await File.ReadAllTextAsync(authorizationPath)))
+            using (JsonDocument receiptJson = JsonDocument.Parse(await File.ReadAllTextAsync(receiptPath)))
+            {
+                Assert.Equal(authorizationJson.RootElement.GetProperty("authorizationId").GetGuid(),
+                    receiptJson.RootElement.GetProperty("authorizationId").GetGuid());
+                Assert.Equal(64, receiptJson.RootElement.GetProperty("authorizationEnvelopeSha256")
+                    .GetString()!.Length);
+                Assert.Equal("public.Country;public.Currency",
+                    receiptJson.RootElement.GetProperty("reviewedMissingTables").GetString());
+            }
             await using var verify = new NpgsqlConnection(materialBuilder.ConnectionString);
             await verify.OpenAsync();
             await using var count = new NpgsqlCommand(

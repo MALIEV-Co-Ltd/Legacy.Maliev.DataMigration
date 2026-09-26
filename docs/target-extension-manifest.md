@@ -55,16 +55,33 @@ The only admissible missing sets are `public.Country;public.Currency` for
 Material and `public.RequestCreateIdempotency` for QuotationRequest. The
 authorization is signed over the source commit, expected complete schema,
 target authority/system identifier, database, missing set, and UTC lifetime.
+Each command reserves a new owner-only output path atomically before target
+work. An apply attempt leaves a durable `pending` marker if execution or final
+publication fails; a completed receipt atomically replaces that marker. Do not
+infer success or failure from a pending marker: re-observe the target schema
+and use a fresh authorization rather than replaying uncertain work.
+The pending marker is operational-only, not proof of authorization or DDL
+outcome. The completed apply receipt records the signed authorization ID and
+envelope digest, source commit, reviewed missing set, target authority, and
+target schema hash for audit correlation; it is not a row-reconciliation receipt.
 Before creating anything, the executor verifies that no approved extension is
 partially present and that the complete source-owned schema already matches the
 current signed plan. It creates only the approved tables, primary keys, and
 identity sequences in one serializable transaction, then verifies the full
-database schema fingerprint before commit. An exact replay is a no-op; any
-unexpected table, column, type, constraint, or identity drift fails closed.
+database schema fingerprint before commit. A fresh post-commit read-only
+inspection checks target identity, full schema fingerprint, and approved
+identity-sequence parameters before publishing success. This narrows, but does
+not eliminate, the window for unrelated non-cooperating DDL after inspection.
+An exact replay is a no-op; any unexpected table, column, type, constraint, or
+identity drift fails closed.
 
+The automated integration fixture has the exact 23 database *names* but only a
+synthetic source-owned `Probe` table in Material. It proves inventory gating
+and repair behavior, **not** the complete current source-owned schema shape.
 This code is not an authorization to change the persistent local target. First
-prove it on a separate disposable exact-23 copy with fresh identity and signing
-material, then seek a separately reviewed local DDL authorization. Production
+perform a separate fresh full-schema disposable proof from the current signed
+exact-23 plan, with fresh identity and signing material, then seek a separately
+reviewed local DDL authorization. Production
 schema repair remains outside these commands. A successful DDL repair still
 requires a new schema plan, fresh disposable row-delta proof, and independent
 row-delta authorization; the DDL receipt is not row reconciliation.

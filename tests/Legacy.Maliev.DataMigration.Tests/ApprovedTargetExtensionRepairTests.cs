@@ -20,6 +20,17 @@ public sealed class ApprovedTargetExtensionRepairTests(PostgreSqlAdapterFixture 
             string first = await ApprovedTargetExtensionRepair.ExecuteAsync(
                 plan, connectionString, shadow.Name, systemIdentifier, reviewedMissing, CancellationToken.None);
             Assert.Equal("created", first);
+            if (database == "Material")
+            {
+                await ExecuteSqlAsync(connectionString,
+                    "ALTER SEQUENCE public.\"Country_ID_seq\" INCREMENT BY 100;");
+                MigrationExecutionException sequenceDrift = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                    ApprovedTargetExtensionRepair.ExecuteAsync(plan, connectionString, shadow.Name,
+                        systemIdentifier, reviewedMissing, CancellationToken.None));
+                Assert.Equal("target_extension_repair_sequence_drift", sequenceDrift.Code);
+                await ExecuteSqlAsync(connectionString,
+                    "ALTER SEQUENCE public.\"Country_ID_seq\" INCREMENT BY 1;");
+            }
             string second = await ApprovedTargetExtensionRepair.ExecuteAsync(
                 plan, connectionString, shadow.Name, systemIdentifier, reviewedMissing, CancellationToken.None);
             Assert.Equal("already-current", second);
@@ -31,6 +42,28 @@ public sealed class ApprovedTargetExtensionRepairTests(PostgreSqlAdapterFixture 
             Assert.Equal(plan.TargetSchemaSha256, await inspector.InspectSchemaAsync(plan, CancellationToken.None));
             await transaction.RollbackAsync();
             Assert.Equal(1, await CountProbeRowsAsync(connectionString));
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task PostCommitVerifier_RejectsFreshlyObservedUnexpectedDdl()
+    {
+        (PostgreSqlShadowTarget target, ShadowDatabase shadow, DatabaseSchemaPlan plan, string connectionString) =
+            await CreateSourceOnlyDatabaseAsync("Material", ApprovedTargetExtensionManifest.MaterialCatalogV1);
+        try
+        {
+            string systemIdentifier = await SystemIdentifierSha256Async(connectionString);
+            _ = await ApprovedTargetExtensionRepair.ExecuteAsync(plan, connectionString, shadow.Name,
+                systemIdentifier, "public.Country;public.Currency", CancellationToken.None);
+            await ExecuteSqlAsync(connectionString, "CREATE TABLE public.\"ConcurrentDrift\" (\"ID\" integer);");
+            MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                ApprovedTargetExtensionRepair.VerifyPostCommitAsync(plan, connectionString, systemIdentifier,
+                    CancellationToken.None));
+            Assert.Equal("target_extension_repair_schema_drift", failure.Code);
         }
         finally
         {

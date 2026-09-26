@@ -93,7 +93,11 @@ public static class ApprovedTargetExtensionRepair
             {
                 throw Invalid("target_extension_repair_schema_drift");
             }
+            await ValidateExtensionSequencesAsync(connection, transaction, extensions, cancellationToken)
+                .ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await VerifyPostCommitAsync(plan, targetConnectionString, expectedSystemIdentifierSha256,
+                cancellationToken).ConfigureAwait(false);
             return "already-current";
         }
 
@@ -120,8 +124,95 @@ public static class ApprovedTargetExtensionRepair
         {
             throw Invalid("target_extension_repair_schema_drift");
         }
+        await ValidateExtensionSequencesAsync(connection, transaction, extensions, cancellationToken)
+            .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await VerifyPostCommitAsync(plan, targetConnectionString, expectedSystemIdentifierSha256,
+            cancellationToken).ConfigureAwait(false);
         return "created";
+    }
+
+    internal static async Task VerifyPostCommitAsync(
+        DatabaseSchemaPlan plan, string targetConnectionString,
+        string expectedSystemIdentifierSha256, CancellationToken cancellationToken)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(targetConnectionString) { Pooling = false };
+        await using var connection = new NpgsqlConnection(builder.ConnectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(
+            IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait(false);
+        await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY;", connection, transaction))
+        {
+            _ = await readOnly.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await ValidateSystemIdentifierAsync(connection, transaction, expectedSystemIdentifierSha256,
+            cancellationToken).ConfigureAwait(false);
+        await using var inspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction,
+            ownsResources: false);
+        if (!string.Equals(await inspector.InspectSchemaAsync(plan, cancellationToken)
+            .ConfigureAwait(false), plan.TargetSchemaSha256, StringComparison.Ordinal))
+        {
+            throw Invalid("target_extension_repair_schema_drift");
+        }
+        await ValidateExtensionSequencesAsync(connection, transaction,
+            ApprovedTargetExtensionManifest.TablesFor(plan), cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task ValidateExtensionSequencesAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction,
+        IReadOnlyList<TableCopyPlan> extensions, CancellationToken cancellationToken)
+    {
+        foreach (TableCopyPlan table in extensions)
+        {
+            foreach (IdentityCopyPlan identity in table.Identities)
+            {
+                string qualifiedTable = $"{PostgreSqlShadowTarget.QuoteIdentifier(table.TargetSchema)}." +
+                    PostgreSqlShadowTarget.QuoteIdentifier(table.TargetTable);
+                await using var name = new NpgsqlCommand("SELECT pg_get_serial_sequence($1, $2);",
+                    connection, transaction);
+                _ = name.Parameters.AddWithValue(qualifiedTable);
+                _ = name.Parameters.AddWithValue(identity.Column);
+                string? sequence = (string?)await name.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(sequence))
+                {
+                    throw Invalid("target_extension_repair_sequence_drift");
+                }
+                await using var definition = new NpgsqlCommand(
+                    "SELECT seqstart, seqincrement, seqmin, seqmax, seqcache, seqcycle, " +
+                    "seqtypid = 'integer'::regtype FROM pg_catalog.pg_sequence WHERE seqrelid=$1::regclass;",
+                    connection, transaction);
+                _ = definition.Parameters.AddWithValue(sequence);
+                await using NpgsqlDataReader reader = await definition.ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
+                    reader.GetInt64(0) != identity.SeedValue ||
+                    reader.GetInt64(1) != identity.IncrementValue ||
+                    reader.GetInt64(2) != 1 || reader.GetInt64(3) != int.MaxValue ||
+                    reader.GetInt64(4) != 1 || reader.GetBoolean(5) || !reader.GetBoolean(6))
+                {
+                    throw Invalid("target_extension_repair_sequence_drift");
+                }
+            }
+        }
+    }
+
+    private static async Task ValidateSystemIdentifierAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction,
+        string expectedSystemIdentifierSha256, CancellationToken cancellationToken)
+    {
+        await using var identifier = new NpgsqlCommand(
+            "SELECT system_identifier::text FROM pg_control_system();", connection, transaction);
+        string observed = (string)(await identifier.ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false) ?? throw Invalid("target_extension_repair_identity_invalid"));
+        string observedHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(observed)))
+            .ToLowerInvariant();
+        if (!CryptographicOperations.FixedTimeEquals(
+            Encoding.ASCII.GetBytes(expectedSystemIdentifierSha256.ToLowerInvariant()),
+            Encoding.ASCII.GetBytes(observedHash)))
+        {
+            throw Invalid("target_extension_repair_identity_invalid");
+        }
     }
 
     private static MigrationExecutionException Invalid(string code)

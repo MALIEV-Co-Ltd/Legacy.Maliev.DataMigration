@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using Npgsql;
 
 namespace Legacy.Maliev.DataMigration.Console;
@@ -34,6 +35,9 @@ public static partial class MigrationConsole
         string command, string configPath, Func<string, string?> environment,
         TextWriter output, TextWriter error, CancellationToken cancellationToken)
     {
+        string? reservedOutputPath = null;
+        bool ddlAttempted = false;
+        bool published = false;
         try
         {
             if (environment(DeployEnabledEnvironmentVariable) != "false")
@@ -53,6 +57,28 @@ public static partial class MigrationConsole
                 throw new MigrationConsoleException("target_extension_repair_output_exists", "The receipt path must be new.");
             }
             OwnerProtectedFilePolicy.ValidatePublicationParent(config.OutputPath);
+            await using var reservation = new FileStream(config.OutputPath, FileMode.CreateNew,
+                FileAccess.Write, FileShare.Read | FileShare.Delete, 4096, FileOptions.Asynchronous);
+            reservedOutputPath = config.OutputPath;
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(config.OutputPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            if (!OwnerProtectedFilePolicy.IsOwnerOnly(config.OutputPath))
+            {
+                throw new MigrationConsoleException("target_extension_repair_output_unprotected", "The reserved receipt must be owner-only.");
+            }
+            byte[] pending = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                schemaVersion = "1.0",
+                state = "pending",
+                command,
+                database = config.Database,
+                reservedAtUtc = DateTimeOffset.UtcNow
+            }, JsonOptions);
+            await reservation.WriteAsync(pending, cancellationToken).ConfigureAwait(false);
+            await reservation.FlushAsync(cancellationToken).ConfigureAwait(false);
+            reservation.Flush(flushToDisk: true);
             if (config.Database is not ("Material" or "QuotationRequest") ||
                 !DeltaSynchronizationPlanProducer.ValidAuthority(config.TargetAuthority,
                     "local-aspire", "legacy-postgres-main-local"))
@@ -125,6 +151,7 @@ public static partial class MigrationConsole
                     throw new MigrationConsoleException("target_extension_repair_authorization_invalid", "The DDL authorization is stale or mismatched.");
                 }
                 var builder = new NpgsqlConnectionStringBuilder(target) { Database = config.Database, Pooling = false };
+                ddlAttempted = true;
                 string disposition = await ApprovedTargetExtensionRepair.ExecuteAsync(database,
                     builder.ConnectionString, config.Database, config.TargetAuthority.SystemIdentifierSha256,
                     config.ReviewedMissingTables, cancellationToken).ConfigureAwait(false);
@@ -133,6 +160,11 @@ public static partial class MigrationConsole
                     schemaVersion = "1.0",
                     database = config.Database,
                     disposition,
+                    authorizationId = authorization.AuthorizationId,
+                    authorizationEnvelopeSha256 = Convert.ToHexString(SHA256.HashData(
+                        JsonSerializer.SerializeToUtf8Bytes(authorization, JsonOptions))).ToLowerInvariant(),
+                    sourceCommitSha = schema.SourceCommitSha,
+                    reviewedMissingTables = config.ReviewedMissingTables,
                     targetAuthority = config.TargetAuthority,
                     targetSchemaSha256 = database.TargetSchemaSha256,
                     completedAtUtc = DateTimeOffset.UtcNow
@@ -143,12 +175,20 @@ public static partial class MigrationConsole
                 throw new MigrationConsoleException("target_extension_repair_command_invalid", "Unsupported DDL command.");
             }
 
-            await WriteNewJsonAsync(config.OutputPath, result, cancellationToken).ConfigureAwait(false);
+            string completePath = config.OutputPath + ".complete-" + Guid.NewGuid().ToString("N");
+            await WriteNewJsonAsync(completePath, result, cancellationToken).ConfigureAwait(false);
+            File.Replace(completePath, config.OutputPath, destinationBackupFileName: null);
+            published = true;
             await output.WriteLineAsync(command.Replace('-', '_') + "_complete").ConfigureAwait(false);
             return 0;
         }
         catch (Exception failure)
         {
+            if (reservedOutputPath is not null && !ddlAttempted && !published)
+            {
+                try { File.Delete(reservedOutputPath); }
+                catch (IOException) { /* A concurrent handle keeps the reservation visible for review. */ }
+            }
             await error.WriteLineAsync(ClassifyDeltaFailure(failure)).ConfigureAwait(false);
             return failure is MigrationConsoleException or MigrationExecutionException or ArgumentException or
                 FormatException or CryptographicException ? 65 : 70;
