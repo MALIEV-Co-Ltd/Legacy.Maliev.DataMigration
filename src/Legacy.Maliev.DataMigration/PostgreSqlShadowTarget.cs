@@ -1213,6 +1213,38 @@ internal static class PostgreSqlSchemaFingerprint
         ArgumentNullException.ThrowIfNull(plan);
         IReadOnlyList<TableCopyPlan> schemaTables =
             [.. ApprovedSourceDispositionManifest.TargetTablesFor(plan), .. ApprovedTargetExtensionManifest.TablesFor(plan)];
+        return ComputeExpectedTables(schemaTables);
+    }
+
+    internal static string ComputeQuotationBootstrapExpected(DatabaseSchemaPlan plan, bool retainSourceOutboxes)
+    {
+        if (plan.Database != "Quotation" ||
+            plan.SourceDispositionProfile != ApprovedSourceDispositionManifest.QuotationOutboxesV1 ||
+            plan.TargetSchemaSha256 != ComputeExpected(plan))
+        {
+            throw new MigrationExecutionException("quotation_target_bootstrap_plan_invalid",
+                "The signed Quotation disposition schema plan is required.");
+        }
+
+        IReadOnlyList<TableCopyPlan> mapped = ApprovedSourceDispositionManifest.TargetTablesFor(plan);
+        if (!retainSourceOutboxes)
+        {
+            return plan.TargetSchemaSha256;
+        }
+
+        TableCopyPlan[] retained = [.. plan.Tables.Where(table =>
+            table.SourceSchema == "dbo" && table.SourceTable is "GoogleAnalyticsOutbox" or "QuotationOutcomeOutbox")];
+        return ComputeExpectedTables([.. mapped, .. retained]);
+    }
+
+    internal static string ComputeExpectedSourceShape(DatabaseSchemaPlan plan)
+    {
+        _ = ComputeQuotationBootstrapExpected(plan, true);
+        return ComputeExpectedTables(plan.Tables);
+    }
+
+    private static string ComputeExpectedTables(IReadOnlyList<TableCopyPlan> schemaTables)
+    {
         List<TableShape> tables = [.. schemaTables.Select(table => new TableShape(table.TargetSchema, table.TargetTable))];
         List<ColumnShape> columns = [.. schemaTables.SelectMany(table => table.OrderedColumns.Select((column, ordinal) =>
             new ColumnShape(
