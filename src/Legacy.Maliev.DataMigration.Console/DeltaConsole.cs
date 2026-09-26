@@ -692,6 +692,23 @@ internal interface IGuardedPairedDeltaConsoleRuntime
         CancellationToken cancellationToken);
 }
 
+internal static class PairedDeltaTargetIdentityFence
+{
+    internal static async Task<PairedCapturedDeltaPlans> VerifyAfterPlanningAsync(
+        PairedCapturedDeltaPlans plans,
+        string disposableConnection,
+        DeltaTargetAuthority disposableAuthority,
+        string persistentConnection,
+        DeltaTargetAuthority persistentAuthority,
+        Func<string, DeltaTargetAuthority, CancellationToken, Task> verify,
+        CancellationToken cancellationToken)
+    {
+        await verify(disposableConnection, disposableAuthority, cancellationToken).ConfigureAwait(false);
+        await verify(persistentConnection, persistentAuthority, cancellationToken).ConfigureAwait(false);
+        return plans;
+    }
+}
+
 internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory? sourceFactory = null) :
     IGuardedDeltaConsoleRuntime, IGuardedPairedDeltaConsoleRuntime
 {
@@ -752,6 +769,10 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
             throw new DeltaExecutionException("delta_live_source_drift",
                 "The live SQL Server source identity changed during paired captured planning.");
         }
+        plans = await PairedDeltaTargetIdentityFence.VerifyAfterPlanningAsync(plans,
+            request.DisposableTargetConnectionString, request.Configuration.TargetAuthority,
+            request.PersistentTargetConnectionString, request.Persistent.TargetAuthority,
+            VerifyTargetAuthorityAsync, cancellationToken).ConfigureAwait(false);
         var planTrust = new ReceiptAttestationTrustStore(
             [new(request.DisposableSigner.KeyId, request.DisposableSigner.ExportSubjectPublicKeyInfo()),
                 new(request.PersistentSigner.KeyId, request.PersistentSigner.ExportSubjectPublicKeyInfo())]);

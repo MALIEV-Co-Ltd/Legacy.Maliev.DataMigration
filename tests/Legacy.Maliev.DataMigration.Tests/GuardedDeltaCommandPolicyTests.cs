@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using Legacy.Maliev.DataMigration.Console;
 
 namespace Legacy.Maliev.DataMigration.Tests;
@@ -80,6 +81,39 @@ public sealed class GuardedDeltaCommandPolicyTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Paired_plan_post_capture_fence_rejects_either_changed_target_identity(
+        bool changedDisposable)
+    {
+        var disposable = new DeltaTargetAuthority(DeltaTargetAuthorityKind.LocalAspire,
+            "aspire://legacy-postgres-main-local/disposable-fence-test", new string('1', 64));
+        var persistent = new DeltaTargetAuthority(DeltaTargetAuthorityKind.LocalAspire,
+            "aspire://legacy-postgres-main-local/persistent-fence-test", new string('2', 64));
+        var planned = new PairedCapturedDeltaPlans(null!, null!);
+        var observed = new List<string>();
+
+        DeltaExecutionException failure = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            PairedDeltaTargetIdentityFence.VerifyAfterPlanningAsync(planned,
+                "disposable", disposable, "persistent", persistent,
+                (connection, expected, _) =>
+                {
+                    observed.Add(connection);
+                    bool isDisposable = connection == "disposable";
+                    if (isDisposable == changedDisposable)
+                    {
+                        throw new DeltaExecutionException("delta_target_identity_changed",
+                            "The target identity changed after captured planning.");
+                    }
+                    Assert.Equal(connection == "disposable" ? disposable : persistent, expected);
+                    return Task.CompletedTask;
+                }, CancellationToken.None));
+
+        Assert.Equal("delta_target_identity_changed", failure.Code);
+        Assert.Equal(changedDisposable ? ["disposable"] : ["disposable", "persistent"], observed);
+    }
+
     [Fact]
     public async Task Paired_command_projects_two_distinct_signers_and_one_capture_without_apply()
     {
@@ -129,7 +163,7 @@ public sealed class GuardedDeltaCommandPolicyTests
                 string captureDirectory = Path.Combine(directory, "captures");
                 OwnerProtectedDirectory.CreateNew(captureDirectory);
                 string captureKey = Path.Combine(directory, "capture-key.bin");
-                await File.WriteAllBytesAsync(captureKey, RandomNumberGenerator.GetBytes(32));
+                await WriteOwnerOnlyBytesAsync(captureKey, RandomNumberGenerator.GetBytes(32));
                 Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(captureKey));
                 string schemaPath = Path.Combine(directory, "schema.json");
                 await MigrationConsole.WriteNewJsonForTestsAsync(schemaPath,
@@ -213,7 +247,27 @@ public sealed class GuardedDeltaCommandPolicyTests
 
     private static async Task WriteOwnerOnlyAsync(string path, string value)
     {
-        await File.WriteAllTextAsync(path, value);
+        await WriteOwnerOnlyBytesAsync(path, Encoding.UTF8.GetBytes(value));
+    }
+
+    private static async Task WriteOwnerOnlyBytesAsync(string path, byte[] bytes)
+    {
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+            Options = FileOptions.Asynchronous,
+        };
+        if (!OperatingSystem.IsWindows())
+        {
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        }
+        await using (var stream = new FileStream(path, options))
+        {
+            await stream.WriteAsync(bytes);
+            await stream.FlushAsync();
+        }
         Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(path));
     }
 
