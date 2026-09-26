@@ -7,6 +7,14 @@ function Test-Throws([scriptblock]$Action) {
 }
 
 Describe 'Quotation disposable copy guards' {
+    It 'parses the connection fields instead of creating a ConnectionString key' {
+        $connection = ConvertTo-QuotationCopyConnection `
+            'Host=127.0.0.1;Port=5432;Database=postgres;Username=synthetic;Password=synthetic'
+        $connection['Host'] | Should Be '127.0.0.1'
+        $connection['Database'] | Should Be 'postgres'
+        $connection.ContainsKey('ConnectionString') | Should Be $false
+    }
+
     It 'accepts only run-owned names' {
         (Test-Throws { Assert-QuotationCopyName 'legacy-quotation-proof-abcdef123456' }) | Should Be $false
         (Test-Throws { Assert-QuotationCopyName 'legacy-maliev-exact23-postgres-data' }) | Should Be $true
