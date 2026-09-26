@@ -26,6 +26,7 @@ public sealed class PostgreSqlDeltaMetadataProvisioner(PostgreSqlDeltaMetadataPr
             throw new DeltaExecutionException("delta_metadata_authority_invalid",
                 "Delta metadata provisioning is not bound to the exact target authority and database inventory.");
         }
+        QuotationDeltaExecutionPreflight.Validate(plan, schemaPlan);
 
         foreach (DatabaseSchemaPlan schema in schemaPlan.Databases)
         {

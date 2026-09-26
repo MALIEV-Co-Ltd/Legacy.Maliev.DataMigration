@@ -40,12 +40,14 @@ public sealed class Exact23DeltaReconciliationCoordinator(
         ArgumentNullException.ThrowIfNull(schemaPlan);
         if (!plan.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
             !schemaPlan.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
+            !string.Equals(plan.SchemaPlanSha256, SchemaPlanCanonicalizer.ComputeSha256(schemaPlan), StringComparison.Ordinal) ||
             schemaPlan.Databases.Any(database => !string.Equals(database.TargetExtensionProfile,
                 ApprovedTargetExtensionManifest.ProfileForDatabase(database.Database), StringComparison.Ordinal)))
         {
             throw new DeltaExecutionException("delta_reconciliation_inventory_invalid",
                 "Post-delta reconciliation requires the exact ordered active database inventory.");
         }
+        QuotationDeltaExecutionPreflight.Validate(plan, schemaPlan);
 
         var reconciled = new List<DatabaseReconciliationEvidence>(DatabaseInventory.ActiveDatabases.Count);
         foreach (DatabaseSchemaPlan schema in schemaPlan.Databases)
@@ -58,14 +60,15 @@ public sealed class Exact23DeltaReconciliationCoordinator(
                 : await source.InspectAsync(schema, cancellationToken).ConfigureAwait(false);
             DatabaseReconciliationEvidence observed = await target.InspectAsync(schema, cancellationToken).ConfigureAwait(false);
             expected ??= observed;
-            ValidateShape(schema, expected, observed);
+            DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(schema).TargetSchema;
+            ValidateShape(schema, targetSchema, expected, observed);
             ReconciliationDiagnostics.CompareSchema(schema.Database, schema.TargetSchemaSha256, observed.TargetSchemaSha256);
             foreach (TableReconciliationEvidence expectedTable in expected.Tables)
             {
                 ReconciliationDiagnostics.CompareTable(schema.Database, expectedTable,
                     observed.Tables.Single(item => string.Equals(item.Table, expectedTable.Table, StringComparison.Ordinal)));
             }
-            ReconciliationDiagnostics.CompareSequences(schema, expected.SequenceNextValues, observed.SequenceNextValues);
+            ReconciliationDiagnostics.CompareSequences(targetSchema, expected.SequenceNextValues, observed.SequenceNextValues);
             reconciled.Add(observed);
         }
 
@@ -122,10 +125,11 @@ public sealed class Exact23DeltaReconciliationCoordinator(
 
     private static void ValidateShape(
         DatabaseSchemaPlan schema,
+        DatabaseSchemaPlan targetSchema,
         DatabaseReconciliationEvidence expected,
         DatabaseReconciliationEvidence observed)
     {
-        string[] tables = [.. schema.Tables.Select(item => $"{item.TargetSchema}.{item.TargetTable}").Order(StringComparer.Ordinal)];
+        string[] tables = [.. targetSchema.Tables.Select(item => $"{item.TargetSchema}.{item.TargetTable}").Order(StringComparer.Ordinal)];
         if (!string.Equals(expected.Database, schema.Database, StringComparison.Ordinal) ||
             !string.Equals(observed.Database, schema.Database, StringComparison.Ordinal) ||
             !string.Equals(expected.SourceSchemaSha256, schema.SourceSchemaSha256, StringComparison.OrdinalIgnoreCase) ||
