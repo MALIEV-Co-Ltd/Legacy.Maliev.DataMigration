@@ -17,11 +17,25 @@ public sealed class ReadOnlyDockerProcessTests
         Task<BackupProcessResult> running = ReadOnlyDockerProcess.ExecuteAsync(start, cancellation.Token);
         try
         {
-            while (!File.Exists(pidPath) && !running.IsCompleted) { await Task.Delay(20, cancellation.Token); }
-            int pid = int.Parse(await File.ReadAllTextAsync(pidPath, cancellation.Token), CultureInfo.InvariantCulture);
+            int? pid = null;
+            while (pid is null && !running.IsCompleted)
+            {
+                if (File.Exists(pidPath) &&
+                    int.TryParse(await File.ReadAllTextAsync(pidPath, cancellation.Token),
+                        NumberStyles.None, CultureInfo.InvariantCulture, out int observedPid) && observedPid > 0)
+                {
+                    pid = observedPid;
+                }
+                else
+                {
+                    await Task.Delay(20, cancellation.Token);
+                }
+            }
+
+            Assert.True(pid.HasValue, "The child process must publish a complete PID before it exits.");
             await cancellation.CancelAsync();
             _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running);
-            Assert.False(IsRunning(pid));
+            Assert.False(IsRunning(pid.Value));
         }
         finally
         {
