@@ -62,4 +62,18 @@ Describe 'Quotation disposable copy guards' {
         $container.Mounts[0].Name = 'legacy-quotation-proof-abcdef123456'
         (Test-Throws { Assert-QuotationCopySourceContainer $container $id }) | Should Be $true
     }
+
+    It 'removes only the exact env file after verified container creation' {
+        $root = Join-Path $TestDrive 'copy-run'
+        New-Item -ItemType Directory -Path $root | Out-Null
+        $path = Join-Path $root 'quotation-copy-container.env'
+        Set-Content -LiteralPath $path -Value 'synthetic-only' -NoNewline
+        $id = 'a' * 64
+        (Test-Throws { Remove-QuotationCopyContainerEnvFile $root $path $id '' }) | Should Be $true
+        (Test-Path -LiteralPath $path) | Should Be $true
+        (Test-Throws { Remove-QuotationCopyContainerEnvFile $root $path $id ('b' * 64) }) | Should Be $true
+        (Test-Path -LiteralPath $path) | Should Be $true
+        (Test-Throws { Remove-QuotationCopyContainerEnvFile $root $path $id $id }) | Should Be $false
+        (Test-Path -LiteralPath $path) | Should Be $false
+    }
 }

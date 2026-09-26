@@ -100,6 +100,9 @@ if ($Action -eq 'Cleanup') {
     if ($LASTEXITCODE -ne 0) { throw 'quotation_copy_container_cleanup_failed' }
     & docker volume rm -- $Name 1>$null 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'quotation_copy_volume_cleanup_failed' }
+    if (Test-Path -LiteralPath $environmentPath) {
+        Remove-QuotationCopyContainerEnvFile $root $environmentPath $receipt.containerId $container[0].Id
+    }
     Write-Output 'quotation_copy_resources_removed_protected_artifacts_retained'
     return
 }
@@ -196,6 +199,10 @@ Assert-QuotationCopyContainer $container[0] $Name $Name $runId $nonce $container
 if ($container[0].Config.Image -cne $ImageReference) {
     throw 'quotation_copy_image_identity_invalid'
 }
+# The Docker env file is needed only until the exact new container is verified.
+# Preserve it on an uncertain create; the protected target connection remains the only
+# run-owned credential file after successful creation.
+Remove-QuotationCopyContainerEnvFile $root $environmentPath $containerId $container[0].Id
 $copyPort = Assert-QuotationCopyPort ((docker port $containerId 5432/tcp) | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'quotation_copy_loopback_required' }
 $ready = $false

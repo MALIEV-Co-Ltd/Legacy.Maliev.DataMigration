@@ -68,6 +68,12 @@ rejects equal source/copy PostgreSQL system identifiers. It writes a protected
 target connection file and PII-free identity/dump-hash receipt; the dump and
 connection file are sensitive and must remain owner-only. Errors are coded,
 without dumping SQL, connection strings, or PostgreSQL stderr to logs.
+The one-time `quotation-copy-container.env` credential projection is removed
+immediately after the new container ID, run labels, volume mount, and pinned
+image are verified. If creation fails before that verification, the protected
+file is retained for owner review; never assume an uncertain container state
+is safe to erase. Verified cleanup also removes a residual exact run-owned env
+file from an older successful copy.
 
 ```powershell
 & ./scripts/new-quotation-disposable-copy.ps1 -Action Create `

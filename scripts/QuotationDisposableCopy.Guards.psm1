@@ -56,6 +56,22 @@ function Assert-QuotationCopyVolume($Volume, [string]$Name, [string]$RunId, [str
     }
 }
 
+function Remove-QuotationCopyContainerEnvFile([string]$RunDirectory, [string]$Path,
+    [string]$ExpectedContainerId, [string]$VerifiedContainerId) {
+    $expectedPath = Join-Path $RunDirectory 'quotation-copy-container.env'
+    if ($Path -cne $expectedPath -or
+        $ExpectedContainerId -cnotmatch '^[0-9a-f]{64}$' -or
+        $VerifiedContainerId -cne $ExpectedContainerId) {
+        throw 'quotation_copy_env_cleanup_unverified'
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.LinkType -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'quotation_copy_env_cleanup_link_invalid'
+    }
+    Remove-Item -LiteralPath $Path -Force
+}
+
 Export-ModuleMember -Function Assert-QuotationCopyName, Assert-QuotationCopyIdentity,
     Assert-QuotationCopyPort, Assert-QuotationCopySourceContainer,
-    Assert-QuotationCopyContainer, Assert-QuotationCopyVolume
+    Assert-QuotationCopyContainer, Assert-QuotationCopyVolume,
+    Remove-QuotationCopyContainerEnvFile
