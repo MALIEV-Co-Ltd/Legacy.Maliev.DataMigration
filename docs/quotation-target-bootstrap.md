@@ -48,6 +48,9 @@ Persistent local Aspire (`aspire://legacy-postgres-main-local/persistent-*`)
 requires that protected proof and its independent public `disposableProofKey`
 on both authorization and apply. The proof must be no older than 12 hours,
 validly signed, and from a **different PostgreSQL system identifier**. The
+persistent command additionally requires the exact-23 source schema plan to
+have a UTC capture no more than two hours old, with the disposable proof
+completed after that capture; a stale or future-dated plan fails closed. The
 persistent authorization has a separate signature domain and binds the exact
 signed proof envelope hash; it expires within 15 minutes. Proof trust and
 persistent authorization trust cannot reuse the same key. The runner rechecks

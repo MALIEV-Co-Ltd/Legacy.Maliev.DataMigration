@@ -88,6 +88,12 @@ public static partial class MigrationConsole
             DatabaseSchemaPlan database = schema.Databases.Single(item => item.Database == "Quotation");
             QuotationTargetBootstrapAuthorizationProducer.Validate(database, schema.SourceCommitSha,
                 config.TargetAuthority);
+            bool persistent = config.TargetAuthority.AuthorityId.StartsWith(
+                "aspire://legacy-postgres-main-local/persistent-", StringComparison.Ordinal);
+            if (persistent)
+            {
+                ValidatePersistentQuotationSchemaFreshness(schema.CapturedAtUtc, DateTimeOffset.UtcNow);
+            }
             string target = await ReadProtectedTextAsync(config.TargetConnectionFile,
                 "quotation_target_bootstrap_connection_unprotected", cancellationToken).ConfigureAwait(false);
             await DefaultGuardedDeltaConsoleRuntime.VerifyTargetAuthorityAsync(target, config.TargetAuthority,
@@ -96,11 +102,9 @@ public static partial class MigrationConsole
                 config.AuthorizationKey.SubjectPublicKeyInfoPath,
                 "quotation_target_bootstrap_trust_unprotected", cancellationToken).ConfigureAwait(false));
             var trust = new ReceiptAttestationTrustStore([new(config.AuthorizationKey.KeyId, publicKey)]);
-            bool persistent = config.TargetAuthority.AuthorityId.StartsWith(
-                "aspire://legacy-postgres-main-local/persistent-", StringComparison.Ordinal);
             string? proofSha256 = persistent
                 ? await ReadQuotationBootstrapProofSha256Async(config, database, schema.SourceCommitSha,
-                    publicKey, cancellationToken).ConfigureAwait(false)
+                    schema.CapturedAtUtc, publicKey, cancellationToken).ConfigureAwait(false)
                 : null;
             if (!persistent && (config.DisposableProofPath is not null || config.DisposableProofKey is not null))
             {
@@ -214,7 +218,8 @@ public static partial class MigrationConsole
 
     private static async Task<string> ReadQuotationBootstrapProofSha256Async(
         QuotationTargetBootstrapCommandConfiguration config, DatabaseSchemaPlan database,
-        string sourceCommitSha, byte[] authorizationPublicKey, CancellationToken cancellationToken)
+        string sourceCommitSha, DateTimeOffset schemaCapturedAtUtc,
+        byte[] authorizationPublicKey, CancellationToken cancellationToken)
     {
         if (config.DisposableProofPath is null || config.DisposableProofKey is null ||
             config.DisposableProofKey.KeyId == config.AuthorizationKey.KeyId)
@@ -231,11 +236,23 @@ public static partial class MigrationConsole
         var trust = new ReceiptAttestationTrustStore([new(config.DisposableProofKey.KeyId, proofPublicKey)]);
         return CryptographicOperations.FixedTimeEquals(SHA256.HashData(proofPublicKey),
                 SHA256.HashData(authorizationPublicKey)) ||
+            proof.CompletedAtUtc < schemaCapturedAtUtc ||
             !QuotationTargetBootstrapProofVerifier.Verify(proof, database, sourceCommitSha,
                 config.TargetAuthority, trust, DateTimeOffset.UtcNow)
             ? throw new MigrationConsoleException("quotation_target_bootstrap_disposable_proof_invalid",
                 "The disposable proof or independent trust root is invalid.")
             : QuotationTargetBootstrapProofProducer.ComputeSha256(proof);
+    }
+
+    internal static void ValidatePersistentQuotationSchemaFreshness(DateTimeOffset capturedAtUtc,
+        DateTimeOffset nowUtc)
+    {
+        if (capturedAtUtc.Offset != TimeSpan.Zero || nowUtc.Offset != TimeSpan.Zero ||
+            capturedAtUtc > nowUtc || nowUtc - capturedAtUtc > TimeSpan.FromHours(2))
+        {
+            throw new MigrationConsoleException("quotation_target_bootstrap_schema_stale",
+                "Persistent local DDL requires a fresh UTC exact-23 source schema plan.");
+        }
     }
 
     private static async Task<P256MigrationEvidenceSigner> ReadQuotationBootstrapEvidenceSignerAsync(
