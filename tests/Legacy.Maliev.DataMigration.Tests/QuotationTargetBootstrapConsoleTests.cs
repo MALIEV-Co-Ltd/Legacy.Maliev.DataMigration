@@ -4,6 +4,38 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class QuotationTargetBootstrapConsoleTests
 {
+    [Fact]
+    public void Persistent_schema_plan_accepts_exact_two_hour_utc_boundary()
+    {
+        DateTimeOffset now = new(2026, 9, 26, 16, 0, 0, TimeSpan.Zero);
+
+        MigrationConsole.ValidatePersistentQuotationSchemaFreshness(now.AddHours(-2), now);
+    }
+
+    [Theory]
+    [InlineData(-120.001)]
+    [InlineData(0.001)]
+    public void Persistent_schema_plan_rejects_stale_or_future_capture(double minutesFromNow)
+    {
+        DateTimeOffset now = new(2026, 9, 26, 16, 0, 0, TimeSpan.Zero);
+
+        MigrationConsoleException failure = Assert.Throws<MigrationConsoleException>(() =>
+            MigrationConsole.ValidatePersistentQuotationSchemaFreshness(
+                now.AddMinutes(minutesFromNow), now));
+        Assert.Equal("quotation_target_bootstrap_schema_stale", failure.Code);
+    }
+
+    [Fact]
+    public void Persistent_schema_plan_rejects_non_utc_offset()
+    {
+        DateTimeOffset now = new(2026, 9, 26, 16, 0, 0, TimeSpan.Zero);
+
+        MigrationConsoleException failure = Assert.Throws<MigrationConsoleException>(() =>
+            MigrationConsole.ValidatePersistentQuotationSchemaFreshness(
+                now.ToOffset(TimeSpan.FromHours(7)), now));
+        Assert.Equal("quotation_target_bootstrap_schema_stale", failure.Code);
+    }
+
     [Theory]
     [InlineData("true", "owner")]
     [InlineData("false", "operator")]

@@ -31,7 +31,49 @@ public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFi
             var inspector = new PostgreSqlWholeDatabaseTransaction(db, transaction, ownsResources: false);
             Assert.Equal(PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(plan, true),
                 await inspector.InspectSchemaAsync(plan, CancellationToken.None));
+            Assert.NotEqual(plan.TargetSchemaSha256,
+                PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(plan, true));
             await transaction.RollbackAsync();
+            _ = Assert.Throws<MigrationExecutionException>(() => ReconciliationDiagnostics.CompareSchema(
+                plan.Database, plan.TargetSchemaSha256,
+                PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(plan, true)));
+        }
+        finally
+        {
+            await target.DeleteRunOwnedShadowAsync(shadow, CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Disposable_postcommit_transition_can_be_signed_but_not_reused_for_same_cluster()
+    {
+        (PostgreSqlShadowTarget target, ShadowDatabase shadow, DatabaseSchemaPlan plan, string connection) =
+            await CreateSourceShapedAsync();
+        try
+        {
+            string identity = await IdentityAsync(connection);
+            string disposition = await QuotationDispositionTargetBootstrap.ExecuteAsync(plan, connection,
+                shadow.Name, identity, CancellationToken.None);
+            using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var signer = new P256MigrationEvidenceSigner("disposable-quotation-evidence",
+                key.ExportECPrivateKeyPem());
+            var trust = new ReceiptAttestationTrustStore(
+                [new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
+            var disposable = new DeltaTargetAuthority(DeltaTargetAuthorityKind.LocalAspire,
+                "aspire://legacy-postgres-main-local/disposable-integration", identity);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            QuotationTargetBootstrapProof proof = QuotationTargetBootstrapProofProducer.Produce(plan,
+                new string('a', 40), disposable, new string('b', 64), disposition, now, signer);
+            Assert.True(QuotationTargetBootstrapProofVerifier.Verify(proof, plan, new string('a', 40),
+                new DeltaTargetAuthority(DeltaTargetAuthorityKind.LocalAspire,
+                    "aspire://legacy-postgres-main-local/persistent-synthetic", new string('c', 64)),
+                trust, now));
+            Assert.False(QuotationTargetBootstrapProofVerifier.Verify(proof, plan, new string('a', 40),
+                new DeltaTargetAuthority(DeltaTargetAuthorityKind.LocalAspire,
+                    "aspire://legacy-postgres-main-local/persistent-same-cluster", identity),
+                trust, now));
+            Assert.Equal("already-current", await QuotationDispositionTargetBootstrap.ExecuteAsync(
+                plan, connection, shadow.Name, identity, CancellationToken.None));
         }
         finally
         {
