@@ -149,12 +149,18 @@ public sealed class PostgreSqlQuotationOutcomeAdopter
                 "The canonical rows or identity sequence do not match the signed adoption contract.");
         }
 
-        const string sequenceSql = "SELECT setval(pg_get_serial_sequence('\"QuotationAcceptedOutcome\"', 'ID'), $1, $2);";
+        if (sourceNextIdentity < 1)
+        {
+            throw new QuotationOutcomeAdoptionException(
+                "quotation_adoption_source_drift", "The signed next identity must be positive.");
+        }
+
+        // RESTART participates in the row transaction; setval does not roll back on failure.
+        string sequenceSql = "ALTER SEQUENCE public.\"QuotationAcceptedOutcome_ID_seq\" RESTART WITH " +
+            sourceNextIdentity.ToString(CultureInfo.InvariantCulture) + ";";
         await using (var sequence = new NpgsqlCommand(sequenceSql, connection, transaction))
         {
-            _ = sequence.Parameters.AddWithValue(sourceNextIdentity == 1 ? 1 : sourceNextIdentity - 1);
-            _ = sequence.Parameters.AddWithValue(sourceNextIdentity != 1);
-            _ = await sequence.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            _ = await sequence.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         var verified = new QuotationOutcomeInventoryContract(
