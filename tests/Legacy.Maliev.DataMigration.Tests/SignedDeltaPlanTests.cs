@@ -257,6 +257,60 @@ public sealed class SignedDeltaPlanTests : IDisposable
         Assert.Equal("delta_plan_capture_invalid", failure.Code);
     }
 
+    [Fact]
+    public void Captured_row_source_requires_the_signed_plan_and_matching_encryption_key()
+    {
+        byte[] key = RandomNumberGenerator.GetBytes(32);
+        using var signer = new P256MigrationEvidenceSigner("captured-key-plan", _key.ExportECPrivateKeyPem());
+        DeltaPlanSigningRequest request = CapturedRequest();
+        request = request with
+        {
+            SourceCaptureManifest = request.SourceCaptureManifest! with
+            {
+                EncryptionKeyFingerprintSha256 = Convert.ToHexString(SHA256.HashData(key)).ToLowerInvariant(),
+            },
+        };
+        DeltaSynchronizationPlan plan = DeltaSynchronizationPlanProducer.Produce(request, signer, Now());
+        var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
+        var archive = new DeltaCapturedTableArchive(Path.GetTempPath());
+
+        using DeltaCapturedTableRowSource source = DeltaCapturedTableRowSource.FromSignedPlan(
+            archive, plan, trust, Now(), key);
+        Assert.NotNull(source);
+        DeltaPlanException wrongKey = Assert.Throws<DeltaPlanException>(() =>
+            DeltaCapturedTableRowSource.FromSignedPlan(archive, plan, trust, Now(), RandomNumberGenerator.GetBytes(32)));
+        Assert.Equal("delta_capture_key_mismatch", wrongKey.Code);
+        DeltaPlanException changedPlan = Assert.Throws<DeltaPlanException>(() =>
+            DeltaCapturedTableRowSource.FromSignedPlan(archive,
+                plan with { SchemaPlanSha256 = new('1', 64) }, trust, Now(), key));
+        Assert.Equal("delta_capture_plan_invalid", changedPlan.Code);
+    }
+
+    [Fact]
+    public async Task Captured_reconciliation_uses_signed_snapshot_evidence_not_live_source()
+    {
+        using var signer = new P256MigrationEvidenceSigner("captured-reconciliation", _key.ExportECPrivateKeyPem());
+        DeltaPlanSigningRequest request = CapturedRequest();
+        TableCopyPlan table = new("dbo", "items", "public", "items", ["id"], ["id"])
+        {
+            ColumnTypes = new Dictionary<string, string> { ["id"] = "integer" },
+            PrimaryKey = new PrimaryKeyCopyPlan("pk_items", ["id"]),
+        };
+        var schema = new FreshSchemaPlan("2.0", Now(), request.SourceCommitSha,
+            [.. DatabaseInventory.ActiveDatabases.Select(database =>
+                new DatabaseSchemaPlan(database, "1.0", new('a', 64), new('b', 64), [table]))]);
+        request = request with { SchemaPlanSha256 = SchemaPlanCanonicalizer.ComputeSha256(schema) };
+        DeltaSynchronizationPlan plan = DeltaSynchronizationPlanProducer.Produce(request, signer, Now());
+        var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
+        var inspector = new SignedCapturedSourceReconciliationInspector(plan, schema, trust, new FixedTime());
+
+        DatabaseReconciliationEvidence observed = await inspector.InspectAsync(schema.Databases[0], CancellationToken.None);
+        Assert.Equal(9, Assert.Single(observed.Tables).RowCount);
+        DeltaExecutionException mismatch = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            inspector.InspectAsync(schema.Databases[0] with { SourceSchemaSha256 = new('c', 64) }, CancellationToken.None));
+        Assert.Equal("delta_capture_schema_invalid", mismatch.Code);
+    }
+
     private static DeltaPlanSigningRequest CapturedRequest()
     {
         DeltaPlanSigningRequest request = Request() with
@@ -283,5 +337,13 @@ public sealed class SignedDeltaPlanTests : IDisposable
         {
             SourceCaptureManifest = new DeltaSourceCaptureManifest(new('8', 64), bindings),
         };
+    }
+
+    private sealed class FixedTime : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow()
+        {
+            return Now();
+        }
     }
 }

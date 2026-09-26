@@ -70,3 +70,22 @@ are unchanged. This is a contract prerequisite, not an enabled data path:
 the guarded executor rejects schema 1.3 until authenticated row replay and
 checkpoint reconciliation are implemented and proven. No daily operator
 should issue or apply a 1.3 plan yet.
+
+`DeltaCapturedTableArchive` now writes each source table to a create-only,
+run-owned encrypted file under an existing protected directory. It records the
+ciphertext and plaintext digests, capture ID, row count, and schema-plan hash;
+replay verifies ciphertext and authenticated plaintext digest before yielding
+rows, checks row count at completed enumeration, and requires the expected
+database, table, schema-plan hash, and key. `DeltaCapturedTableRowSource` can
+plan from the immutable capture after SQL Server changes, and its signed-plan
+factory verifies the plan signature and encryption-key fingerprint. These are
+building blocks only. A second encrypted selection pass retains just the
+planned insert/update rows, checks their keys and canonical fingerprints, and
+rejects missing rows; the initial full-table encrypted staging file is
+temporary and must be removed after a completed run. The guarded exact-23
+console does not yet create these artifacts or use them for execution. Its old
+live-source re-read must remain guarded against drift.
+`SignedCapturedSourceReconciliationInspector` can return the source row/FK/
+sequence evidence from a fresh trusted plan without another mutable SQL read;
+it rejects a different exact-23 schema plan or database schema. This path is
+also not yet selected by the guarded console.
