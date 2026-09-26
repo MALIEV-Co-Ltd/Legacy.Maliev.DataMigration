@@ -49,16 +49,15 @@ It is not proof that the deterministic capture design has been implemented.
 
 ## Capture codec status
 
-`DeltaCapturedRowCodec` provides a bounded encrypted row stream for a future
+`DeltaCapturedRowCodec` provides a bounded encrypted row stream for the
 capture/replay path. It preserves SQL scalar types and single-pass large values,
 binds the table identity in the authenticated archive context, and rejects
 tampering, unsupported types, duplicate keys, and unconsumed large values.
 Its raw plaintext codec methods are internal; callers must publish only the
-authenticated encrypted form. The codec is not yet wired into the exact-23
-planner, signed plan, executor, or checkpoint reconciliation. Until that work
-and a live-write disposable proof are complete, the existing mismatch guard
-must continue to stop a changed source; a successful quiet-period run is not
-deterministic cutoff proof.
+authenticated encrypted form. The exact-23 captured planner, signed plan,
+replay executor, and checkpoint reconciliation now use the codec, but a full
+live-write disposable proof remains required before persistent execution.
+The schema-1.2 live-row mismatch guard remains unchanged.
 
 The signed delta-plan model now reserves schema 1.3 for exact-23 captured
 source metadata. Its domain-separated signature binds each database's bounded
@@ -66,10 +65,13 @@ snapshot window and PII-free source reconciliation, plus every table's capture
 ID, ciphertext/plaintext digests, captured insert/update row count, and
 operation hash. The capture encryption key must be distinct from the backup,
 plan-signing, and execution-authorization keys. Existing schema 1.1/1.2 plans
-are unchanged. This is a contract prerequisite, not an enabled data path:
-the guarded executor rejects schema 1.3 until authenticated row replay and
-checkpoint reconciliation are implemented and proven. No daily operator
-should issue or apply a 1.3 plan yet.
+are unchanged. The library's authenticated captured-row replay and checkpoint
+reconciliation paths now accept reviewed Quotation archive/adoption bindings,
+including target-named signed operations. The guarded operator console can
+issue a schema-1.3 plan and apply it only to a disposable authority. Persistent
+targets remain prohibited pending full exact-23 disposable proof and separate
+target-specific authorization. No daily operator should apply a 1.3 plan to a
+persistent target yet.
 
 `DeltaCapturedTableArchive` now writes each source table to a create-only,
 run-owned encrypted file under an existing protected directory. It records the
@@ -79,13 +81,14 @@ rows, checks row count at completed enumeration, and requires the expected
 database, table, schema-plan hash, and key. `DeltaCapturedTableRowSource` can
 plan from the immutable capture after SQL Server changes, and its signed-plan
 factory verifies the plan signature and encryption-key fingerprint. These are
-building blocks only. A second encrypted selection pass retains just the
+building blocks of the captured path. A second encrypted selection pass retains just the
 planned insert/update rows, checks their keys and canonical fingerprints, and
 rejects missing rows; the initial full-table encrypted staging file is
 temporary and must be removed after a completed run. The guarded exact-23
-console does not yet create these artifacts or use them for execution. Its old
-live-source re-read must remain guarded against drift.
+console creates and uses these artifacts only with captured-source mode and a
+disposable apply authority. Its schema-1.2 live-source re-read remains guarded
+against drift.
 `SignedCapturedSourceReconciliationInspector` can return the source row/FK/
 sequence evidence from a fresh trusted plan without another mutable SQL read;
-it rejects a different exact-23 schema plan or database schema. This path is
-also not yet selected by the guarded console.
+it rejects a different exact-23 schema plan or database schema. The captured
+console path selects it for disposable replay.
