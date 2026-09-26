@@ -68,6 +68,28 @@ replay executor, and checkpoint reconciliation now use the codec, but a full
 live-write disposable proof remains required before persistent execution.
 The schema-1.2 live-row mismatch guard remains unchanged.
 
+## Disposable proof identity gate
+
+The exact-23 disposable proof verifier now requires the persistent-local
+schema-1.3 plan to bind the *same* encrypted capture, not merely an equivalent
+row count, operation hash, or source reconciliation. Its signed manifest must
+match the disposable plan's encryption-key fingerprint and every database's
+capture window, source reconciliation digest, ordered table name, capture ID,
+ciphertext and plaintext digest, selected-row count, and operation hash.
+The existing requirements for distinct PostgreSQL identities, target-specific
+signed plans, fresh signed reconciliation, and identical per-table operations
+remain in force. Separately recapturing SQL Server after disposable proof is
+not an acceptable persistent-local plan: daytime writes can change the cutoff.
+
+This is a fail-closed prerequisite, not permission for persistent execution.
+The daily helper still creates a fresh run-owned capture and rejects
+schema-1.3 persistent `-Execute`; the console independently rejects it as
+well. An operator must not copy or re-sign a disposable plan into a persistent
+run. Promotion requires a separately validated protected archive handoff and
+target-specific planning path, plus disposable live-write, rollback, and
+replay integration evidence. Until then, issue #92 remains open and the only
+schema-1.3 apply authority is an isolated disposable target.
+
 The signed delta-plan model now reserves schema 1.3 for exact-23 captured
 source metadata. Its domain-separated signature binds each database's bounded
 snapshot window and PII-free source reconciliation, plus every table's capture
