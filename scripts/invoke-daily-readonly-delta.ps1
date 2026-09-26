@@ -97,6 +97,10 @@ if (-not $config.ContainsKey('delta') -or $config.delta.sourceMode -cne 'live-re
     $config.delta.allowPlanSigning -ne $true) {
     Fail 'daily_delta_template_not_approved_for_live_comparison'
 }
+if ($config.delta.ContainsKey('useCapturedSource') -and $config.delta.useCapturedSource -isnot [bool]) {
+    Fail 'daily_delta_capture_mode_invalid'
+}
+$useCapturedSource = $config.delta.ContainsKey('useCapturedSource') -and $config.delta.useCapturedSource -eq $true
 $targetKind = $config.delta.targetAuthority.kind
 if ($targetKind -notin @('local-aspire', 'production-cloudnativepg')) { Fail 'daily_delta_target_invalid' }
 if ($Execute -and $targetKind -eq 'production-cloudnativepg') {
@@ -105,11 +109,11 @@ if ($Execute -and $targetKind -eq 'production-cloudnativepg') {
 if ($Execute -and ($config.delta.allowAuthorizationSigning -ne $true -or $config.delta.allowExecution -ne $true)) {
     Fail 'daily_delta_local_execution_not_authorized'
 }
-$disposableCaptureExecution = $Execute -and $config.delta.useCapturedSource -eq $true -and
+$disposableCaptureExecution = $Execute -and $useCapturedSource -and
     $targetKind -eq 'local-aspire' -and
     $config.delta.targetAuthority.authorityId.StartsWith(
         'aspire://legacy-postgres-main-local/disposable-', [StringComparison]::Ordinal)
-if ($Execute -and $config.delta.useCapturedSource -eq $true -and -not $disposableCaptureExecution) {
+if ($Execute -and $useCapturedSource -and -not $disposableCaptureExecution) {
     Fail 'daily_delta_captured_execution_not_proven'
 }
 $runId = [Guid]::NewGuid().ToString('N')
@@ -119,7 +123,7 @@ $acl = Get-Acl -LiteralPath $root
 Set-Acl -LiteralPath $runDirectory -AclObject $acl
 Assert-OwnerOnlyDirectory $runDirectory
 
-if ($config.delta.useCapturedSource -eq $true) {
+if ($useCapturedSource) {
     if (-not [string]::IsNullOrWhiteSpace($config.delta.captureDirectory) -or
         -not [string]::IsNullOrWhiteSpace($config.delta.captureKeyFile)) {
         Fail 'daily_delta_stale_capture_material_invalid'
@@ -165,7 +169,7 @@ function New-PhaseConfig([string]$Phase) {
 New-PhaseConfig 'plan'
 Invoke-GuardedCommand 'plan-delta' (Join-Path $runDirectory 'plan-config.json')
 $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
-$expectedVersion = if ($config.delta.useCapturedSource -eq $true) { '1.3' } else { '1.2' }
+$expectedVersion = if ($useCapturedSource) { '1.3' } else { '1.2' }
 if ($plan.schemaVersion -cne $expectedVersion -or $plan.sourceMode -cne 'live-readonly-comparison' -or
     $plan.sourceObservationSha256 -notmatch '^[0-9a-f]{64}$') {
     Fail 'daily_delta_live_plan_invalid'
