@@ -47,7 +47,8 @@ public static class DeltaExecutionAuthorizationProducer
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(signer);
-        if (plan.SchemaVersion is not ("1.1" or "1.2") ||
+        if (plan.SchemaVersion is not ("1.1" or "1.2" or "1.3") ||
+            (plan.SchemaVersion == "1.3" && plan.SourceCaptureManifest is null) ||
             !DeltaSynchronizationPlanProducer.ValidAuthority(
                 plan.TargetAuthority, plan.TargetNamespace, plan.TargetCluster) ||
             issuedAtUtc.Offset != TimeSpan.Zero || expiresAtUtc.Offset != TimeSpan.Zero ||
@@ -83,7 +84,8 @@ public sealed class SignedDeltaExecutionAuthorizationGate(
     {
         cancellationToken.ThrowIfCancellationRequested();
         DateTimeOffset nowUtc = timeProvider.GetUtcNow();
-        bool valid = authorization.SchemaVersion == "1.1" && plan.SchemaVersion is "1.1" or "1.2" &&
+        bool valid = authorization.SchemaVersion == "1.1" && plan.SchemaVersion is "1.1" or "1.2" or "1.3" &&
+            (plan.SchemaVersion != "1.3" || plan.SourceCaptureManifest is not null) &&
             authorization.AuthorizationId != Guid.Empty && authorization.PlanId == plan.PlanId &&
             Fixed(authorization.PlanSha256, DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan)) &&
             authorization.TargetAuthority == plan.TargetAuthority &&

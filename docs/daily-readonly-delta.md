@@ -44,13 +44,21 @@ with per-database capture windows and selected changed-row bindings. Captured
 rows are taken inside each database snapshot, so later source inserts cannot
 silently change the planned row stream. The daily helper creates a new 32-byte
 capture key and run-owned files; do not supply paths from an earlier run.
-`-Execute` rejects this mode until a separate guarded executor and disposable
-proof are validated. A signed captured plan alone is not data parity.
-During apply, databases with more signed row operations run first; the signed
+`-Execute` in captured mode is limited to a separately observed disposable
+local Aspire target. It replays only the authenticated encrypted rows and
+reconciles against signed snapshot evidence. Persistent local and production
+captured execution remain rejected until a distinct disposable proof and
+target-specific review are validated. A signed captured plan alone is not
+data parity.
+For the original schema `1.2` live-row path, databases with more signed row
+operations run first; the signed
 result is still published in the canonical exact-23 order. This narrows the
 time between capture and apply for recently active databases, but it does not
 make a changing source immutable. New rows arriving before a database's apply
 may still invalidate the plan, requiring a new isolated proof and plan.
+Schema `1.3` disposable execution instead replays its signed encrypted source
+capture and reconciles each PostgreSQL transaction against the captured
+database evidence. Later SQL Server inserts belong to a subsequent daily run.
 Unattended local execution stops if the plan contains a deletion; deletion
 sets require separate review. Production execution always requires separate
 review, including plans containing only inserts or updates.

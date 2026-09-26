@@ -10,7 +10,8 @@ public sealed record Exact23DeltaExecutionResult(
 
 public sealed class Exact23DeltaExecutionCoordinator(
     IReadOnlyMigrationSource source,
-    Func<string, DeltaExecutionCoordinator> executorFactory)
+    Func<string, DeltaExecutionCoordinator> executorFactory,
+    bool capturedSourceReplay = false)
 {
     public async Task<Exact23DeltaExecutionResult> ExecuteAsync(
         DeltaSynchronizationPlan plan,
@@ -19,10 +20,10 @@ public sealed class Exact23DeltaExecutionCoordinator(
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(schemaPlan);
-        if (plan.SchemaVersion == "1.3")
+        if (plan.SchemaVersion == "1.3" != capturedSourceReplay)
         {
             throw new DeltaPlanException("delta_execution_capture_replay_required",
-                "Captured-source plans cannot execute until authenticated replay is available.");
+                "Captured-source plans require the authenticated replay execution path.");
         }
         ValidateInventory(plan, schemaPlan);
         var results = new List<DeltaDatabaseExecutionResult>(DatabaseInventory.ActiveDatabases.Count);
@@ -36,12 +37,18 @@ public sealed class Exact23DeltaExecutionCoordinator(
             bool snapshotOpen = false;
             try
             {
-                await source.BeginDatabaseSnapshotAsync(schema.Database, cancellationToken).ConfigureAwait(false);
-                snapshotOpen = true;
+                if (!capturedSourceReplay)
+                {
+                    await source.BeginDatabaseSnapshotAsync(schema.Database, cancellationToken).ConfigureAwait(false);
+                    snapshotOpen = true;
+                }
                 DeltaDatabaseExecutionResult result = await executorFactory(schema.Database)
                     .ExecuteDatabaseAsync(plan, schema, schema.Database, cancellationToken).ConfigureAwait(false);
-                await source.CompleteDatabaseSnapshotAsync(schema.Database, cancellationToken).ConfigureAwait(false);
-                snapshotOpen = false;
+                if (snapshotOpen)
+                {
+                    await source.CompleteDatabaseSnapshotAsync(schema.Database, cancellationToken).ConfigureAwait(false);
+                    snapshotOpen = false;
+                }
                 results.Add(result);
             }
             catch

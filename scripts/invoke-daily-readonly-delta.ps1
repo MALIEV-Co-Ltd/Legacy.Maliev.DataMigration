@@ -105,7 +105,11 @@ if ($Execute -and $targetKind -eq 'production-cloudnativepg') {
 if ($Execute -and ($config.delta.allowAuthorizationSigning -ne $true -or $config.delta.allowExecution -ne $true)) {
     Fail 'daily_delta_local_execution_not_authorized'
 }
-if ($Execute -and $config.delta.useCapturedSource -eq $true) {
+$disposableCaptureExecution = $Execute -and $config.delta.useCapturedSource -eq $true -and
+    $targetKind -eq 'local-aspire' -and
+    $config.delta.targetAuthority.authorityId.StartsWith(
+        'aspire://legacy-postgres-main-local/disposable-', [StringComparison]::Ordinal)
+if ($Execute -and $config.delta.useCapturedSource -eq $true -and -not $disposableCaptureExecution) {
     Fail 'daily_delta_captured_execution_not_proven'
 }
 $runId = [Guid]::NewGuid().ToString('N')
@@ -175,12 +179,14 @@ if (@($plan.databases | ForEach-Object { $_.tables } | Where-Object { $_.deleteC
     Fail 'daily_delta_delete_review_required'
 }
 
-if ([string]::IsNullOrWhiteSpace($config.delta.disposableProofPlanPath) -or
-    [string]::IsNullOrWhiteSpace($config.delta.disposableProofResultPath)) {
-    Fail 'daily_delta_disposable_proof_required'
+if (-not $disposableCaptureExecution) {
+    if ([string]::IsNullOrWhiteSpace($config.delta.disposableProofPlanPath) -or
+        [string]::IsNullOrWhiteSpace($config.delta.disposableProofResultPath)) {
+        Fail 'daily_delta_disposable_proof_required'
+    }
+    New-PhaseConfig 'proof'
+    Invoke-GuardedCommand 'verify-disposable-delta-proof' (Join-Path $runDirectory 'proof-config.json')
 }
-New-PhaseConfig 'proof'
-Invoke-GuardedCommand 'verify-disposable-delta-proof' (Join-Path $runDirectory 'proof-config.json')
 
 # The same protected template and distinct short-lived key produce a per-run authorization.
 # Production and local targets require separate templates and invocations.
