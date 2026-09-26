@@ -147,22 +147,7 @@ public static partial class MigrationConsole
         {
             if (configuration.UseCapturedSource)
             {
-                string directory = Required(configuration.CaptureDirectory);
-                string expected = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configuration.OutputPath))!, "captures");
-                if (!string.Equals(Path.GetFullPath(directory), expected,
-                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-                {
-                    throw DeltaInvalid("delta_capture_directory_invalid");
-                }
-                OwnerProtectedFilePolicy.ValidatePublicationParent(Path.Combine(directory, "capture.enc"));
-                await using FileStream input = OwnerProtectedFilePolicy.OpenRead(
-                    Required(configuration.CaptureKeyFile), "delta_capture_key_unprotected");
-                if (input.Length != 32)
-                {
-                    throw DeltaInvalid("delta_capture_key_invalid");
-                }
-                captureKey = new byte[32];
-                await input.ReadExactlyAsync(captureKey, cancellationToken).ConfigureAwait(false);
+                captureKey = await ReadCaptureKeyAsync(configuration, cancellationToken).ConfigureAwait(false);
             }
             return await runtime.PlanAsync(new(schema, source, target, configuration,
                 trust.AuthorizationFingerprint, signer)
@@ -246,12 +231,39 @@ public static partial class MigrationConsole
         DeltaExecutionAuthorization authorization = await ReadProtectedJsonAsync<DeltaExecutionAuthorization>(Required(configuration.AuthorizationPath),
             "delta_authorization_unprotected", cancellationToken).ConfigureAwait(false);
         DeltaTrustBundle trust = await ReadDeltaTrustAsync(configuration, cancellationToken).ConfigureAwait(false);
-        string source = await ReadProtectedTextAsync(configuration.SourceConnectionFile,
-            "delta_source_connection_unprotected", cancellationToken).ConfigureAwait(false);
-        string target = await ReadProtectedTextAsync(configuration.TargetConnectionFile,
-            "delta_target_connection_unprotected", cancellationToken).ConfigureAwait(false);
-        return await runtime.ApplyAsync(new(schema, plan, authorization, source, target, configuration.TargetAuthority,
-            trust.TrustStore), cancellationToken).ConfigureAwait(false);
+        if (configuration.UseCapturedSource != (plan.SchemaVersion == "1.3"))
+        {
+            throw DeltaInvalid("delta_capture_plan_mode_mismatch");
+        }
+        byte[]? captureKey = null;
+        try
+        {
+            if (plan.SchemaVersion == "1.3")
+            {
+                if (!configuration.UseCapturedSource ||
+                    !configuration.TargetAuthority.AuthorityId.StartsWith(
+                        "aspire://legacy-postgres-main-local/disposable-", StringComparison.Ordinal))
+                {
+                    throw DeltaInvalid("delta_capture_persistent_execution_not_proven");
+                }
+                captureKey = await ReadCaptureKeyAsync(configuration, cancellationToken).ConfigureAwait(false);
+            }
+            string source = await ReadProtectedTextAsync(configuration.SourceConnectionFile,
+                "delta_source_connection_unprotected", cancellationToken).ConfigureAwait(false);
+            string target = await ReadProtectedTextAsync(configuration.TargetConnectionFile,
+                "delta_target_connection_unprotected", cancellationToken).ConfigureAwait(false);
+            return await runtime.ApplyAsync(new(schema, plan, authorization, source, target, configuration.TargetAuthority,
+                trust.TrustStore)
+            { CaptureKey = captureKey, CaptureDirectory = configuration.CaptureDirectory },
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (captureKey is not null)
+            {
+                CryptographicOperations.ZeroMemory(captureKey);
+            }
+        }
     }
 
     private static async Task<Exact23DeltaReconciliationResult> ReconcileDeltaAsync(
@@ -279,8 +291,41 @@ public static partial class MigrationConsole
             "delta_source_connection_unprotected", cancellationToken).ConfigureAwait(false);
         string target = await ReadProtectedTextAsync(configuration.TargetConnectionFile,
             "delta_target_connection_unprotected", cancellationToken).ConfigureAwait(false);
-        return await runtime.ReconcileAsync(new(schema, plan, source, target, signer), cancellationToken)
+        return await runtime.ReconcileAsync(new(schema, plan, source, target, signer)
+        {
+            Trust = trust.TrustStore,
+        }, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private static async Task<byte[]> ReadCaptureKeyAsync(
+        DeltaCommandConfiguration configuration, CancellationToken cancellationToken)
+    {
+        string directory = Required(configuration.CaptureDirectory);
+        string expected = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configuration.OutputPath))!, "captures");
+        if (!string.Equals(Path.GetFullPath(directory), expected,
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        {
+            throw DeltaInvalid("delta_capture_directory_invalid");
+        }
+        OwnerProtectedFilePolicy.ValidatePublicationParent(Path.Combine(directory, "capture.enc"));
+        await using FileStream input = OwnerProtectedFilePolicy.OpenRead(
+            Required(configuration.CaptureKeyFile), "delta_capture_key_unprotected");
+        if (input.Length != 32)
+        {
+            throw DeltaInvalid("delta_capture_key_invalid");
+        }
+        byte[] captureKey = new byte[32];
+        try
+        {
+            await input.ReadExactlyAsync(captureKey, cancellationToken).ConfigureAwait(false);
+            return captureKey;
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(captureKey);
+            throw;
+        }
     }
 
     private static void ValidateDeltaConfiguration(string command, DeltaCommandConfiguration configuration)
@@ -489,14 +534,21 @@ internal sealed record DeltaApplyRuntimeRequest(
     string SourceConnectionString,
     string TargetConnectionString,
     DeltaTargetAuthority ExpectedAuthority,
-    ReceiptAttestationTrustStore Trust);
+    ReceiptAttestationTrustStore Trust)
+{
+    public byte[]? CaptureKey { get; init; }
+    public string? CaptureDirectory { get; init; }
+}
 
 internal sealed record DeltaReconcileRuntimeRequest(
     FreshSchemaPlan Schema,
     DeltaSynchronizationPlan Plan,
     string SourceConnectionString,
     string TargetConnectionString,
-    P256MigrationEvidenceSigner Signer);
+    P256MigrationEvidenceSigner Signer)
+{
+    public ReceiptAttestationTrustStore? Trust { get; init; }
+}
 
 internal interface IGuardedDeltaConsoleRuntime
 {
@@ -625,6 +677,18 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
         SignedDeltaExecutionAuthorizationGate gate = await DeltaExecutionAdmission.AdmitAsync(
             request.Authorization, request.Trust, TimeProvider.System, request.ExpectedAuthority,
             request.Plan, cancellationToken).ConfigureAwait(false);
+        bool capturedReplay = request.Plan.SchemaVersion == "1.3";
+        if (capturedReplay != (request.CaptureKey is { Length: 32 } &&
+            !string.IsNullOrWhiteSpace(request.CaptureDirectory)))
+        {
+            throw new DeltaExecutionException("delta_capture_execution_material_invalid",
+                "Captured execution requires the matching protected key and archive directory.");
+        }
+        using DeltaCapturedTableRowSource? capturedSource = capturedReplay
+            ? DeltaCapturedTableRowSource.FromSignedPlan(
+                new DeltaCapturedTableArchive(request.CaptureDirectory!), request.Plan,
+                request.Trust, TimeProvider.System.GetUtcNow(), request.CaptureKey!)
+            : null;
         await new PostgreSqlDeltaMetadataProvisioner(new(request.TargetConnectionString, request.ExpectedAuthority))
             .ProvisionAsync(request.Plan, request.Schema, cancellationToken).ConfigureAwait(false);
         await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
@@ -638,13 +702,19 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
             }.ConnectionString;
             return new(
                 new PostgreSqlDeltaCanonicalTarget(new(connection, database, request.Plan.TargetGeneration)),
-                new OrderedDeltaExecutionRowSessionProvider(new SqlServerSnapshotDeltaExecutionRowSource(source), targetRows),
+                capturedSource is null
+                    ? new OrderedDeltaExecutionRowSessionProvider(new SqlServerSnapshotDeltaExecutionRowSource(source), targetRows)
+                    : new CapturedDeltaExecutionRowSessionProvider(capturedSource, targetRows),
                 gate,
-                new SqlServerDeltaReconciliationInspector(source),
+                capturedSource is null
+                    ? new SqlServerDeltaReconciliationInspector(source)
+                    : new SignedCapturedSourceReconciliationInspector(request.Plan, request.Schema,
+                        request.Trust, TimeProvider.System),
                 request.Trust,
                 TimeProvider.System);
         }
-        Exact23DeltaExecutionResult result = await new Exact23DeltaExecutionCoordinator(source, CreateExecutor)
+        Exact23DeltaExecutionResult result = await new Exact23DeltaExecutionCoordinator(source, CreateExecutor,
+            capturedSourceReplay: capturedReplay)
             .ExecuteAsync(request.Plan, request.Schema, cancellationToken).ConfigureAwait(false);
         await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
         return result;
@@ -657,6 +727,24 @@ internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory?
             request.Plan.TargetAuthority ?? throw new DeltaExecutionException("delta_target_authority_invalid", "The delta plan has no target authority."),
             cancellationToken).ConfigureAwait(false);
         var target = new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString));
+        if (request.Plan.SchemaVersion == "1.3")
+        {
+            if (request.Trust is null)
+            {
+                throw new DeltaExecutionException("delta_capture_reconciliation_trust_invalid",
+                    "Captured reconciliation requires the trusted signed source evidence.");
+            }
+            var capturedCoordinator = new Exact23DeltaReconciliationCoordinator(
+                new SignedCapturedSourceReconciliationInspector(request.Plan, request.Schema,
+                    request.Trust, TimeProvider.System), target,
+                new PostgreSqlExact23DeltaCheckpointReader(new(request.TargetConnectionString)),
+                TimeProvider.System, request.Signer);
+            Exact23DeltaReconciliationResult capturedResult = await capturedCoordinator.ReconcileAsync(
+                request.Plan, request.Schema, cancellationToken).ConfigureAwait(false);
+            await VerifyLiveSourceAsync(request.Plan, request.SourceConnectionString, cancellationToken)
+                .ConfigureAwait(false);
+            return capturedResult;
+        }
         if (request.Plan.SourceMode == DeltaSourceMode.LiveReadOnly)
         {
             var checkpointCoordinator = new Exact23DeltaReconciliationCoordinator(

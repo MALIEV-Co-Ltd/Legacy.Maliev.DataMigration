@@ -48,10 +48,12 @@ public sealed class MigrationScriptContractTests
     }
 
     [Fact]
-    public void Daily_captured_source_is_plan_only_with_fresh_protected_material()
+    public void Daily_captured_source_executes_only_on_disposable_with_fresh_protected_material()
     {
         string script = File.ReadAllText(SourcePath("invoke-daily-readonly-delta.ps1"));
         Assert.Contains("daily_delta_captured_execution_not_proven", script, StringComparison.Ordinal);
+        Assert.Contains("$disposableCaptureExecution", script, StringComparison.Ordinal);
+        Assert.Contains("aspire://legacy-postgres-main-local/disposable-", script, StringComparison.Ordinal);
         Assert.Contains("daily_delta_stale_capture_material_invalid", script, StringComparison.Ordinal);
         Assert.Contains("[IO.FileMode]::CreateNew", script, StringComparison.Ordinal);
         Assert.Contains("RandomNumberGenerator]::GetBytes(32)", script, StringComparison.Ordinal);
