@@ -59,3 +59,14 @@ planner, signed plan, executor, or checkpoint reconciliation. Until that work
 and a live-write disposable proof are complete, the existing mismatch guard
 must continue to stop a changed source; a successful quiet-period run is not
 deterministic cutoff proof.
+
+The signed delta-plan model now reserves schema 1.3 for exact-23 captured
+source metadata. Its domain-separated signature binds each database's bounded
+snapshot window and PII-free source reconciliation, plus every table's capture
+ID, ciphertext/plaintext digests, captured insert/update row count, and
+operation hash. The capture encryption key must be distinct from the backup,
+plan-signing, and execution-authorization keys. Existing schema 1.1/1.2 plans
+are unchanged. This is a contract prerequisite, not an enabled data path:
+the guarded executor rejects schema 1.3 until authenticated row replay and
+checkpoint reconciliation are implemented and proven. No daily operator
+should issue or apply a 1.3 plan yet.

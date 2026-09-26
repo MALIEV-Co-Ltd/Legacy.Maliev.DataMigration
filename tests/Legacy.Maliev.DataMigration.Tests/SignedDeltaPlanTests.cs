@@ -174,4 +174,114 @@ public sealed class SignedDeltaPlanTests : IDisposable
             SourceCaptureCompletedAtUtc = Now(),
         }, trust, Now()));
     }
+
+    [Fact]
+    public void Captured_source_plan_binds_exact23_encrypted_artifacts_and_rejects_tampering()
+    {
+        using var signer = new P256MigrationEvidenceSigner("captured-plan", _key.ExportECPrivateKeyPem());
+        DeltaPlanSigningRequest request = CapturedRequest();
+        DeltaSynchronizationPlan plan = DeltaSynchronizationPlanProducer.Produce(request, signer, Now());
+        var trust = new ReceiptAttestationTrustStore([new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
+
+        Assert.Equal("1.3", plan.SchemaVersion);
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(plan, trust, Now()));
+        DeltaSourceCaptureManifest manifest = plan.SourceCaptureManifest!;
+        DeltaDatabaseCaptureBinding first = manifest.Databases[0];
+        Assert.False(DeltaSynchronizationPlanVerifier.Verify(plan with
+        {
+            SourceCaptureManifest = manifest with
+            {
+                Databases = [first with
+                {
+                    Tables = [first.Tables[0] with { EncryptedSha256 = new('1', 64) }],
+                }, .. manifest.Databases.Skip(1)],
+            },
+        }, trust, Now()));
+        Assert.False(DeltaSynchronizationPlanVerifier.Verify(plan with { SourceCaptureManifest = null }, trust, Now()));
+        Assert.False(DeltaSynchronizationPlanVerifier.Verify(plan with { SchemaVersion = "1.2" }, trust, Now()));
+    }
+
+    [Theory]
+    [InlineData("missing-database")]
+    [InlineData("duplicate-capture-id")]
+    [InlineData("wrong-row-count")]
+    [InlineData("reused-key")]
+    public void Captured_source_plan_rejects_inconsistent_bindings(string scenario)
+    {
+        using var signer = new P256MigrationEvidenceSigner("captured-plan", _key.ExportECPrivateKeyPem());
+        DeltaPlanSigningRequest request = CapturedRequest();
+        DeltaSourceCaptureManifest manifest = request.SourceCaptureManifest!;
+        DeltaDatabaseCaptureBinding first = manifest.Databases[0];
+        DeltaDatabaseCaptureBinding second = manifest.Databases[1];
+        request = scenario switch
+        {
+            "missing-database" => request with
+            {
+                SourceCaptureManifest = manifest with { Databases = manifest.Databases.Skip(1).ToArray() },
+            },
+            "duplicate-capture-id" => request with
+            {
+                SourceCaptureManifest = manifest with
+                {
+                    Databases = [first, second with
+                    {
+                        Tables = [second.Tables[0] with { CaptureId = first.Tables[0].CaptureId }],
+                    }, .. manifest.Databases.Skip(2)],
+                },
+            },
+            "wrong-row-count" => request with
+            {
+                SourceCaptureManifest = manifest with
+                {
+                    Databases = [first with
+                    {
+                        SourceReconciliation = first.SourceReconciliation with
+                        {
+                            Tables = [first.SourceReconciliation.Tables[0] with { RowCount = 8 }],
+                        },
+                    }, .. manifest.Databases.Skip(1)],
+                },
+            },
+            "reused-key" => request with
+            {
+                SourceCaptureManifest = manifest with
+                {
+                    EncryptionKeyFingerprintSha256 = signer.PublicKeyFingerprintSha256,
+                },
+            },
+            _ => throw new InvalidOperationException(scenario),
+        };
+
+        DeltaPlanException failure = Assert.Throws<DeltaPlanException>(
+            () => DeltaSynchronizationPlanProducer.Produce(request, signer, Now()));
+        Assert.Equal("delta_plan_capture_invalid", failure.Code);
+    }
+
+    private static DeltaPlanSigningRequest CapturedRequest()
+    {
+        DeltaPlanSigningRequest request = Request() with
+        {
+            SourceMode = DeltaSourceMode.LiveReadOnly,
+            SourceObservationSha256 = new('9', 64),
+            SourceCaptureCompletedAtUtc = Now().AddMinutes(-1),
+        };
+        IReadOnlyList<DeltaDatabaseCaptureBinding> bindings = [.. request.Databases.Select(database =>
+        {
+            byte[] digest = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(database.Database));
+            string hash = Convert.ToHexString(digest).ToLowerInvariant();
+            DeltaTablePlan table = database.Tables[0];
+            return new DeltaDatabaseCaptureBinding(database.Database,
+                Now().AddMinutes(-4), Now().AddMinutes(-2),
+                new DatabaseReconciliationEvidence(database.Database, new('a', 64), new('b', 64),
+                [
+                    new TableReconciliationEvidence(table.Table, 9, new('c', 64), new('d', 64),
+                        new Dictionary<string, long>(), new Dictionary<string, long>()),
+                ]),
+                [new DeltaTableCaptureBinding(table.Table, Guid.NewGuid(), hash, hash, 2, table.OperationsSha256)]);
+        })];
+        return request with
+        {
+            SourceCaptureManifest = new DeltaSourceCaptureManifest(new('8', 64), bindings),
+        };
+    }
 }
