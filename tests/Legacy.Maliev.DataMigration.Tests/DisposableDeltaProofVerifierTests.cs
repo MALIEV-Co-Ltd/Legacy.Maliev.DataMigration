@@ -74,6 +74,33 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         Assert.Equal("delta_disposable_proof_invalid", failure.Code);
     }
 
+    [Fact]
+    public async Task Captured_proof_rejects_a_separate_archive_even_with_identical_operations_and_source_evidence()
+    {
+        Fixture separate = await CreateAsync(captured: true, changedLocalArchive: true);
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(separate.LocalPlan, separate.Trust, separate.Now));
+
+        DeltaExecutionException failure = Assert.Throws<DeltaExecutionException>(() =>
+            DisposableDeltaProofVerifier.Verify(separate.ProofPlan, separate.ProofResult,
+                separate.LocalPlan, separate.Schema, separate.Trust, separate.Now));
+        Assert.Equal("delta_disposable_proof_invalid", failure.Code);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Captured_proof_rejects_a_changed_key_or_database_cutoff(
+        bool changedKey, bool changedWindow)
+    {
+        Fixture fixture = await CreateAsync(captured: true,
+            changedLocalCaptureKey: changedKey, changedLocalCaptureWindow: changedWindow);
+        Assert.True(DeltaSynchronizationPlanVerifier.Verify(fixture.LocalPlan, fixture.Trust, fixture.Now));
+
+        Assert.Equal("delta_disposable_proof_invalid", Assert.Throws<DeltaExecutionException>(() =>
+            DisposableDeltaProofVerifier.Verify(fixture.ProofPlan, fixture.ProofResult,
+                fixture.LocalPlan, fixture.Schema, fixture.Trust, fixture.Now)).Code);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -104,7 +131,8 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
 
     private async Task<Fixture> CreateAsync(bool changedLocalOperations = false,
         bool captured = false, bool changedLocalEvidence = false, bool quotationDisposition = false,
-        bool changedLocalTableInventory = false)
+        bool changedLocalTableInventory = false, bool changedLocalArchive = false,
+        bool changedLocalCaptureKey = false, bool changedLocalCaptureWindow = false)
     {
         DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
         TableCopyPlan[] quotationOutboxes =
@@ -176,7 +204,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 SourceMode = DeltaSourceMode.LiveReadOnly,
                 SourceObservationSha256 = Hash('8'),
                 SourceCaptureCompletedAtUtc = now.AddMinutes(-4),
-                SourceCaptureManifest = captured ? new(Hash('0'),
+                SourceCaptureManifest = captured ? new(Hash(changedLocalCaptureKey && id == "persistent-main" ? '9' : '0'),
                     [.. DatabaseInventory.ActiveDatabases.Select(name =>
                     {
                         DatabaseSchemaPlan databaseSchema = schema.Databases.Single(item => item.Database == name);
@@ -190,10 +218,12 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                                 Tables = [evidence.Tables[0] with { ContentSha256 = Hash('e') }],
                             };
                         }
-                        return new DeltaDatabaseCaptureBinding(name, now.AddMinutes(-4).AddSeconds(-30),
+                        return new DeltaDatabaseCaptureBinding(name,
+                            now.AddMinutes(-4).AddSeconds(changedLocalCaptureWindow && id == "persistent-main" ? -29 : -30),
                             now.AddMinutes(-4).AddSeconds(-10), evidence,
                             [.. databasePlan.Tables.Select(tablePlan => new DeltaTableCaptureBinding(tablePlan.Table,
-                                Guid.NewGuid(), CaptureDigest(id, name + tablePlan.Table), Hash('a'),
+                                CaptureId(name + tablePlan.Table),
+                                CaptureDigest(changedLocalArchive && id == "persistent-main" ? id : "shared", name + tablePlan.Table), Hash('a'),
                                 tablePlan.InsertCount + tablePlan.UpdateCount, tablePlan.OperationsSha256))]);
                     })]) : null,
             };
@@ -206,6 +236,12 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
     {
         return Convert.ToHexString(SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(id + ":" + database))).ToLowerInvariant();
+    }
+
+    private static Guid CaptureId(string table)
+    {
+        byte[] digest = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(table));
+        return new Guid(digest.AsSpan(0, 16));
     }
 
     private static string Hash(char value)

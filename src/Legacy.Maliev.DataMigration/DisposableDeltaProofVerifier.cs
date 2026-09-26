@@ -99,8 +99,16 @@ public static class DisposableDeltaProofVerifier
             (proof.SchemaVersion != "1.3" ||
                 (proof.SourceCaptureManifest is { } proofCapture &&
                  local.SourceCaptureManifest is { } localCapture &&
+                 string.Equals(proofCapture.EncryptionKeyFingerprintSha256,
+                     localCapture.EncryptionKeyFingerprintSha256, StringComparison.Ordinal) &&
+                 proofCapture.Databases.Count == localCapture.Databases.Count &&
                  proofCapture.Databases.Zip(localCapture.Databases)
                      .All(pair => string.Equals(pair.First.Database, pair.Second.Database, StringComparison.Ordinal) &&
+                         pair.First.StartedAtUtc == pair.Second.StartedAtUtc &&
+                         pair.First.CompletedAtUtc == pair.Second.CompletedAtUtc &&
+                         pair.First.Tables.Count == pair.Second.Tables.Count &&
+                         pair.First.Tables.Zip(pair.Second.Tables).All(tables =>
+                             tables.First == tables.Second) &&
                          string.Equals(
                              DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(pair.First.SourceReconciliation),
                              DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(pair.Second.SourceReconciliation),
