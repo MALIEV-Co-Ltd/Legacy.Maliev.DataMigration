@@ -78,6 +78,24 @@ identity drift fails closed.
 The automated integration fixture has the exact 23 database *names* but only a
 synthetic source-owned `Probe` table in Material. It proves inventory gating
 and repair behavior, **not** the complete current source-owned schema shape.
+The opt-in `FullSchemaTargetExtensionRepairProofTests` fixture takes a freshly
+generated, owner-protected exact-23 live-source schema plan and independently
+creates every planned database shape in a new disposable PostgreSQL 18
+container. It projects Quotation's reviewed archive/adoption target shape,
+leaves Material and QuotationRequest without their approved extensions, and
+then runs the guarded authorization and repair commands for both databases.
+It checks the full schema fingerprints and post-commit identity sequences.
+Run it only with a fresh key directory and these environment variables:
+`LEGACY_RUN_FULL_SCHEMA_EXTENSION_PROOF=1`,
+`LEGACY_FULL_SCHEMA_EXTENSION_PLAN_PATH`,
+`LEGACY_FULL_SCHEMA_EXTENSION_SOURCE_COMMIT`, and
+`LEGACY_FULL_SCHEMA_EXTENSION_PROOF_DIRECTORY`. The proof directory must be
+owner-only and contain the fresh signing helper's `public-manifest.json`;
+the source commit must be independently verified. The test leaves protected,
+PII-free authorization and repair receipts for review and disposes only its
+own container. It does not connect to or inspect the persistent target, copy
+source rows, or grant local DDL authority. A passing branch or CI test is not
+itself reviewed protected-main operational proof.
 This code is not an authorization to change the persistent local target. First
 perform a separate fresh full-schema disposable proof from the current signed
 exact-23 plan, with fresh identity and signing material, then seek a separately
