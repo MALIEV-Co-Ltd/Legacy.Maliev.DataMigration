@@ -15,6 +15,7 @@ public sealed class GuardedDeltaCommandPolicyTests
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("plan-paired-delta"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("inspect-target-schema-gaps"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("verify-disposable-delta-proof"));
+        Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("preflight-paired-local-transition"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("authorize-delta"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("reconcile-delta"));
     }
@@ -24,6 +25,7 @@ public sealed class GuardedDeltaCommandPolicyTests
     [InlineData("owner", "authorize-delta")]
     [InlineData("owner", "verify-disposable-delta-proof")]
     [InlineData("owner", "plan-paired-delta")]
+    [InlineData("owner", "preflight-paired-local-transition")]
     [InlineData("operator", "plan-delta")]
     [InlineData("operator", "inspect-target-schema-gaps")]
     [InlineData("operator", "apply-delta-local")]
@@ -41,6 +43,8 @@ public sealed class GuardedDeltaCommandPolicyTests
     [InlineData("operator", "authorize-delta")]
     [InlineData("operator", "verify-disposable-delta-proof")]
     [InlineData("operator", "plan-paired-delta")]
+    [InlineData("operator", "preflight-paired-local-transition")]
+    [InlineData("apphost", "preflight-paired-local-transition")]
     [InlineData("", "plan-delta")]
     public void PrivilegeEscalationPairs_FailClosed(string caller, string command)
     {
@@ -74,6 +78,55 @@ public sealed class GuardedDeltaCommandPolicyTests
 
             Assert.Equal(65, result);
             Assert.Equal("delta_paired_plan_command_invalid" + Environment.NewLine, error.ToString());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Paired_local_preflight_rejects_production_or_execution_before_reading_artifacts(
+        bool production, bool execution)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-preflight-tests",
+            Guid.NewGuid().ToString("N"));
+        OwnerProtectedDirectory.CreateNew(directory);
+        try
+        {
+            var key = new DeltaTrustedKeyReference("unused", Path.Combine(directory, "missing.public"));
+            var config = new DeltaCommandConfiguration("missing-schema", Path.Combine(directory, "output.json"),
+                "missing-source", "missing-target", key, key, key, new('a', 64), DateTimeOffset.UtcNow,
+                new('b', 64), new('c', 64), "local-aspire", "legacy-postgres-main-local",
+                "generation-1", new('d', 64), new(DeltaTargetAuthorityKind.LocalAspire,
+                    production ? "aspire://legacy-postgres-main-local/disposable-wrong" :
+                    "aspire://legacy-postgres-main-local/persistent-preflight", new('e', 64)))
+            {
+                SourceMode = DeltaSourceMode.LiveReadOnly,
+                UseCapturedSource = true,
+                UseQuotationPhysicalTransition = true,
+                CaptureDirectory = "missing-captures",
+                CaptureKeyFile = "missing-key",
+                AllowExecution = execution,
+            };
+            string configPath = Path.Combine(directory, "config.json");
+            await MigrationConsole.WriteNewJsonForTestsAsync(configPath, new { delta = config },
+                CancellationToken.None);
+            using var error = new StringWriter();
+            int exit = await MigrationConsole.RunDeltaForTestsAsync(
+                ["preflight-paired-local-transition", "--config", configPath], TextWriter.Null,
+                error, name => name switch
+                {
+                    "LEGACY_DEPLOY_ENABLED" => "false",
+                    "LEGACY_MIGRATION_CALLER" => "owner",
+                    _ => throw new InvalidOperationException("No private key or connection may be read."),
+                }, new DefaultGuardedDeltaConsoleRuntime(), CancellationToken.None);
+            Assert.Equal(65, exit);
+            Assert.Equal("delta_paired_local_preflight_request_invalid" + Environment.NewLine,
+                error.ToString());
+            Assert.False(File.Exists(config.OutputPath));
         }
         finally
         {

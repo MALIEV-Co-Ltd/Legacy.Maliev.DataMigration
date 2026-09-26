@@ -52,6 +52,8 @@ public static partial class MigrationConsole
                 "plan-paired-delta" => await ProducePairedDeltaPlansAsync(configuration, environment, runtime, cancellationToken).ConfigureAwait(false),
                 "inspect-target-schema-gaps" => await InspectTargetSchemaGapsAsync(configuration, cancellationToken).ConfigureAwait(false),
                 "verify-disposable-delta-proof" => await VerifyDisposableProofAsync(configuration, cancellationToken).ConfigureAwait(false),
+                "preflight-paired-local-transition" => await PreflightPairedLocalTransitionAsync(configuration, runtime,
+                    cancellationToken).ConfigureAwait(false),
                 "authorize-delta" => await ProduceDeltaAuthorizationAsync(configuration, environment, cancellationToken).ConfigureAwait(false),
                 "apply-delta-local" => await ApplyDeltaAsync(configuration, DeltaTargetAuthorityKind.LocalAspire, runtime, cancellationToken).ConfigureAwait(false),
                 "apply-delta-production" => await ApplyDeltaAsync(configuration, DeltaTargetAuthorityKind.ProductionCloudNativePg, runtime, cancellationToken).ConfigureAwait(false),
@@ -306,6 +308,56 @@ public static partial class MigrationConsole
         };
     }
 
+    private static async Task<PairedLocalTransitionPreflightResult> PreflightPairedLocalTransitionAsync(
+        DeltaCommandConfiguration configuration,
+        IGuardedDeltaConsoleRuntime runtime,
+        CancellationToken cancellationToken)
+    {
+        if (runtime is not IGuardedPairedLocalTransitionPreflightRuntime preflight ||
+            !configuration.UseCapturedSource || !configuration.UseQuotationPhysicalTransition ||
+            configuration.AllowExecution || configuration.AllowAuthorizationSigning ||
+            !DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(configuration.TargetAuthority) ||
+            configuration.PairedPersistentTarget is not null)
+        {
+            throw DeltaInvalid("delta_paired_local_preflight_request_invalid");
+        }
+        FreshSchemaPlan schema = await ReadProtectedJsonAsync<FreshSchemaPlan>(configuration.SchemaPlanPath,
+            "delta_schema_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        PairedCapturedDeltaPlans plans = await ReadProtectedJsonAsync<PairedCapturedDeltaPlans>(
+            Required(configuration.DisposableProofPairPath), "delta_paired_plan_unprotected", cancellationToken)
+            .ConfigureAwait(false);
+        Exact23DeltaReconciliationResult proof = await ReadProtectedJsonAsync<Exact23DeltaReconciliationResult>(
+            Required(configuration.DisposableProofResultPath), "delta_proof_result_unprotected", cancellationToken)
+            .ConfigureAwait(false);
+        PairedLocalTransitionAuthorization authorization =
+            await ReadProtectedJsonAsync<PairedLocalTransitionAuthorization>(Required(configuration.AuthorizationPath),
+                "delta_paired_local_authorization_unprotected", cancellationToken).ConfigureAwait(false);
+        ReceiptAttestationTrustStore trust = await ReadDeltaProofTrustAsync(configuration, cancellationToken)
+            .ConfigureAwait(false);
+        if (configuration.TargetAuthority != plans.Persistent.TargetAuthority ||
+            configuration.TargetObservationSha256 != plans.Persistent.TargetObservationSha256 ||
+            configuration.TargetGeneration != plans.Persistent.TargetGeneration ||
+            configuration.TargetNamespace != plans.Persistent.TargetNamespace ||
+            configuration.TargetCluster != plans.Persistent.TargetCluster)
+        {
+            throw DeltaInvalid("delta_paired_local_preflight_target_invalid");
+        }
+        byte[] captureKey = await ReadCaptureKeyAsync(configuration, cancellationToken,
+            pairedPreflight: true).ConfigureAwait(false);
+        try
+        {
+            string target = await ReadProtectedTextAsync(configuration.TargetConnectionFile,
+                "delta_target_connection_unprotected", cancellationToken).ConfigureAwait(false);
+            return await preflight.PreflightPairedLocalTransitionAsync(new(schema, plans, proof,
+                authorization, trust, target, configuration.CaptureDirectory!, captureKey), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(captureKey);
+        }
+    }
+
     private static async Task<Exact23DeltaExecutionResult> ApplyDeltaAsync(
         DeltaCommandConfiguration configuration,
         string requiredAuthorityKind,
@@ -392,11 +444,12 @@ public static partial class MigrationConsole
     }
 
     private static async Task<byte[]> ReadCaptureKeyAsync(
-        DeltaCommandConfiguration configuration, CancellationToken cancellationToken)
+        DeltaCommandConfiguration configuration, CancellationToken cancellationToken,
+        bool pairedPreflight = false)
     {
         string directory = Required(configuration.CaptureDirectory);
         string expected = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configuration.OutputPath))!, "captures");
-        if (!string.Equals(Path.GetFullPath(directory), expected,
+        if (!pairedPreflight && !string.Equals(Path.GetFullPath(directory), expected,
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
         {
             throw DeltaInvalid("delta_capture_directory_invalid");
@@ -438,7 +491,7 @@ public static partial class MigrationConsole
         {
             throw DeltaInvalid("delta_capture_configuration_invalid");
         }
-        if (configuration.UseQuotationPhysicalTransition &&
+        if (configuration.UseQuotationPhysicalTransition && command != "preflight-paired-local-transition" &&
             (!configuration.UseCapturedSource ||
              !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(configuration.TargetAuthority)))
         {
@@ -595,7 +648,8 @@ internal sealed record DeltaCommandConfiguration(
     string? CaptureDirectory = null,
     string? CaptureKeyFile = null,
     bool UseQuotationPhysicalTransition = false,
-    PairedPersistentDeltaTarget? PairedPersistentTarget = null);
+    PairedPersistentDeltaTarget? PairedPersistentTarget = null,
+    string? DisposableProofPairPath = null);
 
 internal sealed record PairedPersistentDeltaTarget(
     string TargetConnectionFile,
@@ -742,7 +796,7 @@ internal static class PairedDeltaTargetPhysicalSchemaFence
     }
 }
 
-internal sealed class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory? sourceFactory = null) :
+internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSourceFactory? sourceFactory = null) :
     IGuardedDeltaConsoleRuntime, IGuardedPairedDeltaConsoleRuntime
 {
     private readonly IMigrationSourceFactory _sourceFactory = sourceFactory ?? new SqlServerMigrationSourceFactory();

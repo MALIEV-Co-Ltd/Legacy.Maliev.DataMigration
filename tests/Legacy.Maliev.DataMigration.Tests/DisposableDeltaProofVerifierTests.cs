@@ -396,6 +396,80 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                     fixture.Now.AddMinutes(-1), fixture.Now.AddMinutes(5), reusedSigner)).Code);
     }
 
+    [Fact]
+    public async Task Local_transition_preflight_checks_signed_admission_before_target_and_stops_on_identity_or_schema_drift()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, matchingInsertOperations: true);
+        using var signer = new P256MigrationEvidenceSigner("local-transition-authorization",
+            _authorizationKey.ExportECPrivateKeyPem());
+        PairedCapturedDeltaPlans plans = new(fixture.ProofPlan, fixture.LocalPlan);
+        PairedLocalTransitionAuthorization admission = PairedLocalTransitionAuthorizationPolicy.Produce(
+            plans, fixture.ProofResult, fixture.Schema, fixture.Trust,
+            fixture.LocalPlan.TargetAuthority!, fixture.LocalPlan.TargetObservationSha256,
+            fixture.LocalPlan.QuotationTransitionSchemaSha256!, fixture.Now.AddMinutes(-1),
+            fixture.Now.AddMinutes(5), signer);
+        string directory = Path.Combine(Path.GetTempPath(), "paired-local-preflight-" + Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
+        try
+        {
+            var clock = new FixedTime(fixture.Now);
+            var observations = new List<string>();
+            Task Identity(CancellationToken _)
+            {
+                observations.Add("identity");
+                throw new DeltaExecutionException("delta_target_identity_changed", "Target changed.");
+            }
+            Task Physical(DatabaseSchemaPlan _, bool transition, CancellationToken __)
+            {
+                observations.Add("physical");
+                throw new DeltaPlanException("delta_schema_drift", "Physical schema changed.");
+            }
+            Task<PairedLocalTransitionPreflightResult> Preflight(
+                PairedLocalTransitionAuthorization candidate,
+                Func<CancellationToken, Task> identity)
+            {
+                return PairedLocalTransitionPreflight.VerifyAsync(plans, fixture.ProofResult, candidate,
+                    fixture.Schema, fixture.Trust, fixture.LocalPlan.TargetAuthority!,
+                    fixture.LocalPlan.TargetObservationSha256, identity, Physical, directory,
+                    RandomNumberGenerator.GetBytes(32), new EmptyRows(), clock, CancellationToken.None);
+            }
+
+            PairedLocalTransitionAuthorization tampered = admission with
+            {
+                DisposableReconciliationSha256 = Hash('f'),
+            };
+            Assert.Equal("delta_paired_local_transition_authorization_invalid",
+                (await Assert.ThrowsAsync<DeltaExecutionException>(() => Preflight(tampered, Identity))).Code);
+            Assert.Empty(observations);
+            Assert.Equal("delta_target_identity_changed",
+                (await Assert.ThrowsAsync<DeltaExecutionException>(() => Preflight(admission, Identity))).Code);
+            Assert.Equal(["identity"], observations);
+            observations.Clear();
+            Assert.Equal("delta_schema_drift",
+                (await Assert.ThrowsAsync<DeltaPlanException>(() => Preflight(admission, _ =>
+                {
+                    observations.Add("identity");
+                    return Task.CompletedTask;
+                }))).Code);
+            Assert.Equal(["identity", "physical"], observations);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private sealed class EmptyRows : IDeltaOrderedRowSource
+    {
+        public async IAsyncEnumerable<MigrationRow> ReadOrderedAsync(string database, TableCopyPlan table,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+    }
+
     private async Task<Fixture> CreateAsync(bool changedLocalOperations = false,
         bool captured = false, bool changedLocalEvidence = false, bool quotationDisposition = false,
         bool changedLocalTableInventory = false, bool changedLocalArchive = false,

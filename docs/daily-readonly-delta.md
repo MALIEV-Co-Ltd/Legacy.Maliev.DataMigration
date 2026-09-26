@@ -202,6 +202,22 @@ check row preimages inside each serializable transaction, preserve the old
 public outboxes, and reconcile all 23 checkpoints. No production transition
 authority is defined.
 
+`preflight-paired-local-transition` is an owner-only, read-only operator check
+for that separately signed artifact. Its protected config references the schema
+plan, the complete paired-plan JSON (`disposableProofPairPath`), the signed
+disposable reconciliation (`disposableProofResultPath`), the local transition
+authorization (`authorizationPath`), five distinct trusted public keys, the
+same protected capture key/directory, and the persistent LOCAL connection file.
+Set `useCapturedSource=true`, `useQuotationPhysicalTransition=true`,
+`allowAuthorizationSigning=false`, and `allowExecution=false`. The command
+verifies admission before opening the target, checks exact target identity and
+all 23 physical schemas before and after replay, and compares each encrypted
+captured changed row and current target preimage with its signed operation. It
+returns only plan/proof hashes and counts. This is not a persistent apply
+command or a durable admission receipt; any later apply must perform its own
+pre-metadata check and serializable row-preimage/replay fence. Existing apply
+and production gates remain unchanged.
+
 ## Read-only target gap inspection
 
 After generating the current source schema plan, use
