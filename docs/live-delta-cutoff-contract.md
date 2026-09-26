@@ -46,3 +46,16 @@ Implementation gates:
 
 The current live-write regression test intentionally asserts safe rollback.
 It is not proof that the deterministic capture design has been implemented.
+
+## Capture codec status
+
+`DeltaCapturedRowCodec` provides a bounded encrypted row stream for a future
+capture/replay path. It preserves SQL scalar types and single-pass large values,
+binds the table identity in the authenticated archive context, and rejects
+tampering, unsupported types, duplicate keys, and unconsumed large values.
+Its raw plaintext codec methods are internal; callers must publish only the
+authenticated encrypted form. The codec is not yet wired into the exact-23
+planner, signed plan, executor, or checkpoint reconciliation. Until that work
+and a live-write disposable proof are complete, the existing mismatch guard
+must continue to stop a changed source; a successful quiet-period run is not
+deterministic cutoff proof.
