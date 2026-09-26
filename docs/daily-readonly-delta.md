@@ -7,6 +7,11 @@ read-only compatibility archive. Neither may be copied as an ordinary public
 table to make a schema fingerprint pass.
 The schema plan now signs explicit source-to-target bindings for these two
 tables, including the reviewed source contract hash and target schema version.
+Its expected PostgreSQL fingerprint uses the reviewed target shapes:
+`legacy_compatibility.GoogleAnalyticsOutbox` retains the source table structure,
+while `public.QuotationAcceptedOutcome` uses the QuotationService EF outcome
+schema, including the sub-microsecond timestamp remainder. It does not expect
+either source-named outbox in `public`.
 Those bindings are review evidence only: they do not authorize outbox row
 execution or relax the planner's fail-closed guard. Adoption, archive apply,
 and full reconciliation still require separate validation before a live run.

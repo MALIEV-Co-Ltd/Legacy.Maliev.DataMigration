@@ -93,7 +93,41 @@ public sealed class ApprovedSourceDispositionManifestTests
             ApprovedSourceDispositionManifest.ProfileForDatabase("Quotation", [analytics, analytics, outcome]));
     }
 
-    private static TableCopyPlan Outbox(
+    [Fact]
+    public void ReviewedQuotationTargetShape_UsesArchiveAndCanonicalOutcome_NotSourceNamedPublicTables()
+    {
+        TableCopyPlan[] tables =
+        [
+            Outbox(CurrentQuotationSourceContract.GoogleAnalyticsOutbox, "PK_GoogleAnalyticsOutbox",
+                "UX_GoogleAnalyticsOutbox_EventKey", uniqueIndex: true),
+            Outbox(CurrentQuotationSourceContract.QuotationOutcomeOutbox, "PK_QuotationOutcomeOutbox",
+                "UQ_QuotationOutcomeOutbox_EventKey", uniqueIndex: false),
+        ];
+        var plan = new DatabaseSchemaPlan("Quotation", "1.0", new string('a', 64), new string('b', 64), tables)
+        {
+            SourceDispositionProfile = ApprovedSourceDispositionManifest.QuotationOutboxesV1,
+            SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase("Quotation", tables),
+        };
+
+        IReadOnlyList<TableCopyPlan> target = ApprovedSourceDispositionManifest.TargetTablesFor(plan);
+        Assert.Equal(["legacy_compatibility.GoogleAnalyticsOutbox", "public.QuotationAcceptedOutcome"],
+            target.Select(table => $"{table.TargetSchema}.{table.TargetTable}"));
+        TableCopyPlan archive = target[0];
+        Assert.Equal(tables[0].OrderedColumns, archive.OrderedColumns);
+        Assert.Equal(tables[0].ColumnTypes, archive.ColumnTypes);
+        Assert.Equal(tables[0].Identities, archive.Identities);
+        TableCopyPlan accepted = target[1];
+        Assert.Equal("timestamp without time zone", accepted.ColumnTypes["AcceptedUtc"]);
+        Assert.Equal("smallint", accepted.ColumnTypes["AcceptedUtcSubMicrosecondTicks"]);
+        Assert.Equal("0", accepted.DefaultExpressions["AcceptedUtcSubMicrosecondTicks"]);
+        Assert.Equal(5, accepted.Indexes.Count);
+        Assert.Contains(accepted.Indexes, index => index.Name == "IX_QuotationAcceptedOutcome_EventKey" && index.Unique);
+        Assert.Matches("^[0-9a-f]{64}$", PostgreSqlSchemaFingerprint.ComputeExpected(plan));
+        _ = Assert.Throws<MigrationExecutionException>(() =>
+            ApprovedSourceDispositionManifest.TargetTablesFor(plan with { SourceTableDispositions = [] }));
+    }
+
+    internal static TableCopyPlan Outbox(
         SourceTableContract contract, string primaryKeyName, string eventKeyName, bool uniqueIndex)
     {
         string name = contract.Name["dbo.".Length..];
@@ -102,8 +136,11 @@ public sealed class ApprovedSourceDispositionManifestTests
         {
             SourceColumnTypes = contract.Columns.ToDictionary(column => column.Name,
                 column => column.StoreType, StringComparer.Ordinal),
+            ColumnTypes = contract.Columns.ToDictionary(column => column.Name,
+                column => SqlServerTypeMapping.Map(column.StoreType), StringComparer.Ordinal),
             NullableColumns = [.. contract.Columns.Where(column => column.Nullable).Select(column => column.Name)],
             IdentityColumns = [.. contract.Columns.Where(column => column.Identity is not null).Select(column => column.Name)],
+            Identities = [new IdentityCopyPlan("ID", 1, 1, 1, false)],
             PrimaryKey = new PrimaryKeyCopyPlan(primaryKeyName, ["ID"]),
             Indexes = uniqueIndex ? [new IndexCopyPlan(eventKeyName, ["EventKey"], true)] : [],
             UniqueConstraints = uniqueIndex ? [] : [new UniqueConstraintCopyPlan(eventKeyName, ["EventKey"])],

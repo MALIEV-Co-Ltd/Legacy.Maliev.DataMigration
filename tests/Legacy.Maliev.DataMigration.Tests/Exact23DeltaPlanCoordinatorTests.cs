@@ -79,7 +79,6 @@ public sealed class Exact23DeltaPlanCoordinatorTests : IDisposable
             TargetTable = sourceTable,
         };
         DatabaseSchemaPlan revised = quotation with { Tables = [.. quotation.Tables, outbox] };
-        revised = revised with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(revised) };
         FreshSchemaPlan schema = valid with
         {
             Databases = valid.Databases.Select(database => database.Database == "Quotation" ? revised : database).ToArray(),
