@@ -2,6 +2,9 @@ using System.Security.Cryptography;
 
 namespace Legacy.Maliev.DataMigration;
 
+/// <summary>Two target-bound plans derived from one immutable source capture.</summary>
+public sealed record PairedCapturedDeltaPlans(DeltaSynchronizationPlan Disposable, DeltaSynchronizationPlan Persistent);
+
 /// <summary>Plans from immutable encrypted per-database snapshots rather than mutable SQL rows.</summary>
 public sealed class Exact23CapturedDeltaPlanCoordinator(
     IReadOnlyMigrationSource liveSource,
@@ -13,6 +16,35 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
 {
     public async Task<DeltaSynchronizationPlan> ProduceAsync(
         Exact23DeltaPlanRequest request,
+        ReadOnlyMemory<byte> captureKey,
+        CancellationToken cancellationToken)
+    {
+        PairedCapturedDeltaPlans plans = await ProduceCoreAsync(request, null, null, null,
+            captureKey, cancellationToken).ConfigureAwait(false);
+        return plans.Disposable;
+    }
+
+    /// <summary>Plans disposable and persistent-local targets from the same per-database captures; does not authorize apply.</summary>
+    public Task<PairedCapturedDeltaPlans> ProducePairedAsync(
+        Exact23DeltaPlanRequest disposableRequest,
+        Exact23DeltaPlanRequest persistentRequest,
+        IDeltaDatabaseSnapshotRowSource persistentTarget,
+        P256MigrationEvidenceSigner persistentSigner,
+        ReadOnlyMemory<byte> captureKey,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(persistentRequest);
+        ArgumentNullException.ThrowIfNull(persistentTarget);
+        ArgumentNullException.ThrowIfNull(persistentSigner);
+        return ProduceCoreAsync(disposableRequest, persistentRequest, persistentTarget, persistentSigner,
+            captureKey, cancellationToken);
+    }
+
+    private async Task<PairedCapturedDeltaPlans> ProduceCoreAsync(
+        Exact23DeltaPlanRequest request,
+        Exact23DeltaPlanRequest? persistentRequest,
+        IDeltaDatabaseSnapshotRowSource? persistentTarget,
+        P256MigrationEvidenceSigner? persistentSigner,
         ReadOnlyMemory<byte> captureKey,
         CancellationToken cancellationToken)
     {
@@ -37,9 +69,39 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
             throw new DeltaPlanException("delta_capture_preflight_invalid",
                 "The live source, target authority, cutoff, or capture key roles are invalid.");
         }
+        if (persistentRequest is not null &&
+            (persistentTarget is null || persistentSigner is null ||
+             ReferenceEquals(persistentTarget, canonicalTarget) ||
+             persistentRequest.SourceMode != DeltaSourceMode.LiveReadOnly ||
+             persistentRequest.SourceCutoffUtc != request.SourceCutoffUtc ||
+             persistentRequest.SourceObservationSha256 != request.SourceObservationSha256 ||
+             SchemaPlanCanonicalizer.ComputeSha256(persistentRequest.SchemaPlan) !=
+                SchemaPlanCanonicalizer.ComputeSha256(request.SchemaPlan) ||
+             persistentRequest.BackupManifestSha256 != request.BackupManifestSha256 ||
+             persistentRequest.RunnerDigestSha256 != request.RunnerDigestSha256 ||
+             request.TargetAuthority?.Kind != DeltaTargetAuthorityKind.LocalAspire ||
+             persistentRequest.TargetAuthority?.Kind != DeltaTargetAuthorityKind.LocalAspire ||
+             !request.TargetAuthority.AuthorityId.StartsWith(
+                 "aspire://legacy-postgres-main-local/disposable-", StringComparison.Ordinal) ||
+             !persistentRequest.TargetAuthority.AuthorityId.StartsWith(
+                 "aspire://legacy-postgres-main-local/persistent-", StringComparison.Ordinal) ||
+             request.TargetAuthority.SystemIdentifierSha256 == persistentRequest.TargetAuthority.SystemIdentifierSha256 ||
+             request.TargetObservationSha256 == persistentRequest.TargetObservationSha256 ||
+             !DeltaSynchronizationPlanProducer.ValidAuthority(persistentRequest.TargetAuthority,
+                 persistentRequest.TargetNamespace, persistentRequest.TargetCluster) ||
+             persistentSigner.PublicKeyFingerprintSha256 == signer.PublicKeyFingerprintSha256 ||
+             new[] { persistentSigner.PublicKeyFingerprintSha256,
+                 persistentRequest.BackupKeyFingerprintSha256,
+                 persistentRequest.ExecutionAuthorizationKeyFingerprintSha256 }.Any(value =>
+                 DeltaSynchronizationPlanProducer.FixedHashEquals(value, keyFingerprint))))
+        {
+            throw new DeltaPlanException("delta_capture_paired_preflight_invalid",
+                "Paired plans require distinct disposable and persistent-local targets and trusted key roles.");
+        }
         Exact23DeltaPlanCoordinator.ValidateInventory(request.SchemaPlan);
         string schemaPlanSha256 = SchemaPlanCanonicalizer.ComputeSha256(request.SchemaPlan);
         var databasePlans = new List<DeltaDatabasePlan>(DatabaseInventory.ActiveDatabases.Count);
+        var persistentDatabasePlans = new List<DeltaDatabasePlan>(DatabaseInventory.ActiveDatabases.Count);
         var bindings = new List<DeltaDatabaseCaptureBinding>(DatabaseInventory.ActiveDatabases.Count);
         foreach (DatabaseSchemaPlan schema in request.SchemaPlan.Databases)
         {
@@ -102,69 +164,77 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
             }
 
             DateTimeOffset completedAtUtc = timeProvider.GetUtcNow();
-            var tablePlans = new List<DeltaTablePlan>(mapping.TargetSchema.Tables.Count);
-            var tableBindings = new List<DeltaTableCaptureBinding>(mapping.TargetSchema.Tables.Count);
-            bool targetSnapshotOpen = false;
-            try
+            var targetFullCaptures = new Dictionary<string, DeltaCapturedTableArtifact>(StringComparer.Ordinal);
+            foreach (TableCopyPlan table in OrderedTables(mapping.TargetSchema))
             {
-                await canonicalTarget.BeginDatabaseSnapshotAsync(schema.Database, cancellationToken)
-                    .ConfigureAwait(false);
-                targetSnapshotOpen = true;
-                foreach (TableCopyPlan table in OrderedTables(mapping.TargetSchema))
+                TableCopyPlan sourceTable = mapping.SourceTableFor(table);
+                DeltaCapturedTableArtifact sourceFull = fullCaptures[Qualified(sourceTable)];
+                DeltaCapturedTableArtifact full = sourceTable == table ? sourceFull :
+                    await archive.CaptureAsync(schema.Database, table, schemaPlanSha256,
+                        MapRows(archive.ReplayAsync(sourceFull, schema.Database, sourceTable,
+                            schemaPlanSha256, captureKey, cancellationToken), mapping, table, cancellationToken),
+                        captureKey, cancellationToken).ConfigureAwait(false);
+                if (sourceFull != full)
                 {
-                    TableCopyPlan sourceTable = mapping.SourceTableFor(table);
-                    DeltaCapturedTableArtifact sourceFull = fullCaptures[Qualified(sourceTable)];
-                    DeltaCapturedTableArtifact full = sourceTable == table ? sourceFull :
-                        await archive.CaptureAsync(schema.Database, table, schemaPlanSha256,
-                            MapRows(archive.ReplayAsync(sourceFull, schema.Database, sourceTable,
-                                schemaPlanSha256, captureKey, cancellationToken), mapping, table, cancellationToken),
-                            captureKey, cancellationToken).ConfigureAwait(false);
-                    if (sourceFull != full)
-                    {
-                        archive.DiscardRunOwned(sourceFull);
-                    }
-                    CanonicalTableDelta delta = await CanonicalAsyncDeltaPlanner.PlanAsync(table,
-                        archive.ReplayAsync(full, schema.Database, table, schemaPlanSha256,
-                            captureKey, cancellationToken),
-                        canonicalTarget.ReadOrderedAsync(schema.Database, table, cancellationToken),
-                        cancellationToken).ConfigureAwait(false);
-                    var planned = new DeltaTablePlan(delta.Table, delta.InsertCount, delta.UpdateCount,
-                        delta.DeleteCount, delta.UnchangedCount,
-                        DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(delta.Operations), delta.Operations);
-                    DeltaCapturedTableArtifact selected = await archive.CapturePlannedRowsAsync(full,
-                        schema.Database, table, schemaPlanSha256, planned, captureKey, cancellationToken)
-                        .ConfigureAwait(false);
-                    archive.DiscardRunOwned(full);
-                    tablePlans.Add(planned);
-                    tableBindings.Add(new(planned.Table, selected.CaptureId, selected.EncryptedSha256,
-                        selected.PlaintextSha256, selected.RowCount, planned.OperationsSha256));
+                    archive.DiscardRunOwned(sourceFull);
                 }
-                await canonicalTarget.CompleteDatabaseSnapshotAsync(schema.Database, cancellationToken)
-                    .ConfigureAwait(false);
-                targetSnapshotOpen = false;
+                targetFullCaptures.Add(Qualified(table), full);
             }
-            catch
+            IReadOnlyList<DeltaTablePlan> tablePlans = await PlanTargetAsync(canonicalTarget, mapping.TargetSchema,
+                targetFullCaptures, schemaPlanSha256, captureKey, cancellationToken).ConfigureAwait(false);
+            if (persistentTarget is not null)
             {
-                if (targetSnapshotOpen)
+                IReadOnlyList<DeltaTablePlan> pairedPlans = await PlanTargetAsync(persistentTarget,
+                    mapping.TargetSchema, targetFullCaptures, schemaPlanSha256, captureKey, cancellationToken)
+                    .ConfigureAwait(false);
+                if (tablePlans.Count != pairedPlans.Count || tablePlans.Zip(pairedPlans).Any(pair =>
+                    pair.First.Table != pair.Second.Table ||
+                    pair.First.InsertCount != pair.Second.InsertCount ||
+                    pair.First.UpdateCount != pair.Second.UpdateCount ||
+                    pair.First.DeleteCount != pair.Second.DeleteCount ||
+                    pair.First.UnchangedCount != pair.Second.UnchangedCount ||
+                    pair.First.OperationsSha256 != pair.Second.OperationsSha256 ||
+                    !pair.First.Operations.SequenceEqual(pair.Second.Operations)))
                 {
-                    try
-                    {
-                        await canonicalTarget.RollbackDatabaseSnapshotAsync(schema.Database, CancellationToken.None)
-                            .ConfigureAwait(false);
-                    }
-                    catch (Exception rollbackFailure) when (rollbackFailure is
-                        DeltaPlanningException or InvalidOperationException or IOException or Npgsql.NpgsqlException)
-                    {
-                        // Preserve the original target planning failure.
-                    }
+                    throw new DeltaPlanException("delta_capture_paired_operations_mismatch",
+                        "The disposable and persistent targets do not have the same signed operation set.");
                 }
-                throw;
+                persistentDatabasePlans.Add(new(schema.Database, pairedPlans));
+            }
+            var tableBindings = new List<DeltaTableCaptureBinding>(mapping.TargetSchema.Tables.Count);
+            foreach (TableCopyPlan table in OrderedTables(mapping.TargetSchema))
+            {
+                DeltaCapturedTableArtifact full = targetFullCaptures[Qualified(table)];
+                DeltaTablePlan planned = tablePlans.Single(item => item.Table == Qualified(table));
+                DeltaCapturedTableArtifact selected = await archive.CapturePlannedRowsAsync(full,
+                    schema.Database, table, schemaPlanSha256, planned, captureKey, cancellationToken)
+                    .ConfigureAwait(false);
+                archive.DiscardRunOwned(full);
+                tableBindings.Add(new(planned.Table, selected.CaptureId, selected.EncryptedSha256,
+                    selected.PlaintextSha256, selected.RowCount, planned.OperationsSha256));
             }
             databasePlans.Add(new(schema.Database, tablePlans));
             bindings.Add(new(schema.Database, startedAtUtc, completedAtUtc, sourceEvidence, tableBindings));
         }
 
         DateTimeOffset nowUtc = timeProvider.GetUtcNow();
+        DeltaSourceCaptureManifest manifest = new(keyFingerprint, bindings);
+        DeltaSynchronizationPlan disposable = SignPlan(request, signer, schemaPlanSha256,
+            databasePlans, manifest, nowUtc);
+        DeltaSynchronizationPlan persistent = persistentRequest is null ? disposable :
+            SignPlan(persistentRequest, persistentSigner!, schemaPlanSha256,
+                persistentDatabasePlans, manifest, nowUtc);
+        return new(disposable, persistent);
+    }
+
+    private static DeltaSynchronizationPlan SignPlan(
+        Exact23DeltaPlanRequest request,
+        P256MigrationEvidenceSigner planSigner,
+        string schemaPlanSha256,
+        IReadOnlyList<DeltaDatabasePlan> databasePlans,
+        DeltaSourceCaptureManifest manifest,
+        DateTimeOffset nowUtc)
+    {
         return DeltaSynchronizationPlanProducer.Produce(new(
             request.SchemaPlan.SourceCommitSha,
             request.SourceCutoffUtc,
@@ -183,8 +253,56 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
             SourceMode = request.SourceMode,
             SourceObservationSha256 = request.SourceObservationSha256,
             SourceCaptureCompletedAtUtc = nowUtc,
-            SourceCaptureManifest = new(keyFingerprint, bindings),
-        }, signer, nowUtc);
+            SourceCaptureManifest = manifest,
+        }, planSigner, nowUtc);
+    }
+
+    private async Task<IReadOnlyList<DeltaTablePlan>> PlanTargetAsync(
+        IDeltaDatabaseSnapshotRowSource target,
+        DatabaseSchemaPlan schema,
+        Dictionary<string, DeltaCapturedTableArtifact> fullCaptures,
+        string schemaPlanSha256,
+        ReadOnlyMemory<byte> captureKey,
+        CancellationToken cancellationToken)
+    {
+        var tablePlans = new List<DeltaTablePlan>(schema.Tables.Count);
+        bool snapshotOpen = false;
+        try
+        {
+            await target.BeginDatabaseSnapshotAsync(schema.Database, cancellationToken).ConfigureAwait(false);
+            snapshotOpen = true;
+            foreach (TableCopyPlan table in OrderedTables(schema))
+            {
+                CanonicalTableDelta delta = await CanonicalAsyncDeltaPlanner.PlanAsync(table,
+                    archive.ReplayAsync(fullCaptures[Qualified(table)], schema.Database, table,
+                        schemaPlanSha256, captureKey, cancellationToken),
+                    target.ReadOrderedAsync(schema.Database, table, cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+                tablePlans.Add(new(delta.Table, delta.InsertCount, delta.UpdateCount,
+                    delta.DeleteCount, delta.UnchangedCount,
+                    DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(delta.Operations), delta.Operations));
+            }
+            await target.CompleteDatabaseSnapshotAsync(schema.Database, cancellationToken).ConfigureAwait(false);
+            snapshotOpen = false;
+            return tablePlans;
+        }
+        catch
+        {
+            if (snapshotOpen)
+            {
+                try
+                {
+                    await target.RollbackDatabaseSnapshotAsync(schema.Database, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception rollbackFailure) when (rollbackFailure is
+                    DeltaPlanningException or InvalidOperationException or IOException or Npgsql.NpgsqlException)
+                {
+                    // Preserve the planning failure.
+                }
+            }
+            throw;
+        }
     }
 
     private static IEnumerable<TableCopyPlan> OrderedTables(DatabaseSchemaPlan schema)
