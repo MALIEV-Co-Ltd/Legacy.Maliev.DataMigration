@@ -7,7 +7,11 @@ public sealed record QuotationTargetBootstrapAuthorization(
     string SchemaVersion, Guid AuthorizationId, string SourceCommitSha, string SourceSchemaSha256,
     string TargetSchemaSha256, string TransitionSchemaSha256,
     DeltaTargetAuthority TargetAuthority, string ReviewedMissingTables, DateTimeOffset IssuedAtUtc,
-    DateTimeOffset ExpiresAtUtc, string AttestationKeyId, string? AttestationSignature);
+    DateTimeOffset ExpiresAtUtc, string AttestationKeyId, string? AttestationSignature)
+{
+    /// <summary>Signed disposable evidence required only for persistent-local additive DDL.</summary>
+    public string? DisposableProofSha256 { get; init; }
+}
 
 /// <summary>Signs a Quotation-only DDL permission independent from row-delta permissions.</summary>
 public static class QuotationTargetBootstrapAuthorizationProducer
@@ -19,20 +23,27 @@ public static class QuotationTargetBootstrapAuthorizationProducer
     /// <summary>Creates a fifteen-minute-or-shorter exact-plan, exact-target authorization.</summary>
     public static QuotationTargetBootstrapAuthorization Produce(DatabaseSchemaPlan schema, string sourceCommitSha,
         DeltaTargetAuthority authority, DateTimeOffset issuedAtUtc, DateTimeOffset expiresAtUtc,
-        P256MigrationEvidenceSigner signer)
+        P256MigrationEvidenceSigner signer, string? disposableProofSha256 = null)
     {
         ArgumentNullException.ThrowIfNull(signer);
         Validate(schema, sourceCommitSha, authority);
-        if (issuedAtUtc.Offset != TimeSpan.Zero || expiresAtUtc.Offset != TimeSpan.Zero ||
+        bool persistent = IsPersistent(authority);
+        if (persistent != (disposableProofSha256 is not null) ||
+            (persistent && (disposableProofSha256!.Length != 64 ||
+                !disposableProofSha256.All(char.IsAsciiHexDigit))) ||
+            issuedAtUtc.Offset != TimeSpan.Zero || expiresAtUtc.Offset != TimeSpan.Zero ||
             expiresAtUtc <= issuedAtUtc || expiresAtUtc - issuedAtUtc > TimeSpan.FromMinutes(15))
         {
             throw Invalid();
         }
-        var unsigned = new QuotationTargetBootstrapAuthorization("1.0", Guid.NewGuid(), sourceCommitSha,
+        var unsigned = new QuotationTargetBootstrapAuthorization(persistent ? "1.1" : "1.0", Guid.NewGuid(), sourceCommitSha,
             schema.SourceSchemaSha256, schema.TargetSchemaSha256,
             PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(schema, true),
             authority, ReviewedMissingSet, issuedAtUtc, expiresAtUtc,
-            signer.KeyId, null);
+            signer.KeyId, null)
+        {
+            DisposableProofSha256 = disposableProofSha256?.ToLowerInvariant(),
+        };
         return unsigned with { AttestationSignature = Convert.ToBase64String(signer.Sign(Payload(unsigned))) };
     }
 
@@ -42,6 +53,8 @@ public static class QuotationTargetBootstrapAuthorizationProducer
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(authority);
         if (sourceCommitSha.Length != 40 || !sourceCommitSha.All(char.IsAsciiHexDigit) ||
+            !(authority.AuthorityId.StartsWith("aspire://legacy-postgres-main-local/disposable-", StringComparison.Ordinal) ||
+              IsPersistent(authority)) ||
             !DeltaSynchronizationPlanProducer.ValidAuthority(authority, "local-aspire", "legacy-postgres-main-local"))
         {
             throw Invalid();
@@ -51,7 +64,9 @@ public static class QuotationTargetBootstrapAuthorizationProducer
 
     internal static byte[] Payload(QuotationTargetBootstrapAuthorization authorization)
     {
-        byte[] domain = "legacy-maliev-quotation-target-bootstrap-authorization-v1.0\0"u8.ToArray();
+        byte[] domain = authorization.SchemaVersion == "1.1"
+            ? "legacy-maliev-quotation-target-bootstrap-authorization-v1.1\0"u8.ToArray()
+            : "legacy-maliev-quotation-target-bootstrap-authorization-v1.0\0"u8.ToArray();
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(authorization with { AttestationSignature = null });
         byte[] payload = new byte[domain.Length + json.Length];
         domain.CopyTo(payload, 0);
@@ -64,6 +79,9 @@ public static class QuotationTargetBootstrapAuthorizationProducer
         return new("quotation_target_bootstrap_authorization_request_invalid",
         "The Quotation target bootstrap authorization request is invalid.");
     }
+
+    private static bool IsPersistent(DeltaTargetAuthority authority) =>
+        authority.AuthorityId.StartsWith("aspire://legacy-postgres-main-local/persistent-", StringComparison.Ordinal);
 }
 
 /// <summary>Verifies the exact local authority, schema, source commit, freshness, and signature.</summary>
@@ -72,14 +90,22 @@ public static class QuotationTargetBootstrapAuthorizationVerifier
     /// <summary>Returns false on any missing, stale, changed, or untrusted binding.</summary>
     public static bool Verify(QuotationTargetBootstrapAuthorization authorization, DatabaseSchemaPlan schema,
         string sourceCommitSha, DeltaTargetAuthority authority, IReceiptAttestationTrustStore trust,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc, string? expectedDisposableProofSha256 = null)
     {
         ArgumentNullException.ThrowIfNull(authorization);
         ArgumentNullException.ThrowIfNull(trust);
         try
         {
             QuotationTargetBootstrapAuthorizationProducer.Validate(schema, sourceCommitSha, authority);
-            return authorization.SchemaVersion == "1.0" && authorization.AuthorizationId != Guid.Empty &&
+            bool persistent = authority.AuthorityId.StartsWith(
+                "aspire://legacy-postgres-main-local/persistent-", StringComparison.Ordinal);
+            return authorization.SchemaVersion == (persistent ? "1.1" : "1.0") &&
+                (persistent ? expectedDisposableProofSha256 is { Length: 64 } &&
+                    expectedDisposableProofSha256.All(char.IsAsciiHexDigit) &&
+                    string.Equals(authorization.DisposableProofSha256, expectedDisposableProofSha256,
+                        StringComparison.OrdinalIgnoreCase)
+                    : authorization.DisposableProofSha256 is null && expectedDisposableProofSha256 is null) &&
+                authorization.AuthorizationId != Guid.Empty &&
                 authorization.SourceCommitSha == sourceCommitSha &&
                 authorization.SourceSchemaSha256 == schema.SourceSchemaSha256 &&
                 authorization.TargetSchemaSha256 == schema.TargetSchemaSha256 &&
