@@ -58,7 +58,9 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("[IO.FileMode]::CreateNew", script, StringComparison.Ordinal);
         Assert.Contains("RandomNumberGenerator]::GetBytes(32)", script, StringComparison.Ordinal);
         Assert.Contains("Assert-OwnerOnlyFile $captureKeyFile", script, StringComparison.Ordinal);
-        Assert.Contains("{ '1.3' } else { '1.2' }", script, StringComparison.Ordinal);
+        Assert.Contains("$config.delta.ContainsKey('useCapturedSource') -and $config.delta.useCapturedSource -eq $true", script, StringComparison.Ordinal);
+        Assert.Contains("daily_delta_capture_mode_invalid", script, StringComparison.Ordinal);
+        Assert.Contains("$expectedVersion = if ($useCapturedSource) { '1.3' } else { '1.2' }", script, StringComparison.Ordinal);
     }
 
     [Theory]
