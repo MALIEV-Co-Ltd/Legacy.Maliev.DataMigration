@@ -193,18 +193,36 @@ disposable apply/reconciliation and a separately reviewed schema-1.4 local
 admission contract are still required.
 The retained public outboxes are never row-delta targets or retired here.
 
-The separately signed `PairedLocalTransitionAuthorization` is an offline
-admission-review contract only. It binds the persistent plan, disposable plan,
+The separately signed `PairedLocalTransitionAuthorization` binds the persistent plan, disposable plan,
 signed disposable exact-23 reconciliation, reviewed transition hash, fresh
 persistent-local identity, target observation, and a 15-minute authorization
 window. The verifier rechecks the zero-delete same-capture proof and observed
-target values. It is not recognized by `authorize-delta`, `apply-delta-local`,
-metadata provisioning, or the atomic executor; those paths still reject a
-persistent schema-1.4 plan before any write. A later reviewed operator workflow
-must verify this contract before metadata, replay the encrypted captured rows,
-check row preimages inside each serializable transaction, preserve the old
-public outboxes, and reconcile all 23 checkpoints. No production transition
-authority is defined.
+target values. It is not recognized by `authorize-delta` or `apply-delta-local`;
+those paths still reject a persistent schema-1.4 plan. Only the owner-only
+`apply-paired-local-transition` command accepts it, after the protected-main
+executable and exact-head CI have been reviewed. This command requires the
+same artifacts and target bindings as the read-only preflight, plus
+`allowExecution=true`, `allowAuthorizationSigning=false`, and the distinct
+LOCAL evidence-signing key in `LEGACY_MIGRATION_DELTA_EVIDENCE_SIGNING_KEY_FILE`.
+It verifies live source identity, exact-23 target identity/physical schemas,
+metadata state, signed encrypted captured rows, and current target preimages
+before execution. Each database then rechecks its short-lived admission,
+PostgreSQL system identifier, physical schema, fence, journal, and row
+preimages within a serializable transaction; metadata creation and row DML
+commit together. Existing checkpoint replay is accepted only after its
+transactionally observed target evidence still matches the checkpoint.
+An interrupted run may resume only with a fresh signed admission for the
+same paired plan/proof and rechecked captured cutoff. The command returns a
+new signed, checkpoint-bound exact-23 reconciliation; a failure or absent
+output is not a successful refresh. It does not delete either retained public
+Quotation outbox, authorize production, or replace any database. The signed
+result proves parity with the immutable SQL capture cutoff, not with live SQL
+rows inserted or changed afterward. The live-source observation checks source
+identity, not current row equality; never label this as current production
+parity. If the 15-minute admission expires during the 23-database run, the
+next database or reconciliation fails closed. Already-committed databases stay
+committed; resumption requires a new signed admission for the same pair and
+proof plus a fresh read-only preflight. No rollback across databases is implied.
 
 `preflight-paired-local-transition` is an owner-only, read-only operator check
 for that separately signed artifact. Its protected config references the schema
@@ -217,10 +235,9 @@ Set `useCapturedSource=true`, `useQuotationPhysicalTransition=true`,
 verifies admission before opening the target, checks exact target identity and
 all 23 physical schemas before and after replay, and compares each encrypted
 captured changed row and current target preimage with its signed operation. It
-returns only plan/proof hashes and counts. This is not a persistent apply
-command or a durable admission receipt; any later apply must perform its own
-pre-metadata check and serializable row-preimage/replay fence. Existing apply
-and production gates remain unchanged.
+returns only plan/proof hashes and counts. This is not itself a persistent apply
+command or a durable admission receipt; the separate owner-only apply command
+repeats its checks. Ordinary apply and production gates remain unchanged.
 The same read-only command now inspects every existing
 `legacy_migration_internal.delta_fence` and `delta_journal` in repeatable-read,
 read-only transactions before returning. A missing pair is reported as

@@ -390,9 +390,10 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             fixture.LocalPlan.TargetObservationSha256, fixture.LocalPlan.QuotationTransitionSchemaSha256!,
             fixture.Now.AddMinutes(-1), fixture.Now.AddMinutes(5), signer);
 
+        var clock = new FixedTime(fixture.Now);
         PairedLocalTransitionExecutionPermit permit = PairedLocalTransitionExecutionPermit.Admit(
             plans, fixture.ProofResult, authorization, fixture.Schema, fixture.Trust,
-            authority, fixture.LocalPlan.TargetObservationSha256, new FixedTime(fixture.Now));
+            authority, fixture.LocalPlan.TargetObservationSha256, clock);
         permit.Require(fixture.LocalPlan, fixture.Schema.Databases.Single(item => item.Database == "Quotation"),
             fixture.Now);
         Assert.Equal(fixture.LocalPlan.QuotationTransitionSchemaSha256,
@@ -404,6 +405,11 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             Assert.Throws<DeltaExecutionException>(() => permit.Require(fixture.LocalPlan,
                 fixture.Schema.Databases.Single(item => item.Database == "Quotation"),
                 fixture.Now.AddMinutes(6))).Code);
+        clock.UtcNow = fixture.Now.AddMinutes(6);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                new PairedLocalTransitionExecutionGate(permit, fixture.Schema).ValidateAsync(
+                    fixture.LocalPlan, "Quotation", CancellationToken.None))).Code);
         Assert.Equal("delta_paired_local_transition_authorization_invalid",
             Assert.Throws<DeltaExecutionException>(() => permit.Require(fixture.LocalPlan with
             {
@@ -817,9 +823,11 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
 
     private sealed class FixedTime(DateTimeOffset now) : TimeProvider
     {
+        public DateTimeOffset UtcNow { get; set; } = now;
+
         public override DateTimeOffset GetUtcNow()
         {
-            return now;
+            return UtcNow;
         }
     }
 }

@@ -25,7 +25,17 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime :
         DeltaSynchronizationPlan local = request.Plans.Persistent;
         DeltaTargetAuthority authority = local.TargetAuthority ?? throw new DeltaExecutionException(
             "delta_paired_local_preflight_authority_invalid", "The persistent local authority is missing.");
+        var permit = PairedLocalTransitionExecutionPermit.Admit(request.Plans, request.Proof,
+            request.Authorization, request.Schema, request.Trust, authority,
+            local.TargetObservationSha256, TimeProvider.System);
         var inspector = new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString));
+        var replayedTarget = new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString)
+        {
+            Plan = local,
+            LocalTransitionPermit = permit,
+        });
+        var capturedSource = new SignedCapturedSourceReconciliationInspector(local, request.Schema,
+            request.Trust, TimeProvider.System);
         var metadata = new PairedLocalTransitionMetadataInspector(request.TargetConnectionString);
         var targetRows = new PostgreSqlDeltaRowSource(new(request.TargetConnectionString));
         return await PairedLocalTransitionPreflight.VerifyAsync(request.Plans, request.Proof,
@@ -37,6 +47,8 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime :
                 : inspector.ValidateSchemaAsync(schema, token),
             metadata.InspectAsync,
             request.CaptureDirectory, request.CaptureKey, targetRows, TimeProvider.System,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            (schema, token) => PairedLocalTransitionReplayVerifier.VerifyAsync(schema,
+                capturedSource, replayedTarget, token)).ConfigureAwait(false);
     }
 }
