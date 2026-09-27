@@ -224,6 +224,59 @@ needed should the owner remove the run-owned capture key and temporary
 credential/signing-key projections under the local retention policy. The
 helper never deletes caller-owned connection or signing-key files itself.
 
+The current off-repository `new-local-delta-template.ps1` projects a
+persistent-only template; it does not create `pairedPersistentTarget` and must
+not be treated as a ready `-ExecutePairedLocal` input. Before using this mode,
+an independently reviewed, owner-only template projection must observe a
+fresh isolated disposable PostgreSQL identity and the existing persistent
+LOCAL identity, verify their exact-23 physical catalogs, and provide distinct
+protected connection files and six distinct plan/authorization/evidence
+signing roles (three per target). Never relabel one target or copy its key
+references into the other. The following is only the target/key overlay on
+an otherwise complete fresh schema-1.4 delta template, not an executable
+template or an authorization:
+
+```json
+{
+  "delta": {
+    "targetConnectionFile": "<owner-only disposable connection file>",
+    "targetNamespace": "local-aspire",
+    "targetCluster": "legacy-postgres-main-local",
+    "targetGeneration": "<fresh disposable generation>",
+    "targetObservationSha256": "<fresh disposable observation hash>",
+    "targetAuthority": {
+      "kind": "local-aspire",
+      "authorityId": "aspire://legacy-postgres-main-local/disposable-<run>",
+      "systemIdentifierSha256": "<disposable system hash>"
+    },
+    "planKey": { "keyId": "<disposable plan key>", "subjectPublicKeyInfoPath": "<protected path>" },
+    "authorizationKey": { "keyId": "<disposable authorization key>", "subjectPublicKeyInfoPath": "<protected path>" },
+    "evidenceKey": { "keyId": "<disposable evidence key>", "subjectPublicKeyInfoPath": "<protected path>" },
+    "pairedPersistentTarget": {
+      "targetConnectionFile": "<owner-only persistent LOCAL connection file>",
+      "targetNamespace": "local-aspire",
+      "targetCluster": "legacy-postgres-main-local",
+      "targetGeneration": "<fresh persistent generation>",
+      "targetObservationSha256": "<fresh persistent observation hash>",
+      "targetAuthority": {
+        "kind": "local-aspire",
+        "authorityId": "aspire://legacy-postgres-main-local/persistent-<run>",
+        "systemIdentifierSha256": "<persistent system hash>"
+      },
+      "planKey": { "keyId": "<persistent plan key>", "subjectPublicKeyInfoPath": "<protected path>" },
+      "authorizationKey": { "keyId": "<persistent authorization key>", "subjectPublicKeyInfoPath": "<protected path>" },
+      "evidenceKey": { "keyId": "<persistent evidence key>", "subjectPublicKeyInfoPath": "<protected path>" }
+    }
+  }
+}
+```
+
+The disposable and persistent private signing-key paths are projected only
+through the console's distinct environment variables; none belongs in JSON.
+If the paired template projection, target observation, or fresh distinct keys
+are unavailable, stop before invoking the execution switch. No automatic
+same-pair fresh-authorization resume exists yet after expiry or partial commit.
+
 `authorize-paired-local-transition` is an owner-only admission command for a
 fresh, same-capture pair and independently signed disposable exact-23 proof.
 Its protected configuration references the schema, complete pair, proof, five
