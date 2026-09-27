@@ -373,6 +373,37 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                     CancellationToken.None))).Code);
     }
 
+    [Fact]
+    public async Task Local_transition_execution_permit_requires_fresh_signed_zero_delete_pair()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, matchingInsertOperations: true);
+        using var signer = new P256MigrationEvidenceSigner("local-transition-authorization",
+            _authorizationKey.ExportECPrivateKeyPem());
+        PairedCapturedDeltaPlans plans = new(fixture.ProofPlan, fixture.LocalPlan);
+        DeltaTargetAuthority authority = fixture.LocalPlan.TargetAuthority!;
+        PairedLocalTransitionAuthorization authorization = PairedLocalTransitionAuthorizationPolicy.Produce(
+            plans, fixture.ProofResult, fixture.Schema, fixture.Trust, authority,
+            fixture.LocalPlan.TargetObservationSha256, fixture.LocalPlan.QuotationTransitionSchemaSha256!,
+            fixture.Now.AddMinutes(-1), fixture.Now.AddMinutes(5), signer);
+
+        PairedLocalTransitionExecutionPermit permit = PairedLocalTransitionExecutionPermit.Admit(
+            plans, fixture.ProofResult, authorization, fixture.Schema, fixture.Trust,
+            authority, fixture.LocalPlan.TargetObservationSha256, fixture.Now);
+        permit.Require(fixture.LocalPlan, fixture.Schema.Databases.Single(item => item.Database == "Quotation"),
+            fixture.Now);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => permit.Require(fixture.LocalPlan,
+                fixture.Schema.Databases.Single(item => item.Database == "Quotation"),
+                fixture.Now.AddMinutes(6))).Code);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => permit.Require(fixture.LocalPlan with
+            {
+                TargetAuthority = new(DeltaTargetAuthorityKind.ProductionCloudNativePg,
+                    "gke://maliev-website/production-test", Hash('f')),
+            }, fixture.Schema.Databases.Single(item => item.Database == "Quotation"), fixture.Now)).Code);
+    }
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, true)]
