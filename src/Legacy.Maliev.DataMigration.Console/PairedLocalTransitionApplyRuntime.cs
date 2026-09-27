@@ -26,6 +26,8 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime :
         var permit = PairedLocalTransitionExecutionPermit.Admit(input.Plans, input.Proof,
             input.Authorization, input.Schema, input.Trust, authority,
             plan.TargetObservationSha256, TimeProvider.System);
+        await LocalDockerGenerationGuard.VerifyAsync(plan, input.TargetConnectionString,
+            cancellationToken).ConfigureAwait(false);
         await VerifyLiveSourceAsync(plan, request.SourceConnectionString, cancellationToken)
             .ConfigureAwait(false);
         _ = await PreflightPairedLocalTransitionAsync(input, cancellationToken).ConfigureAwait(false);
@@ -34,7 +36,8 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime :
             new DeltaCapturedTableArchive(input.CaptureDirectory), plan, input.Trust,
             TimeProvider.System.GetUtcNow(), input.CaptureKey);
         var targetRows = new PostgreSqlDeltaRowSource(new(input.TargetConnectionString));
-        var gate = new PairedLocalTransitionExecutionGate(permit, input.Schema);
+        var gate = new PairedLocalTransitionExecutionGate(permit, input.Schema,
+            token => LocalDockerGenerationGuard.VerifyAsync(plan, input.TargetConnectionString, token));
         await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
         DeltaExecutionCoordinator Executor(string database)
         {
@@ -59,6 +62,8 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime :
             .ExecuteAsync(plan, input.Schema, cancellationToken).ConfigureAwait(false);
         await VerifyLiveSourceAsync(plan, request.SourceConnectionString, cancellationToken)
             .ConfigureAwait(false);
+        await LocalDockerGenerationGuard.VerifyAsync(plan, input.TargetConnectionString,
+            cancellationToken).ConfigureAwait(false);
         await VerifyTargetAuthorityAsync(input.TargetConnectionString, authority, cancellationToken)
             .ConfigureAwait(false);
         var coordinator = new Exact23DeltaReconciliationCoordinator(
@@ -75,6 +80,8 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime :
             cancellationToken).ConfigureAwait(false);
         await VerifyLiveSourceAsync(plan, request.SourceConnectionString, cancellationToken)
             .ConfigureAwait(false);
+        await LocalDockerGenerationGuard.VerifyAsync(plan, input.TargetConnectionString,
+            cancellationToken).ConfigureAwait(false);
         await VerifyTargetAuthorityAsync(input.TargetConnectionString, authority, cancellationToken)
             .ConfigureAwait(false);
         return result;

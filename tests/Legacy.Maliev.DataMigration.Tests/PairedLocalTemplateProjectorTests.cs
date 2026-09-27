@@ -59,7 +59,7 @@ public sealed class PairedLocalTemplateProjectorTests
         MigrationConsoleException targetFailure = await Assert.ThrowsAsync<MigrationConsoleException>(() =>
             MigrationConsole.ProjectPairedLocalTemplateAsync(reusedTarget, fixture.Environment,
                 new Observer(), CancellationToken.None));
-        Assert.Equal("delta_paired_template_observation_invalid", targetFailure.Code);
+        Assert.Equal("delta_paired_template_role_invalid", targetFailure.Code);
         Assert.False(File.Exists(fixture.Candidate.OutputPath));
 
         var reusedRole = fixture.Candidate with
@@ -70,6 +70,30 @@ public sealed class PairedLocalTemplateProjectorTests
             MigrationConsole.ProjectPairedLocalTemplateAsync(reusedRole, fixture.Environment,
                 new Observer(), CancellationToken.None));
         Assert.Equal("delta_paired_template_key_reuse", keyFailure.Code);
+        Assert.False(File.Exists(fixture.Candidate.OutputPath));
+    }
+
+    [Fact]
+    public async Task Swapped_disposable_and_persistent_volumes_fail_before_observation()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync();
+        var observer = new Observer();
+        var swapped = fixture.Candidate with
+        {
+            Disposable = fixture.Candidate.Disposable with
+            {
+                DockerVolumeName = "legacy-maliev-exact23-postgres-data",
+            },
+            Persistent = fixture.Candidate.Persistent with
+            {
+                DockerVolumeName = "legacy-delta-proof-swapped",
+            },
+        };
+        MigrationConsoleException failure = await Assert.ThrowsAsync<MigrationConsoleException>(() =>
+            MigrationConsole.ProjectPairedLocalTemplateAsync(swapped, fixture.Environment,
+                observer, CancellationToken.None));
+        Assert.Equal("delta_paired_template_role_invalid", failure.Code);
+        Assert.Equal(0, observer.Calls);
         Assert.False(File.Exists(fixture.Candidate.OutputPath));
     }
 
@@ -167,6 +191,12 @@ public sealed class PairedLocalTemplateProjectorTests
             Assert.Throws<MigrationConsoleException>(() => DockerLocalTargetObservation.Parse(
                 container.Replace("\"Running\":true", "\"Running\":false", StringComparison.Ordinal),
                 volumeJson, id, volume, 54321)).Code);
+        string persistentVolume = "legacy-maliev-exact23-postgres-data";
+        Assert.Equal("delta_paired_template_docker_observation_invalid",
+            Assert.Throws<MigrationConsoleException>(() => DockerLocalTargetObservation.Parse(
+                container.Replace(volume, persistentVolume, StringComparison.Ordinal),
+                volumeJson.Replace(volume, persistentVolume, StringComparison.Ordinal),
+                id, persistentVolume, 54321)).Code);
     }
 
     [Fact]
@@ -182,6 +212,63 @@ public sealed class PairedLocalTemplateProjectorTests
                 "df unavailable")).Code);
     }
 
+    [Fact]
+    public void Local_apply_requires_same_signed_docker_generation_and_persistent_authority()
+    {
+        string id = new('a', 64);
+        var plan = new DeltaSynchronizationPlan("1.4", Guid.NewGuid(), new string('b', 40),
+            DateTimeOffset.UtcNow, new string('1', 64), new string('2', 64), new string('3', 64),
+            "local-aspire", "legacy-postgres-main-local", "docker:" + id + ":1:2:3", new string('4', 64),
+            new string('5', 64), new string('6', 64), DateTimeOffset.UtcNow, [], "plan-key", "signature")
+        {
+            TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
+                "aspire://legacy-postgres-main-local/persistent-" + id[..12], new string('7', 64)),
+        };
+        Assert.Equal(id, LocalDockerGenerationGuard.RequireContainerId(plan));
+        Assert.Equal("delta_paired_local_docker_generation_required",
+            Assert.Throws<DeltaExecutionException>(() => LocalDockerGenerationGuard.RequireContainerId(
+                plan with { TargetGeneration = "claimed-generation" })).Code);
+        Assert.Equal("delta_paired_local_docker_generation_invalid",
+            Assert.Throws<DeltaExecutionException>(() => LocalDockerGenerationGuard.RequireContainerId(
+                plan with
+                {
+                    TargetAuthority = plan.TargetAuthority with
+                    {
+                        AuthorityId = "aspire://legacy-postgres-main-local/persistent-wrong",
+                    }
+                })).Code);
+        Assert.Equal("delta_paired_local_docker_generation_invalid",
+            Assert.Throws<DeltaExecutionException>(() => LocalDockerGenerationGuard.RequireContainerId(
+                plan with { TargetGeneration = "docker:" + id })).Code);
+        Assert.Equal("delta_paired_local_docker_generation_required",
+            Assert.Throws<DeltaExecutionException>(() => LocalDockerGenerationGuard.RequireContainerId(
+                plan with
+                {
+                    TargetAuthority = new(DeltaTargetAuthorityKind.ProductionCloudNativePg,
+                    "gke://maliev-website/production", new string('7', 64))
+                })).Code);
+    }
+
+    [Fact]
+    public void Docker_generation_changes_on_container_restart_or_volume_recreation()
+    {
+        string id = new('a', 64);
+        var first = new DockerLocalTargetObservation(id, "legacy-maliev-exact23-postgres-data",
+            "/var/lib/postgresql", "/var/lib/postgresql/18/docker",
+            DateTimeOffset.FromUnixTimeMilliseconds(1_000), DateTimeOffset.FromUnixTimeMilliseconds(2_000),
+            DateTimeOffset.FromUnixTimeMilliseconds(500));
+        string generation = LocalDockerGenerationGuard.ComposeGeneration(first);
+        Assert.True(LocalDockerGenerationGuard.IsGenerationFor(generation, id));
+        Assert.NotEqual(generation, LocalDockerGenerationGuard.ComposeGeneration(first with
+        {
+            ContainerStartedAtUtc = DateTimeOffset.FromUnixTimeMilliseconds(3_000),
+        }));
+        Assert.NotEqual(generation, LocalDockerGenerationGuard.ComposeGeneration(first with
+        {
+            VolumeCreatedAtUtc = DateTimeOffset.FromUnixTimeMilliseconds(600),
+        }));
+    }
+
     private sealed class Observer : IPairedLocalTemplateObserver
     {
         public int Calls { get; private set; }
@@ -194,7 +281,7 @@ public sealed class PairedLocalTemplateProjectorTests
             string label = persistent ? "persistent-" : "disposable-";
             int port = persistent ? 54322 : 54321;
             return Task.FromResult(new ObservedPairedLocalTarget(candidate.DockerContainerId,
-                candidate.DockerVolumeName, port, "docker:" + candidate.DockerContainerId,
+                candidate.DockerVolumeName, port, "docker:" + candidate.DockerContainerId + ":1:2:3",
                 new string(persistent ? 'd' : 'c', 64),
                 new(DeltaTargetAuthorityKind.LocalAspire,
                     "aspire://legacy-postgres-main-local/" + label + candidate.DockerContainerId[..12],

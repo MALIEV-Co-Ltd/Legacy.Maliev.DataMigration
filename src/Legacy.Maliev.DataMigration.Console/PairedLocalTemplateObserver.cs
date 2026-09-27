@@ -93,10 +93,10 @@ internal sealed class DefaultPairedLocalTemplateObserver : IPairedLocalTemplateO
             settings.Port.ToString(System.Globalization.CultureInfo.InvariantCulture), systemHash,
             SchemaPlanCanonicalizer.ComputeSha256(schema), observedAt.ToString("O"));
         return new(runtime.ContainerId, runtime.VolumeName, settings.Port,
-            "docker:" + runtime.ContainerId, Hash(observation), authority, observedAt);
+            LocalDockerGenerationGuard.ComposeGeneration(runtime), Hash(observation), authority, observedAt);
     }
 
-    private static async Task<string> RunDockerAsync(IReadOnlyList<string> arguments,
+    internal static async Task<string> RunDockerAsync(IReadOnlyList<string> arguments,
         CancellationToken cancellationToken)
     {
         var process = new Process
@@ -216,6 +216,12 @@ internal sealed partial record DockerLocalTargetObservation(string ContainerId, 
             }
             if (name.StartsWith("legacy-delta-proof-", StringComparison.Ordinal) &&
                 container.GetProperty("Name").GetString() != "/" + name)
+            {
+                throw Invalid();
+            }
+            if (name == "legacy-maliev-exact23-postgres-data" &&
+                !(container.GetProperty("Name").GetString() ?? string.Empty)
+                    .StartsWith("/legacy-postgres-main-", StringComparison.Ordinal))
             {
                 throw Invalid();
             }

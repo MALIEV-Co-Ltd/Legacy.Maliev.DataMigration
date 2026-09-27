@@ -18,6 +18,7 @@ public static partial class MigrationConsole
         {
             throw DeltaInvalid("delta_paired_template_input_invalid");
         }
+        PairedLocalTemplateProjection.ValidateRoleClaims(candidate);
         if (!string.Equals(environment(DeployEnabledEnvironmentVariable), "false", StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(environment("LEGACY_MIGRATION_CALLER"), "owner", StringComparison.Ordinal))
         {
@@ -175,9 +176,22 @@ internal interface IPairedLocalTemplateObserver
 
 internal static class PairedLocalTemplateProjection
 {
+    internal static void ValidateRoleClaims(PairedLocalTemplateCommandConfiguration candidate)
+    {
+        if (candidate.Disposable.DockerVolumeName is null ||
+            !candidate.Disposable.DockerVolumeName.StartsWith("legacy-delta-proof-", StringComparison.Ordinal) ||
+            candidate.Disposable.DockerVolumeName.Length <= "legacy-delta-proof-".Length ||
+            candidate.Persistent.DockerVolumeName != "legacy-maliev-exact23-postgres-data")
+        {
+            throw new MigrationConsoleException("delta_paired_template_role_invalid",
+                "The disposable proof volume and persistent LOCAL volume are not interchangeable.");
+        }
+    }
+
     internal static void ValidateObservations(PairedLocalTemplateCommandConfiguration candidate,
         ObservedPairedLocalTarget disposable, ObservedPairedLocalTarget persistent, DateTimeOffset now)
     {
+        ValidateRoleClaims(candidate);
         ValidateTarget(candidate.Disposable, disposable, "disposable-", now);
         ValidateTarget(candidate.Persistent, persistent, "persistent-", now);
         if (disposable.ContainerId == persistent.ContainerId ||
@@ -198,7 +212,7 @@ internal static class PairedLocalTemplateProjection
             !string.Equals(claimed.DockerVolumeName, observed.VolumeName, StringComparison.Ordinal) ||
             observed.ContainerId.Length != 64 || !observed.ContainerId.All(char.IsAsciiHexDigit) ||
             observed.LoopbackPort is < 1 or > 65535 ||
-            observed.Generation != "docker:" + observed.ContainerId ||
+            !LocalDockerGenerationGuard.IsGenerationFor(observed.Generation, observed.ContainerId) ||
             observed.ObservationSha256.Length != 64 || !observed.ObservationSha256.All(char.IsAsciiHexDigit) ||
             observed.Authority.Kind != DeltaTargetAuthorityKind.LocalAspire ||
             observed.Authority.AuthorityId !=

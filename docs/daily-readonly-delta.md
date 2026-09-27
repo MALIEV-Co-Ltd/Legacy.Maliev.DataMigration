@@ -283,9 +283,14 @@ Only after every check passes does it publish a create-new owner-only `delta`
 template with distinct disposable/persistent authorities, Docker-container
 generation bindings, observation hashes, and schema-1.4 paired fields. The
 Docker generation is a container/volume identity observation, **not** a
-cryptographic attestation of volume contents. The later signed plan and
-atomic apply still recheck PostgreSQL system identity, physical schema,
-captured-row preimages, metadata fences, and signed proof. Regenerate the
+cryptographic attestation of volume contents. The schema-1.4 LOCAL apply
+requires the signed Docker generation tuple (full container ID, container
+creation/start times, and volume creation time) and re-observes
+the canonical persistent container, named volume, loopback binding, capacity,
+and PostgreSQL authority before admission, before each database's atomic
+metadata/DML transaction, and after reconciliation. The signed plan and
+atomic apply also recheck physical schema, captured-row preimages, metadata
+fences, and proof. Regenerate the
 candidate, keys, schema plan, and template for each run; do not reuse an old
 template after restart or target drift. A projector result alone is not an
 apply authorization or a claim of current SQL production parity. The
