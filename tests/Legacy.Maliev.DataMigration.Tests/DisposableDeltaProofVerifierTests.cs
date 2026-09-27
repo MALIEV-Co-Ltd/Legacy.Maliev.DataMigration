@@ -33,6 +33,82 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
     private readonly ECDsa _authorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
     [Fact]
+    public async Task Historical_persistent_local_receipt_is_reviewable_but_never_authorizes_execution()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true);
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(fixture);
+        DateTimeOffset later = fixture.Now.AddMonths(1);
+
+        HistoricalPairedLocalEvidenceReview review = HistoricalPairedLocalEvidenceReviewer.Verify(
+            fixture.LocalPlan, receipt, fixture.Trust, later);
+
+        Assert.Equal(DatabaseInventory.ActiveDatabases.Count, review.DatabasesVerified);
+        Assert.Equal(DeltaSynchronizationPlanCanonicalizer.ComputeSha256(fixture.LocalPlan), review.PlanSha256);
+        Assert.False(HistoricalPairedLocalEvidenceReview.AuthorizesExecution);
+        Assert.False(DeltaSynchronizationPlanVerifier.Verify(fixture.LocalPlan, fixture.Trust, later));
+    }
+
+    [Fact]
+    public async Task Historical_persistent_local_review_rejects_missing_tampered_or_foreign_evidence()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true);
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(fixture);
+        DateTimeOffset later = fixture.Now.AddMonths(1);
+
+        void Reject(DeltaSynchronizationPlan? plan, Exact23DeltaReconciliationResult? result,
+            IReceiptAttestationTrustStore? trust = null)
+        {
+            Assert.Equal("delta_historical_local_evidence_invalid",
+                Assert.Throws<DeltaExecutionException>(() => HistoricalPairedLocalEvidenceReviewer.Verify(
+                    plan, result, trust ?? fixture.Trust, later)).Code);
+        }
+
+        Reject(null, receipt);
+        Reject(fixture.LocalPlan, null);
+        Reject(fixture.LocalPlan, fixture.ProofResult);
+        Reject(fixture.LocalPlan with { SourceCaptureManifest = null }, receipt);
+        Reject(fixture.LocalPlan with { TargetGeneration = $"docker:{Hash('9')}:1:2:3" }, receipt);
+        Reject(fixture.LocalPlan, receipt with { PlanSha256 = Hash('9') });
+        Reject(fixture.LocalPlan, receipt with { Checkpoints = receipt.Checkpoints.Skip(1).ToArray() });
+        Reject(fixture.LocalPlan, receipt with
+        {
+            Checkpoints = [receipt.Checkpoints[0] with { OperationsSha256 = Hash('9') },
+                .. receipt.Checkpoints.Skip(1)],
+        });
+        Reject(fixture.LocalPlan, receipt with
+        {
+            Databases = [receipt.Databases[0] with { Tables = [] }, .. receipt.Databases.Skip(1)],
+        });
+        Reject(fixture.LocalPlan, receipt, new ReceiptAttestationTrustStore([]));
+        Reject(fixture.LocalPlan, receipt with { ReconciledAtUtc = later.AddDays(1) });
+    }
+
+    private async Task<Exact23DeltaReconciliationResult> HistoricalReceiptAsync(Fixture fixture)
+    {
+        using var authorizationSigner = new P256MigrationEvidenceSigner("local-transition-authorization",
+            _authorizationKey.ExportECPrivateKeyPem());
+        using var evidenceSigner = new P256MigrationEvidenceSigner("proof-evidence",
+            _evidenceKey.ExportECPrivateKeyPem());
+        PairedCapturedDeltaPlans plans = new(fixture.ProofPlan, fixture.LocalPlan);
+        PairedLocalTransitionAuthorization authorization = PairedLocalTransitionAuthorizationPolicy.Produce(
+            plans, fixture.ProofResult, fixture.Schema, fixture.Trust,
+            fixture.LocalPlan.TargetAuthority!, fixture.LocalPlan.TargetObservationSha256,
+            fixture.LocalPlan.QuotationTransitionSchemaSha256!, fixture.Now.AddMinutes(-1),
+            fixture.Now.AddMinutes(5), authorizationSigner);
+        PairedLocalTransitionExecutionPermit permit = PairedLocalTransitionExecutionPermit.Admit(
+            plans, fixture.ProofResult, authorization, fixture.Schema, fixture.Trust,
+            fixture.LocalPlan.TargetAuthority!, fixture.LocalPlan.TargetObservationSha256,
+            new FixedTime(fixture.Now));
+        var inspector = new Inspector(pairedTransition: true, fixture.Schema);
+        return await new Exact23DeltaReconciliationCoordinator(inspector, inspector,
+            new Checkpoints(fixture.LocalPlan, fixture.Schema, pairedTransition: true),
+            new FixedTime(fixture.Now), evidenceSigner, localPermit: permit)
+            .ReconcileAsync(fixture.LocalPlan, fixture.Schema, CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Fresh_signed_disposable_reconciliation_admits_distinct_local_target()
     {
         Fixture fixture = await CreateAsync();
@@ -637,7 +713,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         bool changedLocalCaptureKey = false, bool changedLocalCaptureWindow = false,
         bool deleteOperations = false, bool matchingInsertOperations = false,
         bool pairedTransition = false, bool changedLocalTransitionHash = false,
-        bool reuseProofEvidenceAsAuthorization = false,
+        bool reuseProofEvidenceAsAuthorization = false, bool historicalLocal = false,
         string? localSystemHash = null, bool physicalTargetHashes = false)
     {
         DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
@@ -712,13 +788,17 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                         (changedOperations || deleteOperations) && name == "ContactRequest" ? changed : []))]))];
             var request = new DeltaPlanSigningRequest(schema.SourceCommitSha, now.AddMinutes(-5), Hash('3'),
                 SchemaPlanCanonicalizer.ComputeSha256(schema), Hash('4'), "local-aspire",
-                "legacy-postgres-main-local", "generation-1", Hash('5'), Hash('6'),
+                "legacy-postgres-main-local",
+                historicalLocal && id == "persistent-main" ? $"docker:{Hash('7')}:1:2:3" : "generation-1",
+                Hash('5'), Hash('6'),
                 reuseProofEvidenceAsAuthorization ? evidenceSigner.PublicKeyFingerprintSha256 :
                     authorizationSigner.PublicKeyFingerprintSha256,
                 databases)
             {
                 TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
-                    $"aspire://legacy-postgres-main-local/{id}", systemHash),
+                    historicalLocal && id == "persistent-main"
+                        ? $"aspire://legacy-postgres-main-local/persistent-{Hash('7')[..12]}"
+                        : $"aspire://legacy-postgres-main-local/{id}", systemHash),
                 SourceMode = DeltaSourceMode.LiveReadOnly,
                 SourceObservationSha256 = Hash('8'),
                 SourceCaptureCompletedAtUtc = now.AddMinutes(-4),

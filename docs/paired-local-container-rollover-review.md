@@ -27,3 +27,9 @@ The paired CLI needs protected paths for the prior signed plan/receipt and conti
 - Re-observe Docker generation and PostgreSQL identity before every subsequent transaction, and verify a newly signed exact-23 terminal receipt after success.
 
 No persistent LOCAL or production database is modified by this review contract. Issue #193 remains open until the attestation producer, verifier, CLI wiring, disposable proof, and guarded reconciliation are implemented and validated.
+
+## Historical artifact review slice
+
+`HistoricalPairedLocalEvidenceReviewer.Verify` checks an old signed persistent-LOCAL schema-1.4 plan against its signed terminal exact-23 reconciliation. It uses the plan's own creation time to validate the original bounded capture window; it does **not** extend the plan's execution lifetime. It requires trusted, distinct plan/evidence public keys, matching plan/receipt hashes, all 23 signed checkpoint operation and target-observation hashes, and matching source and physical schema fingerprints. An authentic old receipt remains reviewable after normal execution freshness expires. The returned `HistoricalPairedLocalEvidenceReview` is expressly non-authorizing and contains only PII-free hashes/timestamps/counts.
+
+This verifier does not read Docker, PostgreSQL, the named volume, or present target rows. It is only the first input to a future fresh continuity attestation; it must never be wired directly into `PairedLocalTransitionExecutionPermit` or used to bypass the container-generation fence.
