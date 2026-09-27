@@ -39,6 +39,18 @@ public sealed record ProductionSchemaColumnDiagnostic(
     /// <summary>Built-in allowlist identity or explicit-unreviewed.</summary>
     public string ActualCollationIdentity { get; init; } = "not-observed";
 
+    /// <summary>Fixed PostgreSQL provider category; never a raw locale or collation name.</summary>
+    public string ActualCollationProvider { get; init; } = "not-observed";
+
+    /// <summary>Fixed deterministic/nondeterministic classification.</summary>
+    public string ActualCollationDeterminism { get; init; } = "not-observed";
+
+    /// <summary>Recorded versus current provider version state, without either version value.</summary>
+    public string ActualCollationVersionState { get; init; } = "not-observed";
+
+    /// <summary>Whether the catalog namespace is pg_catalog, without publishing other names.</summary>
+    public string ActualCollationCatalogScope { get; init; } = "not-observed";
+
     /// <summary>Presence and equality classification, never the expression.</summary>
     public string DefaultState { get; init; } = "not-observed";
 

@@ -114,3 +114,19 @@ does not become equivalent by classification, and the exact preimage/shape
 gate remains unchanged. A fresh identity-bound, read-only observation is
 required to classify the production drifts; previous output cannot be reused
 as a new schema authority.
+
+The collation diagnostic now reads `pg_collation` metadata for every explicit
+column collation in that same read-only transaction. It requires exactly one
+metadata row per explicit column and rejects missing/duplicate metadata,
+unknown providers, and an encoding incompatible with the current database.
+Output uses fixed labels only: provider (`builtin`, `libc`, `icu`, or
+`database-default`), determinism, recorded-vs-current version state, and
+`pg-catalog` versus `non-pg-catalog` namespace scope. Raw collation names outside
+the existing allowlist, locale, rules, and version values remain unpublished.
+These labels help triage the 304 `explicit-unreviewed` observations but cannot
+prove equivalence with an inherited PostgreSQL or source SQL Server collation.
+The source inventory hashes SQL Server collation metadata but does not map it
+to a PostgreSQL collation contract; PostgreSQL behavior also depends on the
+provider, locale, rules, determinism, and provider version. The whole-schema
+fingerprint and strict alignment gate remain unchanged. No collation change,
+normalization, index rebuild, or production DDL is authorized here.

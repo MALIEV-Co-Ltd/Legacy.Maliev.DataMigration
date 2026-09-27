@@ -5,15 +5,22 @@ internal static class ProductionSchemaColumnDiagnostics
 {
     internal static IReadOnlyList<ProductionSchemaColumnDiagnostic> Compare(
         IReadOnlyList<TableCopyPlan> expectedTables, ProductionSchemaObservation observation,
-        IReadOnlyList<PostgreSqlSchemaFingerprint.ColumnShape> actualColumns)
+        IReadOnlyList<PostgreSqlSchemaFingerprint.ColumnShape> actualColumns,
+        IReadOnlyList<ProductionCollationMetadata> collations)
     {
         ArgumentNullException.ThrowIfNull(expectedTables);
         ArgumentNullException.ThrowIfNull(observation);
         ArgumentNullException.ThrowIfNull(actualColumns);
+        ArgumentNullException.ThrowIfNull(collations);
         var expected = expectedTables.ToDictionary(table => (table.TargetSchema, table.TargetTable));
         var actual = actualColumns.GroupBy(column => (column.Schema, column.Table))
             .ToDictionary(group => group.Key, group => group.ToArray());
         if (expected.Count != expectedTables.Count ||
+            collations.GroupBy(item => (item.Schema, item.Table, item.Column)).Any(group => group.Count() != 1) ||
+            !collations.Select(item => (item.Schema, item.Table, item.Column)).ToHashSet()
+                .SetEquals(actualColumns.Where(item => item.Collation.Length != 0)
+                    .Select(item => (item.Schema, item.Table, item.Column))) ||
+            collations.Any(item => item.Encoding != -1 && item.Encoding != item.DatabaseEncoding) ||
             observation.Tables.GroupBy(table => (table.Schema, table.Table)).Any(group => group.Count() != 1) ||
             actualColumns.Any(column => string.IsNullOrWhiteSpace(column.Schema) ||
                 string.IsNullOrWhiteSpace(column.Table) || string.IsNullOrWhiteSpace(column.Column)) ||
@@ -28,6 +35,13 @@ internal static class ProductionSchemaColumnDiagnostics
             throw new MigrationExecutionException("production_schema_columns_incomplete",
                 "A complete read-only column catalog is required for diagnosis.");
         }
+        if (collations.Any(item => item.Provider is not ("b" or "c" or "i" or "d")))
+        {
+            throw new MigrationExecutionException("production_schema_collation_metadata_unreviewed",
+                "The observed collation provider is not approved for diagnostic output.");
+        }
+
+        var collationByColumn = collations.ToDictionary(item => (item.Schema, item.Table, item.Column));
 
         var result = new List<ProductionSchemaColumnDiagnostic>();
         foreach (ObservedTargetTable table in observation.Tables.OrderBy(item => item.Schema, StringComparer.Ordinal)
@@ -70,6 +84,16 @@ internal static class ProductionSchemaColumnDiagnostics
                     ActualTypeCategory = TypeCategory(column.Type),
                     ActualCollationMode = column.Collation.Length == 0 ? "inherited" : "explicit",
                     ActualCollationIdentity = CollationIdentity(column.Collation),
+                    ActualCollationProvider = column.Collation.Length == 0 ? "inherited" :
+                        CollationProvider(collationByColumn[(column.Schema, column.Table, column.Column)].Provider),
+                    ActualCollationDeterminism = column.Collation.Length == 0 ? "inherited" :
+                        collationByColumn[(column.Schema, column.Table, column.Column)].Deterministic
+                            ? "deterministic" : "nondeterministic",
+                    ActualCollationVersionState = column.Collation.Length == 0 ? "inherited" :
+                        CollationVersionState(collationByColumn[(column.Schema, column.Table, column.Column)]),
+                    ActualCollationCatalogScope = column.Collation.Length == 0 ? "inherited" :
+                        collationByColumn[(column.Schema, column.Table, column.Column)].CatalogSchema == "pg_catalog"
+                            ? "pg-catalog" : "non-pg-catalog",
                     DefaultState = ExpressionState(wanted.DefaultExpression, column.DefaultExpression,
                         PostgreSqlDefaultExpressionCanonicalizer.Canonicalize),
                     GeneratedState = ExpressionState(wanted.GeneratedExpression, column.GeneratedExpression,
@@ -81,6 +105,30 @@ internal static class ProductionSchemaColumnDiagnostics
                 column.Schema, column.Table, column.Column, "target-only-column", [])));
         }
         return result;
+    }
+
+    private static string CollationProvider(string provider)
+    {
+        return provider switch
+        {
+            "b" => "builtin",
+            "c" => "libc",
+            "i" => "icu",
+            "d" => "database-default",
+            _ => throw new MigrationExecutionException("production_schema_collation_metadata_unreviewed",
+                "The observed collation provider is not approved for diagnostic output."),
+        };
+    }
+
+    private static string CollationVersionState(ProductionCollationMetadata metadata)
+    {
+        return (metadata.RecordedVersion, metadata.ActualVersion) switch
+        {
+            (null, null) => "unversioned",
+            (null, _) or (_, null) => "unverifiable",
+            var (recorded, actual) when recorded == actual => "current",
+            _ => "mismatch",
+        };
     }
 
     private static string TypeCategory(string type)
