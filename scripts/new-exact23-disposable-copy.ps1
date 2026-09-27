@@ -62,14 +62,14 @@ function Invoke-DockerJson([string[]]$Arguments) {
 }
 
 function Invoke-PgQuery([string]$Password, [int]$Port, [string]$Database,
-    [string]$Query) {
+    [string]$Query, [string]$Username = 'postgres') {
     $previousPassword = $env:PGPASSWORD
     $previousOptions = $env:PGOPTIONS
     $env:PGPASSWORD = $Password
     $env:PGOPTIONS = '-c default_transaction_read_only=on'
     try {
         $value = & (Join-Path $PgBinDirectory 'psql.exe') -X -w -h 127.0.0.1 -p $Port `
-            -U postgres -d $Database -At -F '|' -v ON_ERROR_STOP=1 -c $Query 2>$null
+            -U $Username -d $Database -At -F '|' -v ON_ERROR_STOP=1 -c $Query 2>$null
         if ($LASTEXITCODE -ne 0) { Fail 'exact23_copy_pg_observation_failed' }
         return @($value)
     }
@@ -81,9 +81,9 @@ function Invoke-PgQuery([string]$Password, [int]$Port, [string]$Database,
     }
 }
 
-function Get-SystemHash([string]$Password, [int]$Port) {
+function Get-SystemHash([string]$Password, [int]$Port, [string]$Username = 'postgres') {
     $value = @(Invoke-PgQuery $Password $Port 'postgres' `
-        'SELECT system_identifier::text FROM pg_control_system();')
+        'SELECT system_identifier::text FROM pg_control_system();' -Username $Username)
     if ($value.Count -ne 1 -or $value[0] -cnotmatch '^\d+$') {
         Fail 'exact23_copy_system_identity_unavailable'
     }
@@ -102,21 +102,25 @@ function Get-PhysicalSchemaHash([string]$ConnectionString, [string]$Database) {
         GetAwaiter().GetResult()
 }
 
-function Get-Inventory([string]$Password, [int]$Port) {
+function Get-Inventory([string]$Password, [int]$Port, [string]$Username = 'postgres',
+    [switch]$Source) {
     $lines = @(Invoke-PgQuery $Password $Port 'postgres' `
-        "SELECT datname, pg_database_size(oid) FROM pg_database WHERE datallowconn AND NOT datistemplate AND datname <> 'postgres' ORDER BY datname;")
+        "SELECT datname, pg_database_size(oid) FROM pg_database WHERE datallowconn AND NOT datistemplate AND datname <> 'postgres' ORDER BY datname;" -Username $Username)
     $names = @()
     [long]$bytes = 0
     foreach ($line in $lines) {
-        if ($line -cnotmatch '^([A-Za-z][A-Za-z0-9]*)\|([0-9]+)$') {
+        if ($line -cnotmatch '^([A-Za-z][A-Za-z0-9_]*)\|([0-9]+)$') {
             Fail 'exact23_copy_inventory_unparseable'
         }
         $names += $Matches[1]
         $size = [long]::Parse($Matches[2], [Globalization.CultureInfo]::InvariantCulture)
-        if ($size -gt [long]::MaxValue - $bytes) { Fail 'exact23_copy_inventory_size_overflow' }
-        $bytes += $size
+        if ((Get-Exact23CopyDatabases) -ccontains $Matches[1]) {
+            if ($size -gt [long]::MaxValue - $bytes) { Fail 'exact23_copy_inventory_size_overflow' }
+            $bytes += $size
+        }
     }
-    Assert-Exact23CopyInventory $names
+    if ($Source) { Assert-Exact23CopySourceInventory $names $Username }
+    else { Assert-Exact23CopyInventory $names }
     return [pscustomobject]@{ Names = $names; Bytes = $bytes }
 }
 
@@ -135,14 +139,14 @@ function Assert-ProtectedMain {
 }
 
 function Invoke-PlainDump([string]$Password, [int]$Port, [string]$Database,
-    [string]$OutputPath) {
+    [string]$OutputPath, [string]$Username = 'postgres') {
     $previousPassword = $env:PGPASSWORD
     $previousOptions = $env:PGOPTIONS
     $env:PGPASSWORD = $Password
     $env:PGOPTIONS = '-c default_transaction_read_only=on'
     try {
         & (Join-Path $PgBinDirectory 'pg_dump.exe') -w -h 127.0.0.1 -p $Port `
-            -U postgres -d $Database -F p --serializable-deferrable `
+            -U $Username -d $Database -F p --serializable-deferrable `
             --no-owner --no-acl --no-comments "--restrict-key=$runId" `
             -f $OutputPath 1>$null 2>$null
         if ($LASTEXITCODE -ne 0) { Fail 'exact23_copy_dump_failed' }
@@ -278,7 +282,6 @@ $source = [System.Data.Common.DbConnectionStringBuilder]::new()
 $source.set_ConnectionString($sourceString)
 if ([string]$source['Host'] -cne '127.0.0.1' -or
     [string]$source['Database'] -cne 'postgres' -or
-    [string]$source['Username'] -cne 'postgres' -or
     [string]::IsNullOrWhiteSpace([string]$source['Password']) -or
     [string]$source['Port'] -cnotmatch '^[1-9][0-9]{0,4}$') {
     Fail 'exact23_copy_source_connection_invalid'
@@ -289,12 +292,14 @@ if ($syntheticOnly) {
     Assert-Exact23CopySyntheticSourceContainer $sourceContainer[0] $SourceContainerId $SyntheticSourceVolumeName
 }
 else { Assert-Exact23CopySourceContainer $sourceContainer[0] $SourceContainerId }
+$sourceUser = [string]$source['Username']
+Assert-Exact23CopySourceRole $sourceContainer[0] $sourceUser
 $sourcePort = Assert-Exact23CopyPort ((docker port $SourceContainerId 5432/tcp) | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or [int]$source['Port'] -ne $sourcePort) {
     Fail 'exact23_copy_source_port_invalid'
 }
 $sourcePassword = [string]$source['Password']
-$sourceHash = Get-SystemHash $sourcePassword $sourcePort
+$sourceHash = Get-SystemHash $sourcePassword $sourcePort -Username $sourceUser
 if ($sourceHash -cne $ExpectedSourceSystemIdentifierSha256) {
     Fail 'exact23_copy_source_identity_changed'
 }
@@ -302,11 +307,11 @@ foreach ($tool in @('pg_dump.exe', 'psql.exe')) {
     $version = & (Join-Path $PgBinDirectory $tool) --version 2>$null
     if ($LASTEXITCODE -ne 0 -or $version -cnotmatch '18\.') { Fail 'exact23_copy_pg18_required' }
 }
-$sourceVersion = @(Invoke-PgQuery $sourcePassword $sourcePort 'postgres' 'SHOW server_version_num;')
+$sourceVersion = @(Invoke-PgQuery $sourcePassword $sourcePort 'postgres' 'SHOW server_version_num;' -Username $sourceUser)
 if ($sourceVersion.Count -ne 1 -or $sourceVersion[0] -cnotmatch '^18[0-9]{4}$') {
     Fail 'exact23_copy_pg18_required'
 }
-$beforeInventory = Get-Inventory $sourcePassword $sourcePort
+$beforeInventory = Get-Inventory $sourcePassword $sourcePort -Username $sourceUser -Source
 $requiredBytes = [long](3 * $beforeInventory.Bytes + 10GB)
 $driveName = [IO.Path]::GetPathRoot($root).Substring(0, 1)
 if ((Get-PSDrive -Name $driveName).Free -lt $requiredBytes) {
@@ -326,10 +331,10 @@ $beforeSchemas = [ordered]@{}
 foreach ($database in Get-Exact23CopyDatabases) {
     $beforeSchemas[$database] = Get-PhysicalSchemaHash $sourceString $database
     $path = Join-Path $dumpRoot "$database-before.sql"
-    $beforeDigests[$database] = Invoke-PlainDump $sourcePassword $sourcePort $database $path
+    $beforeDigests[$database] = Invoke-PlainDump $sourcePassword $sourcePort $database $path -Username $sourceUser
     $beforeRows[$database] = Get-Exact23CopyRowCount $path
 }
-if ((Get-SystemHash $sourcePassword $sourcePort) -cne $sourceHash) {
+if ((Get-SystemHash $sourcePassword $sourcePort -Username $sourceUser) -cne $sourceHash) {
     Fail 'exact23_copy_source_identity_changed'
 }
 $passwordBytes = [Security.Cryptography.RandomNumberGenerator]::GetBytes(48)
@@ -376,8 +381,8 @@ foreach ($database in Get-Exact23CopyDatabases) {
     Invoke-TargetPsql $copyPassword $copyPort $database @('-f', (Join-Path $dumpRoot "$database-before.sql"))
 }
 $null = Get-Inventory $copyPassword $copyPort
-$null = Get-Inventory $sourcePassword $sourcePort
-if ((Get-SystemHash $sourcePassword $sourcePort) -cne $sourceHash -or
+$null = Get-Inventory $sourcePassword $sourcePort -Username $sourceUser -Source
+if ((Get-SystemHash $sourcePassword $sourcePort -Username $sourceUser) -cne $sourceHash -or
     (Get-SystemHash $copyPassword $copyPort) -cne $copyHash) {
     Fail 'exact23_copy_identity_changed'
 }
@@ -386,7 +391,7 @@ $copyConnectionString = "Host=127.0.0.1;Port=$copyPort;Username=postgres;Passwor
 foreach ($database in Get-Exact23CopyDatabases) {
     $afterPath = Join-Path $dumpRoot "$database-source-after.sql"
     $copyPath = Join-Path $dumpRoot "$database-copy.sql"
-    $afterDigest = Invoke-PlainDump $sourcePassword $sourcePort $database $afterPath
+    $afterDigest = Invoke-PlainDump $sourcePassword $sourcePort $database $afterPath -Username $sourceUser
     $copyDigest = Invoke-PlainDump $copyPassword $copyPort $database $copyPath
     Assert-Exact23CopyDigest $beforeDigests[$database] $afterDigest $copyDigest
     $afterSchema = Get-PhysicalSchemaHash $sourceString $database
@@ -405,11 +410,11 @@ foreach ($database in Get-Exact23CopyDatabases) {
         physicalSchemaSha256 = $beforeSchemas[$database]; copyRowCount = $copyRows
     }
 }
-if ((Get-SystemHash $sourcePassword $sourcePort) -cne $sourceHash -or
+if ((Get-SystemHash $sourcePassword $sourcePort -Username $sourceUser) -cne $sourceHash -or
     (Get-SystemHash $copyPassword $copyPort) -cne $copyHash) {
     Fail 'exact23_copy_identity_changed'
 }
-$null = Get-Inventory $sourcePassword $sourcePort
+$null = Get-Inventory $sourcePassword $sourcePort -Username $sourceUser -Source
 $null = Get-Inventory $copyPassword $copyPort
 Write-OwnerText $connectionPath $copyConnectionString
 # Retain the protected environment file until the receipt is complete. Cleanup removes it

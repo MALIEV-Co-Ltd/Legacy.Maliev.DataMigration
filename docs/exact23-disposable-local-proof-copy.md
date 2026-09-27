@@ -41,14 +41,19 @@ $env:LEGACY_MIGRATION_CALLER = 'owner'
 ```
 
 The source connection file must be an owner-only plain-text Npgsql connection
-string with `Host=127.0.0.1`, `Database=postgres`, `Username=postgres`, the
-verified published port, and a password. Do not put the connection string on
+string with `Host=127.0.0.1`, `Database=postgres`, the verified published port,
+and the source container's exact `POSTGRES_USER` role and password. The helper
+rejects a connection role that differs from that container identity; the
+canonical persistent LOCAL role need not be named `postgres`. Do not put the connection string on
 the command line, in logs, or in the receipt. Treat the run directory and its
 SQL dumps as protected data: they can contain every LOCAL row, including PII.
 
 ## What the helper proves
 
-The helper requires the exact canonical set of 23 databases and no extras. For
+The helper requires the exact canonical set of 23 databases. On the persistent
+source, only the observed PostgreSQL role's default database and the separate
+`Auth` runtime database may coexist; arbitrary extra databases still fail.
+The disposable target must contain exactly 23 and no extras. For
 each database it records a physical-schema fingerprint, makes a read-only
 serializable-deferrable plain dump, restores it to a new independent PG18 volume,
 and compares the before, source-after, and copy logical schema-and-data dump
