@@ -209,9 +209,48 @@ public static partial class MigrationConsole
         }
         catch (Exception failure)
         {
-            string code = ClassifyDeltaFailure(failure);
+            string code = failure is MigrationExecutionException { Reconciliation: { } }
+                ? "shadow_reconciliation_failed"
+                : ClassifyDeltaFailure(failure);
+            if (code.Length > 100 || code.Any(value => value is not (>= 'a' and <= 'z') and not '_'))
+            {
+                code = "delta_execution_failed";
+            }
             await error.WriteLineAsync(code).ConfigureAwait(false);
+            if (failure is MigrationExecutionException { Reconciliation: { } diagnostic })
+            {
+                await WriteSafeHistoricalLocalDiagnosticAsync(error, diagnostic).ConfigureAwait(false);
+            }
             return failure is OperationCanceledException ? 130 : 65;
         }
+    }
+
+    internal static Task WriteSafeHistoricalLocalDiagnosticAsync(TextWriter error,
+        ReconciliationDiagnostic diagnostic)
+    {
+        if (!DatabaseInventory.ActiveDatabases.Contains(diagnostic.Database, StringComparer.Ordinal) ||
+            diagnostic.Check is not ("schema" or "row-count" or "ordered-content" or "aggregate" or
+                "null-count" or "orphan" or "relationship" or "sequence"))
+        {
+            return Task.CompletedTask;
+        }
+
+        string? table = diagnostic.Table;
+        if (table is not null)
+        {
+            string[] parts = table.Split('.');
+            if (parts.Length != 2 || parts.Any(part => part.Length is < 1 or > 64 ||
+                    part.Any(character => !char.IsAsciiLetterOrDigit(character) && character != '_')))
+            {
+                table = null;
+            }
+        }
+
+        return error.WriteLineAsync(JsonSerializer.Serialize(new
+        {
+            database = diagnostic.Database,
+            table,
+            check = diagnostic.Check,
+        }));
     }
 }

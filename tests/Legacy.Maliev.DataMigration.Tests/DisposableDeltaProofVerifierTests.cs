@@ -218,6 +218,51 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             Assert.DoesNotContain("Password", reviewJson, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("authorization", reviewJson, StringComparison.OrdinalIgnoreCase);
 
+            var diagnostic = new ReconciliationDiagnostic("ContactRequest", "public.Message",
+                "ordered-content", Hash('a'), Hash('b'))
+            {
+                Field = "secret customer value",
+            };
+            string driftConfigPath = Path.Combine(directory, "drift-config.json");
+            HistoricalLocalReviewCommandConfiguration driftRequest = request with
+            {
+                OutputPath = Path.Combine(directory, "drift-review.json"),
+            };
+            await MigrationConsole.WriteNewJsonForTestsAsync(driftConfigPath,
+                new { historicalLocalReview = driftRequest }, CancellationToken.None);
+            var driftRuntime = new HistoricalRuntime(fixture, diagnostic);
+            using var driftOutput = new StringWriter();
+            using var driftError = new StringWriter();
+            int driftResult = await MigrationConsole.RunHistoricalLocalReviewForTestsAsync(
+                ["review-historical-local-target", "--config", driftConfigPath], driftOutput, driftError,
+                EnvironmentValue, driftRuntime, CancellationToken.None);
+            Assert.Equal(65, driftResult);
+            Assert.False(File.Exists(driftRequest.OutputPath));
+            string[] driftLines = driftError.ToString().Split(Environment.NewLine,
+                StringSplitOptions.RemoveEmptyEntries);
+            Assert.Equal("shadow_reconciliation_failed", driftLines[0]);
+            using (JsonDocument driftDetail = JsonDocument.Parse(Assert.Single(driftLines.Skip(1))))
+            {
+                Assert.Equal(["database", "table", "check"],
+                    driftDetail.RootElement.EnumerateObject().Select(property => property.Name));
+                Assert.Equal("ContactRequest", driftDetail.RootElement.GetProperty("database").GetString());
+                Assert.Equal("public.Message", driftDetail.RootElement.GetProperty("table").GetString());
+                Assert.Equal("ordered-content", driftDetail.RootElement.GetProperty("check").GetString());
+            }
+            Assert.DoesNotContain(Hash('a'), driftError.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain(Hash('b'), driftError.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("secret customer value", driftError.ToString(), StringComparison.Ordinal);
+
+            var malformedCodeRuntime = new HistoricalRuntime(fixture, diagnostic, "private_secret");
+            using var malformedCodeError = new StringWriter();
+            int malformedCodeResult = await MigrationConsole.RunHistoricalLocalReviewForTestsAsync(
+                ["review-historical-local-target", "--config", driftConfigPath], TextWriter.Null,
+                malformedCodeError, EnvironmentValue, malformedCodeRuntime, CancellationToken.None);
+            Assert.Equal(65, malformedCodeResult);
+            Assert.StartsWith("shadow_reconciliation_failed" + Environment.NewLine,
+                malformedCodeError.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("private_secret", malformedCodeError.ToString(), StringComparison.Ordinal);
+
             string badReceiptPath = Path.Combine(directory, "bad-receipt.json");
             await MigrationConsole.WriteNewJsonForTestsAsync(badReceiptPath,
                 receipt with { PlanSha256 = Hash('9') }, CancellationToken.None);
@@ -254,6 +299,26 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task Historical_local_diagnostic_rejects_untrusted_identifiers_and_details()
+    {
+        using var error = new StringWriter();
+        await MigrationConsole.WriteSafeHistoricalLocalDiagnosticAsync(error,
+            new("ContactRequest", "public.customer@example.com", "schema", "private-expected", "private-observed"));
+        using (JsonDocument detail = JsonDocument.Parse(error.ToString()))
+        {
+            Assert.Equal(JsonValueKind.Null, detail.RootElement.GetProperty("table").ValueKind);
+            Assert.Equal("schema", detail.RootElement.GetProperty("check").GetString());
+        }
+        Assert.DoesNotContain("private", error.ToString(), StringComparison.Ordinal);
+        _ = error.GetStringBuilder().Clear();
+        await MigrationConsole.WriteSafeHistoricalLocalDiagnosticAsync(error,
+            new("Customer@example.com", "public.Message", "schema", null, null));
+        await MigrationConsole.WriteSafeHistoricalLocalDiagnosticAsync(error,
+            new("ContactRequest", "public.Message", "secret-check", null, null));
+        Assert.Equal(string.Empty, error.ToString());
     }
 
     [Fact]
@@ -399,7 +464,9 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         await stream.FlushAsync();
     }
 
-    private sealed class HistoricalRuntime(Fixture fixture) : IHistoricalLocalReviewRuntime
+    private sealed class HistoricalRuntime(Fixture fixture, ReconciliationDiagnostic? failure = null,
+        string failureCode = "shadow_reconciliation_failed")
+        : IHistoricalLocalReviewRuntime
     {
         public int Observations { get; private set; }
 
@@ -415,7 +482,23 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             Exact23DeltaReconciliationResult ___, FreshSchemaPlan ____, ReceiptAttestationTrustStore _____,
             DateTimeOffset ______)
         {
-            return new CurrentEvidenceInspector(fixture.Schema);
+            return failure is null
+                ? new CurrentEvidenceInspector(fixture.Schema)
+                : new FailingHistoricalInspector(failure, failureCode);
+        }
+    }
+
+    private sealed class FailingHistoricalInspector(ReconciliationDiagnostic diagnostic, string code)
+        : IDeltaReconciliationInspector
+    {
+        public Task<DatabaseReconciliationEvidence> InspectAsync(DatabaseSchemaPlan _,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new MigrationExecutionException(code, "secret provider detail")
+            {
+                Reconciliation = diagnostic,
+            };
         }
     }
 
