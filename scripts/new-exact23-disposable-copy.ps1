@@ -159,7 +159,7 @@ function Invoke-PlainDump([string]$Password, [int]$Port, [string]$Database,
     }
     if ((Get-Item -LiteralPath $OutputPath).Length -eq 0) { Fail 'exact23_copy_dump_empty' }
     Assert-OwnerOnly $OutputPath $false
-    return (Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    return Get-Exact23CopyCanonicalDumpDigest $OutputPath
 }
 
 function Invoke-TargetPsql([string]$Password, [int]$Port, [string]$Database,

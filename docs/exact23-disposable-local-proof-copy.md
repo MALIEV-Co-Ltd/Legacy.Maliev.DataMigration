@@ -58,7 +58,11 @@ each database it records a physical-schema fingerprint, makes a read-only
 serializable-deferrable plain dump, restores it to a new independent PG18 volume,
 and compares the before, source-after, and copy logical schema-and-data dump
 SHA-256 hashes, physical-schema fingerprints, and `COPY` row counts. It checks
-source and target system identifiers, identities, inventory, and loopback port
+the PostgreSQL 18 dump-version banner as metadata and normalizes only that
+banner for the logical hash (for example, an 18.4 source and 18.6 disposable
+image); the original protected SQL dumps are not rewritten. Other byte-level
+schema/data differences still fail closed. The helper also checks source and
+target system identifiers, identities, inventory, and loopback port
 again before publishing a PII-free `exact23-copy-receipt.json` and protected
 `target-disposable.connection` file. The receipt includes only names, hashes,
 counts, container identity, and completion time. It never includes row contents

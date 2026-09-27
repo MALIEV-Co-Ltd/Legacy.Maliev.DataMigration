@@ -115,6 +115,34 @@ function Assert-Exact23CopyDigest([string]$Before, [string]$After, [string]$Copy
     }
 }
 
+function Get-Exact23CopyCanonicalDumpDigest([string]$DumpPath) {
+    $encoding = [Text.UTF8Encoding]::new($false, $true)
+    $reader = [IO.StreamReader]::new($DumpPath, $encoding, $false)
+    $hasher = [Security.Cryptography.IncrementalHash]::CreateHash(
+        [Security.Cryptography.HashAlgorithmName]::SHA256)
+    try {
+        [int]$lineNumber = 0
+        [int]$versionHeaders = 0
+        while ($null -ne ($line = $reader.ReadLine())) {
+            $lineNumber++
+            if ($line.StartsWith('-- Dumped from database version ', [StringComparison]::Ordinal)) {
+                if ($lineNumber -gt 15 -or $versionHeaders -ne 0 -or
+                    $line -cnotmatch '^-- Dumped from database version 18\.[0-9]+(?: \([^)]*\))?$') {
+                    throw 'exact23_copy_dump_version_invalid'
+                }
+                $line = '-- Dumped from database major version 18'
+                $versionHeaders++
+            }
+            $bytes = $encoding.GetBytes($line + "`n")
+            try { $hasher.AppendData($bytes) }
+            finally { [Security.Cryptography.CryptographicOperations]::ZeroMemory($bytes) }
+        }
+        if ($versionHeaders -ne 1) { throw 'exact23_copy_dump_version_missing' }
+        return [Convert]::ToHexString($hasher.GetHashAndReset()).ToLowerInvariant()
+    }
+    finally { $reader.Dispose(); $hasher.Dispose() }
+}
+
 function Get-Exact23CopyRowCount([string]$DumpPath) {
     $reader = [IO.StreamReader]::new($DumpPath)
     try {
@@ -142,4 +170,5 @@ Export-ModuleMember -Function Get-Exact23CopyDatabases, Assert-Exact23CopyInvent
     Assert-Exact23CopySourceContainer, Assert-Exact23CopySourceRole,
     Assert-Exact23CopySyntheticSourceContainer,
     Assert-Exact23CopyContainer,
-    Assert-Exact23CopyVolume, Assert-Exact23CopyDigest, Get-Exact23CopyRowCount
+    Assert-Exact23CopyVolume, Assert-Exact23CopyDigest,
+    Get-Exact23CopyCanonicalDumpDigest, Get-Exact23CopyRowCount

@@ -92,4 +92,19 @@ Describe 'Exact-23 disposable copy guards' {
         [IO.File]::AppendAllText($dump, 'COPY public."Incomplete" FROM stdin;' + "`n1`n")
         (Test-Throws { Get-Exact23CopyRowCount $dump }) | Should Be $true
     }
+
+    It 'normalizes only the PostgreSQL 18 dump version header' {
+        $before = Join-Path $TestDrive 'before.sql'
+        $copy = Join-Path $TestDrive 'copy.sql'
+        $header = "--`n-- PostgreSQL database dump`n--`n`n-- Dumped from database version "
+        $body = "`n-- Dumped by pg_dump version 18.6`n`nCOPY public.`"Probe`" FROM stdin;`n1`n" + '\.' + "`n"
+        [IO.File]::WriteAllText($before, $header + '18.4' + $body)
+        [IO.File]::WriteAllText($copy, $header + '18.6 (Debian 18.6-1.pgdg13+2)' + $body)
+        $expected = Get-Exact23CopyCanonicalDumpDigest $before
+        (Get-Exact23CopyCanonicalDumpDigest $copy) | Should Be $expected
+        [IO.File]::AppendAllText($copy, 'changed-row' + "`n")
+        (Get-Exact23CopyCanonicalDumpDigest $copy) | Should Not Be $expected
+        [IO.File]::WriteAllText($copy, $header + '17.9' + $body)
+        (Test-Throws { Get-Exact23CopyCanonicalDumpDigest $copy }) | Should Be $true
+    }
 }
