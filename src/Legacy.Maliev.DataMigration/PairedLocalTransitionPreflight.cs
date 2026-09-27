@@ -10,7 +10,12 @@ public sealed record PairedLocalTransitionPreflightResult(
     string QuotationTransitionSchemaSha256,
     int DatabasesChecked,
     long CapturedOperationsChecked,
-    DateTimeOffset CheckedAtUtc);
+    DateTimeOffset CheckedAtUtc)
+{
+    public int UnprovisionedDatabases { get; init; }
+    public int PendingDatabases { get; init; }
+    public int ReplayedDatabases { get; init; }
+}
 
 /// <summary>
 /// Read-only pre-metadata gate. Every target row preimage is checked again by the
@@ -28,6 +33,8 @@ public static class PairedLocalTransitionPreflight
         string targetObservationSha256,
         Func<CancellationToken, Task> verifyTargetIdentity,
         Func<DatabaseSchemaPlan, bool, CancellationToken, Task> verifyPhysicalSchema,
+        Func<DeltaSynchronizationPlan, DatabaseSchemaPlan, CancellationToken,
+            Task<PairedLocalTransitionMetadataObservation>> inspectMetadata,
         string captureDirectory,
         ReadOnlyMemory<byte> captureKey,
         IDeltaOrderedRowSource targetRows,
@@ -38,6 +45,7 @@ public static class PairedLocalTransitionPreflight
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(verifyTargetIdentity);
         ArgumentNullException.ThrowIfNull(verifyPhysicalSchema);
+        ArgumentNullException.ThrowIfNull(inspectMetadata);
         ArgumentException.ThrowIfNullOrWhiteSpace(captureDirectory);
         ArgumentNullException.ThrowIfNull(targetRows);
         ArgumentNullException.ThrowIfNull(clock);
@@ -51,10 +59,13 @@ public static class PairedLocalTransitionPreflight
 
         VerifyAdmission();
         await verifyTargetIdentity(cancellationToken).ConfigureAwait(false);
+        var metadata = new Dictionary<string, PairedLocalTransitionMetadataObservation>(StringComparer.Ordinal);
         foreach (DatabaseSchemaPlan database in schema.Databases)
         {
             bool quotationTransition = database.Database == "Quotation";
             await verifyPhysicalSchema(database, quotationTransition, cancellationToken).ConfigureAwait(false);
+            metadata.Add(database.Database, await inspectMetadata(plans.Persistent, database,
+                cancellationToken).ConfigureAwait(false));
         }
         using DeltaCapturedTableRowSource capturedRows = DeltaCapturedTableRowSource.FromSignedPlan(
             new DeltaCapturedTableArchive(captureDirectory), plans.Persistent, trust,
@@ -73,13 +84,33 @@ public static class PairedLocalTransitionPreflight
         {
             await verifyPhysicalSchema(database, database.Database == "Quotation", cancellationToken)
                 .ConfigureAwait(false);
+            RequireMetadataUnchanged(metadata[database.Database],
+                await inspectMetadata(plans.Persistent, database, cancellationToken).ConfigureAwait(false));
         }
         VerifyAdmission();
         return new("1.0", authorization.AuthorizationId,
             DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plans.Persistent),
             Exact23DeltaReconciliationCoordinator.ComputeSha256(proof),
             plans.Persistent.TargetObservationSha256, transition, schema.Databases.Count,
-            checkedRows, clock.GetUtcNow());
+            checkedRows, clock.GetUtcNow())
+        {
+            UnprovisionedDatabases = metadata.Values.Count(item =>
+                item.State == PairedLocalTransitionMetadataState.Unprovisioned),
+            PendingDatabases = metadata.Values.Count(item =>
+                item.State == PairedLocalTransitionMetadataState.Pending),
+            ReplayedDatabases = metadata.Values.Count(item =>
+                item.State == PairedLocalTransitionMetadataState.Replayed),
+        };
+    }
+
+    internal static void RequireMetadataUnchanged(PairedLocalTransitionMetadataObservation before,
+        PairedLocalTransitionMetadataObservation after)
+    {
+        if (before != after)
+        {
+            throw new DeltaExecutionException("delta_paired_local_metadata_changed",
+                "The local metadata state changed during read-only transition preflight.");
+        }
     }
 
     internal static async Task<long> VerifyCapturedRowsAsync(

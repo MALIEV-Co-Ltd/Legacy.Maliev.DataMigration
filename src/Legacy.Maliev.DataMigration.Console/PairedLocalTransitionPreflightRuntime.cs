@@ -26,6 +26,7 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime :
         DeltaTargetAuthority authority = local.TargetAuthority ?? throw new DeltaExecutionException(
             "delta_paired_local_preflight_authority_invalid", "The persistent local authority is missing.");
         var inspector = new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString));
+        var metadata = new PairedLocalTransitionMetadataInspector(request.TargetConnectionString);
         var targetRows = new PostgreSqlDeltaRowSource(new(request.TargetConnectionString));
         return await PairedLocalTransitionPreflight.VerifyAsync(request.Plans, request.Proof,
             request.Authorization, request.Schema, request.Trust, authority,
@@ -34,6 +35,7 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime :
             (schema, transition, token) => transition
                 ? inspector.ValidateQuotationTransitionSchemaAsync(schema, token)
                 : inspector.ValidateSchemaAsync(schema, token),
+            metadata.InspectAsync,
             request.CaptureDirectory, request.CaptureKey, targetRows, TimeProvider.System,
             cancellationToken).ConfigureAwait(false);
     }
