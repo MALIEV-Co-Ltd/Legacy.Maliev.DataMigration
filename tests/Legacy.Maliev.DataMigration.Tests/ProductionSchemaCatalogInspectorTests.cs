@@ -68,6 +68,10 @@ public sealed class ProductionSchemaCatalogInspectorTests(PostgreSqlAdapterFixtu
             Assert.Matches("^[0-9a-f]{64}$", before.WholeTableSha256);
             Assert.Contains(first.TableDiagnostics, item => item.Schema == "catalog_probe" &&
                 item.Table == "Sample" && item.Status == "shape-drift");
+            Assert.Contains(first.ColumnDiagnostics, item => item.Schema == "catalog_probe" &&
+                item.Table == "Sample" && item.Column == "Value" && item.Status == "match");
+            Assert.DoesNotContain("test-only", System.Text.Json.JsonSerializer.Serialize(first),
+                StringComparison.Ordinal);
             var independent = new PostgreSqlDeltaReconciliationInspector(
                 new PostgreSqlDeltaReconciliationInspectorOptions(fixture.ConnectionString));
             Assert.Equal(await independent.InspectSchemaAsync(plan, CancellationToken.None), first.SchemaSha256);
@@ -87,6 +91,7 @@ public sealed class ProductionSchemaCatalogInspectorTests(PostgreSqlAdapterFixtu
             Assert.NotEqual(before.IndexesSha256, after.IndexesSha256);
             Assert.Equal(before.ForeignKeysSha256, after.ForeignKeysSha256);
             Assert.NotEqual(before.WholeTableSha256, after.WholeTableSha256);
+            Assert.Equal(first.ColumnDiagnostics, second.ColumnDiagnostics);
             await using var rows = new NpgsqlCommand("SELECT COUNT(*) FROM catalog_probe.\"Sample\";", connection);
             Assert.Equal(1L, await rows.ExecuteScalarAsync());
         }

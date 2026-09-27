@@ -67,3 +67,17 @@ component catalog fails closed. They do not identify the precise column type,
 constraint, or index definition responsible and do not imply additive DDL is
 safe. The prior catalog output has no component digests, so a new owner-only,
 identity-bound read-only observation is required for this classification.
+
+The subsequent 2026-09-27 observation classified 78 tables with column-shape
+drift, seven with index drift, and one with constraint drift; 21 expected tables
+were absent and four matched. To narrow the systemic column mismatch without
+publishing schema SQL, the observer also emits `columnDiagnostics`: each
+observed or expected column name is labeled `match`, `shape-drift`,
+`missing-column`, or `target-only-column`. Changed facets are limited to
+`type`, `nullability`, `identity`, `default`, `generated`, and `collation`.
+Neither the observed type nor default/generated expression or collation value
+is serialized. This is a comparison to the expected *final* target shape,
+not the reviewed preimage and never DDL authorization. The component and
+column diagnostics come from one read-only repeatable-read catalog snapshot;
+missing or duplicate column observations fail closed. A fresh owner-only
+catalog run after this change is needed to see the column labels.

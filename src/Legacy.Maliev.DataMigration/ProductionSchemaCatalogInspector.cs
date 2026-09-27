@@ -74,7 +74,8 @@ public static class ProductionSchemaCatalogInspector
                     }
                 }
             }
-            (string fingerprint, IReadOnlyList<ProductionSchemaTableComponents> components) =
+            (string fingerprint, IReadOnlyList<ProductionSchemaTableComponents> components,
+                IReadOnlyList<PostgreSqlSchemaFingerprint.ColumnShape> columnShapes) =
                 await inspector.InspectSchemaWithComponentsAsync(database, cancellationToken).ConfigureAwait(false);
             await inspector.RollbackAsync(cancellationToken).ConfigureAwait(false);
             var observation = new ProductionSchemaObservation(database.Database,
@@ -89,6 +90,7 @@ public static class ProductionSchemaCatalogInspector
             return observation with
             {
                 TableDiagnostics = ProductionSchemaComponentDiagnostics.Compare(expected, observation),
+                ColumnDiagnostics = ProductionSchemaColumnDiagnostics.Compare(expected, observation, columnShapes),
             };
         }
         catch
