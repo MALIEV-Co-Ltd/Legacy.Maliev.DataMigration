@@ -67,7 +67,7 @@ internal static class LocalDockerGenerationGuard
         string volumeJson = await DefaultPairedLocalTemplateObserver.RunDockerAsync(
             ["inspect", "--type", "volume", PersistentVolume], cancellationToken).ConfigureAwait(false);
         DockerLocalTargetObservation observed = DockerLocalTargetObservation.Parse(containerJson, volumeJson,
-            id, PersistentVolume, settings.Port);
+            id, PersistentVolume, settings.Port, persistent: true);
         if (ComposeGeneration(observed) != plan.TargetGeneration)
         {
             throw Invalid("delta_paired_local_docker_generation_drift");

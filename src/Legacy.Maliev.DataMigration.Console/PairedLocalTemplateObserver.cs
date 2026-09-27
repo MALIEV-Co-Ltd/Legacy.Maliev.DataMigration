@@ -9,7 +9,7 @@ namespace Legacy.Maliev.DataMigration.Console;
 internal sealed class DefaultPairedLocalTemplateObserver : IPairedLocalTemplateObserver
 {
     public async Task<ObservedPairedLocalTarget> ObserveAsync(PairedLocalTemplateTarget candidate,
-        string connectionString, FreshSchemaPlan schema, CancellationToken cancellationToken)
+        string connectionString, FreshSchemaPlan schema, bool persistent, CancellationToken cancellationToken)
     {
         if (!OperatingSystem.IsWindows() || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOCKER_HOST")) ||
             !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOCKER_CONTEXT")))
@@ -17,8 +17,9 @@ internal sealed class DefaultPairedLocalTemplateObserver : IPairedLocalTemplateO
             throw Invalid("delta_paired_template_local_docker_required");
         }
         if (candidate.DockerContainerId.Length != 64 || !candidate.DockerContainerId.All(char.IsAsciiHexDigit) ||
-            (candidate.DockerVolumeName != "legacy-maliev-exact23-postgres-data" &&
-             !candidate.DockerVolumeName.StartsWith("legacy-delta-proof-", StringComparison.Ordinal)) ||
+            (persistent ? candidate.DockerVolumeName != "legacy-maliev-exact23-postgres-data" :
+                !candidate.DockerVolumeName.StartsWith("legacy-delta-proof-", StringComparison.Ordinal) ||
+                candidate.DockerVolumeName.Length <= "legacy-delta-proof-".Length) ||
             candidate.DockerVolumeName.Length > 128 ||
             !candidate.DockerVolumeName.All(value => char.IsAsciiLetterOrDigit(value) || value is '-'))
         {
@@ -36,7 +37,7 @@ internal sealed class DefaultPairedLocalTemplateObserver : IPairedLocalTemplateO
         string volumeJson = await RunDockerAsync(["inspect", "--type", "volume", candidate.DockerVolumeName],
             cancellationToken).ConfigureAwait(false);
         DockerLocalTargetObservation runtime = DockerLocalTargetObservation.Parse(containerJson, volumeJson,
-            candidate.DockerContainerId, candidate.DockerVolumeName, settings.Port);
+            candidate.DockerContainerId, candidate.DockerVolumeName, settings.Port, persistent);
         string capacityOutput = await RunDockerAsync(["exec", candidate.DockerContainerId,
             "df", "-Pk", runtime.PgData], cancellationToken).ConfigureAwait(false);
         DockerLocalTargetObservation.RequireCapacity(capacityOutput);
@@ -52,8 +53,7 @@ internal sealed class DefaultPairedLocalTemplateObserver : IPairedLocalTemplateO
             throw Invalid("delta_paired_template_system_identifier_invalid");
         }
         string systemHash = Hash(identifier);
-        string label = candidate.DockerVolumeName == "legacy-maliev-exact23-postgres-data" ?
-            "persistent-" : "disposable-";
+        string label = persistent ? "persistent-" : "disposable-";
         var authority = new DeltaTargetAuthority(DeltaTargetAuthorityKind.LocalAspire,
             "aspire://legacy-postgres-main-local/" + label + candidate.DockerContainerId[..12], systemHash);
         await DefaultGuardedDeltaConsoleRuntime.VerifyTargetAuthorityAsync(settings.ConnectionString,
@@ -77,7 +77,7 @@ internal sealed class DefaultPairedLocalTemplateObserver : IPairedLocalTemplateO
         string volumeAfter = await RunDockerAsync(["inspect", "--type", "volume", candidate.DockerVolumeName],
             cancellationToken).ConfigureAwait(false);
         DockerLocalTargetObservation observedAfter = DockerLocalTargetObservation.Parse(containerAfter, volumeAfter,
-            candidate.DockerContainerId, candidate.DockerVolumeName, settings.Port);
+            candidate.DockerContainerId, candidate.DockerVolumeName, settings.Port, persistent);
         if (runtime != observedAfter)
         {
             throw Invalid("delta_paired_template_runtime_drift");
@@ -88,11 +88,12 @@ internal sealed class DefaultPairedLocalTemplateObserver : IPairedLocalTemplateO
             authority, cancellationToken).ConfigureAwait(false);
         DateTimeOffset observedAt = DateTimeOffset.UtcNow;
         string observation = string.Join('\n', "paired-local-template-observation-v1", runtime.ContainerId,
+            runtime.ContainerName,
             runtime.ContainerCreatedAtUtc.ToString("O"), runtime.ContainerStartedAtUtc.ToString("O"),
             runtime.VolumeName, runtime.VolumeCreatedAtUtc.ToString("O"), runtime.VolumeDestination,
             settings.Port.ToString(System.Globalization.CultureInfo.InvariantCulture), systemHash,
             SchemaPlanCanonicalizer.ComputeSha256(schema), observedAt.ToString("O"));
-        return new(runtime.ContainerId, runtime.VolumeName, settings.Port,
+        return new(runtime.ContainerId, runtime.ContainerName, runtime.VolumeName, settings.Port,
             LocalDockerGenerationGuard.ComposeGeneration(runtime), Hash(observation), authority, observedAt);
     }
 
@@ -155,7 +156,7 @@ internal sealed class DefaultPairedLocalTemplateObserver : IPairedLocalTemplateO
     }
 }
 
-internal sealed partial record DockerLocalTargetObservation(string ContainerId, string VolumeName,
+internal sealed partial record DockerLocalTargetObservation(string ContainerId, string ContainerName, string VolumeName,
     string VolumeDestination, string PgData, DateTimeOffset ContainerCreatedAtUtc, DateTimeOffset ContainerStartedAtUtc,
     DateTimeOffset VolumeCreatedAtUtc)
 {
@@ -175,7 +176,7 @@ internal sealed partial record DockerLocalTargetObservation(string ContainerId, 
     }
 
     internal static DockerLocalTargetObservation Parse(string containerJson, string volumeJson,
-        string claimedContainerId, string claimedVolumeName, int claimedLoopbackPort)
+        string claimedContainerId, string claimedVolumeName, int claimedLoopbackPort, bool persistent)
     {
         try
         {
@@ -191,8 +192,14 @@ internal sealed partial record DockerLocalTargetObservation(string ContainerId, 
             JsonElement container = containers.RootElement[0];
             JsonElement volume = volumes.RootElement[0];
             string id = container.GetProperty("Id").GetString() ?? string.Empty;
+            string containerName = container.GetProperty("Name").GetString() ?? string.Empty;
             string name = volume.GetProperty("Name").GetString() ?? string.Empty;
             if (id != claimedContainerId || name != claimedVolumeName ||
+                (persistent ? name != "legacy-maliev-exact23-postgres-data" ||
+                    !containerName.StartsWith("/legacy-postgres-main-", StringComparison.Ordinal) ||
+                    containerName.Length <= "/legacy-postgres-main-".Length :
+                    !name.StartsWith("legacy-delta-proof-", StringComparison.Ordinal) ||
+                    name.Length <= "legacy-delta-proof-".Length || containerName != "/" + name) ||
                 !container.GetProperty("State").GetProperty("Running").GetBoolean() ||
                 volume.GetProperty("Driver").GetString() != "local")
             {
@@ -214,17 +221,6 @@ internal sealed partial record DockerLocalTargetObservation(string ContainerId, 
             {
                 throw Invalid();
             }
-            if (name.StartsWith("legacy-delta-proof-", StringComparison.Ordinal) &&
-                container.GetProperty("Name").GetString() != "/" + name)
-            {
-                throw Invalid();
-            }
-            if (name == "legacy-maliev-exact23-postgres-data" &&
-                !(container.GetProperty("Name").GetString() ?? string.Empty)
-                    .StartsWith("/legacy-postgres-main-", StringComparison.Ordinal))
-            {
-                throw Invalid();
-            }
             JsonElement ports = container.GetProperty("NetworkSettings").GetProperty("Ports")
                 .GetProperty("5432/tcp");
             if (ports.ValueKind != JsonValueKind.Array || ports.GetArrayLength() != 1 ||
@@ -242,7 +238,7 @@ internal sealed partial record DockerLocalTargetObservation(string ContainerId, 
                 System.Globalization.CultureInfo.InvariantCulture);
             return created > started || volumeCreated > started || started > DateTimeOffset.UtcNow.AddMinutes(1)
                 ? throw Invalid()
-                : new(id, name, destination, pgData, created.ToUniversalTime(), started.ToUniversalTime(),
+                : new(id, containerName, name, destination, pgData, created.ToUniversalTime(), started.ToUniversalTime(),
                 volumeCreated.ToUniversalTime());
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException or

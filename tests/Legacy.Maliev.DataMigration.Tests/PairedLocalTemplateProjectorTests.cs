@@ -97,6 +97,21 @@ public sealed class PairedLocalTemplateProjectorTests
         Assert.False(File.Exists(fixture.Candidate.OutputPath));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Observed_wrong_role_container_name_never_publishes_a_template(bool persistent)
+    {
+        await using Fixture fixture = await Fixture.CreateAsync();
+        var observer = new Observer { WrongNameForPersistent = persistent };
+        MigrationConsoleException failure = await Assert.ThrowsAsync<MigrationConsoleException>(() =>
+            MigrationConsole.ProjectPairedLocalTemplateAsync(fixture.Candidate, fixture.Environment,
+                observer, CancellationToken.None));
+        Assert.Equal("delta_paired_template_observation_invalid", failure.Code);
+        Assert.Equal(2, observer.Calls);
+        Assert.False(File.Exists(fixture.Candidate.OutputPath));
+    }
+
     [Fact]
     public async Task Missing_private_signer_or_unprotected_connection_fails_before_observation()
     {
@@ -180,23 +195,32 @@ public sealed class PairedLocalTemplateProjectorTests
         {
             Name = volume, Driver = "local", CreatedAt = "2026-09-26T00:00:00Z",
         } });
-        Assert.Equal(id, DockerLocalTargetObservation.Parse(container, volumeJson, id, volume, 54321).ContainerId);
+        Assert.Equal(id, DockerLocalTargetObservation.Parse(container, volumeJson, id, volume, 54321,
+            persistent: false).ContainerId);
         Assert.Equal("delta_paired_template_docker_observation_invalid",
             Assert.Throws<MigrationConsoleException>(() => DockerLocalTargetObservation.Parse(container,
-                volumeJson, id, volume, 54322)).Code);
+                volumeJson, id, volume, 54322, persistent: false)).Code);
         Assert.Equal("delta_paired_template_docker_observation_invalid",
             Assert.Throws<MigrationConsoleException>(() => DockerLocalTargetObservation.Parse(container,
-                volumeJson.Replace(volume, "wrong-volume", StringComparison.Ordinal), id, volume, 54321)).Code);
+                volumeJson.Replace(volume, "wrong-volume", StringComparison.Ordinal), id, volume, 54321,
+                persistent: false)).Code);
         Assert.Equal("delta_paired_template_docker_observation_invalid",
             Assert.Throws<MigrationConsoleException>(() => DockerLocalTargetObservation.Parse(
                 container.Replace("\"Running\":true", "\"Running\":false", StringComparison.Ordinal),
-                volumeJson, id, volume, 54321)).Code);
+                volumeJson, id, volume, 54321, persistent: false)).Code);
         string persistentVolume = "legacy-maliev-exact23-postgres-data";
         Assert.Equal("delta_paired_template_docker_observation_invalid",
             Assert.Throws<MigrationConsoleException>(() => DockerLocalTargetObservation.Parse(
                 container.Replace(volume, persistentVolume, StringComparison.Ordinal),
                 volumeJson.Replace(volume, persistentVolume, StringComparison.Ordinal),
-                id, persistentVolume, 54321)).Code);
+                id, persistentVolume, 54321, persistent: true)).Code);
+        Assert.Equal("delta_paired_template_docker_observation_invalid",
+            Assert.Throws<MigrationConsoleException>(() => DockerLocalTargetObservation.Parse(
+                container, volumeJson, id, volume, 54321, persistent: true)).Code);
+        Assert.Equal("delta_paired_template_docker_observation_invalid",
+            Assert.Throws<MigrationConsoleException>(() => DockerLocalTargetObservation.Parse(
+                container.Replace("/" + volume, "/legacy-postgres-main-test", StringComparison.Ordinal),
+                volumeJson, id, volume, 54321, persistent: false)).Code);
     }
 
     [Fact]
@@ -253,7 +277,8 @@ public sealed class PairedLocalTemplateProjectorTests
     public void Docker_generation_changes_on_container_restart_or_volume_recreation()
     {
         string id = new('a', 64);
-        var first = new DockerLocalTargetObservation(id, "legacy-maliev-exact23-postgres-data",
+        var first = new DockerLocalTargetObservation(id, "/legacy-postgres-main-test",
+            "legacy-maliev-exact23-postgres-data",
             "/var/lib/postgresql", "/var/lib/postgresql/18/docker",
             DateTimeOffset.FromUnixTimeMilliseconds(1_000), DateTimeOffset.FromUnixTimeMilliseconds(2_000),
             DateTimeOffset.FromUnixTimeMilliseconds(500));
@@ -272,15 +297,17 @@ public sealed class PairedLocalTemplateProjectorTests
     private sealed class Observer : IPairedLocalTemplateObserver
     {
         public int Calls { get; private set; }
+        public bool? WrongNameForPersistent { get; init; }
 
         public Task<ObservedPairedLocalTarget> ObserveAsync(PairedLocalTemplateTarget candidate,
-            string connectionString, FreshSchemaPlan schema, CancellationToken cancellationToken)
+            string connectionString, FreshSchemaPlan schema, bool persistent, CancellationToken cancellationToken)
         {
             Calls++;
-            bool persistent = candidate.DockerVolumeName == "legacy-maliev-exact23-postgres-data";
             string label = persistent ? "persistent-" : "disposable-";
             int port = persistent ? 54322 : 54321;
             return Task.FromResult(new ObservedPairedLocalTarget(candidate.DockerContainerId,
+                WrongNameForPersistent is bool wrong && wrong == persistent ? "/swapped-role-name" :
+                    persistent ? "/legacy-postgres-main-test" : "/" + candidate.DockerVolumeName,
                 candidate.DockerVolumeName, port, "docker:" + candidate.DockerContainerId + ":1:2:3",
                 new string(persistent ? 'd' : 'c', 64),
                 new(DeltaTargetAuthorityKind.LocalAspire,

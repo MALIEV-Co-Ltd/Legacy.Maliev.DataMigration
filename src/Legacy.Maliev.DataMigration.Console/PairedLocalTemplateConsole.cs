@@ -110,9 +110,9 @@ public static partial class MigrationConsole
         }
 
         ObservedPairedLocalTarget disposable = await observer.ObserveAsync(candidate.Disposable,
-            connections[0], schema, cancellationToken).ConfigureAwait(false);
+            connections[0], schema, persistent: false, cancellationToken).ConfigureAwait(false);
         ObservedPairedLocalTarget persistent = await observer.ObserveAsync(candidate.Persistent,
-            connections[1], schema, cancellationToken).ConfigureAwait(false);
+            connections[1], schema, persistent: true, cancellationToken).ConfigureAwait(false);
         PairedLocalTemplateProjection.ValidateObservations(candidate, disposable, persistent, DateTimeOffset.UtcNow);
         DeltaCommandConfiguration delta = new(candidate.SchemaPlanPath, candidate.OutputPath,
             candidate.SourceConnectionFile, candidate.Disposable.TargetConnectionFile,
@@ -161,6 +161,7 @@ internal sealed record PairedLocalTemplateTarget(
 
 internal sealed record ObservedPairedLocalTarget(
     string ContainerId,
+    string ContainerName,
     string VolumeName,
     int LoopbackPort,
     string Generation,
@@ -171,7 +172,7 @@ internal sealed record ObservedPairedLocalTarget(
 internal interface IPairedLocalTemplateObserver
 {
     Task<ObservedPairedLocalTarget> ObserveAsync(PairedLocalTemplateTarget candidate,
-        string connectionString, FreshSchemaPlan schema, CancellationToken cancellationToken);
+        string connectionString, FreshSchemaPlan schema, bool persistent, CancellationToken cancellationToken);
 }
 
 internal static class PairedLocalTemplateProjection
@@ -192,8 +193,8 @@ internal static class PairedLocalTemplateProjection
         ObservedPairedLocalTarget disposable, ObservedPairedLocalTarget persistent, DateTimeOffset now)
     {
         ValidateRoleClaims(candidate);
-        ValidateTarget(candidate.Disposable, disposable, "disposable-", now);
-        ValidateTarget(candidate.Persistent, persistent, "persistent-", now);
+        ValidateTarget(candidate.Disposable, disposable, persistent: false, now);
+        ValidateTarget(candidate.Persistent, persistent, persistent: true, now);
         if (disposable.ContainerId == persistent.ContainerId ||
             disposable.VolumeName == persistent.VolumeName ||
             disposable.LoopbackPort == persistent.LoopbackPort ||
@@ -206,10 +207,19 @@ internal static class PairedLocalTemplateProjection
     }
 
     private static void ValidateTarget(PairedLocalTemplateTarget claimed, ObservedPairedLocalTarget observed,
-        string label, DateTimeOffset now)
+        bool persistent, DateTimeOffset now)
     {
+        string label = persistent ? "persistent-" : "disposable-";
+        bool roleValid = persistent
+            ? observed.VolumeName == "legacy-maliev-exact23-postgres-data" &&
+              observed.ContainerName.StartsWith("/legacy-postgres-main-", StringComparison.Ordinal) &&
+              observed.ContainerName.Length > "/legacy-postgres-main-".Length
+            : observed.VolumeName.StartsWith("legacy-delta-proof-", StringComparison.Ordinal) &&
+              observed.VolumeName.Length > "legacy-delta-proof-".Length &&
+              observed.ContainerName == "/" + observed.VolumeName;
         if (!string.Equals(claimed.DockerContainerId, observed.ContainerId, StringComparison.Ordinal) ||
             !string.Equals(claimed.DockerVolumeName, observed.VolumeName, StringComparison.Ordinal) ||
+            !roleValid ||
             observed.ContainerId.Length != 64 || !observed.ContainerId.All(char.IsAsciiHexDigit) ||
             observed.LoopbackPort is < 1 or > 65535 ||
             !LocalDockerGenerationGuard.IsGenerationFor(observed.Generation, observed.ContainerId) ||
