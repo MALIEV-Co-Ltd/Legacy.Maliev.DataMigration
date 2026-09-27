@@ -80,7 +80,8 @@ public sealed class DeltaExecutionCoordinator(
     IDeltaExecutionAuthorizationGate authorization,
     IDeltaReconciliationInspector sourceReconciliation,
     IReceiptAttestationTrustStore planTrust,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    PairedLocalTransitionExecutionPermit? localPermit = null)
 {
     public async Task<DeltaDatabaseExecutionResult> ExecuteDatabaseAsync(
         DeltaSynchronizationPlan plan,
@@ -108,7 +109,7 @@ public sealed class DeltaExecutionCoordinator(
                 "Quotation disposition plans require a reviewed archive/adoption executor and reconciliation path.");
         }
 
-        _ = QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema);
+        _ = QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema, localPermit);
 
         DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(schema).TargetSchema;
 

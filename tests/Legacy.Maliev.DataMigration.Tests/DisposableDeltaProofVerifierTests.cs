@@ -1,4 +1,7 @@
 using System.Security.Cryptography;
+using System.Text;
+using Npgsql;
+using Testcontainers.PostgreSql;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -373,6 +376,131 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                     CancellationToken.None))).Code);
     }
 
+    [Fact]
+    public async Task Local_transition_execution_permit_requires_fresh_signed_zero_delete_pair()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, matchingInsertOperations: true);
+        using var signer = new P256MigrationEvidenceSigner("local-transition-authorization",
+            _authorizationKey.ExportECPrivateKeyPem());
+        PairedCapturedDeltaPlans plans = new(fixture.ProofPlan, fixture.LocalPlan);
+        DeltaTargetAuthority authority = fixture.LocalPlan.TargetAuthority!;
+        PairedLocalTransitionAuthorization authorization = PairedLocalTransitionAuthorizationPolicy.Produce(
+            plans, fixture.ProofResult, fixture.Schema, fixture.Trust, authority,
+            fixture.LocalPlan.TargetObservationSha256, fixture.LocalPlan.QuotationTransitionSchemaSha256!,
+            fixture.Now.AddMinutes(-1), fixture.Now.AddMinutes(5), signer);
+
+        var clock = new FixedTime(fixture.Now);
+        PairedLocalTransitionExecutionPermit permit = PairedLocalTransitionExecutionPermit.Admit(
+            plans, fixture.ProofResult, authorization, fixture.Schema, fixture.Trust,
+            authority, fixture.LocalPlan.TargetObservationSha256, clock);
+        permit.Require(fixture.LocalPlan, fixture.Schema.Databases.Single(item => item.Database == "Quotation"),
+            fixture.Now);
+        Assert.Equal(fixture.LocalPlan.QuotationTransitionSchemaSha256,
+            QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(fixture.LocalPlan,
+                fixture.Schema.Databases.Single(item => item.Database == "Quotation"), permit));
+        _ = Assert.Throws<DeltaPlanException>(() => QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(
+            fixture.LocalPlan, fixture.Schema.Databases.Single(item => item.Database == "Quotation")));
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => permit.Require(fixture.LocalPlan,
+                fixture.Schema.Databases.Single(item => item.Database == "Quotation"),
+                fixture.Now.AddMinutes(6))).Code);
+        clock.UtcNow = fixture.Now.AddMinutes(6);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                new PairedLocalTransitionExecutionGate(permit, fixture.Schema).ValidateAsync(
+                    fixture.LocalPlan, "Quotation", CancellationToken.None))).Code);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            Assert.Throws<DeltaExecutionException>(() => permit.Require(fixture.LocalPlan with
+            {
+                TargetAuthority = new(DeltaTargetAuthorityKind.ProductionCloudNativePg,
+                    "gke://maliev-website/production-test", Hash('f')),
+            }, fixture.Schema.Databases.Single(item => item.Database == "Quotation"), fixture.Now)).Code);
+    }
+
+    [Fact]
+    public async Task Local_transition_target_rolls_back_new_metadata_and_replays_only_matching_atomic_checkpoint()
+    {
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await container.StartAsync();
+        string admin = container.GetConnectionString();
+        string identity;
+        await using (var connection = new NpgsqlConnection(admin))
+        {
+            await connection.OpenAsync();
+            await using var identifier = new NpgsqlCommand("SELECT system_identifier::text FROM pg_control_system();",
+                connection);
+            identity = Convert.ToString(await identifier.ExecuteScalarAsync(),
+                System.Globalization.CultureInfo.InvariantCulture)!;
+            await using var create = new NpgsqlCommand("CREATE DATABASE \"ContactRequest\" TEMPLATE template0;",
+                connection);
+            _ = await create.ExecuteNonQueryAsync();
+        }
+        string systemHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))
+            .ToLowerInvariant();
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, localSystemHash: systemHash, physicalTargetHashes: true);
+        DatabaseSchemaPlan schema = fixture.Schema.Databases.Single(item => item.Database == "ContactRequest");
+        string databaseConnection = new NpgsqlConnectionStringBuilder(admin)
+        {
+            Database = schema.Database,
+            Pooling = false,
+        }.ConnectionString;
+        await using (var connection = new NpgsqlConnection(databaseConnection))
+        {
+            await connection.OpenAsync();
+            await using var transaction = await connection.BeginTransactionAsync();
+            await using var writer = new PostgreSqlWholeDatabaseTransaction(connection, transaction,
+                ownsResources: false);
+            await writer.ApplySchemaAsync(schema, CancellationToken.None);
+            await writer.FinalizeSchemaAsync(schema, CancellationToken.None);
+            await transaction.CommitAsync();
+        }
+        using var signer = new P256MigrationEvidenceSigner("local-transition-authorization",
+            _authorizationKey.ExportECPrivateKeyPem());
+        PairedCapturedDeltaPlans plans = new(fixture.ProofPlan, fixture.LocalPlan);
+        PairedLocalTransitionAuthorization authorization = PairedLocalTransitionAuthorizationPolicy.Produce(
+            plans, fixture.ProofResult, fixture.Schema, fixture.Trust,
+            fixture.LocalPlan.TargetAuthority!, fixture.LocalPlan.TargetObservationSha256,
+            fixture.LocalPlan.QuotationTransitionSchemaSha256!, fixture.Now.AddMinutes(-1),
+            fixture.Now.AddMinutes(5), signer);
+        var permit = PairedLocalTransitionExecutionPermit.Admit(plans, fixture.ProofResult,
+            authorization, fixture.Schema, fixture.Trust, fixture.LocalPlan.TargetAuthority!,
+            fixture.LocalPlan.TargetObservationSha256, new FixedTime(fixture.Now));
+        var target = new PostgreSqlDeltaCanonicalTarget(new(databaseConnection, schema.Database,
+            fixture.LocalPlan.TargetGeneration)
+        { LocalTransitionPermit = permit });
+        await using (IDeltaCanonicalTransaction abandoned = await target.BeginAsync(fixture.LocalPlan,
+            schema, schema.Database, CancellationToken.None))
+        {
+            Assert.Equal(DeltaExecutionDisposition.Pending, abandoned.Disposition);
+        }
+        await using (var connection = new NpgsqlConnection(databaseConnection))
+        {
+            await connection.OpenAsync();
+            await using var catalog = new NpgsqlCommand(
+                "SELECT to_regclass('legacy_migration_internal.delta_journal')::text;", connection);
+            Assert.Null(await catalog.ExecuteScalarAsync() as string);
+        }
+        DatabaseReconciliationEvidence empty = await new PostgreSqlDeltaReconciliationInspector(
+            new(admin) { Plan = fixture.LocalPlan, LocalTransitionPermit = permit })
+            .InspectAsync(schema, CancellationToken.None);
+        string planHash = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(fixture.LocalPlan);
+        await using (IDeltaCanonicalTransaction committed = await target.BeginAsync(fixture.LocalPlan,
+            schema, schema.Database, CancellationToken.None))
+        {
+            string reconciliationHash = await committed.ReconcileAsync(empty, CancellationToken.None);
+            await committed.CommitAsync(planHash, reconciliationHash, CancellationToken.None);
+        }
+        await using IDeltaCanonicalTransaction replay = await target.BeginAsync(fixture.LocalPlan,
+            schema, schema.Database, CancellationToken.None);
+        Assert.Equal(DeltaExecutionDisposition.AlreadyCommitted, replay.Disposition);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => target.BeginAsync(
+                fixture.LocalPlan with { TargetGeneration = "other" }, schema, schema.Database,
+                CancellationToken.None))).Code);
+    }
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, true)]
@@ -497,7 +625,8 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         bool changedLocalCaptureKey = false, bool changedLocalCaptureWindow = false,
         bool deleteOperations = false, bool matchingInsertOperations = false,
         bool pairedTransition = false, bool changedLocalTransitionHash = false,
-        bool reuseProofEvidenceAsAuthorization = false)
+        bool reuseProofEvidenceAsAuthorization = false,
+        string? localSystemHash = null, bool physicalTargetHashes = false)
     {
         DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
         TableCopyPlan[] quotationOutboxes =
@@ -523,7 +652,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                     SourceTableDispositions = disposed
                         ? ApprovedSourceDispositionManifest.DispositionsForDatabase(name, quotationOutboxes) : [],
                 };
-                return disposed ? database with
+                return disposed || physicalTargetHashes ? database with
                 {
                     TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(database),
                 } : database;
@@ -540,7 +669,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 new(authorizationSigner.KeyId, authorizationSigner.ExportSubjectPublicKeyInfo())]);
         DeltaSynchronizationPlan proofPlan = MakePlan("disposable-proof", Hash('1'), now.AddMinutes(-3),
             matchingInsertOperations);
-        DeltaSynchronizationPlan localPlan = MakePlan("persistent-main", Hash('2'),
+        DeltaSynchronizationPlan localPlan = MakePlan("persistent-main", localSystemHash ?? Hash('2'),
             now.AddMinutes(pairedTransition ? -3 : -1),
             changedLocalOperations || matchingInsertOperations, changedLocalTableInventory);
         var inspector = new Inspector(pairedTransition, schema);
@@ -618,12 +747,12 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
     private static string CaptureDigest(string id, string database)
     {
         return Convert.ToHexString(SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(id + ":" + database))).ToLowerInvariant();
+            Encoding.UTF8.GetBytes(id + ":" + database))).ToLowerInvariant();
     }
 
     private static Guid CaptureId(string table)
     {
-        byte[] digest = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(table));
+        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(table));
         return new Guid(digest.AsSpan(0, 16));
     }
 
@@ -694,9 +823,11 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
 
     private sealed class FixedTime(DateTimeOffset now) : TimeProvider
     {
+        public DateTimeOffset UtcNow { get; set; } = now;
+
         public override DateTimeOffset GetUtcNow()
         {
-            return now;
+            return UtcNow;
         }
     }
 }

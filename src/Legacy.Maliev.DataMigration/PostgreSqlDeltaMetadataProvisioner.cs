@@ -62,7 +62,8 @@ public sealed class PostgreSqlDeltaMetadataProvisioner(PostgreSqlDeltaMetadataPr
         NpgsqlTransaction transaction,
         DeltaSynchronizationPlan plan,
         DatabaseSchemaPlan schema,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        PairedLocalTransitionExecutionPermit? localPermit = null)
     {
         if (plan.SchemaVersion == "1.4" && schema.Database == "Quotation")
         {
@@ -70,7 +71,7 @@ public sealed class PostgreSqlDeltaMetadataProvisioner(PostgreSqlDeltaMetadataPr
                 ownsResources: false);
             string observedSchema = await schemaInspector.InspectSchemaAsync(schema, cancellationToken)
                 .ConfigureAwait(false);
-            QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema, observedSchema);
+            QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema, observedSchema, localPermit);
         }
         await ExecuteAsync(connection, transaction, """
             CREATE SCHEMA IF NOT EXISTS legacy_migration_internal;
@@ -121,7 +122,7 @@ public sealed class PostgreSqlDeltaMetadataProvisioner(PostgreSqlDeltaMetadataPr
         _ = fence.Parameters.AddWithValue(schema.Database);
         _ = fence.Parameters.AddWithValue(plan.SchemaPlanSha256);
         _ = fence.Parameters.AddWithValue(
-            QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema));
+            QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema, localPermit));
         _ = fence.Parameters.AddWithValue(plan.TargetGeneration);
         _ = fence.Parameters.AddWithValue(plan.TargetObservationSha256);
         _ = await fence.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
