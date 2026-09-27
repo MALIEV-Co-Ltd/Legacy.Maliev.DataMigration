@@ -16,6 +16,13 @@ Describe 'Exact-23 disposable copy guards' {
         (Test-Throws { Assert-Exact23CopyInventory @($names[0..21] + $names[0]) }) | Should Be $true
     }
 
+    It 'admits only exact-23 plus Auth and the observed source role database' {
+        $names = @(Get-Exact23CopyDatabases)
+        (Test-Throws { Assert-Exact23CopySourceInventory @($names + 'Auth' + 'legacy_local') 'legacy_local' }) | Should Be $false
+        (Test-Throws { Assert-Exact23CopySourceInventory @($names + 'Unknown') 'legacy_local' }) | Should Be $true
+        (Test-Throws { Assert-Exact23CopySourceInventory @($names[0..21] + 'Auth') 'legacy_local' }) | Should Be $true
+    }
+
     It 'accepts only unique run-owned names and independent identities' {
         (Test-Throws { Assert-Exact23CopyName 'legacy-delta-proof-abcdef123456' }) | Should Be $false
         (Test-Throws { Assert-Exact23CopyName 'legacy-maliev-exact23-postgres-data' }) | Should Be $true
@@ -28,6 +35,16 @@ Describe 'Exact-23 disposable copy guards' {
         (Assert-Exact23CopyPort '127.0.0.1:5432') | Should Be 5432
         (Test-Throws { Assert-Exact23CopyPort '0.0.0.0:5432' }) | Should Be $true
         (Test-Throws { Assert-Exact23CopyPort "127.0.0.1:5432`n[::]:5432" }) | Should Be $true
+    }
+
+    It 'binds the source login to the container role without requiring postgres' {
+        $source = [pscustomobject]@{ Config = [pscustomobject]@{
+            Env = @('POSTGRES_USER=legacy_local', 'POSTGRES_PASSWORD=synthetic-only')
+        } }
+        (Test-Throws { Assert-Exact23CopySourceRole $source 'legacy_local' }) | Should Be $false
+        (Test-Throws { Assert-Exact23CopySourceRole $source 'postgres' }) | Should Be $true
+        $source.Config.Env += 'POSTGRES_USER=legacy_local'
+        (Test-Throws { Assert-Exact23CopySourceRole $source 'legacy_local' }) | Should Be $true
     }
 
     It 'requires exact persistent source and run-owned target resources' {

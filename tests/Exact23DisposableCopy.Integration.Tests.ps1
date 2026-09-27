@@ -22,8 +22,9 @@ if ($IsWindows) {
             Set-Acl -LiteralPath $root -AclObject $acl
             $environmentPath = Join-Path $root 'synthetic-source.env'
             $connectionPath = Join-Path $root 'synthetic-source.connection'
+            $sourceUser = 'legacy_local'
             $password = 'synthetic-only-' + $runId
-            [IO.File]::WriteAllText($environmentPath, "POSTGRES_USER=postgres`nPOSTGRES_PASSWORD=$password`n")
+            [IO.File]::WriteAllText($environmentPath, "POSTGRES_USER=$sourceUser`nPOSTGRES_PASSWORD=$password`n")
             $imageDigest = @(docker image inspect postgres:18 --format '{{json .RepoDigests}}' |
                 ConvertFrom-Json)[0]
             $image = 'postgres:18@sha256:' + ($imageDigest -split '@sha256:')[1]
@@ -49,25 +50,28 @@ if ($IsWindows) {
                 $ready = $false
                 for ($attempt = 0; $attempt -lt 30; $attempt++) {
                     & 'C:\Program Files\PostgreSQL\18\bin\pg_isready.exe' -h 127.0.0.1 -p $port `
-                        -U postgres -d postgres 1>$null 2>$null
+                        -U $sourceUser -d postgres 1>$null 2>$null
                     if ($LASTEXITCODE -eq 0) { $ready = $true; break }
                     Start-Sleep -Seconds 1
                 }
                 if (-not $ready) { throw 'synthetic_source_not_ready' }
                 foreach ($database in Get-Exact23CopyDatabases) {
                     & 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -X -w -h 127.0.0.1 -p $port `
-                        -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE `"$database`";" 1>$null 2>$null
+                        -U $sourceUser -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE `"$database`";" 1>$null 2>$null
                     if ($LASTEXITCODE -ne 0) { throw 'synthetic_database_create_failed' }
                 }
                 & 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -X -w -h 127.0.0.1 -p $port `
-                    -U postgres -d Country -v ON_ERROR_STOP=1 -c `
+                    -U $sourceUser -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE "Auth";' 1>$null 2>$null
+                if ($LASTEXITCODE -ne 0) { throw 'synthetic_auth_database_create_failed' }
+                & 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -X -w -h 127.0.0.1 -p $port `
+                    -U $sourceUser -d Country -v ON_ERROR_STOP=1 -c `
                     'CREATE TABLE public."Probe" ("ID" integer PRIMARY KEY, "Value" text); INSERT INTO public."Probe" VALUES (1, ''synthetic-only'');' `
                     1>$null 2>$null
                 if ($LASTEXITCODE -ne 0) { throw 'synthetic_row_create_failed' }
                 [IO.File]::WriteAllText($connectionPath,
-                    "Host=127.0.0.1;Port=$port;Username=postgres;Password=$password;Database=postgres;Pooling=False")
+                    "Host=127.0.0.1;Port=$port;Username=$sourceUser;Password=$password;Database=postgres;Pooling=False")
                 $systemId = (& 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -X -w `
-                    -h 127.0.0.1 -p $port -U postgres -d postgres -Atc `
+                    -h 127.0.0.1 -p $port -U $sourceUser -d postgres -Atc `
                     'SELECT system_identifier::text FROM pg_control_system();').Trim()
                 $systemHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
                     [Text.Encoding]::UTF8.GetBytes($systemId))).ToLowerInvariant()

@@ -18,6 +18,16 @@ function Assert-Exact23CopyInventory([string[]]$Names) {
     }
 }
 
+function Assert-Exact23CopySourceInventory([string[]]$Names, [string]$Username) {
+    $canonical = @(Get-Exact23CopyDatabases)
+    $allowed = @($canonical + @('Auth', $Username) | Select-Object -Unique)
+    $extra = @($Names | Where-Object { $allowed -cnotcontains $_ })
+    if ($extra.Count -gt 0 -or @($Names | Select-Object -Unique).Count -ne $Names.Count) {
+        throw 'exact23_copy_source_inventory_invalid'
+    }
+    Assert-Exact23CopyInventory @($Names | Where-Object { $canonical -ccontains $_ })
+}
+
 function Assert-Exact23CopyName([string]$Name) {
     if ($Name -cnotmatch '^legacy-delta-proof-[a-z0-9]{12,32}$') {
         throw 'exact23_copy_name_invalid'
@@ -47,6 +57,14 @@ function Assert-Exact23CopySourceContainer($Container, [string]$ExpectedId) {
             $_.Destination -ceq '/var/lib/postgresql'
         }).Count -ne 1) {
         throw 'exact23_copy_persistent_source_invalid'
+    }
+}
+
+function Assert-Exact23CopySourceRole($Container, [string]$Username) {
+    $roleEntries = @($Container.Config.Env | Where-Object { $_ -clike 'POSTGRES_USER=*' })
+    if ($Username -cnotmatch '^[A-Za-z_][A-Za-z0-9_]{0,62}$' -or
+        $roleEntries.Count -ne 1 -or $roleEntries[0] -cne "POSTGRES_USER=$Username") {
+        throw 'exact23_copy_source_role_invalid'
     }
 }
 
@@ -119,7 +137,9 @@ function Get-Exact23CopyRowCount([string]$DumpPath) {
 }
 
 Export-ModuleMember -Function Get-Exact23CopyDatabases, Assert-Exact23CopyInventory,
+    Assert-Exact23CopySourceInventory,
     Assert-Exact23CopyName, Assert-Exact23CopyIdentity, Assert-Exact23CopyPort,
-    Assert-Exact23CopySourceContainer, Assert-Exact23CopySyntheticSourceContainer,
+    Assert-Exact23CopySourceContainer, Assert-Exact23CopySourceRole,
+    Assert-Exact23CopySyntheticSourceContainer,
     Assert-Exact23CopyContainer,
     Assert-Exact23CopyVolume, Assert-Exact23CopyDigest, Get-Exact23CopyRowCount
