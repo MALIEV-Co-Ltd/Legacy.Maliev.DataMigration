@@ -14,6 +14,7 @@ public sealed class GuardedDeltaCommandPolicyTests
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("plan-delta"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("plan-paired-delta"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("inspect-target-schema-gaps"));
+        Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("inspect-production-schema-catalog"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("verify-disposable-delta-proof"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("preflight-paired-local-transition"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("authorize-paired-local-transition"));
@@ -27,6 +28,7 @@ public sealed class GuardedDeltaCommandPolicyTests
     [InlineData("owner", "authorize-delta")]
     [InlineData("owner", "verify-disposable-delta-proof")]
     [InlineData("owner", "plan-paired-delta")]
+    [InlineData("owner", "inspect-production-schema-catalog")]
     [InlineData("owner", "preflight-paired-local-transition")]
     [InlineData("owner", "authorize-paired-local-transition")]
     [InlineData("owner", "apply-paired-local-transition")]
@@ -43,6 +45,8 @@ public sealed class GuardedDeltaCommandPolicyTests
     [InlineData("apphost", "apply-delta-production")]
     [InlineData("apphost", "authorize-delta")]
     [InlineData("apphost", "inspect-target-schema-gaps")]
+    [InlineData("apphost", "inspect-production-schema-catalog")]
+    [InlineData("operator", "inspect-production-schema-catalog")]
     [InlineData("operator", "apply-delta-production")]
     [InlineData("operator", "authorize-delta")]
     [InlineData("operator", "verify-disposable-delta-proof")]

@@ -74,6 +74,7 @@ public static partial class MigrationConsole
                 "plan-delta" => await ProduceDeltaPlanAsync(configuration, environment, runtime, cancellationToken).ConfigureAwait(false),
                 "plan-paired-delta" => await ProducePairedDeltaPlansAsync(configuration, environment, runtime, cancellationToken).ConfigureAwait(false),
                 "inspect-target-schema-gaps" => await InspectTargetSchemaGapsAsync(configuration, cancellationToken).ConfigureAwait(false),
+                "inspect-production-schema-catalog" => await InspectProductionSchemaCatalogAsync(configuration, cancellationToken).ConfigureAwait(false),
                 "verify-disposable-delta-proof" => await VerifyDisposableProofAsync(configuration, cancellationToken).ConfigureAwait(false),
                 "authorize-paired-local-transition" => await AuthorizePairedLocalTransitionAsync(configuration,
                     environment, runtime, cancellationToken).ConfigureAwait(false),

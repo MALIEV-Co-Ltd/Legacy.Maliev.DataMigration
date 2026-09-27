@@ -42,3 +42,14 @@ approval. Apply per database with pending/uncertain-result handling; do not
 run EF `Database.Migrate` over existing databases without migration history.
 No deployment, cutover, sysdiagrams retirement, or production row delta is
 authorized by this manifest.
+
+The owner-only `inspect-production-schema-catalog` command is the read-only
+full-catalog observation step. It requires a protected, fresh exact-23 source
+plan and verified production target authority. For each database it reads table
+and column names and the full structural fingerprint from one repeatable-read,
+read-only transaction. Its PII-free output binds the source commit, canonical
+schema-plan SHA-256, target authority, observation time, and all 23 observed
+catalogs. The source-plan freshness and target authority are checked again
+before publication. It reads no application rows and signs or applies nothing. The
+owner must still review the catalog and run a separate disposable additive proof
+before any production DDL request.

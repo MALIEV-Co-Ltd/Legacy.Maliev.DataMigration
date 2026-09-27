@@ -138,6 +138,7 @@ public static partial class MigrationConsole
                 case "project-paired-local-template":
                 case "plan-paired-delta":
                 case "inspect-target-schema-gaps":
+                case "inspect-production-schema-catalog":
                 case "verify-disposable-delta-proof":
                 case "authorize-paired-local-transition":
                 case "preflight-paired-local-transition":
