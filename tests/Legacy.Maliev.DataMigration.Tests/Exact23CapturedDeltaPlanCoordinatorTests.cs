@@ -841,6 +841,288 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
     }
 
     [Fact]
+    public async Task Signed_pair_proves_disposable_then_atomically_applies_and_replays_exact23_local_transition()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-atomic-tests", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
+        await using var disposableContainer = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using var localContainer = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        try
+        {
+            await disposableContainer.StartAsync();
+            await localContainer.StartAsync();
+            string disposableAdmin = disposableContainer.GetConnectionString();
+            string localAdmin = localContainer.GetConnectionString();
+            FreshSchemaPlan schema = QuotationSchema();
+            DatabaseSchemaPlan quotation = schema.Databases.Single(item => item.Database == "Quotation");
+            foreach (string admin in new[] { disposableAdmin, localAdmin })
+            {
+                foreach (DatabaseSchemaPlan database in schema.Databases)
+                {
+                    await using (var connection = new NpgsqlConnection(admin))
+                    {
+                        await connection.OpenAsync();
+                        await using var create = new NpgsqlCommand(
+                            $"CREATE DATABASE \"{database.Database}\" TEMPLATE template0;", connection);
+                        _ = await create.ExecuteNonQueryAsync();
+                    }
+                    string connectionString = new NpgsqlConnectionStringBuilder(admin)
+                    {
+                        Database = database.Database,
+                        Pooling = false,
+                    }.ConnectionString;
+                    await using var connectionDb = new NpgsqlConnection(connectionString);
+                    await connectionDb.OpenAsync();
+                    await using var transaction = await connectionDb.BeginTransactionAsync();
+                    await using var writer = new PostgreSqlWholeDatabaseTransaction(connectionDb, transaction,
+                        ownsResources: false);
+                    DatabaseSchemaPlan initial = database.Database == "Quotation"
+                        ? database with
+                        {
+                            Database = "QuotationBootstrapFixture",
+                            SourceDispositionProfile = null,
+                            SourceTableDispositions = [],
+                        }
+                        : database;
+                    await writer.ApplySchemaAsync(initial, CancellationToken.None);
+                    await writer.FinalizeSchemaAsync(initial, CancellationToken.None);
+                    await transaction.CommitAsync();
+                }
+                string quotationConnection = new NpgsqlConnectionStringBuilder(admin)
+                {
+                    Database = "Quotation",
+                    Pooling = false,
+                }.ConnectionString;
+                await using (var db = new NpgsqlConnection(quotationConnection))
+                {
+                    await db.OpenAsync();
+                    await using var insert = new NpgsqlCommand(
+                        "INSERT INTO public.\"QuotationOutcomeOutbox\" " +
+                        "(\"ID\", \"EventKey\", \"QuotationID\", \"AcceptedUtc\", \"AcceptanceOrigin\") " +
+                        "VALUES (99, 'retained-paired', 41, '2026-09-26 12:34:56', 'customer');", db);
+                    _ = await insert.ExecuteNonQueryAsync();
+                }
+                Assert.Equal("created", await QuotationDispositionTargetBootstrap.ExecuteAsync(quotation,
+                    quotationConnection, "Quotation", await IdentityAsync(quotationConnection),
+                    CancellationToken.None));
+            }
+            using var disposablePlanSigner = new P256MigrationEvidenceSigner("paired-disposable-plan",
+                _key.ExportECPrivateKeyPem());
+            using var localPlanKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var localPlanSigner = new P256MigrationEvidenceSigner("paired-local-plan",
+                localPlanKey.ExportECPrivateKeyPem());
+            using var disposableAuthorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var disposableAuthorizer = new P256MigrationEvidenceSigner("paired-disposable-authorization",
+                disposableAuthorizationKey.ExportECPrivateKeyPem());
+            using var localAuthorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var localAuthorizer = new P256MigrationEvidenceSigner("paired-local-authorization",
+                localAuthorizationKey.ExportECPrivateKeyPem());
+            using var disposableEvidenceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var disposableEvidenceSigner = new P256MigrationEvidenceSigner("paired-disposable-evidence",
+                disposableEvidenceKey.ExportECPrivateKeyPem());
+            using var localEvidenceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var localEvidenceSigner = new P256MigrationEvidenceSigner("paired-local-evidence",
+                localEvidenceKey.ExportECPrivateKeyPem());
+            var trust = new ReceiptAttestationTrustStore(
+            [
+                new(disposablePlanSigner.KeyId, disposablePlanSigner.ExportSubjectPublicKeyInfo()),
+                new(localPlanSigner.KeyId, localPlanSigner.ExportSubjectPublicKeyInfo()),
+                new(disposableAuthorizer.KeyId, disposableAuthorizer.ExportSubjectPublicKeyInfo()),
+                new(localAuthorizer.KeyId, localAuthorizer.ExportSubjectPublicKeyInfo()),
+                new(disposableEvidenceSigner.KeyId, disposableEvidenceSigner.ExportSubjectPublicKeyInfo()),
+                new(localEvidenceSigner.KeyId, localEvidenceSigner.ExportSubjectPublicKeyInfo()),
+            ]);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            DeltaTargetAuthority disposableAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
+                "aspire://legacy-postgres-main-local/disposable-paired-atomic",
+                await IdentityAsync(disposableAdmin));
+            DeltaTargetAuthority localAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
+                "aspire://legacy-postgres-main-local/persistent-paired-atomic",
+                await IdentityAsync(localAdmin));
+            Exact23DeltaPlanRequest disposableRequest = Request(schema) with
+            {
+                SourceCutoffUtc = now.AddMinutes(-5),
+                TargetAuthority = disposableAuthority,
+                ExecutionAuthorizationKeyFingerprintSha256 = disposableAuthorizer.PublicKeyFingerprintSha256,
+                UseQuotationPhysicalTransition = true,
+            };
+            Exact23DeltaPlanRequest localRequest = PersistentRequest(schema) with
+            {
+                SourceCutoffUtc = disposableRequest.SourceCutoffUtc,
+                TargetAuthority = localAuthority,
+                ExecutionAuthorizationKeyFingerprintSha256 = localAuthorizer.PublicKeyFingerprintSha256,
+                UseQuotationPhysicalTransition = true,
+            };
+            var source = new QuotationSource(schema);
+            var archive = new DeltaCapturedTableArchive(directory);
+            byte[] captureKey = RandomNumberGenerator.GetBytes(32);
+            var planner = new Exact23CapturedDeltaPlanCoordinator(source, new EmptyTarget(),
+                new QuotationEvidence(source), archive, disposablePlanSigner, TimeProvider.System);
+            PairedCapturedDeltaPlans plans = await planner.ProducePairedAsync(disposableRequest,
+                localRequest, new EmptyTarget(), localPlanSigner, captureKey, CancellationToken.None);
+            PairedCapturedDeltaPlanPublicationGate.Verify(plans, schema, trust, DateTimeOffset.UtcNow);
+            DeltaSynchronizationPlan disposable = plans.Disposable;
+            DeltaSynchronizationPlan local = plans.Persistent;
+            await new PostgreSqlDeltaMetadataProvisioner(new(disposableAdmin, disposableAuthority))
+                .ProvisionAsync(disposable, schema, CancellationToken.None);
+            DeltaExecutionAuthorization disposableAuthorization = DeltaExecutionAuthorizationProducer.Produce(
+                disposable, now.AddMinutes(-1), now.AddMinutes(10), disposableAuthorizer);
+            var disposableGate = new SignedDeltaExecutionAuthorizationGate(disposableAuthorization,
+                trust, TimeProvider.System, disposableAuthority);
+            using var disposableRows = DeltaCapturedTableRowSource.FromSignedPlan(archive,
+                disposable, trust, DateTimeOffset.UtcNow, captureKey);
+            var disposableTargetRows = new PostgreSqlDeltaRowSource(new(disposableAdmin));
+            DeltaExecutionCoordinator DisposableExecutor(string database)
+            {
+                string connection = new NpgsqlConnectionStringBuilder(disposableAdmin)
+                {
+                    Database = database,
+                    Pooling = false,
+                }.ConnectionString;
+                return new(new PostgreSqlDeltaCanonicalTarget(new(connection, database,
+                        disposable.TargetGeneration)),
+                    new CapturedDeltaExecutionRowSessionProvider(disposableRows, disposableTargetRows),
+                    disposableGate,
+                    new SignedCapturedSourceReconciliationInspector(disposable, schema, trust,
+                        TimeProvider.System), trust, TimeProvider.System);
+            }
+            Exact23DeltaExecutionResult disposableApplied = await new Exact23DeltaExecutionCoordinator(
+                source, DisposableExecutor, capturedSourceReplay: true).ExecuteAsync(disposable, schema,
+                CancellationToken.None);
+            Assert.Equal(23, disposableApplied.Databases.Count);
+            var disposableReconciliation = new Exact23DeltaReconciliationCoordinator(
+                new SignedCapturedSourceReconciliationInspector(disposable, schema, trust,
+                    TimeProvider.System),
+                new PostgreSqlDeltaReconciliationInspector(new(disposableAdmin) { Plan = disposable }),
+                new PostgreSqlExact23DeltaCheckpointReader(new(disposableAdmin)), TimeProvider.System,
+                disposableEvidenceSigner);
+            Exact23DeltaReconciliationResult proof = await disposableReconciliation.ReconcileAsync(
+                disposable, schema, CancellationToken.None);
+            Assert.True(Exact23DeltaReconciliationCoordinator.Verify(proof, trust));
+            PairedLocalTransitionAuthorization authorization = PairedLocalTransitionAuthorizationPolicy.Produce(
+                plans, proof, schema, trust, localAuthority, local.TargetObservationSha256,
+                local.QuotationTransitionSchemaSha256!, DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddMinutes(10), localAuthorizer);
+            var permit = PairedLocalTransitionExecutionPermit.Admit(plans, proof, authorization,
+                schema, trust, localAuthority, local.TargetObservationSha256, TimeProvider.System);
+            var localMetadata = new PairedLocalTransitionMetadataInspector(localAdmin);
+            var localPhysical = new PostgreSqlDeltaReconciliationInspector(new(localAdmin));
+            var localReconciler = new PostgreSqlDeltaReconciliationInspector(new(localAdmin)
+            {
+                Plan = local,
+                LocalTransitionPermit = permit,
+            });
+            var capturedEvidence = new SignedCapturedSourceReconciliationInspector(local, schema,
+                trust, TimeProvider.System);
+            Task<PairedLocalTransitionPreflightResult> Preflight()
+            {
+                return PairedLocalTransitionPreflight.VerifyAsync(
+                plans, proof, authorization, schema, trust, localAuthority,
+                local.TargetObservationSha256,
+                token => Console.DefaultGuardedDeltaConsoleRuntime
+                    .VerifyTargetAuthorityAsync(localAdmin, localAuthority, token),
+                (database, transition, token) => transition
+                    ? localPhysical.ValidateQuotationTransitionSchemaAsync(database, token)
+                    : localPhysical.ValidateSchemaAsync(database, token),
+                localMetadata.InspectAsync, directory, captureKey, new PostgreSqlDeltaRowSource(new(localAdmin)),
+                TimeProvider.System, CancellationToken.None,
+                (database, token) => PairedLocalTransitionReplayVerifier.VerifyAsync(database,
+                    capturedEvidence, localReconciler, token));
+            }
+
+            string localContact = new NpgsqlConnectionStringBuilder(localAdmin)
+            {
+                Database = "ContactRequest",
+                Pooling = false,
+            }.ConnectionString;
+            await using (var drift = new NpgsqlConnection(localContact))
+            {
+                await drift.OpenAsync();
+                await using var insert = new NpgsqlCommand("INSERT INTO public.\"items\" (\"id\") VALUES (1);",
+                    drift);
+                _ = await insert.ExecuteNonQueryAsync();
+            }
+            _ = await Assert.ThrowsAnyAsync<Exception>(Preflight);
+            await using (var restore = new NpgsqlConnection(localContact))
+            {
+                await restore.OpenAsync();
+                await using var delete = new NpgsqlCommand("DELETE FROM public.\"items\" WHERE \"id\"=1;",
+                    restore);
+                _ = await delete.ExecuteNonQueryAsync();
+            }
+            PairedLocalTransitionPreflightResult before = await Preflight();
+            Assert.Equal(23, before.UnprovisionedDatabases);
+            using var localRows = DeltaCapturedTableRowSource.FromSignedPlan(archive,
+                local, trust, DateTimeOffset.UtcNow, captureKey);
+            var localTargetRows = new PostgreSqlDeltaRowSource(new(localAdmin));
+            var localGate = new PairedLocalTransitionExecutionGate(permit, schema);
+            DeltaExecutionCoordinator LocalExecutor(string database)
+            {
+                string connection = new NpgsqlConnectionStringBuilder(localAdmin)
+                {
+                    Database = database,
+                    Pooling = false,
+                }.ConnectionString;
+                return new(new PostgreSqlDeltaCanonicalTarget(new(connection, database,
+                        local.TargetGeneration)
+                { LocalTransitionPermit = permit }),
+                    new CapturedDeltaExecutionRowSessionProvider(localRows, localTargetRows), localGate,
+                    capturedEvidence, trust, TimeProvider.System, permit);
+            }
+            DeltaDatabaseExecutionResult partial = await LocalExecutor("Quotation")
+                .ExecuteDatabaseAsync(local, quotation, "Quotation", CancellationToken.None);
+            Assert.Equal(DeltaExecutionDisposition.Committed, partial.Disposition);
+            PairedLocalTransitionPreflightResult resume = await Preflight();
+            Assert.Equal(1, resume.ReplayedDatabases);
+            Assert.Equal(22, resume.UnprovisionedDatabases);
+            Exact23DeltaExecutionResult applied = await new Exact23DeltaExecutionCoordinator(source,
+                LocalExecutor, capturedSourceReplay: true, localPermit: permit).ExecuteAsync(local,
+                schema, CancellationToken.None);
+            Assert.Equal(23, applied.Databases.Count);
+            Assert.Equal(24, partial.AppliedOperations + applied.Databases.Sum(database => database.AppliedOperations));
+            Assert.Equal(1, applied.Databases.Count(database =>
+                database.Disposition == DeltaExecutionDisposition.AlreadyCommitted));
+            var localReconciliation = new Exact23DeltaReconciliationCoordinator(capturedEvidence,
+                localReconciler, new PostgreSqlExact23DeltaCheckpointReader(new(localAdmin)),
+                TimeProvider.System, localEvidenceSigner, localPermit: permit);
+            Exact23DeltaReconciliationResult result = await localReconciliation.ReconcileAsync(local,
+                schema, CancellationToken.None);
+            Assert.Equal(23, result.Databases.Count);
+            Assert.True(Exact23DeltaReconciliationCoordinator.Verify(result, trust));
+            PairedLocalTransitionPreflightResult replayReady = await Preflight();
+            Assert.Equal(23, replayReady.ReplayedDatabases);
+            Exact23DeltaExecutionResult replayed = await new Exact23DeltaExecutionCoordinator(source,
+                LocalExecutor, capturedSourceReplay: true, localPermit: permit).ExecuteAsync(local,
+                schema, CancellationToken.None);
+            Assert.All(replayed.Databases, item => Assert.Equal(
+                DeltaExecutionDisposition.AlreadyCommitted, item.Disposition));
+            string localQuotation = new NpgsqlConnectionStringBuilder(localAdmin)
+            {
+                Database = "Quotation",
+                Pooling = false,
+            }.ConnectionString;
+            await using var retainedConnection = new NpgsqlConnection(localQuotation);
+            await retainedConnection.OpenAsync();
+            await using var retained = new NpgsqlCommand(
+                "SELECT count(*) FROM public.\"QuotationOutcomeOutbox\" WHERE \"ID\"=99;",
+                retainedConnection);
+            Assert.Equal(1L, Convert.ToInt64(await retained.ExecuteScalarAsync(),
+                System.Globalization.CultureInfo.InvariantCulture));
+            await using var tamper = new NpgsqlCommand("DELETE FROM public.\"QuotationAcceptedOutcome\";",
+                retainedConnection);
+            _ = await tamper.ExecuteNonQueryAsync();
+            _ = await Assert.ThrowsAnyAsync<Exception>(Preflight);
+            Assert.Equal("canonical_delta_replay_target_drift",
+                (await Assert.ThrowsAsync<DeltaExecutionException>(() => LocalExecutor("Quotation")
+                    .ExecuteDatabaseAsync(local, quotation, "Quotation", CancellationToken.None))).Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Target_database_snapshot_defers_concurrent_writes_across_table_reads()
     {
         const string database = "DeltaTargetSnapshot";

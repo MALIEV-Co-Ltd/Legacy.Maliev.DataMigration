@@ -98,7 +98,8 @@ internal sealed class QuotationDeltaExecutionMapping
 
 public static class QuotationDeltaExecutionPreflight
 {
-    public static void Validate(DeltaSynchronizationPlan plan, FreshSchemaPlan schemaPlan)
+    public static void Validate(DeltaSynchronizationPlan plan, FreshSchemaPlan schemaPlan,
+        PairedLocalTransitionExecutionPermit? localPermit = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(schemaPlan);
@@ -119,7 +120,7 @@ public static class QuotationDeltaExecutionPreflight
         }
         foreach (DatabaseSchemaPlan schema in schemaPlan.Databases)
         {
-            _ = QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema);
+            _ = QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema, localPermit);
             if (schema.SourceDispositionProfile is null &&
                 ApprovedSourceDispositionManifest.RequiresQuotationExecution(schema))
             {

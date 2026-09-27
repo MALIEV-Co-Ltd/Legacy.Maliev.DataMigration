@@ -11,7 +11,8 @@ public sealed record Exact23DeltaExecutionResult(
 public sealed class Exact23DeltaExecutionCoordinator(
     IReadOnlyMigrationSource source,
     Func<string, DeltaExecutionCoordinator> executorFactory,
-    bool capturedSourceReplay = false)
+    bool capturedSourceReplay = false,
+    PairedLocalTransitionExecutionPermit? localPermit = null)
 {
     public async Task<Exact23DeltaExecutionResult> ExecuteAsync(
         DeltaSynchronizationPlan plan,
@@ -26,7 +27,7 @@ public sealed class Exact23DeltaExecutionCoordinator(
                 "Captured-source plans require the authenticated replay execution path.");
         }
         ValidateInventory(plan, schemaPlan);
-        QuotationDeltaExecutionPreflight.Validate(plan, schemaPlan);
+        QuotationDeltaExecutionPreflight.Validate(plan, schemaPlan, localPermit);
         var results = new List<DeltaDatabaseExecutionResult>(DatabaseInventory.ActiveDatabases.Count);
         // The live source can accept new rows after planning. Apply databases with
         // signed changes first, reducing the capture-to-apply window for active data.

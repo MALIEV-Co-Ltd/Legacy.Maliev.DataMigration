@@ -14,11 +14,16 @@ public sealed class PairedLocalTransitionExecutionPermit
     private readonly IReceiptAttestationTrustStore _trust;
     private readonly DeltaTargetAuthority _authority;
     private readonly string _targetObservationSha256;
+    private readonly TimeProvider _clock;
+
+    internal DatabaseSchemaPlan SourceQuotationSchema => _schema.Databases.Single(
+        database => database.Database == "Quotation");
+    internal DateTimeOffset NowUtc => _clock.GetUtcNow();
 
     private PairedLocalTransitionExecutionPermit(PairedCapturedDeltaPlans plans,
         Exact23DeltaReconciliationResult proof, PairedLocalTransitionAuthorization authorization,
         FreshSchemaPlan schema, IReceiptAttestationTrustStore trust,
-        DeltaTargetAuthority authority, string targetObservationSha256)
+        DeltaTargetAuthority authority, string targetObservationSha256, TimeProvider clock)
     {
         _plans = plans;
         _proof = proof;
@@ -27,21 +32,23 @@ public sealed class PairedLocalTransitionExecutionPermit
         _trust = trust;
         _authority = authority;
         _targetObservationSha256 = targetObservationSha256;
+        _clock = clock;
     }
 
     public static PairedLocalTransitionExecutionPermit Admit(PairedCapturedDeltaPlans plans,
         Exact23DeltaReconciliationResult proof, PairedLocalTransitionAuthorization authorization,
         FreshSchemaPlan schema, IReceiptAttestationTrustStore trust,
         DeltaTargetAuthority observedAuthority, string observedTargetObservationSha256,
-        DateTimeOffset nowUtc)
+        TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(plans);
         ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(clock);
         string transition = plans.Persistent.QuotationTransitionSchemaSha256 ?? string.Empty;
         PairedLocalTransitionAuthorizationPolicy.Verify(authorization, plans, proof, schema,
-            trust, observedAuthority, observedTargetObservationSha256, transition, nowUtc);
+            trust, observedAuthority, observedTargetObservationSha256, transition, clock.GetUtcNow());
         return new(plans, proof, authorization, schema, trust, observedAuthority,
-            observedTargetObservationSha256);
+            observedTargetObservationSha256, clock);
     }
 
     public void Require(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema,

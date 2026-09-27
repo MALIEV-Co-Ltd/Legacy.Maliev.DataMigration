@@ -29,7 +29,8 @@ public sealed class Exact23DeltaReconciliationCoordinator(
     IExact23DeltaCheckpointReader checkpoints,
     TimeProvider timeProvider,
     P256MigrationEvidenceSigner signer,
-    bool checkpointBound = false)
+    bool checkpointBound = false,
+    PairedLocalTransitionExecutionPermit? localPermit = null)
 {
     public async Task<Exact23DeltaReconciliationResult> ReconcileAsync(
         DeltaSynchronizationPlan plan,
@@ -47,7 +48,7 @@ public sealed class Exact23DeltaReconciliationCoordinator(
             throw new DeltaExecutionException("delta_reconciliation_inventory_invalid",
                 "Post-delta reconciliation requires the exact ordered active database inventory.");
         }
-        QuotationDeltaExecutionPreflight.Validate(plan, schemaPlan);
+        QuotationDeltaExecutionPreflight.Validate(plan, schemaPlan, localPermit);
 
         var reconciled = new List<DatabaseReconciliationEvidence>(DatabaseInventory.ActiveDatabases.Count);
         foreach (DatabaseSchemaPlan schema in schemaPlan.Databases)
@@ -62,7 +63,8 @@ public sealed class Exact23DeltaReconciliationCoordinator(
             expected ??= observed;
             DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(schema).TargetSchema;
             ValidateShape(schema, targetSchema, expected, observed);
-            QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema, observed.TargetSchemaSha256);
+            QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema,
+                observed.TargetSchemaSha256, localPermit);
             foreach (TableReconciliationEvidence expectedTable in expected.Tables)
             {
                 ReconciliationDiagnostics.CompareTable(schema.Database, expectedTable,

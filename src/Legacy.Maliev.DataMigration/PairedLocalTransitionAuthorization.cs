@@ -5,8 +5,8 @@ using System.Text.Json;
 namespace Legacy.Maliev.DataMigration;
 
 /// <summary>
-/// Signed review artifact for a proven schema-1.4 persistent-local transition.
-/// It is not accepted by the current execution authorization or metadata paths.
+/// Signed short-lived authority for the owner-only schema-1.4 LOCAL transition path.
+/// Ordinary execution authorization and production paths do not accept it.
 /// </summary>
 public sealed record PairedLocalTransitionAuthorization(
     string SchemaVersion,
@@ -39,7 +39,7 @@ public static class PairedLocalTransitionAuthorizationCanonicalizer
 
 /// <summary>
 /// Binds fresh disposable proof and a current local physical observation to one
-/// zero-delete paired plan. This does not implement an apply command or grant DML.
+/// zero-delete paired plan. It grants no DML outside the guarded LOCAL executor.
 /// </summary>
 public static class PairedLocalTransitionAuthorizationPolicy
 {

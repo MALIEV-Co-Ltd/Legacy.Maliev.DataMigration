@@ -39,7 +39,8 @@ public static class PairedLocalTransitionPreflight
         ReadOnlyMemory<byte> captureKey,
         IDeltaOrderedRowSource targetRows,
         TimeProvider clock,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<DatabaseSchemaPlan, CancellationToken, Task>? verifyReplayedDatabase = null)
     {
         ArgumentNullException.ThrowIfNull(plans);
         ArgumentNullException.ThrowIfNull(schema);
@@ -73,6 +74,16 @@ public static class PairedLocalTransitionPreflight
         long checkedRows = 0;
         foreach (DatabaseSchemaPlan database in schema.Databases)
         {
+            if (metadata[database.Database].State == PairedLocalTransitionMetadataState.Replayed)
+            {
+                if (verifyReplayedDatabase is null)
+                {
+                    throw new DeltaExecutionException("delta_paired_local_replay_verifier_missing",
+                        "A committed LOCAL database requires independent captured-source reconciliation before replay.");
+                }
+                await verifyReplayedDatabase(database, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
             DeltaDatabasePlan signedDatabase = plans.Persistent.Databases.Single(item =>
                 item.Database == database.Database);
             DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(database).TargetSchema;

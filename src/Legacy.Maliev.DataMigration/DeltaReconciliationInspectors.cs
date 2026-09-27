@@ -65,6 +65,7 @@ public sealed class SqlServerDeltaReconciliationInspector(IReadOnlyMigrationSour
 public sealed record PostgreSqlDeltaReconciliationInspectorOptions(string AdministrativeConnectionString)
 {
     public DeltaSynchronizationPlan? Plan { get; init; }
+    public PairedLocalTransitionExecutionPermit? LocalTransitionPermit { get; init; }
 }
 
 public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconciliationInspectorOptions options)
@@ -154,7 +155,8 @@ public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconc
             }
             else
             {
-                QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(options.Plan, schema, schemaSha256);
+                QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(options.Plan, schema, schemaSha256,
+                    options.LocalTransitionPermit);
             }
             DatabaseSchemaPlan targetSchema = new QuotationDeltaExecutionMapping(schema).TargetSchema;
             var tables = new List<TableReconciliationEvidence>(targetSchema.Tables.Count);

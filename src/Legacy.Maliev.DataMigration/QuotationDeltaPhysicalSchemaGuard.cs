@@ -7,7 +7,8 @@ namespace Legacy.Maliev.DataMigration;
 /// </summary>
 internal static class QuotationDeltaPhysicalSchemaGuard
 {
-    internal static string ExpectedPhysicalSchema(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema)
+    internal static string ExpectedPhysicalSchema(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema,
+        PairedLocalTransitionExecutionPermit? localPermit = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(schema);
@@ -31,6 +32,27 @@ internal static class QuotationDeltaPhysicalSchemaGuard
                 table.TargetSchema == "legacy_compatibility" && table.TargetTable == "GoogleAnalyticsOutbox") &&
             schema.Tables.Any(table => table.SourceSchema == "disposition" &&
                 table.TargetSchema == "public" && table.TargetTable == "QuotationAcceptedOutcome");
+        if (DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(plan.TargetAuthority))
+        {
+            if (localPermit is null || plan.PairedTransitionPlanOnly != true ||
+                (schema.Database == "Quotation" && !reviewedSource && !reviewedMappedTarget))
+            {
+                throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
+                    "A signed paired LOCAL transition permit is required for this physical schema.");
+            }
+            localPermit.Require(plan, schema, localPermit.NowUtc);
+            if (schema.Database == "Quotation")
+            {
+                string derived = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(
+                    localPermit.SourceQuotationSchema, true);
+                return !DeltaSynchronizationPlanProducer.FixedHashEquals(
+                    plan.QuotationTransitionSchemaSha256 ?? string.Empty, derived)
+                    ? throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
+                        "The signed LOCAL transition hash does not derive from the reviewed Quotation schema.")
+                    : derived;
+            }
+            return schema.TargetSchemaSha256;
+        }
         return plan.SourceCaptureManifest is null ||
             !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(plan.TargetAuthority) ||
             (schema.Database == "Quotation" &&
@@ -44,9 +66,9 @@ internal static class QuotationDeltaPhysicalSchemaGuard
     }
 
     internal static void RequirePlanSchema(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema,
-        string observedSha256)
+        string observedSha256, PairedLocalTransitionExecutionPermit? localPermit = null)
     {
-        string expected = ExpectedPhysicalSchema(plan, schema);
+        string expected = ExpectedPhysicalSchema(plan, schema, localPermit);
         if (plan.SchemaVersion != "1.4")
         {
             RequireFinalSchema(schema, observedSha256);
