@@ -66,6 +66,22 @@ public sealed class QuotationDispositionRowMapperTests
         };
         Assert.Equal("quotation_disposition_row_invalid", Assert.Throws<MigrationExecutionException>(
             () => mapper.MapAnalytics(new MigrationRow(wrongKind))).Code);
+
+        var normalizedSource = new Dictionary<string, object?>(source.Values, StringComparer.Ordinal);
+        foreach (string column in ApprovedSourceDispositionManifest.AnalyticsTimestampColumns)
+        {
+            if (normalizedSource[column] is DateTime sourceDate)
+            {
+                normalizedSource[column] = sourceDate.ToString(
+                    "yyyy-MM-dd'T'HH:mm:ss.fffffff", System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+        MigrationRow normalizedArchive = mapper.MapAnalytics(new MigrationRow(normalizedSource));
+        Assert.Equal(originalFingerprint,
+            CanonicalRowFingerprint.Compute(mapper.AnalyticsArchive, [normalizedArchive]));
+        normalizedSource["OccurredUtc"] = "2026-09-26T12:34:56.123456Z";
+        Assert.Equal("quotation_disposition_row_invalid", Assert.Throws<MigrationExecutionException>(
+            () => mapper.MapAnalytics(new MigrationRow(normalizedSource))).Code);
     }
 
     [Fact]
@@ -103,6 +119,18 @@ public sealed class QuotationDispositionRowMapperTests
         };
         Assert.Equal("quotation_outcome_source_invalid", Assert.Throws<MigrationExecutionException>(
             () => mapper.MapOutcome(new MigrationRow(wrongKind))).Code);
+
+        var normalizedSource = new Dictionary<string, object?>(source.Values, StringComparer.Ordinal)
+        {
+            ["AcceptedUtc"] = accepted.ToString(
+                "yyyy-MM-dd'T'HH:mm:ss.fffffff", System.Globalization.CultureInfo.InvariantCulture),
+        };
+        MigrationRow normalizedOutcome = mapper.MapOutcome(new MigrationRow(normalizedSource));
+        Assert.Equal(CanonicalRowFingerprint.Compute(mapper.AcceptedOutcome, [mapped]),
+            CanonicalRowFingerprint.Compute(mapper.AcceptedOutcome, [normalizedOutcome]));
+        normalizedSource["AcceptedUtc"] = "2026-09-26T12:34:56.123456Z";
+        Assert.Equal("quotation_disposition_row_invalid", Assert.Throws<MigrationExecutionException>(
+            () => mapper.MapOutcome(new MigrationRow(normalizedSource))).Code);
     }
 
     private static DatabaseSchemaPlan Plan()
