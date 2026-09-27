@@ -4,6 +4,47 @@ namespace Legacy.Maliev.DataMigration.Console;
 
 public static partial class MigrationConsole
 {
+    private static async Task<object> InspectProductionSchemaCatalogAsync(
+        DeltaCommandConfiguration configuration, CancellationToken cancellationToken)
+    {
+        FreshSchemaPlan schema = await ReadProtectedJsonAsync<FreshSchemaPlan>(configuration.SchemaPlanPath,
+            "delta_schema_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        DateTimeOffset observedAtUtc = DateTimeOffset.UtcNow;
+        if (configuration.TargetAuthority.Kind != DeltaTargetAuthorityKind.ProductionCloudNativePg)
+        {
+            throw new MigrationConsoleException("delta_schema_catalog_boundary_invalid",
+                "The catalog inspection requires production authority.");
+        }
+        ProductionSchemaCatalogInspector.ValidatePlan(schema, observedAtUtc);
+
+        string target = await ReadProtectedTextAsync(configuration.TargetConnectionFile,
+            "delta_target_connection_unprotected", cancellationToken).ConfigureAwait(false);
+        await DefaultGuardedDeltaConsoleRuntime.VerifyTargetAuthorityAsync(
+            target, configuration.TargetAuthority, cancellationToken).ConfigureAwait(false);
+        var databases = new List<ProductionSchemaObservation>(schema.Databases.Count);
+        foreach (DatabaseSchemaPlan database in schema.Databases)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            databases.Add(await ProductionSchemaCatalogInspector.InspectDatabaseAsync(
+                database, target, cancellationToken).ConfigureAwait(false));
+        }
+        DateTimeOffset completedAtUtc = DateTimeOffset.UtcNow;
+        ProductionSchemaCatalogInspector.ValidatePlan(schema, completedAtUtc);
+        await DefaultGuardedDeltaConsoleRuntime.VerifyTargetAuthorityAsync(
+            target, configuration.TargetAuthority, cancellationToken).ConfigureAwait(false);
+        return new
+        {
+            schemaVersion = "1.0",
+            inspectionKind = "read-only-full-catalog-not-reconciliation",
+            sourceCommitSha = schema.SourceCommitSha,
+            schemaPlanSha256 = SchemaPlanCanonicalizer.ComputeSha256(schema),
+            targetAuthority = configuration.TargetAuthority,
+            observedAtUtc,
+            completedAtUtc,
+            databases,
+        };
+    }
+
     private static async Task<object> InspectTargetSchemaGapsAsync(
         DeltaCommandConfiguration configuration,
         CancellationToken cancellationToken)
