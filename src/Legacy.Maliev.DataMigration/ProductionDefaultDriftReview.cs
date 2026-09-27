@@ -4,10 +4,18 @@ using System.Text;
 
 namespace Legacy.Maliev.DataMigration;
 
+/// <summary>A fixed-kind expression facet without the source or target SQL expression.</summary>
+public sealed record ProductionExpressionDriftColumnReview(
+    string Column, string Kind, bool OtherColumnShapeDriftPresent);
+
 /// <summary>One observed table preimage and its expected final shape; no executable DDL is present.</summary>
 public sealed record ProductionDefaultDriftTableReview(
     string Schema, string Table, string ObservedWholeTableSha256, string ExpectedFinalWholeTableSha256,
-    ImmutableArray<string> Columns, bool OtherShapeDriftPresent);
+    ImmutableArray<string> Columns, bool OtherShapeDriftPresent)
+{
+    /// <summary>Default and generated facets; Columns remains the default-only compatibility view.</summary>
+    public ImmutableArray<ProductionExpressionDriftColumnReview> Expressions { get; init; } = [];
+}
 
 /// <summary>One database's immutable review evidence, including its complete observed preimage.</summary>
 public sealed record ProductionDefaultDriftDatabaseReview(
@@ -19,7 +27,7 @@ public sealed record ProductionDefaultDriftReview(
     string SchemaPlanSha256, string SourceCommitSha, DeltaTargetAuthority TargetAuthority,
     ImmutableArray<ProductionDefaultDriftDatabaseReview> Databases, string ReviewSha256);
 
-/// <summary>Records only present-but-different default drifts; never derives or executes repair SQL.</summary>
+/// <summary>Records present-but-different default and generated facets; never derives or executes repair SQL.</summary>
 public static class ProductionDefaultDriftReviewPlanner
 {
     /// <summary>Requires a fresh exact-23 source plan and complete read-only production catalog.</summary>
@@ -103,12 +111,19 @@ public static class ProductionDefaultDriftReviewPlanner
             if (!actualTables.TryGetValue(key, out ObservedTargetTable? actual)) { continue; }
             ProductionSchemaColumnDiagnostic[] defaults = [.. observed.ColumnDiagnostics.Where(item =>
                 item.Schema == key.TargetSchema && item.Table == key.TargetTable &&
-                item.Status == "shape-drift" && item.ChangedComponents.SequenceEqual(["default"],
+                item.Status == "shape-drift" && item.ChangedComponents.Contains("default",
                     StringComparer.Ordinal) && item.DefaultState == "present-different")];
-            if (defaults.Length == 0) { continue; }
+            ProductionSchemaColumnDiagnostic[] generated = [.. observed.ColumnDiagnostics.Where(item =>
+                item.Schema == key.TargetSchema && item.Table == key.TargetTable &&
+                item.Status == "shape-drift" && item.ChangedComponents.Contains("generated",
+                    StringComparer.Ordinal) && item.GeneratedState == "present-different")];
+            if (defaults.Length == 0 && generated.Length == 0) { continue; }
             if (defaults.Any(item => !actual.Columns.Contains(item.Column, StringComparer.Ordinal) ||
                 !table.DefaultExpressions.TryGetValue(item.Column, out string? expression) ||
-                string.IsNullOrWhiteSpace(expression)))
+                string.IsNullOrWhiteSpace(expression)) ||
+                generated.Any(item => !actual.Columns.Contains(item.Column, StringComparer.Ordinal) ||
+                    !table.GeneratedColumns.Any(column => column.Column == item.Column &&
+                        !string.IsNullOrWhiteSpace(column.Expression))))
             {
                 throw Invalid();
             }
@@ -121,13 +136,27 @@ public static class ProductionDefaultDriftReviewPlanner
             }
             ProductionSchemaTableComponents component = observed.TableComponents.Single(item =>
                 item.Schema == key.TargetSchema && item.Table == key.TargetTable);
+            ProductionExpressionDriftColumnReview[] expressions =
+            [
+                .. defaults.Select(item => new ProductionExpressionDriftColumnReview(item.Column, "default",
+                    item.ChangedComponents.Any(component => component != "default"))),
+                .. generated.Select(item => new ProductionExpressionDriftColumnReview(item.Column, "generated",
+                    item.ChangedComponents.Any(component => component != "generated"))),
+            ];
+            expressions = [.. expressions.OrderBy(item => item.Column, StringComparer.Ordinal)
+                .ThenBy(item => item.Kind, StringComparer.Ordinal)];
             bool otherDrift = tableDiagnostic.ChangedComponents.Any(item =>
                     item is not ("columns" or "whole-table")) ||
                 observed.ColumnDiagnostics.Any(item => item.Schema == key.TargetSchema &&
-                    item.Table == key.TargetTable && item.Status != "match" && !defaults.Contains(item));
+                    item.Table == key.TargetTable && item.Status != "match" &&
+                    !defaults.Contains(item) && !generated.Contains(item)) ||
+                expressions.Any(item => item.OtherColumnShapeDriftPresent);
             reviews.Add(new(key.TargetSchema, key.TargetTable, component.WholeTableSha256,
                 PostgreSqlSchemaFingerprint.ComputeExpectedComponents(table).WholeTableSha256,
-                [.. defaults.Select(item => item.Column).Order(StringComparer.Ordinal)], otherDrift));
+                [.. defaults.Select(item => item.Column).Order(StringComparer.Ordinal)], otherDrift)
+            {
+                Expressions = [.. expressions],
+            });
         }
         return new(database.Database, observed.SchemaSha256, database.TargetSchemaSha256, [.. reviews]);
     }
@@ -153,6 +182,12 @@ public static class ProductionDefaultDriftReviewPlanner
                     writer.Write(table.OtherShapeDriftPresent);
                     writer.Write(table.Columns.Length);
                     foreach (string column in table.Columns) { Write(writer, column); }
+                    writer.Write(table.Expressions.Length);
+                    foreach (ProductionExpressionDriftColumnReview expression in table.Expressions)
+                    {
+                        Write(writer, expression.Column); Write(writer, expression.Kind);
+                        writer.Write(expression.OtherColumnShapeDriftPresent);
+                    }
                 }
             }
         }
