@@ -12,6 +12,9 @@ public sealed record ProductionSchemaObservation(
 
     /// <summary>Diagnostic comparison to the expected final target, never migration authorization.</summary>
     public IReadOnlyList<ProductionSchemaTableDiagnostic> TableDiagnostics { get; init; } = [];
+
+    /// <summary>PII-free per-column structural labels from the same catalog snapshot.</summary>
+    public IReadOnlyList<ProductionSchemaColumnDiagnostic> ColumnDiagnostics { get; init; } = [];
 }
 
 /// <summary>Per-table digests over the same five structural facets as the whole-schema hash.</summary>
@@ -22,6 +25,10 @@ public sealed record ProductionSchemaTableComponents(
 /// <summary>Names and structural facet labels only; no row values or SQL expressions.</summary>
 public sealed record ProductionSchemaTableDiagnostic(
     string Schema, string Table, string Status, IReadOnlyList<string> ChangedComponents);
+
+/// <summary>Column names and changed facet names only; never default or generated SQL text.</summary>
+public sealed record ProductionSchemaColumnDiagnostic(
+    string Schema, string Table, string Column, string Status, IReadOnlyList<string> ChangedComponents);
 
 /// <summary>A reviewed object name; this is diagnostic, never executable SQL or DDL permission.</summary>
 public sealed record ProductionSchemaAlignmentStep(string Kind, string ObjectName, bool PreserveSourceRows = false);
