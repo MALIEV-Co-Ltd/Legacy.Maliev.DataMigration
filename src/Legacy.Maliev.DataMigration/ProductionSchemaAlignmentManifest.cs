@@ -5,7 +5,23 @@ namespace Legacy.Maliev.DataMigration;
 
 /// <summary>Authenticated catalog data must be supplied by a separate read-only observer.</summary>
 public sealed record ProductionSchemaObservation(
-    string Database, IReadOnlyList<ObservedTargetTable> Tables, string SchemaSha256);
+    string Database, IReadOnlyList<ObservedTargetTable> Tables, string SchemaSha256)
+{
+    /// <summary>PII-free structural digests, captured in the same read-only snapshot.</summary>
+    public IReadOnlyList<ProductionSchemaTableComponents> TableComponents { get; init; } = [];
+
+    /// <summary>Diagnostic comparison to the expected final target, never migration authorization.</summary>
+    public IReadOnlyList<ProductionSchemaTableDiagnostic> TableDiagnostics { get; init; } = [];
+}
+
+/// <summary>Per-table digests over the same five structural facets as the whole-schema hash.</summary>
+public sealed record ProductionSchemaTableComponents(
+    string Schema, string Table, string ColumnsSha256, string ConstraintsSha256,
+    string IndexesSha256, string ForeignKeysSha256, string WholeTableSha256);
+
+/// <summary>Names and structural facet labels only; no row values or SQL expressions.</summary>
+public sealed record ProductionSchemaTableDiagnostic(
+    string Schema, string Table, string Status, IReadOnlyList<string> ChangedComponents);
 
 /// <summary>A reviewed object name; this is diagnostic, never executable SQL or DDL permission.</summary>
 public sealed record ProductionSchemaAlignmentStep(string Kind, string ObjectName, bool PreserveSourceRows = false);

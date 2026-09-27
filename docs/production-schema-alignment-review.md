@@ -31,8 +31,11 @@ extensions, source disposition drift, stale source plan, and non-production
 authority all fail closed. The output records only object names, preimage and
 final hashes, and an ordered review-step digest; it contains no rows or DDL.
 
-This first slice does **not** prove the current production state: #94's latest
-observation is names-only, and the source-row counts are historical. Before a
+The 2026-09-27 authenticated full-catalog observation found 21/23 whole-schema
+hashes different from the reviewed preimage, even where names alone suggested
+the reviewed additive gap. ContactRequest and LocationData matched; therefore
+the manifest correctly refuses to produce an alignment review. The source-row
+counts remain historical. Before a
 separate production DDL design, obtain a fresh authenticated full catalog and
 schema plan, prove the identical additive operation set on an independent
 disposable exact-23 PostgreSQL cluster, define distinct signed disposable
@@ -53,3 +56,14 @@ catalogs. The source-plan freshness and target authority are checked again
 before publication. It reads no application rows and signs or applies nothing. The
 owner must still review the catalog and run a separate disposable additive proof
 before any production DDL request.
+
+The catalog now also emits a digest for each table's columns, constraints,
+indexes, foreign keys, and complete table shape, all from that same snapshot.
+`tableDiagnostics` compares those digests to the *final* source-plan target
+shape and labels each table `match`, `shape-drift`, `missing-table`, or
+`target-only-table`, with changed structural facets. These labels contain no
+row values, SQL expressions, or credentials. An incomplete or duplicate
+component catalog fails closed. They do not identify the precise column type,
+constraint, or index definition responsible and do not imply additive DDL is
+safe. The prior catalog output has no component digests, so a new owner-only,
+identity-bound read-only observation is required for this classification.

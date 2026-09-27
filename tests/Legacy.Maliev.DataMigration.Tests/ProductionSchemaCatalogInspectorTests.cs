@@ -53,13 +53,21 @@ public sealed class ProductionSchemaCatalogInspectorTests(PostgreSqlAdapterFixtu
         {
             var plan = new DatabaseSchemaPlan(fixture.CanonicalDatabase, "1.0", new string('a', 64),
                 new string('b', 64),
-                [new TableCopyPlan("dbo", "Sample", "catalog_probe", "Sample", ["ID", "Value"], ["ID"])]);
+                [new TableCopyPlan("dbo", "Sample", "catalog_probe", "Sample", ["ID", "Value"], ["ID"])
+                {
+                    ColumnTypes = new Dictionary<string, string> { ["ID"] = "integer", ["Value"] = "text" },
+                }]);
             ProductionSchemaObservation first = await ProductionSchemaCatalogInspector.InspectDatabaseAsync(
                 plan, fixture.ConnectionString, CancellationToken.None);
             Assert.Equal(fixture.CanonicalDatabase, first.Database);
             Assert.Contains(first.Tables, table => table.Schema == "catalog_probe" && table.Table == "Sample" &&
                 table.Columns.SequenceEqual(["ID", "Value"], StringComparer.Ordinal));
             Assert.Matches("^[0-9a-f]{64}$", first.SchemaSha256);
+            ProductionSchemaTableComponents before = Assert.Single(first.TableComponents,
+                item => item.Schema == "catalog_probe" && item.Table == "Sample");
+            Assert.Matches("^[0-9a-f]{64}$", before.WholeTableSha256);
+            Assert.Contains(first.TableDiagnostics, item => item.Schema == "catalog_probe" &&
+                item.Table == "Sample" && item.Status == "shape-drift");
             var independent = new PostgreSqlDeltaReconciliationInspector(
                 new PostgreSqlDeltaReconciliationInspectorOptions(fixture.ConnectionString));
             Assert.Equal(await independent.InspectSchemaAsync(plan, CancellationToken.None), first.SchemaSha256);
@@ -72,6 +80,13 @@ public sealed class ProductionSchemaCatalogInspectorTests(PostgreSqlAdapterFixtu
             ProductionSchemaObservation second = await ProductionSchemaCatalogInspector.InspectDatabaseAsync(
                 plan, fixture.ConnectionString, CancellationToken.None);
             Assert.NotEqual(first.SchemaSha256, second.SchemaSha256);
+            ProductionSchemaTableComponents after = Assert.Single(second.TableComponents,
+                item => item.Schema == "catalog_probe" && item.Table == "Sample");
+            Assert.Equal(before.ColumnsSha256, after.ColumnsSha256);
+            Assert.Equal(before.ConstraintsSha256, after.ConstraintsSha256);
+            Assert.NotEqual(before.IndexesSha256, after.IndexesSha256);
+            Assert.Equal(before.ForeignKeysSha256, after.ForeignKeysSha256);
+            Assert.NotEqual(before.WholeTableSha256, after.WholeTableSha256);
             await using var rows = new NpgsqlCommand("SELECT COUNT(*) FROM catalog_probe.\"Sample\";", connection);
             Assert.Equal(1L, await rows.ExecuteScalarAsync());
         }
