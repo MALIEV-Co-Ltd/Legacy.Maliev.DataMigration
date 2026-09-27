@@ -107,4 +107,21 @@ Describe 'Exact-23 disposable copy guards' {
         [IO.File]::WriteAllText($copy, $header + '17.9' + $body)
         (Test-Throws { Get-Exact23CopyCanonicalDumpDigest $copy }) | Should Be $true
     }
+
+    It 'compares COPY rows independent of heap order without losing multiplicity or values' {
+        $source = Join-Path $TestDrive 'source-rows.sql'
+        $copy = Join-Path $TestDrive 'copy-rows.sql'
+        $prefix = "-- Dumped from database version 18.4`nCOPY public.`"Probe`" FROM stdin;`n"
+        $ending = '\.' + "`n"
+        [IO.File]::WriteAllText($source, $prefix + "1`talpha`n2`tbeta`n" + $ending)
+        [IO.File]::WriteAllText($copy, $prefix + "2`tbeta`n1`talpha`n" + $ending)
+        $expected = Get-Exact23CopyCanonicalDumpDigest $source
+        (Get-Exact23CopyCanonicalDumpDigest $copy) | Should Be $expected
+        [IO.File]::WriteAllText($copy, $prefix + "2`tchanged`n1`talpha`n" + $ending)
+        (Get-Exact23CopyCanonicalDumpDigest $copy) | Should Not Be $expected
+        [IO.File]::WriteAllText($copy, $prefix + "1`talpha`n1`talpha`n" + $ending)
+        (Get-Exact23CopyCanonicalDumpDigest $copy) | Should Not Be $expected
+        [IO.File]::WriteAllText($copy, $prefix + "1`talpha`n")
+        (Test-Throws { Get-Exact23CopyCanonicalDumpDigest $copy }) | Should Be $true
+    }
 }
