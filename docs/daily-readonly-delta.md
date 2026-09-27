@@ -29,6 +29,10 @@ per-database transaction, and binds both identity sequences and final
 reconciliation to the target table names. The journal still makes exact-plan
 replay a no-op; changed source rows, target rows, dispositions, or target
 inventory fail closed. The ordinary shadow-copy path remains prohibited.
+Inside the serializable atomic transaction, replay also requires the journal's
+plan ID and per-database signed operation digest to match; ambiguous or
+conflicting checkpoint rows are rejected before DML. This tightens disposable
+replay and does not admit schema-1.4 persistent-local or production execution.
 Captured-source schema-1.3 plan/replay code now applies the same reviewed
 archive/adoption mapping to encrypted snapshot rows and target-shaped signed
 operations. The operator console allows captured-source apply only for its

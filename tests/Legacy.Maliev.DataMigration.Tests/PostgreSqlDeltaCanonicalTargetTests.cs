@@ -109,6 +109,76 @@ public sealed class PostgreSqlDeltaCanonicalTargetIntegrationTests(PostgreSqlAda
         Assert.Equal([(1, "old"), (2, "delete")], await RowsAsync(cs));
     }
 
+    [Theory]
+    [InlineData("plan-id")]
+    [InlineData("operations")]
+    public async Task Begin_ConflictingReplayIdentityOrOperations_RejectsBeforeDml(string drift)
+    {
+        (string cs, DatabaseSchemaPlan schema, PostgreSqlDeltaCanonicalTarget target) = await SetupAsync();
+        DeltaSynchronizationPlan plan = Plan(schema.Database, schema.Tables[0], []);
+        string planHash = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
+        string operations = DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(
+            plan.Databases.Single(item => item.Database == schema.Database));
+        await SeedJournalAsync(cs, plan, planHash,
+            drift == "plan-id" ? Guid.NewGuid() : plan.PlanId,
+            drift == "operations" ? Hash('9') : operations);
+
+        DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            target.BeginAsync(plan, schema, schema.Database, CancellationToken.None));
+
+        Assert.Equal("canonical_delta_replay_conflict", error.Code);
+        Assert.Equal([(1, "old"), (2, "delete")], await RowsAsync(cs));
+        Assert.Equal(1L, await ScalarAsync(cs, "SELECT count(*) FROM legacy_migration_internal.delta_journal"));
+    }
+
+    [Fact]
+    public async Task Begin_DuplicateReplayRows_RejectsBeforeDml()
+    {
+        (string cs, DatabaseSchemaPlan schema, PostgreSqlDeltaCanonicalTarget target) = await SetupAsync();
+        DeltaSynchronizationPlan plan = Plan(schema.Database, schema.Tables[0], []);
+        string planHash = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
+        string operations = DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(
+            plan.Databases.Single(item => item.Database == schema.Database));
+        await using (var connection = new NpgsqlConnection(cs))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand("""
+                ALTER TABLE legacy_migration_internal.delta_journal DROP CONSTRAINT delta_journal_pkey;
+                ALTER TABLE legacy_migration_internal.delta_journal DROP CONSTRAINT delta_journal_plan_id_key;
+                """, connection);
+            _ = await command.ExecuteNonQueryAsync();
+        }
+        await SeedJournalAsync(cs, plan, planHash, plan.PlanId, operations);
+        await SeedJournalAsync(cs, plan, planHash, plan.PlanId, operations);
+
+        DeltaExecutionException error = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            target.BeginAsync(plan, schema, schema.Database, CancellationToken.None));
+
+        Assert.Equal("canonical_delta_replay_conflict", error.Code);
+        Assert.Equal([(1, "old"), (2, "delete")], await RowsAsync(cs));
+        Assert.Equal(2L, await ScalarAsync(cs, "SELECT count(*) FROM legacy_migration_internal.delta_journal"));
+    }
+
+    private static async Task SeedJournalAsync(string cs, DeltaSynchronizationPlan plan,
+        string planHash, Guid planId, string operations)
+    {
+        await using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("""
+            INSERT INTO legacy_migration_internal.delta_journal
+                (plan_sha256, plan_id, source_cutoff_utc, target_observation_sha256,
+                 operations_sha256, reconciliation_sha256, committed_at_utc)
+            VALUES ($1,$2,$3,$4,$5,$6,clock_timestamp());
+            """, connection);
+        _ = command.Parameters.AddWithValue(planHash);
+        _ = command.Parameters.AddWithValue(planId);
+        _ = command.Parameters.AddWithValue(plan.SourceCutoffUtc);
+        _ = command.Parameters.AddWithValue(plan.TargetObservationSha256);
+        _ = command.Parameters.AddWithValue(operations);
+        _ = command.Parameters.AddWithValue(Hash('5'));
+        _ = await command.ExecuteNonQueryAsync();
+    }
+
     [Fact]
     public async Task StreamedTextInsert_IsConsumedAndFingerprintCheckedBeforeAtomicCommit()
     {

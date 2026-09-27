@@ -25,6 +25,8 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(schema);
         string planSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
+        string operationsSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(
+            plan.Databases.Single(item => string.Equals(item.Database, database, StringComparison.Ordinal)));
         var binding = new CanonicalDeltaTargetBinding(plan.PlanId, planSha256, plan.SourceCutoffUtc, database,
             plan.SchemaPlanSha256,
             QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema),
@@ -62,16 +64,15 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                     QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema, observedSchema);
                 }
                 await ValidateFenceAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
-                string? replayReconciliationSha256 = await ValidateReplayAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
+                string? replayReconciliationSha256 = await ValidateReplayAsync(connection, transaction, binding,
+                    operationsSha256, cancellationToken).ConfigureAwait(false);
                 ApprovedTargetExtensionState? extensionState = replayReconciliationSha256 is null
                     ? await ApprovedTargetExtensionStateInspector.InspectAsync(
                         connection, transaction, schema, cancellationToken).ConfigureAwait(false)
                     : null;
                 IReadOnlyDictionary<string, int> upsertOrder = CanonicalForeignKeyOrder.Build(schema);
                 return new PostgreSqlDeltaCanonicalTransaction(connection, transaction, binding, schema, replayReconciliationSha256,
-                    extensionState, upsertOrder,
-                    DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(
-                        plan.Databases.Single(item => string.Equals(item.Database, database, StringComparison.Ordinal))));
+                    extensionState, upsertOrder, operationsSha256);
             }
             catch
             {
@@ -156,10 +157,12 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         CanonicalDeltaTargetBinding binding,
+        string operationsSha256,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand("""
-            SELECT plan_sha256, source_cutoff_utc, target_observation_sha256, reconciliation_sha256
+            SELECT plan_sha256, plan_id, source_cutoff_utc, target_observation_sha256,
+                   operations_sha256, reconciliation_sha256
             FROM legacy_migration_internal.delta_journal
             WHERE plan_sha256=$1 OR plan_id=$2
             FOR UPDATE;
@@ -167,16 +170,24 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         _ = command.Parameters.AddWithValue(binding.PlanSha256);
         _ = command.Parameters.AddWithValue(binding.PlanId);
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        string reconciliationSha256 = ValidateReplayRow(reader, binding, operationsSha256);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? ValidateReplayRow(reader, binding)
-            : null;
+            ? throw Error("canonical_delta_replay_conflict", "More than one canonical checkpoint matches the signed plan identity.")
+            : reconciliationSha256;
     }
 
-    private static string ValidateReplayRow(NpgsqlDataReader reader, CanonicalDeltaTargetBinding binding)
+    private static string ValidateReplayRow(NpgsqlDataReader reader, CanonicalDeltaTargetBinding binding,
+        string operationsSha256)
     {
-        return Fixed(reader.GetString(0), binding.PlanSha256) && SamePostgreSqlTimestamp(reader.GetFieldValue<DateTimeOffset>(1), binding.SourceCutoffUtc) &&
-            Fixed(reader.GetString(2), binding.TargetObservationSha256) && Hash(reader.GetString(3))
-            ? reader.GetString(3).ToLowerInvariant()
+        return Fixed(reader.GetString(0), binding.PlanSha256) && reader.GetGuid(1) == binding.PlanId &&
+            SamePostgreSqlTimestamp(reader.GetFieldValue<DateTimeOffset>(2), binding.SourceCutoffUtc) &&
+            Fixed(reader.GetString(3), binding.TargetObservationSha256) &&
+            Fixed(reader.GetString(4), operationsSha256) && Hash(reader.GetString(5))
+            ? reader.GetString(5).ToLowerInvariant()
             : throw Error("canonical_delta_replay_conflict", "A conflicting canonical delta execution already uses this plan identity.");
     }
 
