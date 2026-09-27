@@ -33,6 +33,167 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
     private readonly ECDsa _authorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
     [Fact]
+    public async Task Historical_local_current_target_review_compares_all_23_without_authorizing_execution()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true);
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(fixture);
+        HistoricalCurrentLocalObservation observation = CurrentObservation(fixture);
+        var observations = 0;
+
+        HistoricalPairedLocalCurrentTargetReview result = await HistoricalPairedLocalCurrentTargetReviewer
+            .CompareAsync(fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+                _ =>
+                {
+                    observations++;
+                    return Task.FromResult(observation);
+                },
+                new CurrentEvidenceInspector(fixture.Schema), new FixedTime(fixture.Now.AddDays(1)),
+                CancellationToken.None);
+
+        Assert.Equal(DatabaseInventory.ActiveDatabases.Count, result.DatabasesCompared);
+        Assert.Equal(fixture.LocalPlan.SourceCutoffUtc, result.HistoricalSourceCutoffUtc);
+        Assert.Equal(2, observations);
+        Assert.False(HistoricalPairedLocalCurrentTargetReview.AuthorizesExecution);
+    }
+
+    [Fact]
+    public async Task Historical_local_current_target_review_rejects_schema_rows_and_identity_drift()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true);
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(fixture);
+        HistoricalCurrentLocalObservation observation = CurrentObservation(fixture);
+        var clock = new FixedTime(fixture.Now.AddDays(1));
+        var inspector = new CurrentEvidenceInspector(fixture.Schema);
+
+        Assert.Equal("delta_historical_local_current_target_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => HistoricalPairedLocalCurrentTargetReviewer
+                .CompareAsync(fixture.LocalPlan, receipt,
+                    fixture.Schema with { CapturedAtUtc = fixture.Schema.CapturedAtUtc.AddMinutes(1) },
+                    fixture.Trust, _ => Task.FromResult(observation), inspector, clock,
+                    CancellationToken.None))).Code);
+        Assert.Equal("shadow_reconciliation_failed",
+            (await Assert.ThrowsAsync<MigrationExecutionException>(() => HistoricalPairedLocalCurrentTargetReviewer
+                .CompareAsync(fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+                    _ => Task.FromResult(observation), new CurrentEvidenceInspector(fixture.Schema, driftRow: true),
+                    clock, CancellationToken.None))).Code);
+        Assert.Equal("shadow_reconciliation_failed",
+            (await Assert.ThrowsAsync<MigrationExecutionException>(() => HistoricalPairedLocalCurrentTargetReviewer
+                .CompareAsync(fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+                    _ => Task.FromResult(observation), new CurrentEvidenceInspector(fixture.Schema, driftContent: true),
+                    clock, CancellationToken.None))).Code);
+        Assert.Equal("shadow_reconciliation_failed",
+            (await Assert.ThrowsAsync<MigrationExecutionException>(() => HistoricalPairedLocalCurrentTargetReviewer
+                .CompareAsync(fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+                    _ => Task.FromResult(observation), new CurrentEvidenceInspector(fixture.Schema, driftSequence: true),
+                    clock, CancellationToken.None))).Code);
+        Assert.Equal("delta_historical_local_current_target_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => HistoricalPairedLocalCurrentTargetReviewer
+                .CompareAsync(fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+                    _ => Task.FromResult(observation with { SystemIdentifierSha256 = Hash('9') }),
+                    inspector, clock, CancellationToken.None))).Code);
+        Assert.Equal("delta_historical_local_current_target_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => HistoricalPairedLocalCurrentTargetReviewer
+                .CompareAsync(fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+                    _ => Task.FromResult(observation with
+                    {
+                        VolumeCreatedAtUtc = observation.VolumeCreatedAtUtc.AddMilliseconds(1),
+                    }), inspector, clock, CancellationToken.None))).Code);
+        Assert.Equal("delta_historical_local_current_target_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => HistoricalPairedLocalCurrentTargetReviewer
+                .CompareAsync(fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+                    _ => Task.FromResult(observation with { VolumeMountpoint = string.Empty }),
+                    inspector, clock, CancellationToken.None))).Code);
+        var count = 0;
+        Assert.Equal("delta_historical_local_current_target_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => HistoricalPairedLocalCurrentTargetReviewer
+                .CompareAsync(fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+                    _ => Task.FromResult(++count == 1 ? observation :
+                        CurrentObservation(fixture, '9')),
+                    inspector, clock, CancellationToken.None))).Code);
+        Assert.Equal(2, count);
+    }
+
+    [Fact]
+    public async Task Historical_postgresql_inspector_uses_disposable_read_only_snapshot_without_old_permit()
+    {
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await container.StartAsync();
+        string admin = container.GetConnectionString();
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true, physicalTargetHashes: true);
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(fixture);
+        DatabaseSchemaPlan schema = fixture.Schema.Databases.Single(item => item.Database == "ContactRequest");
+        await using (var connection = new NpgsqlConnection(admin))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand("CREATE DATABASE \"ContactRequest\" TEMPLATE template0;", connection);
+            _ = await command.ExecuteNonQueryAsync();
+        }
+        string target = new NpgsqlConnectionStringBuilder(admin)
+        {
+            Database = schema.Database,
+            Pooling = false,
+        }.ConnectionString;
+        await using (var connection = new NpgsqlConnection(target))
+        {
+            await connection.OpenAsync();
+            await using var transaction = await connection.BeginTransactionAsync();
+            await using var writer = new PostgreSqlWholeDatabaseTransaction(connection, transaction,
+                ownsResources: false);
+            await writer.ApplySchemaAsync(schema, CancellationToken.None);
+            await writer.FinalizeSchemaAsync(schema, CancellationToken.None);
+            await transaction.CommitAsync();
+        }
+        var inspector = new HistoricalPostgreSqlDeltaReconciliationInspector(admin,
+            fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust, fixture.Now.AddDays(1));
+
+        DatabaseReconciliationEvidence observed = await inspector.InspectAsync(schema, CancellationToken.None);
+
+        Assert.Equal(schema.Database, observed.Database);
+        Assert.Equal(0, Assert.Single(observed.Tables).RowCount);
+        await using var verify = new NpgsqlConnection(target);
+        await verify.OpenAsync();
+        await using var count = new NpgsqlCommand("SELECT count(*) FROM public.items;", verify);
+        Assert.Equal(0L, await count.ExecuteScalarAsync());
+    }
+
+    private static HistoricalCurrentLocalObservation CurrentObservation(Fixture fixture, char id = '8')
+    {
+        string containerId = Hash(id);
+        return new(containerId, $"docker:{containerId}:4:5:3",
+            "legacy-maliev-exact23-postgres-data", DateTimeOffset.FromUnixTimeMilliseconds(3),
+            "/var/lib/docker/volumes/legacy-maliev-exact23-postgres-data/_data",
+            "/var/lib/postgresql/data", "/var/lib/postgresql/data/pgdata",
+            fixture.LocalPlan.TargetAuthority!.SystemIdentifierSha256);
+    }
+
+    private sealed class CurrentEvidenceInspector(FreshSchemaPlan schema, bool driftRow = false,
+        bool driftContent = false, bool driftSequence = false)
+        : IDeltaReconciliationInspector
+    {
+        public async Task<DatabaseReconciliationEvidence> InspectAsync(DatabaseSchemaPlan database,
+            CancellationToken cancellationToken)
+        {
+            DatabaseReconciliationEvidence evidence = await new Inspector(pairedTransition: true, schema)
+                .InspectAsync(database, cancellationToken);
+            return database.Database != "ContactRequest"
+                ? evidence
+                : (driftRow, driftContent, driftSequence) switch
+                {
+                    (true, _, _) => evidence with { Tables = [evidence.Tables[0] with { RowCount = 2 }] },
+                    (_, true, _) => evidence with { Tables = [evidence.Tables[0] with { ContentSha256 = Hash('f') }] },
+                    (_, _, true) => evidence with
+                    {
+                        SequenceNextValues = new Dictionary<string, long> { ["public.items.Id"] = 2 },
+                    },
+                    _ => evidence,
+                };
+        }
+    }
+
+    [Fact]
     public async Task Historical_persistent_local_receipt_is_reviewable_but_never_authorizes_execution()
     {
         Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
