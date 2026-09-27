@@ -165,6 +165,34 @@ public sealed class PairedLocalTransitionMetadataInspectorTests(PostgreSqlAdapte
             await ExecuteAsync(target, $"UPDATE legacy_migration_internal.delta_journal SET reconciliation_sha256='{Hash('5')}';");
             Assert.Equal(settled, await inspector.InspectAsync(plan, schema, CancellationToken.None));
 
+            // A recreated container can mount the same PostgreSQL volume and preserve its
+            // system identifier. Neither fact authorizes adopting a prior generation:
+            // the transition needs independent signed continuity evidence first.
+            DeltaSynchronizationPlan recreatedContainerPlan = plan with
+            {
+                TargetGeneration = $"docker:{Hash('a')}:400:500:300",
+                TargetAuthority = plan.TargetAuthority with
+                {
+                    AuthorityId = $"aspire://legacy-postgres-main-local/persistent-{Hash('a')[..12]}",
+                },
+            };
+            Assert.Equal("delta_paired_local_metadata_preimage_invalid",
+                (await Assert.ThrowsAsync<DeltaExecutionException>(() => inspector.InspectAsync(
+                    recreatedContainerPlan, schema, CancellationToken.None))).Code);
+            await using (var rejectedConnection = new NpgsqlConnection(target))
+            {
+                await rejectedConnection.OpenAsync();
+                await using var rejectedTransaction = await rejectedConnection.BeginTransactionAsync(
+                    System.Data.IsolationLevel.Serializable);
+                Assert.Equal("delta_paired_local_metadata_preimage_invalid",
+                    (await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                        PairedLocalTransitionMetadataInspector.InspectInTransactionAsync(
+                            rejectedConnection, rejectedTransaction, recreatedContainerPlan, schema,
+                            CancellationToken.None, lockFence: true))).Code);
+                await rejectedTransaction.RollbackAsync();
+            }
+            Assert.Equal(settled, await inspector.InspectAsync(plan, schema, CancellationToken.None));
+
             await using (var connection = new NpgsqlConnection(target))
             {
                 await connection.OpenAsync();
