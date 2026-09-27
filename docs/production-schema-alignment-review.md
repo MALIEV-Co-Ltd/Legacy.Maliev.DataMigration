@@ -81,3 +81,16 @@ not the reviewed preimage and never DDL authorization. The component and
 column diagnostics come from one read-only repeatable-read catalog snapshot;
 missing or duplicate column observations fail closed. A fresh owner-only
 catalog run after this change is needed to see the column labels.
+
+For owner review, each observed column now also carries fixed-vocabulary
+field evidence. `actualTypeCategory` is an approved broad PostgreSQL type
+category, never an unconstrained type declaration. `actualCollationMode` is
+`inherited` or `explicit`; `actualCollationIdentity` names only a small
+allowlist of built-in collations, otherwise `explicit-unreviewed`.
+`defaultState` and `generatedState` distinguish absent, unexpected-present,
+matching, and present-different expressions without serializing their text.
+These fields are diagnostic only: an unreviewed collation or differing default
+does not become equivalent by classification, and the exact preimage/shape
+gate remains unchanged. A fresh identity-bound, read-only observation is
+required to classify the production drifts; previous output cannot be reused
+as a new schema authority.

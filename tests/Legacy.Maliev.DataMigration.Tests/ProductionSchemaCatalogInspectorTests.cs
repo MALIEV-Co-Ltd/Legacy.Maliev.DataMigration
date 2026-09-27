@@ -33,6 +33,65 @@ public sealed class ProductionSchemaCatalogPlanTests
 public sealed class ProductionSchemaCatalogInspectorTests(PostgreSqlAdapterFixture fixture)
 {
     [Fact]
+    public async Task InspectDatabaseAsync_DisposablePostgreSql_ClassifiesSafeFieldEvidenceWithoutLeakingSql()
+    {
+        var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+        {
+            Database = fixture.CanonicalDatabase,
+        };
+        await using var connection = new NpgsqlConnection(builder.ConnectionString);
+        await connection.OpenAsync();
+        await using (var setup = new NpgsqlCommand(
+            "CREATE SCHEMA field_probe; " +
+            "CREATE TABLE field_probe.\"Sample\" (\"Value\" text COLLATE \"C\" DEFAULT 'private-default', " +
+            "\"Computed\" text GENERATED ALWAYS AS (\"Value\" || 'private-generated') STORED, " +
+            "\"LockoutEnd\" timestamp with time zone);", connection))
+        {
+            _ = await setup.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            var plan = new DatabaseSchemaPlan(fixture.CanonicalDatabase, "1.0", new string('a', 64),
+                new string('b', 64),
+                [new TableCopyPlan("dbo", "Sample", "field_probe", "Sample",
+                    ["Value", "Computed", "LockoutEnd"], ["Value"])
+                {
+                    ColumnTypes = new Dictionary<string, string>
+                    {
+                        ["Value"] = "text", ["Computed"] = "text", ["LockoutEnd"] = "text",
+                    },
+                    NullableColumns = ["Value", "Computed", "LockoutEnd"],
+                    DefaultExpressions = new Dictionary<string, string> { ["Value"] = "'expected-default'" },
+                    GeneratedColumns = [new GeneratedColumnCopyPlan("Computed", "lower(\"Value\")")],
+                }]);
+            ProductionSchemaObservation observed = await ProductionSchemaCatalogInspector.InspectDatabaseAsync(
+                plan, fixture.ConnectionString, CancellationToken.None);
+            ProductionSchemaColumnDiagnostic value = Assert.Single(observed.ColumnDiagnostics,
+                item => item.Schema == "field_probe" && item.Table == "Sample" && item.Column == "Value");
+            Assert.Equal("text", value.ActualTypeCategory);
+            Assert.Equal("explicit", value.ActualCollationMode);
+            Assert.Equal("C", value.ActualCollationIdentity);
+            Assert.Equal("present-different", value.DefaultState);
+            ProductionSchemaColumnDiagnostic computed = Assert.Single(observed.ColumnDiagnostics,
+                item => item.Schema == "field_probe" && item.Table == "Sample" && item.Column == "Computed");
+            Assert.Equal("present-different", computed.GeneratedState);
+            ProductionSchemaColumnDiagnostic lockout = Assert.Single(observed.ColumnDiagnostics,
+                item => item.Schema == "field_probe" && item.Table == "Sample" && item.Column == "LockoutEnd");
+            Assert.Equal("timestamp-with-time-zone", lockout.ActualTypeCategory);
+            string json = System.Text.Json.JsonSerializer.Serialize(observed);
+            Assert.DoesNotContain("private-default", json, StringComparison.Ordinal);
+            Assert.DoesNotContain("private-generated", json, StringComparison.Ordinal);
+            Assert.DoesNotContain("timestamp with time zone", json, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await using var cleanup = new NpgsqlCommand("DROP SCHEMA field_probe CASCADE;", connection);
+            _ = await cleanup.ExecuteNonQueryAsync();
+        }
+    }
+
+    [Fact]
     public async Task InspectDatabaseAsync_DisposablePostgreSql_ReportsFullShapeWithoutChangingRows()
     {
         var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
