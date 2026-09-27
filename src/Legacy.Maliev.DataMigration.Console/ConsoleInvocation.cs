@@ -26,6 +26,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "sign-quotation-postgres-snapshot",
         "plan-delta",
         "plan-paired-delta",
+        "project-paired-local-template",
         "inspect-target-schema-gaps",
         "authorize-target-extension-repair",
         "apply-target-extension-repair",

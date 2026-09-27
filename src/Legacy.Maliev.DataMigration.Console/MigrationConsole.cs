@@ -135,6 +135,7 @@ public static partial class MigrationConsole
                     return await RunIncrementalBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable, output, error,
                         incrementalRuntime ?? new DefaultIncrementalConsoleRuntime(), cancellationToken).ConfigureAwait(false);
                 case "plan-delta":
+                case "project-paired-local-template":
                 case "plan-paired-delta":
                 case "inspect-target-schema-gaps":
                 case "verify-disposable-delta-proof":
@@ -1367,6 +1368,7 @@ public static partial class MigrationConsole
         SigningRolesCommandConfiguration? SigningRoles = null,
         IncrementalCommandConfiguration? Incremental = null,
         DeltaCommandConfiguration? Delta = null,
+        PairedLocalTemplateCommandConfiguration? PairedLocalTemplate = null,
         CanonicalDatabaseBootstrapCommandConfiguration? CanonicalBootstrap = null,
         TargetExtensionRepairCommandConfiguration? TargetExtensionRepair = null,
         QuotationTargetBootstrapCommandConfiguration? QuotationTargetBootstrap = null);
