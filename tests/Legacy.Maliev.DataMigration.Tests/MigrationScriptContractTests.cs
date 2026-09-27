@@ -12,6 +12,10 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("production_delta_exec_config_outside_root", script, StringComparison.Ordinal);
         Assert.Contains("production_delta_exec_config_unprotected", script, StringComparison.Ordinal);
         Assert.Contains("Assert-ProductionExecTunnelIdentity", script, StringComparison.Ordinal);
+        Assert.Contains("Assert-ProductionExecTunnelDurability", script, StringComparison.Ordinal);
+        Assert.Contains("production_delta_tunnel_changed_during_preflight", script, StringComparison.Ordinal);
+        Assert.Contains("[string]::IsNullOrWhiteSpace($ExecTunnelConfigPath)", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("$transport = 'kubectl-port-forward'", script, StringComparison.Ordinal);
         Assert.Contains("tunnelConfigSha256", script, StringComparison.Ordinal);
         Assert.Contains("production_delta_canonical_database_missing", script, StringComparison.Ordinal);
         Assert.Contains("legacy-postgres-main-rw", script, StringComparison.Ordinal);
