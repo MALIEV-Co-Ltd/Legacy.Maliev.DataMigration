@@ -213,6 +213,19 @@ An interrupted LOCAL run may have committed some database transactions; inspect
 checkpoints and use a fresh admission for deliberate same-pair replay rather
 than rerunning this helper with a new capture. This option never targets
 production, deletes rows, replaces a database, or deploys an application.
+On a later daily run, previously reconciled LOCAL metadata is accepted only
+when its Docker container lineage still matches, every historical journal
+checkpoint is complete, and the prior fence observation belongs to a
+reconciled checkpoint. A legacy short Docker generation may be advanced to the
+same container's freshly observed timestamp-bound generation. The old fence's
+physical-schema hash may differ after a separately reviewed additive migration;
+the current full physical schema must match the new signed plan in read-only
+preflight and again inside each serializable LOCAL transaction. Preflight
+fingerprints the settled history; the executor rechecks it and re-fences to the
+new signed plan inside that same transaction before row DML. An incomplete or
+changed checkpoint, wrong container, unverified current schema, or conflicting
+current plan still fails closed. There is no standalone metadata update or
+replay of a failed capture.
 The success marker means a signed result was published for independent review,
 not that current live SQL rows equal the capture cutoff. Retain the protected
 pair, proof, authorization, reconciliation, encrypted capture, and key while
