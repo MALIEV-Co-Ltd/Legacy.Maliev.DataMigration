@@ -60,8 +60,11 @@ and compares the before, source-after, and copy logical schema-and-data dump
 SHA-256 hashes, physical-schema fingerprints, and `COPY` row counts. It checks
 the PostgreSQL 18 dump-version banner as metadata and normalizes only that
 banner for the logical hash (for example, an 18.4 source and 18.6 disposable
-image); the original protected SQL dumps are not rewritten. Other byte-level
-schema/data differences still fail closed. The helper also checks source and
+image). It hashes each `COPY` row and sorts those hashes within its own table,
+so a restore-induced heap-order change does not look like a changed row. Row
+values, duplicate multiplicity, table boundaries, and non-`COPY` SQL remain
+strictly compared; incomplete sections fail closed. The original protected
+SQL dumps are not rewritten. The helper also checks source and
 target system identifiers, identities, inventory, and loopback port
 again before publishing a PII-free `exact23-copy-receipt.json` and protected
 `target-disposable.connection` file. The receipt includes only names, hashes,

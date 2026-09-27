@@ -123,8 +123,29 @@ function Get-Exact23CopyCanonicalDumpDigest([string]$DumpPath) {
     try {
         [int]$lineNumber = 0
         [int]$versionHeaders = 0
+        $copyRows = $null
         while ($null -ne ($line = $reader.ReadLine())) {
             $lineNumber++
+            if ($null -ne $copyRows) {
+                if ($line -ceq '\.') {
+                    $copyRows.Sort([StringComparer]::Ordinal)
+                    foreach ($rowHash in $copyRows) {
+                        $rowBytes = $encoding.GetBytes("row-sha256:$rowHash`n")
+                        try { $hasher.AppendData($rowBytes) }
+                        finally { [Security.Cryptography.CryptographicOperations]::ZeroMemory($rowBytes) }
+                    }
+                    $copyRows = $null
+                }
+                else {
+                    $rowBytes = $encoding.GetBytes($line)
+                    try {
+                        $copyRows.Add([Convert]::ToHexString(
+                            [Security.Cryptography.SHA256]::HashData($rowBytes)))
+                    }
+                    finally { [Security.Cryptography.CryptographicOperations]::ZeroMemory($rowBytes) }
+                    continue
+                }
+            }
             if ($line.StartsWith('-- Dumped from database version ', [StringComparison]::Ordinal)) {
                 if ($lineNumber -gt 15 -or $versionHeaders -ne 0 -or
                     $line -cnotmatch '^-- Dumped from database version 18\.[0-9]+(?: \([^)]*\))?$') {
@@ -133,10 +154,15 @@ function Get-Exact23CopyCanonicalDumpDigest([string]$DumpPath) {
                 $line = '-- Dumped from database major version 18'
                 $versionHeaders++
             }
+            if ($line.StartsWith('COPY ', [StringComparison]::Ordinal) -and
+                $line.EndsWith(' FROM stdin;', [StringComparison]::Ordinal)) {
+                $copyRows = [Collections.Generic.List[string]]::new()
+            }
             $bytes = $encoding.GetBytes($line + "`n")
             try { $hasher.AppendData($bytes) }
             finally { [Security.Cryptography.CryptographicOperations]::ZeroMemory($bytes) }
         }
+        if ($null -ne $copyRows) { throw 'exact23_copy_dump_incomplete' }
         if ($versionHeaders -ne 1) { throw 'exact23_copy_dump_version_missing' }
         return [Convert]::ToHexString($hasher.GetHashAndReset()).ToLowerInvariant()
     }
