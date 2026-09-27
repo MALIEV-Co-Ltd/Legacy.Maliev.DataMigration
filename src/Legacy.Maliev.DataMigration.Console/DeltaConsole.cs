@@ -52,6 +52,8 @@ public static partial class MigrationConsole
                 "plan-paired-delta" => await ProducePairedDeltaPlansAsync(configuration, environment, runtime, cancellationToken).ConfigureAwait(false),
                 "inspect-target-schema-gaps" => await InspectTargetSchemaGapsAsync(configuration, cancellationToken).ConfigureAwait(false),
                 "verify-disposable-delta-proof" => await VerifyDisposableProofAsync(configuration, cancellationToken).ConfigureAwait(false),
+                "authorize-paired-local-transition" => await AuthorizePairedLocalTransitionAsync(configuration,
+                    environment, runtime, cancellationToken).ConfigureAwait(false),
                 "preflight-paired-local-transition" => await PreflightPairedLocalTransitionAsync(configuration, runtime,
                     cancellationToken).ConfigureAwait(false),
                 "apply-paired-local-transition" => await ApplyPairedLocalTransitionAsync(configuration, environment,
@@ -310,6 +312,62 @@ public static partial class MigrationConsole
         };
     }
 
+    private static async Task<PairedLocalTransitionAuthorization> AuthorizePairedLocalTransitionAsync(
+        DeltaCommandConfiguration configuration,
+        Func<string, string?> environment,
+        IGuardedDeltaConsoleRuntime runtime,
+        CancellationToken cancellationToken)
+    {
+        if (runtime is not IGuardedPairedLocalTransitionAuthorizationRuntime authorizer ||
+            !configuration.UseCapturedSource || !configuration.UseQuotationPhysicalTransition ||
+            !configuration.AllowAuthorizationSigning || configuration.AllowExecution ||
+            configuration.AuthorizationExpiresAtUtc is null ||
+            !DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(configuration.TargetAuthority) ||
+            configuration.PairedPersistentTarget is not null)
+        {
+            throw DeltaInvalid("delta_paired_local_authorization_request_invalid");
+        }
+        FreshSchemaPlan schema = await ReadProtectedJsonAsync<FreshSchemaPlan>(configuration.SchemaPlanPath,
+            "delta_schema_plan_unprotected", cancellationToken).ConfigureAwait(false);
+        PairedCapturedDeltaPlans plans = await ReadProtectedJsonAsync<PairedCapturedDeltaPlans>(
+            Required(configuration.DisposableProofPairPath), "delta_paired_plan_unprotected", cancellationToken)
+            .ConfigureAwait(false);
+        Exact23DeltaReconciliationResult proof = await ReadProtectedJsonAsync<Exact23DeltaReconciliationResult>(
+            Required(configuration.DisposableProofResultPath), "delta_proof_result_unprotected", cancellationToken)
+            .ConfigureAwait(false);
+        ReceiptAttestationTrustStore trust = await ReadDeltaProofTrustAsync(configuration, cancellationToken)
+            .ConfigureAwait(false);
+        if (configuration.TargetAuthority != plans.Persistent.TargetAuthority ||
+            configuration.TargetObservationSha256 != plans.Persistent.TargetObservationSha256 ||
+            configuration.TargetGeneration != plans.Persistent.TargetGeneration ||
+            configuration.TargetNamespace != plans.Persistent.TargetNamespace ||
+            configuration.TargetCluster != plans.Persistent.TargetCluster)
+        {
+            throw DeltaInvalid("delta_paired_local_authorization_target_invalid");
+        }
+        DeltaTrustBundle localTrust = await ReadDeltaTrustAsync(configuration, cancellationToken)
+            .ConfigureAwait(false);
+        using P256MigrationEvidenceSigner signer = await ReadDeltaSignerAsync(environment,
+            DeltaAuthorizationSigningKeyEnvironmentVariable, configuration.AuthorizationKey.KeyId,
+            localTrust.AuthorizationFingerprint, "delta_authorization_signing_key_unprotected",
+            cancellationToken).ConfigureAwait(false);
+        byte[] captureKey = await ReadCaptureKeyAsync(configuration, cancellationToken,
+            pairedPreflight: true).ConfigureAwait(false);
+        try
+        {
+            string target = await ReadProtectedTextAsync(configuration.TargetConnectionFile,
+                "delta_target_connection_unprotected", cancellationToken).ConfigureAwait(false);
+            return await authorizer.AuthorizePairedLocalTransitionAsync(new(schema, plans, proof, trust,
+                target, configuration.CaptureDirectory!, captureKey,
+                configuration.AuthorizationExpiresAtUtc.Value, signer), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(captureKey);
+        }
+    }
+
     private static async Task<PairedLocalTransitionPreflightResult> PreflightPairedLocalTransitionAsync(
         DeltaCommandConfiguration configuration,
         IGuardedDeltaConsoleRuntime runtime,
@@ -554,7 +612,8 @@ public static partial class MigrationConsole
             throw DeltaInvalid("delta_capture_configuration_invalid");
         }
         if (configuration.UseQuotationPhysicalTransition && command is not
-            ("preflight-paired-local-transition" or "apply-paired-local-transition") &&
+            ("authorize-paired-local-transition" or "preflight-paired-local-transition" or
+             "apply-paired-local-transition") &&
             (!configuration.UseCapturedSource ||
              !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(configuration.TargetAuthority)))
         {

@@ -32,6 +32,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "authorize-quotation-target-bootstrap",
         "apply-quotation-target-bootstrap",
         "verify-disposable-delta-proof",
+        "authorize-paired-local-transition",
         "preflight-paired-local-transition",
         "apply-paired-local-transition",
         "authorize-delta",

@@ -16,6 +16,7 @@ public sealed class GuardedDeltaCommandPolicyTests
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("inspect-target-schema-gaps"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("verify-disposable-delta-proof"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("preflight-paired-local-transition"));
+        Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("authorize-paired-local-transition"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("apply-paired-local-transition"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("authorize-delta"));
         Assert.False(GuardedDeltaCommandPolicy.IsAppHostCallable("reconcile-delta"));
@@ -27,6 +28,7 @@ public sealed class GuardedDeltaCommandPolicyTests
     [InlineData("owner", "verify-disposable-delta-proof")]
     [InlineData("owner", "plan-paired-delta")]
     [InlineData("owner", "preflight-paired-local-transition")]
+    [InlineData("owner", "authorize-paired-local-transition")]
     [InlineData("owner", "apply-paired-local-transition")]
     [InlineData("operator", "plan-delta")]
     [InlineData("operator", "inspect-target-schema-gaps")]
@@ -47,6 +49,8 @@ public sealed class GuardedDeltaCommandPolicyTests
     [InlineData("operator", "plan-paired-delta")]
     [InlineData("operator", "preflight-paired-local-transition")]
     [InlineData("apphost", "preflight-paired-local-transition")]
+    [InlineData("operator", "authorize-paired-local-transition")]
+    [InlineData("apphost", "authorize-paired-local-transition")]
     [InlineData("operator", "apply-paired-local-transition")]
     [InlineData("apphost", "apply-paired-local-transition")]
     [InlineData("", "plan-delta")]
@@ -179,6 +183,58 @@ public sealed class GuardedDeltaCommandPolicyTests
                 }, new DefaultGuardedDeltaConsoleRuntime(), CancellationToken.None);
             Assert.Equal(65, exit);
             Assert.Equal("delta_paired_local_apply_request_invalid" + Environment.NewLine,
+                error.ToString());
+            Assert.False(File.Exists(configuration.OutputPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Paired_local_authorizer_rejects_nonpersistent_or_execution_before_artifacts(
+        bool nonpersistent, bool execution)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-auth-guard-tests",
+            Guid.NewGuid().ToString("N"));
+        OwnerProtectedDirectory.CreateNew(directory);
+        try
+        {
+            var key = new DeltaTrustedKeyReference("unused", Path.Combine(directory, "missing.public"));
+            var configuration = new DeltaCommandConfiguration("missing-schema",
+                Path.Combine(directory, "output.json"), "missing-source", "missing-target", key,
+                key, key, new('a', 64), DateTimeOffset.UtcNow, new('b', 64), new('c', 64),
+                "local-aspire", "legacy-postgres-main-local", "generation-1", new('d', 64),
+                new(DeltaTargetAuthorityKind.LocalAspire,
+                    nonpersistent ? "aspire://legacy-postgres-main-local/disposable-wrong" :
+                    "aspire://legacy-postgres-main-local/persistent-auth", new('e', 64)))
+            {
+                SourceMode = DeltaSourceMode.LiveReadOnly,
+                UseCapturedSource = true,
+                UseQuotationPhysicalTransition = true,
+                CaptureDirectory = "missing-captures",
+                CaptureKeyFile = "missing-key",
+                AllowAuthorizationSigning = true,
+                AuthorizationExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(10),
+                AllowExecution = execution,
+            };
+            string configPath = Path.Combine(directory, "config.json");
+            await MigrationConsole.WriteNewJsonForTestsAsync(configPath, new { delta = configuration },
+                CancellationToken.None);
+            using var error = new StringWriter();
+            int exit = await MigrationConsole.RunDeltaForTestsAsync(
+                ["authorize-paired-local-transition", "--config", configPath], TextWriter.Null,
+                error, name => name switch
+                {
+                    "LEGACY_DEPLOY_ENABLED" => "false",
+                    "LEGACY_MIGRATION_CALLER" => "owner",
+                    _ => throw new InvalidOperationException("No signer or connection may be read."),
+                }, new DefaultGuardedDeltaConsoleRuntime(), CancellationToken.None);
+            Assert.Equal(65, exit);
+            Assert.Equal("delta_paired_local_authorization_request_invalid" + Environment.NewLine,
                 error.ToString());
             Assert.False(File.Exists(configuration.OutputPath));
         }
