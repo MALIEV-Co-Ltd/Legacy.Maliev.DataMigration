@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)][string]$TemplatePath,
     [Parameter(Mandatory = $true)][string]$OutputRoot,
     [switch]$Execute,
-    [switch]$PlanPaired
+    [switch]$PlanPaired,
+    [switch]$ExecutePairedLocal
 )
 
 Set-StrictMode -Version Latest
@@ -59,6 +60,12 @@ function Write-ProtectedConfig([string]$Path, [object]$Config) {
     try { $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
 }
 
+function Write-ProtectedRawJson([string]$Path, [string]$Json) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Json)
+    $stream = [IO.FileStream]::new($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
+}
+
 function Invoke-GuardedCommand([string]$Command, [string]$ConfigPath) {
     & dotnet run --project $consoleProject -c Release --no-build -- $Command --config $ConfigPath
     if ($LASTEXITCODE -ne 0) { Fail "daily_delta_${Command}_failed" }
@@ -69,7 +76,10 @@ if ($env:LEGACY_DEPLOY_ENABLED -cne 'false') { Fail 'daily_delta_deploy_gate_inv
 if ($env:LEGACY_MIGRATION_CALLER -notin @('owner', 'operator')) { Fail 'daily_delta_caller_invalid' }
 if ($Execute -and $env:LEGACY_MIGRATION_CALLER -cne 'owner') { Fail 'daily_delta_execution_requires_owner' }
 if ($PlanPaired -and $Execute) { Fail 'daily_delta_paired_plan_only' }
-if ($PlanPaired -and $env:LEGACY_MIGRATION_CALLER -cne 'owner') { Fail 'daily_delta_paired_requires_owner' }
+if ($ExecutePairedLocal -and ($Execute -or $PlanPaired)) { Fail 'daily_delta_paired_mode_conflict' }
+if (($PlanPaired -or $ExecutePairedLocal) -and $env:LEGACY_MIGRATION_CALLER -cne 'owner') {
+    Fail 'daily_delta_paired_requires_owner'
+}
 
 $repository = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $template = (Resolve-Path -LiteralPath $TemplatePath).Path
@@ -112,15 +122,22 @@ $useQuotationPhysicalTransition = $config.delta.ContainsKey('useQuotationPhysica
     $config.delta.useQuotationPhysicalTransition -eq $true
 $targetKind = $config.delta.targetAuthority.kind
 if ($targetKind -notin @('local-aspire', 'production-cloudnativepg')) { Fail 'daily_delta_target_invalid' }
-if ($PlanPaired -and (-not $useCapturedSource -or
+if (($PlanPaired -or $ExecutePairedLocal) -and (-not $useCapturedSource -or
     $targetKind -cne 'local-aspire' -or
     -not $config.delta.targetAuthority.authorityId.StartsWith(
         'aspire://legacy-postgres-main-local/disposable-', [StringComparison]::Ordinal) -or
     -not $config.delta.ContainsKey('pairedPersistentTarget'))) {
     Fail 'daily_delta_paired_request_invalid'
 }
-if (-not $PlanPaired -and $config.delta.ContainsKey('pairedPersistentTarget')) {
+if (-not $PlanPaired -and -not $ExecutePairedLocal -and $config.delta.ContainsKey('pairedPersistentTarget')) {
     Fail 'daily_delta_paired_command_required'
+}
+if ($ExecutePairedLocal -and (-not $useQuotationPhysicalTransition -or
+    $config.delta.allowAuthorizationSigning -ne $true -or $config.delta.allowExecution -ne $true -or
+    $config.delta.pairedPersistentTarget.targetAuthority.kind -cne 'local-aspire' -or
+    -not $config.delta.pairedPersistentTarget.targetAuthority.authorityId.StartsWith(
+        'aspire://legacy-postgres-main-local/persistent-', [StringComparison]::Ordinal))) {
+    Fail 'daily_delta_paired_local_execution_invalid'
 }
 if ($useQuotationPhysicalTransition -and
     (-not $useCapturedSource -or $targetKind -cne 'local-aspire' -or
@@ -192,8 +209,9 @@ function New-PhaseConfig([string]$Phase) {
 }
 
 New-PhaseConfig 'plan'
-if ($PlanPaired) {
+if ($PlanPaired -or $ExecutePairedLocal) {
     Invoke-GuardedCommand 'plan-paired-delta' (Join-Path $runDirectory 'plan-config.json')
+    Assert-OwnerOnlyFile $planPath
     $pair = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
     $pairedVersion = if ($useQuotationPhysicalTransition) { '1.4' } else { '1.3' }
     if ($pair.disposable.schemaVersion -cne $pairedVersion -or
@@ -204,7 +222,85 @@ if ($PlanPaired) {
             Where-Object { $_.deleteCount -gt 0 }).Count -gt 0) {
         Fail 'daily_delta_paired_plan_invalid'
     }
-    Write-Output "daily_delta_paired_plans_ready_for_review:$runId"
+    if ($PlanPaired) {
+        Write-Output "daily_delta_paired_plans_ready_for_review:$runId"
+        return
+    }
+
+    # The exact signed pair remains the sole capture authority for both targets.
+    # Every phase has a new protected config/output and the local phase begins
+    # only after the independent disposable reconciliation has been published.
+    $disposablePlanPath = Join-Path $runDirectory 'disposable-plan.json'
+    $disposableAuthorizationPath = Join-Path $runDirectory 'disposable-authorization.json'
+    $disposableProofPath = Join-Path $runDirectory 'disposable-proof.json'
+    $localAuthorizationPath = Join-Path $runDirectory 'local-authorization.json'
+    $pairDocument = [Text.Json.JsonDocument]::Parse((Get-Content -LiteralPath $planPath -Raw))
+    try {
+        Write-ProtectedRawJson $disposablePlanPath $pairDocument.RootElement.GetProperty('disposable').GetRawText()
+    }
+    finally { $pairDocument.Dispose() }
+    Assert-OwnerOnlyFile $disposablePlanPath
+
+    function New-PairedPhaseConfig([string]$Phase) {
+        $phaseConfig = ($config | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable)
+        $null = $phaseConfig.delta.Remove('pairedPersistentTarget')
+        $phaseConfig.delta.allowPlanSigning = $false
+        $phaseConfig.delta.allowAuthorizationSigning = $Phase -in @('disposable-authorize', 'local-authorize')
+        $phaseConfig.delta.allowExecution = $Phase -in @('disposable-apply', 'local-apply')
+        $phaseConfig.delta.outputPath = Join-Path $runDirectory "$Phase-result.json"
+        if ($Phase.StartsWith('disposable-', [StringComparison]::Ordinal)) {
+            $phaseConfig.delta.planPath = $disposablePlanPath
+            $phaseConfig.delta.authorizationPath = $disposableAuthorizationPath
+        }
+        else {
+            $persistent = $config.delta.pairedPersistentTarget
+            foreach ($field in @('targetConnectionFile', 'targetNamespace', 'targetCluster',
+                    'targetGeneration', 'targetObservationSha256', 'targetAuthority',
+                    'planKey', 'authorizationKey', 'evidenceKey')) {
+                $phaseConfig.delta[$field] = $persistent[$field]
+            }
+            $phaseConfig.delta.disposableProofPairPath = $planPath
+            $phaseConfig.delta.disposableProofResultPath = $disposableProofPath
+            $phaseConfig.delta.disposableProofPlanKey = $config.delta.planKey
+            $phaseConfig.delta.disposableProofEvidenceKey = $config.delta.evidenceKey
+            $phaseConfig.delta.authorizationPath = $localAuthorizationPath
+        }
+        switch ($Phase) {
+            'disposable-authorize' {
+                $phaseConfig.delta.outputPath = $disposableAuthorizationPath
+                $phaseConfig.delta.authorizationExpiresAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(15).ToString('o')
+            }
+            'disposable-reconcile' { $phaseConfig.delta.outputPath = $disposableProofPath }
+            'local-authorize' {
+                $phaseConfig.delta.outputPath = $localAuthorizationPath
+                $phaseConfig.delta.authorizationExpiresAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(15).ToString('o')
+            }
+        }
+        $path = Join-Path $runDirectory "$Phase-config.json"
+        Write-ProtectedConfig $path $phaseConfig
+        Assert-OwnerOnlyFile $path
+        return $path
+    }
+
+    $phasePath = New-PairedPhaseConfig 'disposable-authorize'
+    Invoke-GuardedCommand 'authorize-delta' $phasePath
+    Assert-OwnerOnlyFile $disposableAuthorizationPath
+    $phasePath = New-PairedPhaseConfig 'disposable-apply'
+    Invoke-GuardedCommand 'apply-delta-local' $phasePath
+    Assert-OwnerOnlyFile (Join-Path $runDirectory 'disposable-apply-result.json')
+    $phasePath = New-PairedPhaseConfig 'disposable-reconcile'
+    Invoke-GuardedCommand 'reconcile-delta' $phasePath
+    Assert-OwnerOnlyFile $disposableProofPath
+    $phasePath = New-PairedPhaseConfig 'local-authorize'
+    Invoke-GuardedCommand 'authorize-paired-local-transition' $phasePath
+    Assert-OwnerOnlyFile $localAuthorizationPath
+    $phasePath = New-PairedPhaseConfig 'local-preflight'
+    Invoke-GuardedCommand 'preflight-paired-local-transition' $phasePath
+    Assert-OwnerOnlyFile (Join-Path $runDirectory 'local-preflight-result.json')
+    $phasePath = New-PairedPhaseConfig 'local-apply'
+    Invoke-GuardedCommand 'apply-paired-local-transition' $phasePath
+    Assert-OwnerOnlyFile (Join-Path $runDirectory 'local-apply-result.json')
+    Write-Output "daily_delta_paired_local_signed_result_ready_for_review:$runId"
     return
 }
 Invoke-GuardedCommand 'plan-delta' (Join-Path $runDirectory 'plan-config.json')
