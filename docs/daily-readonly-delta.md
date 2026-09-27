@@ -217,6 +217,16 @@ returns only plan/proof hashes and counts. This is not a persistent apply
 command or a durable admission receipt; any later apply must perform its own
 pre-metadata check and serializable row-preimage/replay fence. Existing apply
 and production gates remain unchanged.
+The same read-only command now inspects every existing
+`legacy_migration_internal.delta_fence` and `delta_journal` in repeatable-read,
+read-only transactions before returning. A missing pair is reported as
+unprovisioned; a partial pair, stale fence, unreconciled legacy entry, or
+conflicting plan-id/hash/operation/reconciliation replay fails closed. It reads
+all 23 states again after captured-row scanning and rejects a change. Its
+PII-free result reports unprovisioned, pending, and exact-replay counts; none
+is an authorization to create metadata or execute rows. The serializable
+atomic target must still recheck the same fences and row preimages at write
+time. No existing public Quotation outbox is deleted or targeted by this check.
 
 ## Read-only target gap inspection
 

@@ -4,6 +4,26 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class DisposableDeltaProofVerifierTests : IDisposable
 {
+    [Fact]
+    public void Local_transition_preflight_rejects_mid_scan_metadata_replay_or_rollback()
+    {
+        var pending = new PairedLocalTransitionMetadataObservation(
+            PairedLocalTransitionMetadataState.Pending, Hash('1'));
+        PairedLocalTransitionPreflight.RequireMetadataUnchanged(pending, pending);
+        foreach (PairedLocalTransitionMetadataState changed in new[]
+            { PairedLocalTransitionMetadataState.Unprovisioned, PairedLocalTransitionMetadataState.Replayed })
+        {
+            Assert.Equal("delta_paired_local_metadata_changed",
+                Assert.Throws<DeltaExecutionException>(() =>
+                    PairedLocalTransitionPreflight.RequireMetadataUnchanged(pending,
+                        new(changed, Hash('1')))).Code);
+        }
+        Assert.Equal("delta_paired_local_metadata_changed",
+            Assert.Throws<DeltaExecutionException>(() =>
+                PairedLocalTransitionPreflight.RequireMetadataUnchanged(pending,
+                    new(PairedLocalTransitionMetadataState.Pending, Hash('2')))).Code);
+    }
+
     private readonly ECDsa _planKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _localPlanKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _evidenceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -431,7 +451,8 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             {
                 return PairedLocalTransitionPreflight.VerifyAsync(plans, fixture.ProofResult, candidate,
                     fixture.Schema, fixture.Trust, fixture.LocalPlan.TargetAuthority!,
-                    fixture.LocalPlan.TargetObservationSha256, identity, Physical, directory,
+                    fixture.LocalPlan.TargetObservationSha256, identity, Physical,
+                    (_, _, _) => throw new InvalidOperationException("Metadata must not be inspected."), directory,
                     RandomNumberGenerator.GetBytes(32), new EmptyRows(), clock, CancellationToken.None);
             }
 
