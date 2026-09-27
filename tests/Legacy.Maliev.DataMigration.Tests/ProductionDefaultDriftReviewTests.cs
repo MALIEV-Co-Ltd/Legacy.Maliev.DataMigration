@@ -59,7 +59,7 @@ public sealed class ProductionDefaultDriftReviewTests(PostgreSqlAdapterFixture f
         await connection.OpenAsync();
         await using (var setup = new NpgsqlCommand(
             "CREATE SCHEMA default_review_probe; " +
-            "CREATE TABLE default_review_probe.\"Sample\" (\"Value\" text DEFAULT 'private-actual');",
+            "CREATE TABLE default_review_probe.\"Sample\" (\"Value\" text COLLATE \"C\" DEFAULT 'private-actual');",
             connection))
         {
             _ = await setup.ExecuteNonQueryAsync();
@@ -83,6 +83,10 @@ public sealed class ProductionDefaultDriftReviewTests(PostgreSqlAdapterFixture f
             ProductionDefaultDriftTableReview target = Assert.Single(review.Tables);
             Assert.Equal("default_review_probe", target.Schema);
             Assert.True(target.Columns.SequenceEqual(["Value"], StringComparer.Ordinal));
+            ProductionExpressionDriftColumnReview facet = Assert.Single(target.Expressions);
+            Assert.Equal("default", facet.Kind);
+            Assert.True(facet.OtherColumnShapeDriftPresent);
+            Assert.True(target.OtherShapeDriftPresent);
             Assert.Equal(first.SchemaSha256, review.ObservedSchemaSha256);
             Assert.Equal(Assert.Single(first.TableComponents, item => item.Schema == target.Schema &&
                 item.Table == target.Table).WholeTableSha256, target.ObservedWholeTableSha256);
@@ -116,6 +120,80 @@ public sealed class ProductionDefaultDriftReviewTests(PostgreSqlAdapterFixture f
         finally
         {
             await using var cleanup = new NpgsqlCommand("DROP SCHEMA default_review_probe CASCADE;", connection);
+            _ = await cleanup.ExecuteNonQueryAsync();
+        }
+    }
+
+    [Fact]
+    public async Task PlanDatabase_DisposableGeneratedFacet_IsNonExecutableAndBoundToPreimage()
+    {
+        var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+        {
+            Database = fixture.CanonicalDatabase,
+        };
+        await using var connection = new NpgsqlConnection(builder.ConnectionString);
+        await connection.OpenAsync();
+        await using (var setup = new NpgsqlCommand(
+            "CREATE SCHEMA generated_review_probe; " +
+            "CREATE TABLE generated_review_probe.\"Sample\" (\"Value\" text, " +
+            "\"Computed\" text GENERATED ALWAYS AS (\"Value\" || 'private-actual') STORED);",
+            connection))
+        {
+            _ = await setup.ExecuteNonQueryAsync();
+        }
+        try
+        {
+            var table = new TableCopyPlan("dbo", "Sample", "generated_review_probe", "Sample",
+                ["Value", "Computed"], ["Value"])
+            {
+                ColumnTypes = new Dictionary<string, string>
+                {
+                    ["Value"] = "text",
+                    ["Computed"] = "text",
+                },
+                NullableColumns = ["Value", "Computed"],
+                GeneratedColumns = [new GeneratedColumnCopyPlan("Computed", "lower(\"Value\")")],
+            };
+            var database = new DatabaseSchemaPlan(fixture.CanonicalDatabase, "1.0", new string('a', 64), "",
+                [table]);
+            database = database with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(database) };
+            ProductionSchemaObservation first = await ProductionSchemaCatalogInspector.InspectDatabaseAsync(
+                database, fixture.ConnectionString, CancellationToken.None);
+            ProductionDefaultDriftDatabaseReview review = ProductionDefaultDriftReviewPlanner.PlanDatabase(
+                database, first);
+            ProductionDefaultDriftTableReview target = Assert.Single(review.Tables);
+            Assert.Empty(target.Columns);
+            ProductionExpressionDriftColumnReview facet = Assert.Single(target.Expressions);
+            Assert.Equal("Computed", facet.Column);
+            Assert.Equal("generated", facet.Kind);
+            Assert.False(facet.OtherColumnShapeDriftPresent);
+            Assert.False(target.OtherShapeDriftPresent);
+            Assert.Equal(Assert.Single(first.TableComponents).WholeTableSha256, target.ObservedWholeTableSha256);
+            Assert.Equal(PostgreSqlSchemaFingerprint.ComputeExpectedComponents(table).WholeTableSha256,
+                target.ExpectedFinalWholeTableSha256);
+            string json = JsonSerializer.Serialize(review);
+            Assert.DoesNotContain("private-actual", json, StringComparison.Ordinal);
+            Assert.DoesNotContain("lower", json, StringComparison.Ordinal);
+            Assert.DoesNotContain("GENERATED ALWAYS", json, StringComparison.Ordinal);
+
+            await using (var change = new NpgsqlCommand(
+                "ALTER TABLE generated_review_probe.\"Sample\" DROP COLUMN \"Computed\"; " +
+                "ALTER TABLE generated_review_probe.\"Sample\" ADD COLUMN \"Computed\" text " +
+                "GENERATED ALWAYS AS (\"Value\" || 'private-second') STORED;",
+                connection))
+            {
+                _ = await change.ExecuteNonQueryAsync();
+            }
+            ProductionSchemaObservation second = await ProductionSchemaCatalogInspector.InspectDatabaseAsync(
+                database, fixture.ConnectionString, CancellationToken.None);
+            ProductionDefaultDriftTableReview changed = Assert.Single(
+                ProductionDefaultDriftReviewPlanner.PlanDatabase(database, second).Tables);
+            Assert.NotEqual(target.ObservedWholeTableSha256, changed.ObservedWholeTableSha256);
+            Assert.Equal(target.ExpectedFinalWholeTableSha256, changed.ExpectedFinalWholeTableSha256);
+        }
+        finally
+        {
+            await using var cleanup = new NpgsqlCommand("DROP SCHEMA generated_review_probe CASCADE;", connection);
             _ = await cleanup.ExecuteNonQueryAsync();
         }
     }
