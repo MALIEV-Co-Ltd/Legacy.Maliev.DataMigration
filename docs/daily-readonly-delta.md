@@ -184,14 +184,29 @@ one new capture key and directory, invokes `plan-paired-delta`, and stops
 after one protected JSON artifact containing both separately signed plans.
 It refuses `-Execute`, deletes, and production. With
 `useQuotationPhysicalTransition=true`, the two plans use schema `1.4`, and both
-targets must have the reviewed retained-outbox physical schema. No current
-helper promotes that artifact into a persistent-local row apply. The pure
+targets must have the reviewed retained-outbox physical schema. The plan-only
+helper does not promote that artifact into a persistent-local row apply. The pure
 zero-delete proof validator can check a later signed disposable exact-23
 reconciliation against the same-capture schema-1.4 pair, including the
 reviewed transition hash; it grants no execution authority. Independent
-disposable apply/reconciliation and a separately reviewed schema-1.4 local
-admission contract are still required.
+disposable apply/reconciliation and separately signed schema-1.4 LOCAL
+admission are still required.
 The retained public outboxes are never row-delta targets or retired here.
+
+`authorize-paired-local-transition` is an owner-only admission command for a
+fresh, same-capture pair and independently signed disposable exact-23 proof.
+Its protected configuration references the schema, complete pair, proof, five
+distinct trusted public keys, capture key and directory, and the persistent
+LOCAL connection file. Set `useCapturedSource=true`,
+`useQuotationPhysicalTransition=true`, `allowAuthorizationSigning=true`, and
+`allowExecution=false`; provide a new expiry no more than 15 minutes after
+issuance and the distinct authorization private key through
+`LEGACY_MIGRATION_DELTA_AUTHORIZATION_SIGNING_KEY_FILE`. It re-observes the
+exact target identity and all 23 physical schemas, verifies the signed
+zero-delete proof and captured rows, and inspects metadata, replay fences, and
+target preimages before publishing owner-only authorization JSON. Any drift
+or failed check stops publication. Authorization makes no target write; apply
+still repeats all checks and may fail if the target changes afterward.
 
 The separately signed `PairedLocalTransitionAuthorization` binds the persistent plan, disposable plan,
 signed disposable exact-23 reconciliation, reviewed transition hash, fresh

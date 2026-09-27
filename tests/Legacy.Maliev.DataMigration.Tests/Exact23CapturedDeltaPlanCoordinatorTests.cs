@@ -999,10 +999,48 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
             Exact23DeltaReconciliationResult proof = await disposableReconciliation.ReconcileAsync(
                 disposable, schema, CancellationToken.None);
             Assert.True(Exact23DeltaReconciliationCoordinator.Verify(proof, trust));
-            PairedLocalTransitionAuthorization authorization = PairedLocalTransitionAuthorizationPolicy.Produce(
-                plans, proof, schema, trust, localAuthority, local.TargetObservationSha256,
-                local.QuotationTransitionSchemaSha256!, DateTimeOffset.UtcNow,
+            var authorizer = new Console.DefaultGuardedDeltaConsoleRuntime();
+            Console.PairedLocalTransitionAuthorizationRequest authorizationRequest = new(schema,
+                plans, proof, trust, localAdmin, directory, captureKey,
                 DateTimeOffset.UtcNow.AddMinutes(10), localAuthorizer);
+            Assert.Equal("delta_target_system_identifier_invalid",
+                (await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                    authorizer.AuthorizePairedLocalTransitionAsync(authorizationRequest with
+                    {
+                        TargetConnectionString = disposableAdmin,
+                    }, CancellationToken.None))).Code);
+            string localQuotationForAuthorization = new NpgsqlConnectionStringBuilder(localAdmin)
+            {
+                Database = "Quotation",
+                Pooling = false,
+            }.ConnectionString;
+            await using (var drifted = new NpgsqlConnection(localQuotationForAuthorization))
+            {
+                await drifted.OpenAsync();
+                await using var alter = new NpgsqlCommand(
+                    "ALTER TABLE public.\"QuotationOutcomeOutbox\" ADD COLUMN \"UnexpectedDrift\" integer;",
+                    drifted);
+                _ = await alter.ExecuteNonQueryAsync();
+            }
+            MigrationExecutionException schemaDrift = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                authorizer.AuthorizePairedLocalTransitionAsync(authorizationRequest,
+                    CancellationToken.None));
+            Assert.Equal("shadow_reconciliation_failed", schemaDrift.Code);
+            Assert.Equal("Quotation", schemaDrift.Reconciliation?.Database);
+            Assert.Equal("schema", schemaDrift.Reconciliation?.Check);
+            await using (var restored = new NpgsqlConnection(localQuotationForAuthorization))
+            {
+                await restored.OpenAsync();
+                await using var alter = new NpgsqlCommand(
+                    "ALTER TABLE public.\"QuotationOutcomeOutbox\" DROP COLUMN \"UnexpectedDrift\";",
+                    restored);
+                _ = await alter.ExecuteNonQueryAsync();
+            }
+            PairedLocalTransitionAuthorization authorization = await authorizer
+                .AuthorizePairedLocalTransitionAsync(authorizationRequest, CancellationToken.None);
+            PairedLocalTransitionAuthorizationPolicy.Verify(authorization, plans, proof, schema,
+                trust, localAuthority, local.TargetObservationSha256,
+                local.QuotationTransitionSchemaSha256!, DateTimeOffset.UtcNow);
             var permit = PairedLocalTransitionExecutionPermit.Admit(plans, proof, authorization,
                 schema, trust, localAuthority, local.TargetObservationSha256, TimeProvider.System);
             var localMetadata = new PairedLocalTransitionMetadataInspector(localAdmin);
