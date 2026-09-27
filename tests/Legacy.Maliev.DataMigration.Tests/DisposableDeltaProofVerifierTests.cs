@@ -33,6 +33,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
     private readonly ECDsa _localPlanKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _evidenceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     private readonly ECDsa _authorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    private readonly ECDsa _continuityKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
     [Fact]
     public async Task Historical_local_current_target_review_compares_all_23_without_authorizing_execution()
@@ -295,6 +296,89 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             Assert.Throws<MigrationConsoleException>(() =>
                 DefaultHistoricalLocalReviewRuntime.RequireMountSource(container,
                     "legacy-maliev-exact23-postgres-data", "/reused/name")).Code);
+    }
+
+    [Fact]
+    public async Task Historical_continuity_attestation_is_signed_but_never_authorizes_fence_adoption()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true);
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(fixture);
+        HistoricalCurrentLocalObservation observation = CurrentObservation(fixture);
+        DateTimeOffset comparedAt = fixture.Now.AddDays(1);
+        HistoricalPairedLocalCurrentTargetReview review = await HistoricalPairedLocalCurrentTargetReviewer
+            .CompareAsync(fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+                _ => Task.FromResult(observation), new CurrentEvidenceInspector(fixture.Schema),
+                new FixedTime(comparedAt), CancellationToken.None);
+        HistoricalLocalMetadataBinding[] metadata = [.. DatabaseInventory.ActiveDatabases.Select(database =>
+            new HistoricalLocalMetadataBinding(database, PairedLocalTransitionMetadataState.SettledPrior, Hash('f')))];
+        using var signer = new P256MigrationEvidenceSigner("continuity-review", _continuityKey.ExportECPrivateKeyPem());
+        var trust = new ReceiptAttestationTrustStore(
+            [new(fixture.LocalPlan.AttestationKeyId, _localPlanKey.ExportSubjectPublicKeyInfo()),
+                new(receipt.AttestationKeyId, _evidenceKey.ExportSubjectPublicKeyInfo()),
+                new(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
+        string futurePlan = Hash('d');
+        Guid futureAuthorization = Guid.NewGuid();
+        DateTimeOffset issuedAt = comparedAt.AddMinutes(1);
+        var unsigned = new HistoricalLocalContinuityAttestation("1.0", Guid.NewGuid(),
+            DeltaSynchronizationPlanCanonicalizer.ComputeSha256(fixture.LocalPlan),
+            Exact23DeltaReconciliationCoordinator.ComputeSha256(receipt),
+            SchemaPlanCanonicalizer.ComputeSha256(fixture.Schema), fixture.LocalPlan.SourceCutoffUtc,
+            fixture.LocalPlan.TargetGeneration, observation.DockerGeneration,
+            HistoricalLocalContinuityAttestationCanonicalizer.ComputeObservationSha256(observation),
+            HistoricalLocalContinuityAttestationCanonicalizer.ComputeReviewSha256(review), true,
+            metadata, futurePlan, futureAuthorization, issuedAt, issuedAt.AddMinutes(10), signer.KeyId, null);
+        HistoricalLocalContinuityAttestation Sign(HistoricalLocalContinuityAttestation value)
+        {
+            return value with
+            {
+                AttestationSignature = Convert.ToBase64String(signer.Sign(
+                    HistoricalLocalContinuityAttestationCanonicalizer.CreatePayload(value))),
+            };
+        }
+        HistoricalLocalContinuityAttestation signed = Sign(unsigned);
+        HistoricalLocalContinuityReview result = HistoricalLocalContinuityAttestationVerifier.Verify(
+            signed, fixture.LocalPlan, receipt, fixture.Schema, review, observation, metadata,
+            futurePlan, futureAuthorization, trust, issuedAt.AddMinutes(1));
+        Assert.Equal(DatabaseInventory.ActiveDatabases.Count, result.MetadataBindingsVerified);
+        Assert.Equal(fixture.LocalPlan.SourceCutoffUtc, result.HistoricalSourceCutoffUtc);
+        Assert.False(HistoricalLocalContinuityAttestation.AuthorizesExecution);
+        Assert.False(HistoricalLocalContinuityReview.AuthorizesExecution);
+
+        void Reject(HistoricalLocalContinuityAttestation candidate,
+            HistoricalCurrentLocalObservation? current = null,
+            IReadOnlyList<HistoricalLocalMetadataBinding>? observed = null,
+            DateTimeOffset? at = null,
+            string? expectedFuturePlan = null)
+        {
+            Assert.Equal("delta_historical_local_continuity_invalid",
+                Assert.Throws<DeltaExecutionException>(() => HistoricalLocalContinuityAttestationVerifier
+                    .Verify(candidate, fixture.LocalPlan, receipt, fixture.Schema, review,
+                        current ?? observation, observed ?? metadata, expectedFuturePlan ?? futurePlan,
+                        futureAuthorization, trust, at ?? issuedAt.AddMinutes(1))).Code);
+        }
+        Reject(signed with { CurrentReviewSha256 = Hash('9') });
+        Reject(Sign(unsigned with { FormerContainerAbsentObserved = false }));
+        Reject(Sign(unsigned with { PriorMetadata = metadata[..^1] }));
+        HistoricalLocalMetadataBinding[] pending = [.. metadata];
+        pending[0] = pending[0] with { State = PairedLocalTransitionMetadataState.Pending };
+        Reject(Sign(unsigned with { PriorMetadata = pending }));
+        Reject(signed, current: observation with { VolumeMountpoint = "/different" });
+        Reject(signed, observed: metadata[..^1]);
+        Reject(signed, at: issuedAt.AddMinutes(10));
+        Reject(signed, expectedFuturePlan: Hash('a'));
+        using var reusedSigner = new P256MigrationEvidenceSigner(fixture.LocalPlan.AttestationKeyId,
+            _localPlanKey.ExportECPrivateKeyPem());
+        HistoricalLocalContinuityAttestation reusedUnsigned = unsigned with
+        {
+            AttestationKeyId = reusedSigner.KeyId,
+        };
+        HistoricalLocalContinuityAttestation reused = reusedUnsigned with
+        {
+            AttestationSignature = Convert.ToBase64String(reusedSigner.Sign(
+                HistoricalLocalContinuityAttestationCanonicalizer.CreatePayload(reusedUnsigned))),
+        };
+        Reject(reused);
     }
 
     private static async Task WriteOwnerOnlyTextAsync(string path, string content)
@@ -1196,6 +1280,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         _localPlanKey.Dispose();
         _evidenceKey.Dispose();
         _authorizationKey.Dispose();
+        _continuityKey.Dispose();
     }
 
     private sealed record Fixture(DeltaSynchronizationPlan ProofPlan,
