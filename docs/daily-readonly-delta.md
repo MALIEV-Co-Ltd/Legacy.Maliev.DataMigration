@@ -422,13 +422,18 @@ time. No existing public Quotation outbox is deleted or targeted by this check.
 After generating the current source schema plan, use
 `scripts/new-production-delta-template.ps1` from clean, exact-head-green
 protected main to project a fresh production target connection and observation
-into a new owner-only key directory. Its loopback tunnel must be either the
-observed `maliev-legacy/legacy-postgres-main-rw` port-forward or the exact-main
-identity-checked exec tunnel created with
+into a new owner-only key directory. The CRI port-forward has repeatedly reset
+after one authenticated PostgreSQL connection, so it is no longer admitted for
+this template. Use the exact-main identity-checked, loopback-only exec tunnel
+created with
 `scripts/new-production-exec-tunnel-config.ps1` and admitted through
-`-ExecTunnelConfigPath`. The latter is plan-only and cannot authorize or apply
-production rows. Both paths verify cluster
-health, archiving, primary identity, capacity, and all 23 canonical databases.
+`-ExecTunnelConfigPath`. Before publishing an owner-only connection or template,
+the projector checks the cluster, archiving, primary identity, capacity, and
+inventory, then opens 23 separate authenticated, read-only connections, one to
+each canonical database. Every connection must return the same PostgreSQL system
+identifier; the listener process, config hash, cluster and primary are rechecked
+afterward. One successful query is insufficient. The template remains plan-only
+and cannot authorize or apply production rows.
 Supply the independently verified current source commit with
 `-ExpectedSourceCommitSha`; a stale schema plan is rejected.
 The generated template permits planning only; it cannot sign an execution

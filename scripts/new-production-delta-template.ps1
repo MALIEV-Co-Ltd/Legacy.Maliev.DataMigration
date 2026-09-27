@@ -15,6 +15,7 @@ if (-not $IsWindows -or $env:LEGACY_DEPLOY_ENABLED -cne 'false') {
     throw 'production_delta_host_or_deploy_gate_invalid'
 }
 if ($Port -lt 1024 -or $Port -gt 65535 -or
+    [string]::IsNullOrWhiteSpace($ExecTunnelConfigPath) -or
     $ExpectedSourceCommitSha -cnotmatch '^[0-9a-f]{40}$' -or
     $BackupManifestSha256 -cnotmatch '^[0-9a-f]{64}$' -or
     $BackupKeyFingerprintSha256 -cnotmatch '^[0-9a-f]{64}$') {
@@ -78,37 +79,24 @@ if ($LASTEXITCODE -ne 0 -or $service.spec.ports[0].port -ne 5432) {
 $listener = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
 if ($listener.Count -ne 1) { throw 'production_delta_loopback_tunnel_missing' }
 $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener[0].OwningProcess)"
-$transport = 'kubectl-port-forward'
-$tunnelConfigHash = $null
-if ([string]::IsNullOrWhiteSpace($ExecTunnelConfigPath)) {
-    if ($null -eq $process -or $process.Name -cnotmatch '^kubectl(\.exe)?$' -or
-        $process.CommandLine -cnotmatch '[ -]-n maliev-legacy port-forward svc/legacy-postgres-main-rw ' -or
-        $process.CommandLine -cnotmatch " $($Port):5432 --address 127\.0\.0\.1") {
-        throw 'production_delta_tunnel_identity_invalid'
-    }
+if ($null -eq $process) { throw 'production_delta_tunnel_identity_invalid' }
+$execConfigPath = (Resolve-Path -LiteralPath $ExecTunnelConfigPath).Path
+if (-not $execConfigPath.StartsWith($root + [IO.Path]::DirectorySeparatorChar,
+    [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'production_delta_exec_config_outside_root'
 }
-else {
-    $execConfigPath = (Resolve-Path -LiteralPath $ExecTunnelConfigPath).Path
-    if (-not $execConfigPath.StartsWith($root + [IO.Path]::DirectorySeparatorChar,
-        [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'production_delta_exec_config_outside_root'
-    }
-    $execAcl = Get-Acl -LiteralPath $execConfigPath
-    $execRules = @($execAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-    if ($execAcl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $owner -or
-        @($execRules | Where-Object { $_.IdentityReference -ne $owner -or $_.AccessControlType -ne 'Allow' }).Count -gt 0) {
-        throw 'production_delta_exec_config_unprotected'
-    }
-    if ($null -eq $process) {
-        throw 'production_delta_tunnel_identity_invalid'
-    }
-    $execConfig = Get-Content -LiteralPath $execConfigPath -Raw | ConvertFrom-Json
-    . (Join-Path $PSScriptRoot 'production-exec-tunnel-admission.ps1')
-    Assert-ProductionExecTunnelIdentity -Config $execConfig -Cluster $cluster -Pod $pod `
-        -Process $process -Assembly $assembly -ConfigPath $execConfigPath -Port $Port
-    $transport = 'identity-checked-kubectl-exec'
-    $tunnelConfigHash = (Get-FileHash -LiteralPath $execConfigPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$execAcl = Get-Acl -LiteralPath $execConfigPath
+$execRules = @($execAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+if ($execAcl.GetOwner([Security.Principal.SecurityIdentifier]) -ne $owner -or
+    @($execRules | Where-Object { $_.IdentityReference -ne $owner -or $_.AccessControlType -ne 'Allow' }).Count -gt 0) {
+    throw 'production_delta_exec_config_unprotected'
 }
+$execConfig = Get-Content -LiteralPath $execConfigPath -Raw | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'production-exec-tunnel-admission.ps1')
+Assert-ProductionExecTunnelIdentity -Config $execConfig -Cluster $cluster -Pod $pod `
+    -Process $process -Assembly $assembly -ConfigPath $execConfigPath -Port $Port
+$tunnelConfigHash = (Get-FileHash -LiteralPath $execConfigPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$transport = 'identity-checked-kubectl-exec'
 
 $secret = kubectl -n maliev-legacy get secret legacy-postgres-superuser -o json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or -not $secret.data.username -or -not $secret.data.password) {
@@ -120,19 +108,23 @@ if ($username -cne 'postgres' -or [string]::IsNullOrWhiteSpace($password)) {
     throw 'production_delta_target_role_invalid'
 }
 $oldPassword = $env:PGPASSWORD
+$oldOptions = $env:PGOPTIONS
 $env:PGPASSWORD = $password
+$env:PGOPTIONS = '-c default_transaction_read_only=on'
 try {
     $psql = 'C:\Program Files\PostgreSQL\18\bin\psql.exe'
-    $systemIds = @(& $psql -h 127.0.0.1 -p $Port -U $username -d postgres -w -Atc 'SELECT system_identifier::text FROM pg_control_system();')
+    $systemIds = @(& $psql -X -h 127.0.0.1 -p $Port -U $username -d postgres -w -Atc 'SELECT system_identifier::text FROM pg_control_system();')
     if ($LASTEXITCODE -ne 0 -or $systemIds.Count -ne 1 -or $systemIds[0] -cnotmatch '^\d+$') {
         throw 'production_delta_target_identity_unavailable'
     }
-    $databases = @(& $psql -h 127.0.0.1 -p $Port -U $username -d postgres -w -Atc "SELECT datname FROM pg_database WHERE datistemplate=false AND datname<>'postgres' ORDER BY datname;")
+    $databases = @(& $psql -X -h 127.0.0.1 -p $Port -U $username -d postgres -w -Atc "SELECT datname FROM pg_database WHERE datistemplate=false AND datname<>'postgres' ORDER BY datname;")
     if ($LASTEXITCODE -ne 0) { throw 'production_delta_target_inventory_unavailable' }
 }
 finally {
     if ($null -eq $oldPassword) { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
     else { $env:PGPASSWORD = $oldPassword }
+    if ($null -eq $oldOptions) { Remove-Item Env:PGOPTIONS -ErrorAction SilentlyContinue }
+    else { $env:PGOPTIONS = $oldOptions }
 }
 $expected = @('ContactRequest','Country','Currency','Customer','CustomerIdentity','DataProtectionKeys',
     'DataProtectionKeysEmployee','Employee','EmployeeIdentity','Invoice','JobOffers','LocationData',
@@ -148,6 +140,55 @@ for ($index = 0; $index -lt $expected.Count; $index++) {
         throw 'production_delta_schema_inventory_invalid'
     }
 }
+
+# The CRI port-forward can pass one authenticated query and then reset. Admit only
+# the identity-checked exec relay after 23 separate read-only connections, one per
+# canonical database, each returning the same PostgreSQL system identifier.
+$oldPassword = $env:PGPASSWORD
+$oldOptions = $env:PGOPTIONS
+$env:PGPASSWORD = $password
+$env:PGOPTIONS = '-c default_transaction_read_only=on'
+try {
+    $identityQuery = {
+        param([string]$Database)
+        $lines = @(& $psql -X -w -h 127.0.0.1 -p $Port -U $username -d $Database -At `
+            -v ON_ERROR_STOP=1 -c 'SELECT system_identifier::text FROM pg_control_system();' 2>$null)
+        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Lines = $lines }
+    }
+    Assert-ProductionExecTunnelDurability -Databases $expected `
+        -ExpectedSystemIdentifier $systemIds[0] -Query $identityQuery
+    $finalDatabases = @(& $psql -X -w -h 127.0.0.1 -p $Port -U $username -d postgres -At `
+        -v ON_ERROR_STOP=1 -c "SELECT datname FROM pg_database WHERE datistemplate=false AND datname<>'postgres' ORDER BY datname;" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or
+        [string]::Join('|', $finalDatabases) -cne [string]::Join('|', $databases)) {
+        throw 'production_delta_tunnel_inventory_changed'
+    }
+}
+finally {
+    if ($null -eq $oldPassword) { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
+    else { $env:PGPASSWORD = $oldPassword }
+    if ($null -eq $oldOptions) { Remove-Item Env:PGOPTIONS -ErrorAction SilentlyContinue }
+    else { $env:PGOPTIONS = $oldOptions }
+}
+$finalListener = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+if ($finalListener.Count -ne 1 -or $finalListener[0].OwningProcess -ne $listener[0].OwningProcess -or
+    (Get-FileHash -LiteralPath $execConfigPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $tunnelConfigHash) {
+    throw 'production_delta_tunnel_changed_during_preflight'
+}
+$finalProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($finalListener[0].OwningProcess)"
+$finalCluster = kubectl -n maliev-legacy get cluster legacy-postgres-main -o json | ConvertFrom-Json
+$clusterStatus = $LASTEXITCODE
+$finalPod = kubectl -n maliev-legacy get pod $primaryName -o json | ConvertFrom-Json
+if ($clusterStatus -ne 0 -or $LASTEXITCODE -ne 0 -or $null -eq $finalProcess -or
+    $finalCluster.status.phase -cne 'Cluster in healthy state' -or
+    $finalCluster.status.readyInstances -ne 2 -or $finalCluster.status.instances -ne 2 -or
+    @($finalCluster.status.conditions | Where-Object { $_.type -eq 'ContinuousArchiving' -and $_.status -eq 'True' }).Count -ne 1 -or
+    $finalPod.status.phase -cne 'Running' -or
+    $finalPod.metadata.labels.'cnpg.io/instanceRole' -cne 'primary') {
+    throw 'production_delta_tunnel_changed_during_preflight'
+}
+Assert-ProductionExecTunnelIdentity -Config $execConfig -Cluster $finalCluster -Pod $finalPod `
+    -Process $finalProcess -Assembly $assembly -ConfigPath $execConfigPath -Port $Port
 
 function Write-OwnerNewFile([string]$Path, [string]$Text) {
     $bytes = [Text.Encoding]::UTF8.GetBytes($Text)
