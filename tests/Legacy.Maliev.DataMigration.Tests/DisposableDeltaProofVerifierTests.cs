@@ -394,6 +394,18 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         PairedLocalTransitionExecutionPermit permit = PairedLocalTransitionExecutionPermit.Admit(
             plans, fixture.ProofResult, authorization, fixture.Schema, fixture.Trust,
             authority, fixture.LocalPlan.TargetObservationSha256, clock);
+        var generationChecks = 0;
+        await new PairedLocalTransitionExecutionGate(permit, fixture.Schema, _ =>
+        {
+            generationChecks++;
+            return Task.CompletedTask;
+        }).ValidateAsync(fixture.LocalPlan, "Quotation", CancellationToken.None);
+        Assert.Equal(1, generationChecks);
+        DeltaExecutionException generationDrift = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            new PairedLocalTransitionExecutionGate(permit, fixture.Schema, _ =>
+                throw new DeltaExecutionException("delta_paired_local_runtime_drift", "changed"))
+                .ValidateAsync(fixture.LocalPlan, "Quotation", CancellationToken.None));
+        Assert.Equal("delta_paired_local_runtime_drift", generationDrift.Code);
         permit.Require(fixture.LocalPlan, fixture.Schema.Databases.Single(item => item.Database == "Quotation"),
             fixture.Now);
         Assert.Equal(fixture.LocalPlan.QuotationTransitionSchemaSha256,

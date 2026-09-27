@@ -224,17 +224,77 @@ needed should the owner remove the run-owned capture key and temporary
 credential/signing-key projections under the local retention policy. The
 helper never deletes caller-owned connection or signing-key files itself.
 
-The current off-repository `new-local-delta-template.ps1` projects a
-persistent-only template; it does not create `pairedPersistentTarget` and must
-not be treated as a ready `-ExecutePairedLocal` input. Before using this mode,
-an independently reviewed, owner-only template projection must observe a
-fresh isolated disposable PostgreSQL identity and the existing persistent
-LOCAL identity, verify their exact-23 physical catalogs, and provide distinct
-protected connection files and six distinct plan/authorization/evidence
-signing roles (three per target). Never relabel one target or copy its key
-references into the other. The following is only the target/key overlay on
-an otherwise complete fresh schema-1.4 delta template, not an executable
-template or an authorization:
+The off-repository `new-local-delta-template.ps1` remains a persistent-only
+helper. It does not create `pairedPersistentTarget` and must not be passed to
+`-ExecutePairedLocal`. From clean protected main with exact-head green CI,
+the owner can instead run `project-paired-local-template --config
+<owner-only-candidate.json>` immediately before the paired daily run. The
+candidate contains `pairedLocalTemplate`, not `delta`:
+
+```json
+{
+  "pairedLocalTemplate": {
+    "schemaPlanPath": "<fresh owner-only exact-23 source schema plan>",
+    "outputPath": "<new file in owner-only local directory>",
+    "sourceConnectionFile": "<owner-only SQL source connection file>",
+    "runnerAssemblyPath": "<reviewed protected-main Console DLL>",
+    "backupManifestSha256": "<fresh backup/capture baseline hash>",
+    "backupKeyFingerprintSha256": "<distinct backup key fingerprint>",
+    "disposable": {
+      "targetConnectionFile": "<owner-only isolated disposable PG connection file>",
+      "dockerContainerId": "<full 64-character container ID claim>",
+      "dockerVolumeName": "legacy-delta-proof-<unique-run>",
+      "planKey": { "keyId": "<unique disposable plan ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" },
+      "authorizationKey": { "keyId": "<unique disposable auth ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" },
+      "evidenceKey": { "keyId": "<unique disposable evidence ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" }
+    },
+    "persistent": {
+      "targetConnectionFile": "<owner-only existing LOCAL PG connection file>",
+      "dockerContainerId": "<full 64-character container ID claim>",
+      "dockerVolumeName": "legacy-maliev-exact23-postgres-data",
+      "planKey": { "keyId": "<unique persistent plan ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" },
+      "authorizationKey": { "keyId": "<unique persistent auth ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" },
+      "evidenceKey": { "keyId": "<unique persistent evidence ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" }
+    }
+  }
+}
+```
+
+The six distinct owner-only private signer paths are supplied through the
+disposable `LEGACY_MIGRATION_DELTA_{PLAN,AUTHORIZATION,EVIDENCE}_SIGNING_KEY_FILE`
+and persistent
+`LEGACY_MIGRATION_PERSISTENT_DELTA_{PLAN,AUTHORIZATION,EVIDENCE}_SIGNING_KEY_FILE`
+environment variables. Set `LEGACY_DEPLOY_ENABLED=false` and
+`LEGACY_MIGRATION_CALLER=owner`. The projector reads each private signer and
+checks its fingerprint against the separate protected public key; no private
+path or key is written to the resulting template. It requires a fresh
+schema-2.0 exact-23 source plan with the reviewed Quotation disposition,
+separate connection files, six different roles and fingerprints, and the
+backup key fingerprint distinct from all six. It independently runs Docker
+inspect for each full container ID and named local volume, checks a running
+container, its writable PGDATA volume mount, exact loopback port binding,
+and at least 10 GiB available on that mount, then
+opens both PostgreSQL targets with read-only transactions to verify system
+identifiers, exact-23 inventory, and all 23 full physical schemas. Quotation
+must match the additive retained-public-outbox transition schema. The
+caller-supplied IDs and volume names are claims, never observations.
+
+Only after every check passes does it publish a create-new owner-only `delta`
+template with distinct disposable/persistent authorities, Docker-container
+generation bindings, observation hashes, and schema-1.4 paired fields. The
+Docker generation is a container/volume identity observation, **not** a
+cryptographic attestation of volume contents. The schema-1.4 LOCAL apply
+requires the signed Docker generation tuple (full container ID, container
+creation/start times, and volume creation time) and re-observes
+the canonical persistent container, named volume, loopback binding, capacity,
+and PostgreSQL authority before admission, before each database's atomic
+metadata/DML transaction, and after reconciliation. The signed plan and
+atomic apply also recheck physical schema, captured-row preimages, metadata
+fences, and proof. Regenerate the
+candidate, keys, schema plan, and template for each run; do not reuse an old
+template after restart or target drift. A projector result alone is not an
+apply authorization or a claim of current SQL production parity. The
+following is the projected target/key portion for operator review:
 
 ```json
 {
@@ -273,6 +333,15 @@ template or an authorization:
 
 The disposable and persistent private signing-key paths are projected only
 through the console's distinct environment variables; none belongs in JSON.
+The paired run requires separate protected
+`LEGACY_MIGRATION_DELTA_AUTHORIZATION_SIGNING_KEY_FILE` and
+`LEGACY_MIGRATION_PERSISTENT_DELTA_AUTHORIZATION_SIGNING_KEY_FILE` paths, and
+likewise separate `LEGACY_MIGRATION_DELTA_EVIDENCE_SIGNING_KEY_FILE` and
+`LEGACY_MIGRATION_PERSISTENT_DELTA_EVIDENCE_SIGNING_KEY_FILE` paths. The helper
+temporarily selects each persistent path only for its LOCAL signing phase and
+restores the disposable path afterward; missing or identical paths fail closed.
+The console still validates each private key against its distinct trusted
+public-key fingerprint.
 If the paired template projection, target observation, or fresh distinct keys
 are unavailable, stop before invoking the execution switch. No automatic
 same-pair fresh-authorization resume exists yet after expiry or partial commit.

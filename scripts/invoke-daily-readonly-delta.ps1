@@ -71,6 +71,23 @@ function Invoke-GuardedCommand([string]$Command, [string]$ConfigPath) {
     if ($LASTEXITCODE -ne 0) { Fail "daily_delta_${Command}_failed" }
 }
 
+function Invoke-GuardedWithPersistentSigner([string]$Command, [string]$ConfigPath,
+    [string]$DisposableVariable, [string]$PersistentVariable) {
+    $original = [Environment]::GetEnvironmentVariable($DisposableVariable, 'Process')
+    $persistent = [Environment]::GetEnvironmentVariable($PersistentVariable, 'Process')
+    if ([string]::IsNullOrWhiteSpace($original) -or [string]::IsNullOrWhiteSpace($persistent) -or
+        [string]::Equals($original, $persistent, [StringComparison]::OrdinalIgnoreCase)) {
+        Fail 'daily_delta_persistent_signer_projection_invalid'
+    }
+    try {
+        [Environment]::SetEnvironmentVariable($DisposableVariable, $persistent, 'Process')
+        Invoke-GuardedCommand $Command $ConfigPath
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable($DisposableVariable, $original, 'Process')
+    }
+}
+
 if (-not $IsWindows) { Fail 'daily_delta_windows_host_required' }
 if ($env:LEGACY_DEPLOY_ENABLED -cne 'false') { Fail 'daily_delta_deploy_gate_invalid' }
 if ($env:LEGACY_MIGRATION_CALLER -notin @('owner', 'operator')) { Fail 'daily_delta_caller_invalid' }
@@ -292,13 +309,17 @@ if ($PlanPaired -or $ExecutePairedLocal) {
     Invoke-GuardedCommand 'reconcile-delta' $phasePath
     Assert-OwnerOnlyFile $disposableProofPath
     $phasePath = New-PairedPhaseConfig 'local-authorize'
-    Invoke-GuardedCommand 'authorize-paired-local-transition' $phasePath
+    Invoke-GuardedWithPersistentSigner 'authorize-paired-local-transition' $phasePath `
+        'LEGACY_MIGRATION_DELTA_AUTHORIZATION_SIGNING_KEY_FILE' `
+        'LEGACY_MIGRATION_PERSISTENT_DELTA_AUTHORIZATION_SIGNING_KEY_FILE'
     Assert-OwnerOnlyFile $localAuthorizationPath
     $phasePath = New-PairedPhaseConfig 'local-preflight'
     Invoke-GuardedCommand 'preflight-paired-local-transition' $phasePath
     Assert-OwnerOnlyFile (Join-Path $runDirectory 'local-preflight-result.json')
     $phasePath = New-PairedPhaseConfig 'local-apply'
-    Invoke-GuardedCommand 'apply-paired-local-transition' $phasePath
+    Invoke-GuardedWithPersistentSigner 'apply-paired-local-transition' $phasePath `
+        'LEGACY_MIGRATION_DELTA_EVIDENCE_SIGNING_KEY_FILE' `
+        'LEGACY_MIGRATION_PERSISTENT_DELTA_EVIDENCE_SIGNING_KEY_FILE'
     Assert-OwnerOnlyFile (Join-Path $runDirectory 'local-apply-result.json')
     Write-Output "daily_delta_paired_local_signed_result_ready_for_review:$runId"
     return

@@ -25,6 +25,19 @@ public static partial class MigrationConsole
             cancellationToken);
     }
 
+    internal static Task<int> RunPairedTemplateForTestsAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        Func<string, string?> environment,
+        IPairedLocalTemplateObserver observer,
+        CancellationToken cancellationToken)
+    {
+        ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
+        return RunDeltaBoundaryAsync(invocation.Command, invocation.ConfigPath, environment, output, error,
+            new DefaultGuardedDeltaConsoleRuntime(), cancellationToken, observer);
+    }
+
     private static async Task<int> RunDeltaBoundaryAsync(
         string command,
         string configPath,
@@ -32,7 +45,8 @@ public static partial class MigrationConsole
         TextWriter output,
         TextWriter error,
         IGuardedDeltaConsoleRuntime runtime,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IPairedLocalTemplateObserver? templateObserver = null)
     {
         try
         {
@@ -44,6 +58,15 @@ public static partial class MigrationConsole
 
             MigrationConsoleConfiguration root = await ReadProtectedJsonAsync<MigrationConsoleConfiguration>(
                 configPath, "delta_config_unprotected", cancellationToken).ConfigureAwait(false);
+            if (command == "project-paired-local-template")
+            {
+                PairedLocalTemplateCommandConfiguration candidate = root.PairedLocalTemplate ??
+                    throw DeltaInvalid("delta_paired_template_configuration_missing");
+                await ProjectPairedLocalTemplateAsync(candidate, environment,
+                    templateObserver ?? new DefaultPairedLocalTemplateObserver(), cancellationToken).ConfigureAwait(false);
+                await output.WriteLineAsync("project_paired_local_template_complete").ConfigureAwait(false);
+                return 0;
+            }
             DeltaCommandConfiguration configuration = root.Delta ?? throw DeltaInvalid("delta_configuration_missing");
             ValidateDeltaConfiguration(command, configuration);
             object result = command switch

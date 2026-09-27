@@ -119,11 +119,11 @@ public sealed class MigrationScriptContractTests
             StringComparison.Ordinal);
         int disposableApply = script.IndexOf("Invoke-GuardedCommand 'apply-delta-local' $phasePath", StringComparison.Ordinal);
         int disposableProof = script.IndexOf("Invoke-GuardedCommand 'reconcile-delta' $phasePath", StringComparison.Ordinal);
-        int localAuthorization = script.IndexOf("Invoke-GuardedCommand 'authorize-paired-local-transition' $phasePath",
+        int localAuthorization = script.IndexOf("Invoke-GuardedWithPersistentSigner 'authorize-paired-local-transition' $phasePath",
             StringComparison.Ordinal);
         int localPreflight = script.IndexOf("Invoke-GuardedCommand 'preflight-paired-local-transition' $phasePath",
             StringComparison.Ordinal);
-        int localApply = script.IndexOf("Invoke-GuardedCommand 'apply-paired-local-transition' $phasePath",
+        int localApply = script.IndexOf("Invoke-GuardedWithPersistentSigner 'apply-paired-local-transition' $phasePath",
             StringComparison.Ordinal);
         Assert.True(pair >= 0 && pair < deleteGate && deleteGate < disposableAuthorization &&
             disposableAuthorization < disposableApply &&
@@ -135,6 +135,13 @@ public sealed class MigrationScriptContractTests
         Assert.DoesNotContain("apply-delta-production", pairedExecution, StringComparison.Ordinal);
         Assert.DoesNotContain("Remove-Item", pairedExecution, StringComparison.Ordinal);
         Assert.DoesNotContain("apply-delta-production' $phasePath", script, StringComparison.Ordinal);
+        Assert.Contains("LEGACY_MIGRATION_PERSISTENT_DELTA_AUTHORIZATION_SIGNING_KEY_FILE", script,
+            StringComparison.Ordinal);
+        Assert.Contains("LEGACY_MIGRATION_PERSISTENT_DELTA_EVIDENCE_SIGNING_KEY_FILE", script,
+            StringComparison.Ordinal);
+        Assert.Contains("daily_delta_persistent_signer_projection_invalid", script, StringComparison.Ordinal);
+        Assert.Contains("[Environment]::SetEnvironmentVariable($DisposableVariable, $original, 'Process')", script,
+            StringComparison.Ordinal);
     }
 
     [Theory]
