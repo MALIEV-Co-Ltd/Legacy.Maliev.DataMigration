@@ -15,6 +15,7 @@ public sealed record PairedLocalTransitionPreflightResult(
     public int UnprovisionedDatabases { get; init; }
     public int PendingDatabases { get; init; }
     public int ReplayedDatabases { get; init; }
+    public int SettledPriorDatabases { get; init; }
 }
 
 /// <summary>
@@ -111,6 +112,8 @@ public static class PairedLocalTransitionPreflight
                 item.State == PairedLocalTransitionMetadataState.Pending),
             ReplayedDatabases = metadata.Values.Count(item =>
                 item.State == PairedLocalTransitionMetadataState.Replayed),
+            SettledPriorDatabases = metadata.Values.Count(item =>
+                item.State == PairedLocalTransitionMetadataState.SettledPrior),
         };
     }
 

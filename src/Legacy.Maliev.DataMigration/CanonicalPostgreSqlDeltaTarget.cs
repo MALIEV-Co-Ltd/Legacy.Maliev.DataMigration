@@ -65,19 +65,34 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                         .ConfigureAwait(false);
                 }
                 await AcquireLocksAsync(connection, transaction, binding, schema, cancellationToken).ConfigureAwait(false);
-                if (schema.Database == "Quotation")
+                if (schema.Database == "Quotation" || localPermit is not null)
                 {
                     await using var schemaInspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction,
                         ownsResources: false);
                     string observedSchema = await schemaInspector.InspectSchemaAsync(schema, cancellationToken)
                         .ConfigureAwait(false);
-                    QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema, observedSchema, localPermit);
+                    if (schema.Database == "Quotation")
+                    {
+                        QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema, observedSchema, localPermit);
+                    }
+                    else if (!Fixed(observedSchema, schema.TargetSchemaSha256))
+                    {
+                        throw Error("canonical_delta_local_schema_drift",
+                            "The LOCAL physical schema changed after transition admission.");
+                    }
                 }
-                if (localPermit is not null && await MetadataAbsentAsync(connection, transaction,
-                    cancellationToken).ConfigureAwait(false))
+                if (localPermit is not null)
                 {
-                    await PostgreSqlDeltaMetadataProvisioner.ProvisionDatabaseAsync(connection, transaction,
-                        plan, schema, cancellationToken, localPermit).ConfigureAwait(false);
+                    PairedLocalTransitionMetadataObservation metadata =
+                        await PairedLocalTransitionMetadataInspector.InspectInTransactionAsync(
+                            connection, transaction, plan, schema, cancellationToken, lockFence: true)
+                            .ConfigureAwait(false);
+                    if (metadata.State is PairedLocalTransitionMetadataState.Unprovisioned or
+                        PairedLocalTransitionMetadataState.SettledPrior)
+                    {
+                        await PostgreSqlDeltaMetadataProvisioner.ProvisionDatabaseAsync(connection, transaction,
+                            plan, schema, cancellationToken, localPermit).ConfigureAwait(false);
+                    }
                 }
                 await ValidateFenceAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
                 string? replayReconciliationSha256 = await ValidateReplayAsync(connection, transaction, binding,
@@ -139,40 +154,6 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         {
             throw Error("canonical_delta_local_identity_drift", "The opened LOCAL PostgreSQL system identity changed.");
         }
-    }
-
-    private static async Task<bool> MetadataAbsentAsync(NpgsqlConnection connection,
-        NpgsqlTransaction transaction, CancellationToken cancellationToken)
-    {
-        await using (var catalog = new NpgsqlCommand("""
-            SELECT to_regclass('legacy_migration_internal.delta_fence') IS NOT NULL,
-                   to_regclass('legacy_migration_internal.delta_journal') IS NOT NULL;
-            """, connection, transaction))
-        await using (NpgsqlDataReader reader = await catalog.ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false))
-        {
-            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                throw Error("canonical_delta_metadata_invalid", "The LOCAL metadata catalog cannot be inspected.");
-            }
-            bool fence = reader.GetBoolean(0);
-            bool journal = reader.GetBoolean(1);
-            if (!fence && !journal)
-            {
-                return true;
-            }
-            if (!fence || !journal)
-            {
-                throw Error("canonical_delta_metadata_invalid", "The LOCAL metadata tables are incomplete.");
-            }
-        }
-        await using var legacy = new NpgsqlCommand("""
-            SELECT EXISTS (SELECT 1 FROM legacy_migration_internal.delta_journal
-                           WHERE reconciliation_sha256 IS NULL);
-            """, connection, transaction);
-        return await legacy.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not false
-            ? throw Error("canonical_delta_metadata_invalid", "An unreconciled LOCAL checkpoint is present.")
-            : false;
     }
 
     private static async Task AcquireLocksAsync(

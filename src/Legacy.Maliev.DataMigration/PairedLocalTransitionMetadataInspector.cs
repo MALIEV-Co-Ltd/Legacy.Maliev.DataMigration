@@ -10,6 +10,7 @@ public enum PairedLocalTransitionMetadataState
     Unprovisioned,
     Pending,
     Replayed,
+    SettledPrior,
 }
 
 public sealed record PairedLocalTransitionMetadataObservation(
@@ -63,13 +64,21 @@ public sealed class PairedLocalTransitionMetadataInspector(string administrative
         }
     }
 
-    private static async Task<PairedLocalTransitionMetadataObservation> InspectInTransactionAsync(
+    internal static async Task<PairedLocalTransitionMetadataObservation> InspectInTransactionAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         DeltaSynchronizationPlan plan,
         DatabaseSchemaPlan schema,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool lockFence = false)
     {
+        if (plan.SchemaVersion != "1.4" || plan.PairedTransitionPlanOnly != true ||
+            !DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(plan.TargetAuthority) ||
+            !plan.Databases.Any(database => database.Database == schema.Database) ||
+            !DatabaseInventory.ActiveDatabases.Contains(schema.Database, StringComparer.Ordinal))
+        {
+            throw Invalid();
+        }
         await using (var catalog = new NpgsqlCommand("""
             SELECT to_regclass('legacy_migration_internal.delta_fence') IS NOT NULL,
                    to_regclass('legacy_migration_internal.delta_journal') IS NOT NULL;
@@ -95,7 +104,15 @@ public sealed class PairedLocalTransitionMetadataInspector(string administrative
         string physical = schema.Database == "Quotation"
             ? plan.QuotationTransitionSchemaSha256 ?? string.Empty
             : schema.TargetSchemaSha256;
-        await using (var fence = new NpgsqlCommand("""
+        string priorSchemaPlan;
+        string priorPhysical;
+        string priorGeneration;
+        string priorObservation;
+        await using (var fence = new NpgsqlCommand(lockFence ? """
+            SELECT schema_plan_sha256, target_schema_sha256, target_generation,
+                   target_observation_sha256
+            FROM legacy_migration_internal.delta_fence WHERE database_name=$1 FOR UPDATE;
+            """ : """
             SELECT schema_plan_sha256, target_schema_sha256, target_generation,
                    target_observation_sha256
             FROM legacy_migration_internal.delta_fence WHERE database_name=$1;
@@ -104,14 +121,27 @@ public sealed class PairedLocalTransitionMetadataInspector(string administrative
             _ = fence.Parameters.AddWithValue(schema.Database);
             await using NpgsqlDataReader reader = await fence.ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false);
-            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
-                !Fixed(reader.GetString(0), plan.SchemaPlanSha256) ||
-                !Fixed(reader.GetString(1), physical) ||
-                reader.GetString(2) != plan.TargetGeneration ||
-                !Fixed(reader.GetString(3), plan.TargetObservationSha256))
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 throw Invalid();
             }
+            priorSchemaPlan = reader.GetString(0);
+            priorPhysical = reader.GetString(1);
+            priorGeneration = reader.GetString(2);
+            priorObservation = reader.GetString(3);
+            if (!Hash(priorSchemaPlan) || !Hash(priorPhysical) || !Hash(priorObservation) ||
+                await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw Invalid();
+            }
+        }
+        bool currentFence = Fixed(priorSchemaPlan, plan.SchemaPlanSha256) &&
+            Fixed(priorObservation, plan.TargetObservationSha256);
+        if (currentFence
+            ? !Fixed(priorPhysical, physical) || priorGeneration != plan.TargetGeneration
+            : !SameDockerGeneration(priorGeneration, plan.TargetGeneration))
+        {
+            throw Invalid();
         }
         await using (var legacy = new NpgsqlCommand("""
             SELECT EXISTS (SELECT 1 FROM legacy_migration_internal.delta_journal
@@ -136,7 +166,16 @@ public sealed class PairedLocalTransitionMetadataInspector(string administrative
             .ConfigureAwait(false);
         if (!await replay.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            return Observe(PairedLocalTransitionMetadataState.Pending, schema.Database, planHash);
+            await replay.DisposeAsync().ConfigureAwait(false);
+            return currentFence
+                ? Observe(PairedLocalTransitionMetadataState.Pending, schema.Database, planHash)
+                : await ObserveSettledPriorAsync(connection, transaction, schema.Database,
+                    priorSchemaPlan, priorPhysical, priorGeneration, priorObservation,
+                    cancellationToken).ConfigureAwait(false);
+        }
+        if (!currentFence)
+        {
+            throw Invalid();
         }
         string operationHash = DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(
             plan.Databases.Single(database => database.Database == schema.Database));
@@ -151,6 +190,59 @@ public sealed class PairedLocalTransitionMetadataInspector(string administrative
         return valid ? Observe(PairedLocalTransitionMetadataState.Replayed, schema.Database,
             planHash, reconciliation, committedAt.ToString("O",
                 System.Globalization.CultureInfo.InvariantCulture)) : throw Invalid();
+    }
+
+    private static async Task<PairedLocalTransitionMetadataObservation> ObserveSettledPriorAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, string database,
+        string priorSchemaPlan, string priorPhysical, string priorGeneration,
+        string priorObservation, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT plan_sha256, plan_id, source_cutoff_utc, target_observation_sha256,
+                   operations_sha256, reconciliation_sha256, committed_at_utc
+            FROM legacy_migration_internal.delta_journal ORDER BY plan_sha256;
+            """, connection, transaction);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var settled = new List<string>();
+        bool currentObservationReconciled = false;
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            string planHash = reader.GetString(0);
+            Guid planId = reader.GetGuid(1);
+            string observation = reader.GetString(3);
+            string operations = reader.GetString(4);
+            string reconciliation = reader.GetString(5);
+            if (!Hash(planHash) || planId == Guid.Empty || !Hash(observation) ||
+                !Hash(operations) || !Hash(reconciliation))
+            {
+                throw Invalid();
+            }
+            currentObservationReconciled |= Fixed(observation, priorObservation);
+            settled.Add(string.Join("|", [planHash, planId.ToString("D"),
+                reader.GetFieldValue<DateTimeOffset>(2).ToUniversalTime().ToString("O"),
+                observation, operations, reconciliation,
+                reader.GetFieldValue<DateTimeOffset>(6).ToUniversalTime().ToString("O")]));
+        }
+        return currentObservationReconciled
+            ? Observe(PairedLocalTransitionMetadataState.SettledPrior, database,
+                priorSchemaPlan, priorPhysical, priorGeneration, priorObservation,
+                string.Join('\n', settled))
+            : throw Invalid();
+    }
+
+    private static bool SameDockerGeneration(string prior, string signed)
+    {
+        if (prior == signed)
+        {
+            return true;
+        }
+        string[] parts = signed.Split(':');
+        return parts.Length == 5 && parts[0] == "docker" && parts[1].Length == 64 &&
+            parts[1].All(char.IsAsciiHexDigit) && prior == $"docker:{parts[1]}" &&
+            parts.Skip(2).All(part => long.TryParse(part,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out long value) && value > 0);
     }
 
     private static bool Hash(string value)
