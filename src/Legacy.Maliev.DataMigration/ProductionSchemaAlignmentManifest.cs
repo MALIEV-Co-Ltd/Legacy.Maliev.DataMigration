@@ -28,7 +28,23 @@ public sealed record ProductionSchemaTableDiagnostic(
 
 /// <summary>Column names and changed facet names only; never default or generated SQL text.</summary>
 public sealed record ProductionSchemaColumnDiagnostic(
-    string Schema, string Table, string Column, string Status, IReadOnlyList<string> ChangedComponents);
+    string Schema, string Table, string Column, string Status, IReadOnlyList<string> ChangedComponents)
+{
+    /// <summary>Fixed vocabulary only; never the raw PostgreSQL type declaration.</summary>
+    public string ActualTypeCategory { get; init; } = "not-observed";
+
+    /// <summary>Inherited or explicit; never the raw collation name.</summary>
+    public string ActualCollationMode { get; init; } = "not-observed";
+
+    /// <summary>Built-in allowlist identity or explicit-unreviewed.</summary>
+    public string ActualCollationIdentity { get; init; } = "not-observed";
+
+    /// <summary>Presence and equality classification, never the expression.</summary>
+    public string DefaultState { get; init; } = "not-observed";
+
+    /// <summary>Presence and equality classification, never the expression.</summary>
+    public string GeneratedState { get; init; } = "not-observed";
+}
 
 /// <summary>A reviewed object name; this is diagnostic, never executable SQL or DDL permission.</summary>
 public sealed record ProductionSchemaAlignmentStep(string Kind, string ObjectName, bool PreserveSourceRows = false);

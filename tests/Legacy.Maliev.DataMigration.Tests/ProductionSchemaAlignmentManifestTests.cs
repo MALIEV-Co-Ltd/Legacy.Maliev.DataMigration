@@ -84,7 +84,11 @@ public sealed class ProductionSchemaAlignmentManifestTests
     {
         (FreshSchemaPlan schema, ProductionSchemaObservation[] observed) = Fixture();
         int index = Array.FindIndex(observed, item => item.Database == "Invoice");
-        observed[index] = observed[index] with { SchemaSha256 = new string('f', 64) };
+        observed[index] = observed[index] with
+        {
+            SchemaSha256 = new string('f', 64),
+            ColumnDiagnostics = [new("public", "Invoice", "ID", "match", [])],
+        };
 
         MigrationExecutionException failure = Assert.Throws<MigrationExecutionException>(() =>
             ProductionSchemaAlignmentManifest.Plan(schema, Authority(), observed, DateTimeOffset.UtcNow));

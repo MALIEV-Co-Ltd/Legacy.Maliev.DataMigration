@@ -1632,7 +1632,7 @@ internal static partial class PostgreSqlTypePolicy
     {
         string normalized = value.Trim().ToLowerInvariant();
         return !ApprovedType().IsMatch(normalized)
-            ? throw new MigrationExecutionException("target_type_forbidden", $"PostgreSQL target type '{value}' is not approved.")
+            ? throw new MigrationExecutionException("target_type_forbidden", "The PostgreSQL target type is not approved.")
             : normalized;
     }
 

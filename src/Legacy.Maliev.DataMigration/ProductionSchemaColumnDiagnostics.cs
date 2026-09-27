@@ -65,12 +65,65 @@ internal static class ProductionSchemaColumnDiagnostics
                     .. wanted.Collation == column.Collation ? [] : new[] { "collation" },
                 ];
                 result.Add(new(table.Schema, table.Table, name,
-                    changed.Length == 0 ? "match" : "shape-drift", changed));
+                    changed.Length == 0 ? "match" : "shape-drift", changed)
+                {
+                    ActualTypeCategory = TypeCategory(column.Type),
+                    ActualCollationMode = column.Collation.Length == 0 ? "inherited" : "explicit",
+                    ActualCollationIdentity = CollationIdentity(column.Collation),
+                    DefaultState = ExpressionState(wanted.DefaultExpression, column.DefaultExpression,
+                        PostgreSqlDefaultExpressionCanonicalizer.Canonicalize),
+                    GeneratedState = ExpressionState(wanted.GeneratedExpression, column.GeneratedExpression,
+                        SchemaExpressionCanonicalizer.Canonicalize),
+                });
             }
             result.AddRange(columns.Where(column => !planned.OrderedColumns.Contains(column.Column,
                 StringComparer.Ordinal)).Select(column => new ProductionSchemaColumnDiagnostic(
                 column.Schema, column.Table, column.Column, "target-only-column", [])));
         }
         return result;
+    }
+
+    private static string TypeCategory(string type)
+    {
+        string approved = PostgreSqlTypePolicy.Validate(type);
+        return approved switch
+        {
+            string value when value.StartsWith("numeric(", StringComparison.Ordinal) => "numeric",
+            string value when value.StartsWith("character varying(", StringComparison.Ordinal) =>
+                "character-varying",
+            string value when value.StartsWith("character(", StringComparison.Ordinal) => "character",
+            "double precision" => "double-precision",
+            "timestamp with time zone" => "timestamp-with-time-zone",
+            "timestamp without time zone" => "timestamp-without-time-zone",
+            "smallint" or "integer" or "bigint" or "boolean" or "text" or "bytea" or "uuid" or
+                "date" or "real" or "jsonb" => approved,
+            _ => throw new MigrationExecutionException("production_schema_type_category_unreviewed",
+                "The observed type has no approved diagnostic category."),
+        };
+    }
+
+    private static string CollationIdentity(string collation)
+    {
+        return collation switch
+        {
+            "" => "inherited",
+            "C" => "C",
+            "POSIX" => "POSIX",
+            "C.utf8" => "C.utf8",
+            "ucs_basic" => "ucs_basic",
+            "pg_unicode_fast" => "pg_unicode_fast",
+            _ => "explicit-unreviewed",
+        };
+    }
+
+    private static string ExpressionState(string expected, string actual, Func<string, string> canonicalize)
+    {
+        return (expected.Length == 0, actual.Length == 0) switch
+        {
+            (true, true) => "absent-both",
+            (false, true) => "observed-absent",
+            (true, false) => "unexpected-present",
+            _ => canonicalize(expected) == canonicalize(actual) ? "match" : "present-different",
+        };
     }
 }
