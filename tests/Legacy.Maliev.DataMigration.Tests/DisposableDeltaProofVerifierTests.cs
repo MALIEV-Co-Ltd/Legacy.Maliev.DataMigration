@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using Legacy.Maliev.DataMigration.Console;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -157,6 +159,180 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         await verify.OpenAsync();
         await using var count = new NpgsqlCommand("SELECT count(*) FROM public.items;", verify);
         Assert.Equal(0L, await count.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task Historical_local_command_uses_public_only_trust_and_never_observes_a_tampered_receipt()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true);
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(fixture);
+        string directory = Path.Combine(Path.GetTempPath(), "historical-local-review-" + Guid.NewGuid().ToString("N"));
+        OwnerProtectedDirectory.CreateNew(directory);
+        try
+        {
+            string planPath = Path.Combine(directory, "plan.json");
+            string receiptPath = Path.Combine(directory, "receipt.json");
+            string schemaPath = Path.Combine(directory, "schema.json");
+            string connectionPath = Path.Combine(directory, "target.connection");
+            string planKeyPath = Path.Combine(directory, "plan.public");
+            string evidenceKeyPath = Path.Combine(directory, "evidence.public");
+            await MigrationConsole.WriteNewJsonForTestsAsync(planPath, fixture.LocalPlan, CancellationToken.None);
+            await MigrationConsole.WriteNewJsonForTestsAsync(receiptPath, receipt, CancellationToken.None);
+            await MigrationConsole.WriteNewJsonForTestsAsync(schemaPath, fixture.Schema, CancellationToken.None);
+            await WriteOwnerOnlyTextAsync(connectionPath,
+                "Host=127.0.0.1;Port=5432;Database=postgres;Username=unused;Password=unused");
+            await WriteOwnerOnlyTextAsync(planKeyPath,
+                Convert.ToBase64String(_localPlanKey.ExportSubjectPublicKeyInfo()));
+            await WriteOwnerOnlyTextAsync(evidenceKeyPath,
+                Convert.ToBase64String(_evidenceKey.ExportSubjectPublicKeyInfo()));
+            var request = new HistoricalLocalReviewCommandConfiguration(planPath, receiptPath, schemaPath,
+                connectionPath, Hash('8'), 5432, new(fixture.LocalPlan.AttestationKeyId, planKeyPath),
+                new(receipt.AttestationKeyId, evidenceKeyPath), Path.Combine(directory, "review.json"));
+            string configPath = Path.Combine(directory, "config.json");
+            await MigrationConsole.WriteNewJsonForTestsAsync(configPath,
+                new { historicalLocalReview = request }, CancellationToken.None);
+            var runtime = new HistoricalRuntime(fixture);
+            static string? EnvironmentValue(string key)
+            {
+                return key switch
+                {
+                    "LEGACY_DEPLOY_ENABLED" => "false",
+                    "LEGACY_MIGRATION_CALLER" => "owner",
+                    _ => null,
+                };
+            }
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+            int result = await MigrationConsole.RunHistoricalLocalReviewForTestsAsync(
+                ["review-historical-local-target", "--config", configPath], output, error,
+                EnvironmentValue, runtime, CancellationToken.None);
+
+            Assert.Equal(0, result);
+            Assert.Equal(2, runtime.Observations);
+            Assert.Equal(string.Empty, error.ToString());
+            Assert.Equal("review_historical_local_target_complete" + Environment.NewLine, output.ToString());
+            Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(request.OutputPath));
+            string reviewJson = await File.ReadAllTextAsync(request.OutputPath);
+            Assert.DoesNotContain("Password", reviewJson, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("authorization", reviewJson, StringComparison.OrdinalIgnoreCase);
+
+            string badReceiptPath = Path.Combine(directory, "bad-receipt.json");
+            await MigrationConsole.WriteNewJsonForTestsAsync(badReceiptPath,
+                receipt with { PlanSha256 = Hash('9') }, CancellationToken.None);
+            string badConfigPath = Path.Combine(directory, "bad-config.json");
+            HistoricalLocalReviewCommandConfiguration badRequest = request with
+            {
+                HistoricalReceiptPath = badReceiptPath,
+                OutputPath = Path.Combine(directory, "bad-review.json"),
+            };
+            await MigrationConsole.WriteNewJsonForTestsAsync(badConfigPath,
+                new { historicalLocalReview = badRequest }, CancellationToken.None);
+            var rejectedRuntime = new HistoricalRuntime(fixture);
+            using var rejectedOutput = new StringWriter();
+            using var rejectedError = new StringWriter();
+            int rejected = await MigrationConsole.RunHistoricalLocalReviewForTestsAsync(
+                ["review-historical-local-target", "--config", badConfigPath], rejectedOutput,
+                rejectedError, EnvironmentValue, rejectedRuntime, CancellationToken.None);
+            Assert.Equal(65, rejected);
+            Assert.Equal(0, rejectedRuntime.Observations);
+            Assert.False(File.Exists(Path.Combine(directory, "bad-review.json")));
+
+            var disabledRuntime = new HistoricalRuntime(fixture);
+            using var disabledOutput = new StringWriter();
+            using var disabledError = new StringWriter();
+            int disabled = await MigrationConsole.RunHistoricalLocalReviewForTestsAsync(
+                ["review-historical-local-target", "--config", configPath], disabledOutput,
+                disabledError, key => key == "LEGACY_DEPLOY_ENABLED" ? "true" : "owner",
+                disabledRuntime, CancellationToken.None);
+            Assert.Equal(65, disabled);
+            Assert.Equal(0, disabledRuntime.Observations);
+            Assert.Contains("delta_deploy_gate_invalid", disabledError.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Historical_local_docker_observation_rejects_old_container_or_unbound_mountpoint()
+    {
+        string oldId = Hash('7');
+        string currentId = Hash('8');
+        DefaultHistoricalLocalReviewRuntime.RequireContainerInventory(currentId + "\n", oldId, currentId);
+        Assert.Equal("delta_historical_local_old_container_present",
+            Assert.Throws<MigrationConsoleException>(() =>
+                DefaultHistoricalLocalReviewRuntime.RequireContainerInventory(
+                    oldId + "\n" + currentId + "\n", oldId, currentId)).Code);
+        Assert.Equal("delta_historical_local_docker_invalid",
+            Assert.Throws<MigrationConsoleException>(() =>
+                DefaultHistoricalLocalReviewRuntime.RequireContainerInventory(oldId + "\n", oldId,
+                    currentId)).Code);
+        Assert.Equal("/var/lib/docker/volumes/legacy-maliev-exact23-postgres-data/_data",
+            DefaultHistoricalLocalReviewRuntime.ReadMountpoint(
+                JsonSerializer.Serialize(new[]
+                {
+                    new { Mountpoint = "/var/lib/docker/volumes/legacy-maliev-exact23-postgres-data/_data" },
+                })));
+        Assert.Equal("delta_historical_local_volume_invalid",
+            Assert.Throws<MigrationConsoleException>(() =>
+                DefaultHistoricalLocalReviewRuntime.ReadMountpoint(
+                    JsonSerializer.Serialize(new[] { new { Mountpoint = string.Empty } }))).Code);
+        string container = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                Mounts = new[]
+                {
+                    new { Type = "volume", Name = "legacy-maliev-exact23-postgres-data", Source = "/actual/volume" },
+                },
+            },
+        });
+        DefaultHistoricalLocalReviewRuntime.RequireMountSource(container,
+            "legacy-maliev-exact23-postgres-data", "/actual/volume");
+        Assert.Equal("delta_historical_local_volume_invalid",
+            Assert.Throws<MigrationConsoleException>(() =>
+                DefaultHistoricalLocalReviewRuntime.RequireMountSource(container,
+                    "legacy-maliev-exact23-postgres-data", "/reused/name")).Code);
+    }
+
+    private static async Task WriteOwnerOnlyTextAsync(string path, string content)
+    {
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+            Options = FileOptions.Asynchronous,
+        };
+        if (!OperatingSystem.IsWindows())
+        {
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        }
+        await using var stream = new FileStream(path, options);
+        await stream.WriteAsync(Encoding.UTF8.GetBytes(content));
+        await stream.FlushAsync();
+    }
+
+    private sealed class HistoricalRuntime(Fixture fixture) : IHistoricalLocalReviewRuntime
+    {
+        public int Observations { get; private set; }
+
+        public Task<HistoricalCurrentLocalObservation> ObserveAsync(HistoricalLocalReviewCommandConfiguration _,
+            string __, DeltaSynchronizationPlan ___, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Observations++;
+            return Task.FromResult(CurrentObservation(fixture));
+        }
+
+        public IDeltaReconciliationInspector CreateInspector(string _, DeltaSynchronizationPlan __,
+            Exact23DeltaReconciliationResult ___, FreshSchemaPlan ____, ReceiptAttestationTrustStore _____,
+            DateTimeOffset ______)
+        {
+            return new CurrentEvidenceInspector(fixture.Schema);
+        }
     }
 
     private static HistoricalCurrentLocalObservation CurrentObservation(Fixture fixture, char id = '8')

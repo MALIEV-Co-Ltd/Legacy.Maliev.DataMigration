@@ -27,6 +27,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "plan-delta",
         "plan-paired-delta",
         "project-paired-local-template",
+        "review-historical-local-target",
         "inspect-target-schema-gaps",
         "inspect-production-schema-catalog",
         "authorize-target-extension-repair",
