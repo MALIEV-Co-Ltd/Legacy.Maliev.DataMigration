@@ -150,6 +150,13 @@ public static class PairedLocalTransitionPreflight
             await foreach (ResolvedDeltaRow row in session.ResolveAsync(plan, cancellationToken)
                 .WithCancellation(cancellationToken).ConfigureAwait(false))
             {
+                if (row.Source is not null)
+                {
+                    foreach (StreamingLob lob in row.Source.Values.Values.OfType<StreamingLob>())
+                    {
+                        await lob.ConsumeAsync(Stream.Null, cancellationToken).ConfigureAwait(false);
+                    }
+                }
                 DeltaExecutionCoordinator.VerifyRow(table, row.Source, row.Operation.KeySha256,
                     row.Operation.SourceRowSha256, "source");
                 DeltaExecutionCoordinator.VerifyRow(table, row.Target, row.Operation.KeySha256,
