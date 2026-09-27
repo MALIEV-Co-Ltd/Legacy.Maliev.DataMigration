@@ -93,23 +93,25 @@ Write-Output 'production_exec_tunnel_durability_tests_passed=6'
 
 # A stale operator invocation without the reviewed exec config must stop before
 # Kubernetes observation, credential projection, or any target output.
-$previousDeploy = $env:LEGACY_DEPLOY_ENABLED
-$env:LEGACY_DEPLOY_ENABLED = 'false'
-try {
+if ($IsWindows) {
+    $previousDeploy = $env:LEGACY_DEPLOY_ENABLED
+    $env:LEGACY_DEPLOY_ENABLED = 'false'
     try {
-        & (Join-Path $PSScriptRoot '../../scripts/new-production-delta-template.ps1') `
-            -RunDirectory 'C:\does-not-exist' -SchemaPlanPath 'C:\does-not-exist' `
-            -RunnerAssemblyPath 'C:\does-not-exist' `
-            -ExpectedSourceCommitSha ('a' * 40) -BackupManifestSha256 ('b' * 64) `
-            -BackupKeyFingerprintSha256 ('c' * 64) | Out-Null
-        throw 'test_expected_rejection'
+        try {
+            & (Join-Path $PSScriptRoot '../../scripts/new-production-delta-template.ps1') `
+                -RunDirectory 'C:\does-not-exist' -SchemaPlanPath 'C:\does-not-exist' `
+                -RunnerAssemblyPath 'C:\does-not-exist' `
+                -ExpectedSourceCommitSha ('a' * 40) -BackupManifestSha256 ('b' * 64) `
+                -BackupKeyFingerprintSha256 ('c' * 64) | Out-Null
+            throw 'test_expected_rejection'
+        }
+        catch {
+            if ($_.Exception.Message -cne 'production_delta_parameters_invalid') { throw }
+        }
     }
-    catch {
-        if ($_.Exception.Message -cne 'production_delta_parameters_invalid') { throw }
+    finally {
+        if ($null -eq $previousDeploy) { Remove-Item Env:LEGACY_DEPLOY_ENABLED -ErrorAction SilentlyContinue }
+        else { $env:LEGACY_DEPLOY_ENABLED = $previousDeploy }
     }
+    Write-Output 'production_exec_tunnel_missing_config_rejected=1'
 }
-finally {
-    if ($null -eq $previousDeploy) { Remove-Item Env:LEGACY_DEPLOY_ENABLED -ErrorAction SilentlyContinue }
-    else { $env:LEGACY_DEPLOY_ENABLED = $previousDeploy }
-}
-Write-Output 'production_exec_tunnel_missing_config_rejected=1'
