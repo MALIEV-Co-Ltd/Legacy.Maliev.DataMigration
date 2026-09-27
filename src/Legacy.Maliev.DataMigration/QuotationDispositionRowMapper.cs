@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace Legacy.Maliev.DataMigration;
 
 /// <summary>
@@ -53,7 +55,8 @@ internal sealed class QuotationDispositionRowMapper
                 continue;
             }
 
-            if (value is not DateTime date || date.Kind != DateTimeKind.Unspecified)
+            DateTime date = PreciseUtc(value);
+            if (date.Kind != DateTimeKind.Unspecified)
             {
                 throw Invalid();
             }
@@ -71,11 +74,12 @@ internal sealed class QuotationDispositionRowMapper
         ValidateSourceRow(_outcomeSource, source);
         if (source.Values["ID"] is not long id || source.Values["EventKey"] is not string eventKey ||
             source.Values["QuotationID"] is not int quotationId ||
-            source.Values["AcceptedUtc"] is not DateTime acceptedUtc ||
             source.Values["AcceptanceOrigin"] is not string acceptanceOrigin)
         {
             throw Invalid();
         }
+
+        DateTime acceptedUtc = PreciseUtc(source.Values["AcceptedUtc"]);
 
         int? requestId = NullableValue<int>(source.Values["SourceRequestID"]);
         Guid? journeyId = NullableValue<Guid>(source.Values["SourceJourneyID"]);
@@ -112,6 +116,18 @@ internal sealed class QuotationDispositionRowMapper
         {
             null or DBNull => null,
             T typed => typed,
+            _ => throw Invalid(),
+        };
+    }
+
+    private static DateTime PreciseUtc(object? value)
+    {
+        return value switch
+        {
+            DateTime date => date,
+            string text when DateTime.TryParseExact(text,
+                "yyyy-MM-dd'T'HH:mm:ss.fffffff", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out DateTime parsed) && parsed.Kind == DateTimeKind.Unspecified => parsed,
             _ => throw Invalid(),
         };
     }
