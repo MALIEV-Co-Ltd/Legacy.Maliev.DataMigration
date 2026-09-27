@@ -629,6 +629,12 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         DatabaseSchemaPlan plan,
         CancellationToken cancellationToken)
     {
+        return (await InspectSchemaWithComponentsAsync(plan, cancellationToken).ConfigureAwait(false)).SchemaSha256;
+    }
+
+    internal async Task<(string SchemaSha256, IReadOnlyList<ProductionSchemaTableComponents> Components)>
+        InspectSchemaWithComponentsAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(plan);
         _inspectionStarted = true;
         List<PostgreSqlSchemaFingerprint.TableShape> tables = [];
@@ -831,7 +837,8 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         }
 
         _schemaInspected = true;
-        return PostgreSqlSchemaFingerprint.Compute(tables, columns, constraints, indexes, foreignKeys);
+        return (PostgreSqlSchemaFingerprint.Compute(tables, columns, constraints, indexes, foreignKeys),
+            PostgreSqlSchemaFingerprint.ComputeComponents(tables, columns, constraints, indexes, foreignKeys));
     }
 
     public async Task<TableReconciliationEvidence> InspectTableAsync(
@@ -1315,6 +1322,64 @@ internal static class PostgreSqlSchemaFingerprint
                 foreignKey.OnUpdate,
                 true)))];
         return Compute(tables, columns, constraints, indexes, foreignKeys);
+    }
+
+    internal static ProductionSchemaTableComponents ComputeExpectedComponents(TableCopyPlan table)
+    {
+        TableCopyPlan columns = table with
+        {
+            PrimaryKey = null,
+            UniqueConstraints = [],
+            CheckConstraints = [],
+            Indexes = [],
+            ForeignKeys = [],
+        };
+        TableCopyPlan constraints = table with
+        {
+            OrderedColumns = [],
+            Indexes = [],
+            ForeignKeys = [],
+        };
+        TableCopyPlan indexes = table with
+        {
+            OrderedColumns = [],
+            PrimaryKey = null,
+            UniqueConstraints = [],
+            CheckConstraints = [],
+            ForeignKeys = [],
+        };
+        TableCopyPlan foreignKeys = table with
+        {
+            OrderedColumns = [],
+            PrimaryKey = null,
+            UniqueConstraints = [],
+            CheckConstraints = [],
+            Indexes = [],
+        };
+        return new(table.TargetSchema, table.TargetTable,
+            ComputeExpectedTables([columns]), ComputeExpectedTables([constraints]),
+            ComputeExpectedTables([indexes]), ComputeExpectedTables([foreignKeys]),
+            ComputeExpectedTables([table]));
+    }
+
+    internal static IReadOnlyList<ProductionSchemaTableComponents> ComputeComponents(
+        IReadOnlyList<TableShape> tables, IReadOnlyList<ColumnShape> columns,
+        IReadOnlyList<ConstraintShape> constraints, IReadOnlyList<IndexShape> indexes,
+        IReadOnlyList<ForeignKeyShape> foreignKeys)
+    {
+        return [.. tables.Select(table =>
+        {
+            bool InTable(string schema, string name) { return schema == table.Schema && name == table.Table; } ColumnShape[] tableColumns = [.. columns.Where(item => InTable(item.Schema, item.Table))];
+            ConstraintShape[] tableConstraints = [.. constraints.Where(item => InTable(item.Schema, item.Table))];
+            IndexShape[] tableIndexes = [.. indexes.Where(item => InTable(item.Schema, item.Table))];
+            ForeignKeyShape[] tableForeignKeys = [.. foreignKeys.Where(item => InTable(item.Schema, item.Table))];
+            return new ProductionSchemaTableComponents(table.Schema, table.Table,
+                Compute([table], tableColumns, [], [], []),
+                Compute([table], [], tableConstraints, [], []),
+                Compute([table], [], [], tableIndexes, []),
+                Compute([table], [], [], [], tableForeignKeys),
+                Compute([table], tableColumns, tableConstraints, tableIndexes, tableForeignKeys));
+        })];
     }
 
     internal static string Compute(

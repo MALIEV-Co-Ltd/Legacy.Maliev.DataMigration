@@ -74,11 +74,22 @@ public static class ProductionSchemaCatalogInspector
                     }
                 }
             }
-            string fingerprint = await inspector.InspectSchemaAsync(database, cancellationToken).ConfigureAwait(false);
+            (string fingerprint, IReadOnlyList<ProductionSchemaTableComponents> components) =
+                await inspector.InspectSchemaWithComponentsAsync(database, cancellationToken).ConfigureAwait(false);
             await inspector.RollbackAsync(cancellationToken).ConfigureAwait(false);
-            return new ProductionSchemaObservation(database.Database,
+            var observation = new ProductionSchemaObservation(database.Database,
                 [.. names.Select(item => new ObservedTargetTable(item.Key.Schema, item.Key.Table, item.Value))],
-                fingerprint);
+                fingerprint)
+            { TableComponents = components };
+            TableCopyPlan[] expected =
+            [
+                .. ApprovedSourceDispositionManifest.TargetTablesFor(database),
+                .. ApprovedTargetExtensionManifest.TablesFor(database),
+            ];
+            return observation with
+            {
+                TableDiagnostics = ProductionSchemaComponentDiagnostics.Compare(expected, observation),
+            };
         }
         catch
         {
