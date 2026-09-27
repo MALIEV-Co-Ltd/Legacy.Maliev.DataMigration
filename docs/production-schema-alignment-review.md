@@ -57,6 +57,26 @@ before publication. It reads no application rows and signs or applies nothing. T
 owner must still review the catalog and run a separate disposable additive proof
 before any production DDL request.
 
+`ProductionDefaultDriftReviewPlanner.Plan` is a separate, non-executable
+classification for the `present-different` default-expression drift class. It
+requires a fresh exact-23 source schema plan, canonical complete catalog order,
+and verified production CNPG authority. It records the source-plan digest and
+commit, target identity, each observed whole-database fingerprint, and for each
+affected table the observed complete-table preimage and expected final-table
+fingerprint. The review digest includes every database, table, and listed column
+with explicit boundaries. Only schema/table/column names and structural hashes
+are emitted; neither actual nor planned default SQL is copied into the review.
+The `OtherShapeDriftPresent` flag reports additional drift on the listed table,
+not a claim that other databases or tables match. The observer's catalog must
+still be independently authenticated; a constructed observation is not proof.
+This review does not select a default repair expression, authorize DDL, or
+relax `ProductionSchemaAlignmentManifest`'s strict whole-schema preimage gate.
+The 304 collation, seven generated-expression, two LockoutEnd type, missing
+object, and other shape discrepancies remain separate review work. In
+particular, no PostgreSQL type normalization is inferred from the SQL Server
+`datetimeoffset` source mapping, whose offset and precision semantics must be
+preserved by any later, separately reviewed design.
+
 The catalog now also emits a digest for each table's columns, constraints,
 indexes, foreign keys, and complete table shape, all from that same snapshot.
 `tableDiagnostics` compares those digests to the *final* source-plan target
