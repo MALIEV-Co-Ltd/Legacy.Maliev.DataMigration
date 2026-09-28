@@ -70,7 +70,8 @@ public sealed class PairedLocalTransitionMetadataInspector(string administrative
         DeltaSynchronizationPlan plan,
         DatabaseSchemaPlan schema,
         CancellationToken cancellationToken,
-        bool lockFence = false)
+        bool lockFence = false,
+        bool allowHistoricalGeneration = false)
     {
         if (plan.SchemaVersion != "1.4" || plan.PairedTransitionPlanOnly != true ||
             !DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(plan.TargetAuthority) ||
@@ -136,10 +137,13 @@ public sealed class PairedLocalTransitionMetadataInspector(string administrative
             }
         }
         bool currentFence = Fixed(priorSchemaPlan, plan.SchemaPlanSha256) &&
-            Fixed(priorObservation, plan.TargetObservationSha256);
+            Fixed(priorObservation, plan.TargetObservationSha256) &&
+            priorGeneration == plan.TargetGeneration;
         if (currentFence
-            ? !Fixed(priorPhysical, physical) || priorGeneration != plan.TargetGeneration
-            : !SameDockerGeneration(priorGeneration, plan.TargetGeneration))
+            ? !Fixed(priorPhysical, physical)
+            : !SameDockerGeneration(priorGeneration, plan.TargetGeneration) &&
+              !(allowHistoricalGeneration &&
+                SameRolloverVolumeGeneration(priorGeneration, plan.TargetGeneration)))
         {
             throw Invalid();
         }
@@ -243,6 +247,22 @@ public sealed class PairedLocalTransitionMetadataInspector(string administrative
             parts.Skip(2).All(part => long.TryParse(part,
                 System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out long value) && value > 0);
+    }
+
+    private static bool SameRolloverVolumeGeneration(string prior, string signed)
+    {
+        string[] old = prior.Split(':');
+        string[] current = signed.Split(':');
+        return old.Length == 5 && current.Length == 5 &&
+            old[0] == "docker" && current[0] == "docker" &&
+            old[1].Length == 64 && current[1].Length == 64 &&
+            old[1].All(char.IsAsciiHexDigit) &&
+            current[1].All(char.IsAsciiHexDigit) && old[1] != current[1] &&
+            old[4] == current[4] && old.Skip(2).Concat(current.Skip(2))
+                .All(part => long.TryParse(part,
+                    System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out long value) && value > 0);
     }
 
     private static bool Hash(string value)

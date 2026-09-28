@@ -93,7 +93,9 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                 {
                     PairedLocalTransitionMetadataObservation metadata =
                         await PairedLocalTransitionMetadataInspector.InspectInTransactionAsync(
-                            connection, transaction, plan, schema, cancellationToken, lockFence: true)
+                            connection, transaction, plan, schema, cancellationToken,
+                            lockFence: true,
+                            allowHistoricalGeneration: rolloverPermit is not null)
                             .ConfigureAwait(false);
                     if (metadata.State == PairedLocalTransitionMetadataState.SettledPrior)
                     {

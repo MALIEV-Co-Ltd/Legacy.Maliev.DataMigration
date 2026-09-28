@@ -7,6 +7,75 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class PostgreSqlRolloverAdoptionTests(PostgreSqlAdapterFixture fixture)
 {
     [Fact]
+    public async Task MetadataPreflight_AcceptsDifferentFullDockerGenerationOnlyForClaimBoundPath()
+    {
+        string connectionString = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+        {
+            Database = fixture.CanonicalDatabase,
+            Pooling = false,
+        }.ConnectionString;
+        await ExecuteAsync(connectionString,
+            "DROP SCHEMA IF EXISTS legacy_migration_internal CASCADE;");
+        try
+        {
+            long volume = DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeMilliseconds();
+            string priorGeneration = $"docker:{Hash('1')}:1700000000000:1700000001000:{volume}";
+            string currentGeneration = $"docker:{Hash('2')}:1700000002000:1700000003000:{volume}";
+            DatabaseSchemaPlan schema = new("ContactRequest", "1", Hash('a'), Hash('b'), []);
+            DeltaSynchronizationPlan oldPlan = Plan(priorGeneration);
+            DeltaSynchronizationPlan futurePlan = Plan(currentGeneration) with
+            {
+                SchemaVersion = "1.4",
+                PairedTransitionPlanOnly = true,
+                TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
+                    "aspire://legacy-postgres-main-local/persistent-test", Hash('3')),
+                Databases = [new DeltaDatabasePlan(schema.Database, [])],
+            };
+            await using (var connection = new NpgsqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
+                    IsolationLevel.Serializable);
+                await PostgreSqlDeltaMetadataProvisioner.ProvisionDatabaseAsync(connection,
+                    transaction, oldPlan, schema, CancellationToken.None);
+                await InsertJournalAsync(connection, transaction, oldPlan,
+                    DeltaSynchronizationPlanCanonicalizer.ComputeSha256(oldPlan), Hash('4'));
+                await transaction.CommitAsync();
+            }
+            await using (var connection = new NpgsqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
+                    IsolationLevel.RepeatableRead);
+                await ExecuteAsync(connection, transaction, "SET TRANSACTION READ ONLY;");
+                DeltaExecutionException unclaimed = await Assert.ThrowsAsync<DeltaExecutionException>(
+                    () => PairedLocalTransitionMetadataInspector.InspectInTransactionAsync(
+                        connection, transaction, futurePlan, schema, CancellationToken.None));
+                Assert.Equal("delta_paired_local_metadata_preimage_invalid", unclaimed.Code);
+                PairedLocalTransitionMetadataObservation claimed =
+                    await PairedLocalTransitionMetadataInspector.InspectInTransactionAsync(
+                        connection, transaction, futurePlan, schema, CancellationToken.None,
+                        allowHistoricalGeneration: true);
+                Assert.Equal(PairedLocalTransitionMetadataState.SettledPrior, claimed.State);
+                Assert.Equal(64, claimed.FingerprintSha256.Length);
+                DeltaExecutionException changedVolume = await Assert.ThrowsAsync<DeltaExecutionException>(
+                    () => PairedLocalTransitionMetadataInspector.InspectInTransactionAsync(
+                        connection, transaction, futurePlan with
+                        {
+                            TargetGeneration = $"docker:{Hash('2')}:1700000002000:1700000003000:{volume + 1}",
+                        }, schema, CancellationToken.None, allowHistoricalGeneration: true));
+                Assert.Equal("delta_paired_local_metadata_preimage_invalid", changedVolume.Code);
+                await transaction.RollbackAsync();
+            }
+        }
+        finally
+        {
+            await ExecuteAsync(connectionString,
+                "DROP SCHEMA IF EXISTS legacy_migration_internal CASCADE;");
+        }
+    }
+
+    [Fact]
     public async Task PriorFence_DmlJournalAndMarker_RollBackTogetherThenCommitOnce()
     {
         string connectionString = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
