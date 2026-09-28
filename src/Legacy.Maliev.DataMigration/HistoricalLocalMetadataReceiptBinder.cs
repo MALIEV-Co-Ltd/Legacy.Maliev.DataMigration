@@ -62,7 +62,6 @@ public static class HistoricalLocalMetadataReceiptBinder
             {
                 throw Invalid();
             }
-            var entries = new List<string>();
             var planHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var planIds = new HashSet<Guid>();
             int signedMatches = 0;
@@ -86,25 +85,32 @@ public static class HistoricalLocalMetadataReceiptBinder
                     }
                     signedMatches++;
                 }
-                entries.Add(string.Join("|", [entry.PlanSha256,
-                    entry.PlanId.ToString("D"), Utc(entry.SourceCutoffUtc),
-                    entry.TargetObservationSha256, entry.OperationsSha256,
-                    entry.ReconciliationSha256, Utc(entry.CommittedAtUtc)]));
             }
             if (signedMatches != 1)
             {
                 throw Invalid();
             }
-            // Keep the PostgreSQL ORDER BY plan_sha256 sequence supplied by the reader.
-            // A .NET ordinal re-sort could disagree with the target column collation.
-            string payload = string.Join("\0", ["paired-local-transition-metadata-v1",
-                PairedLocalTransitionMetadataState.SettledPrior.ToString(), database,
-                fence.SchemaPlanSha256, fence.TargetSchemaSha256, fence.TargetGeneration,
-                fence.TargetObservationSha256, string.Join('\n', entries)]);
             bindings.Add(new(database, PairedLocalTransitionMetadataState.SettledPrior,
-                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant()));
+                ComputePriorFingerprint(snapshot)));
         }
         return bindings.AsReadOnly();
+    }
+
+    internal static string ComputePriorFingerprint(HistoricalLocalMetadataSnapshot snapshot)
+    {
+        HistoricalLocalFence fence = snapshot.Fence;
+        // Preserve the PostgreSQL ORDER BY plan_sha256 sequence supplied by the reader.
+        // A .NET ordinal re-sort could disagree with the target column collation.
+        string entries = string.Join('\n', snapshot.Journal.Select(entry =>
+            string.Join("|", [entry.PlanSha256, entry.PlanId.ToString("D"),
+                Utc(entry.SourceCutoffUtc), entry.TargetObservationSha256,
+                entry.OperationsSha256, entry.ReconciliationSha256,
+                Utc(entry.CommittedAtUtc)])));
+        string payload = string.Join("\0", ["paired-local-transition-metadata-v1",
+            PairedLocalTransitionMetadataState.SettledPrior.ToString(), snapshot.Database,
+            fence.SchemaPlanSha256, fence.TargetSchemaSha256, fence.TargetGeneration,
+            fence.TargetObservationSha256, entries]);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
     }
 
     private static bool ExactCheckpoint(DeltaDatabaseCheckpointEvidence actual,

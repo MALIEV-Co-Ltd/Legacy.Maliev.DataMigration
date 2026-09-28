@@ -71,6 +71,14 @@ ordinal. Each database is either the exact prior signed state or has an atomic
 claim-bound adoption marker, new fence, settled journal, and matching current
 row/schema/sequence evidence. No third state is accepted.
 
+The internal read-only mixed-state reader now scans each database under one
+repeatable-read snapshot for its metadata and row evidence, performs the full
+23-database scan twice, and brackets it with immutable claim/ordinal and
+Docker/volume/PostgreSQL identity observations. A prior database must match the
+signed historical receipt and initial metadata fingerprint; an adopted database
+must match the signed disposable result and a retained ordinal no later than
+the highest consecutive ordinal. This reader does not yet issue a write permit.
+
 The per-database adoption transaction must hold the serializable locks,
 compare-and-swap the old fence, apply DML and sequences, reconcile, and write
 the marker and settled journal together. The existing unconditional metadata

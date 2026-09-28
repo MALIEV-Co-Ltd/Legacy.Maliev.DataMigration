@@ -338,6 +338,9 @@ public sealed class ImmutableRolloverClaimStore
             document.Ordinal != ordinal || document.CreatedAtUtc.Offset != TimeSpan.Zero ||
             document.CreatedAtUtc > nowUtc || document.Continuation is null ||
             document.Authorization is null ||
+            retained.CreatedAtUtc < document.Continuation.IssuedAtUtc ||
+            retained.CreatedAtUtc >= document.Continuation.ExpiresAtUtc ||
+            (retained.CreatedAtUtc - document.CreatedAtUtc).Duration() > TimeSpan.FromMinutes(1) ||
             document.CreatedAtUtc < document.Continuation.IssuedAtUtc ||
             document.CreatedAtUtc >= document.Continuation.ExpiresAtUtc ||
             document.CreatedAtUtc < document.Authorization.IssuedAtUtc ||

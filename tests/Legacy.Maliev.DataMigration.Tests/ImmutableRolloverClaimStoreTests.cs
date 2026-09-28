@@ -142,6 +142,7 @@ public sealed class ImmutableRolloverClaimStoreTests
             store.ReserveSignedOrdinalAsync(claim, earlyEvidence.Continuation,
                 earlyEvidence.Authorization, earlyEvidence.Continuation.Databases,
                 signatures.Trust, Now.AddMinutes(4), CancellationToken.None));
+        gateway.Now = Now.AddMinutes(11);
         _ = await store.ReserveSignedOrdinalAsync(claim, secondEvidence.Continuation,
             secondEvidence.Authorization, secondEvidence.Continuation.Databases,
             signatures.Trust, Now.AddMinutes(11), CancellationToken.None);
@@ -149,8 +150,17 @@ public sealed class ImmutableRolloverClaimStoreTests
             store.ReserveSignedOrdinalAsync(claim, secondEvidence.Continuation,
                 secondEvidence.Authorization, secondEvidence.Continuation.Databases,
                 signatures.Trust, Now.AddMinutes(11), CancellationToken.None));
-        gateway.Replace("claims/v1/ordinals/" + claim.ClaimId.ToString("D") + "/" +
-            1L.ToString("D20", System.Globalization.CultureInfo.InvariantCulture),
+        string ordinalName = "claims/v1/ordinals/" + claim.ClaimId.ToString("D") + "/" +
+            1L.ToString("D20", System.Globalization.CultureInfo.InvariantCulture);
+        gateway.Replace(ordinalName,
+            System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(retained with
+            {
+                CreatedAtUtc = Now.AddMinutes(-2),
+            }));
+        await AssertCodeAsync("delta_rollover_claim_ordinal_invalid", () =>
+            store.ReadSignedOrdinalAsync(claim, 1, signatures.Trust, Now.AddMinutes(11),
+                CancellationToken.None));
+        gateway.Replace(ordinalName,
             System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(retained with
             {
                 Continuation = retained.Continuation with { AttestationSignature = "forged" },
@@ -316,6 +326,7 @@ public sealed class ImmutableRolloverClaimStoreTests
             new(StringComparer.Ordinal);
         private long _generation;
         public int Count => _objects.Count;
+        public DateTimeOffset Now { get; set; } = now;
         public TimeSpan Retention { get; init; } = TimeSpan.FromSeconds(
             ImmutableRolloverClaimStore.MinimumRetentionSeconds);
         public RolloverClaimBucketPolicy Policy { get; init; } = new(true,
@@ -332,7 +343,7 @@ public sealed class ImmutableRolloverClaimStoreTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             var candidate = new RolloverClaimObject(Interlocked.Increment(ref _generation),
-                now, now.Add(Retention), [.. content]);
+                Now, Now.Add(Retention), [.. content]);
             return !_objects.TryAdd(name, candidate)
                 ? throw new DeltaExecutionException("delta_rollover_claim_conflict",
                     "The immutable rollover object exists.")
