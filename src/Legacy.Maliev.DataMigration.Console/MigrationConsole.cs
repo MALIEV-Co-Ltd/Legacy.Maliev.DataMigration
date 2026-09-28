@@ -135,8 +135,10 @@ public static partial class MigrationConsole
                     return await RunIncrementalBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable, output, error,
                         incrementalRuntime ?? new DefaultIncrementalConsoleRuntime(), cancellationToken).ConfigureAwait(false);
                 case "plan-delta":
+                case "project-paired-local-template":
                 case "plan-paired-delta":
                 case "inspect-target-schema-gaps":
+                case "inspect-production-schema-catalog":
                 case "verify-disposable-delta-proof":
                 case "authorize-paired-local-transition":
                 case "preflight-paired-local-transition":
@@ -147,6 +149,14 @@ public static partial class MigrationConsole
                 case "reconcile-delta":
                     return await RunDeltaBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable,
                         output, error, new DefaultGuardedDeltaConsoleRuntime(), cancellationToken).ConfigureAwait(false);
+                case "review-historical-local-target":
+                    return await RunHistoricalLocalReviewBoundaryAsync(invocation.ConfigPath,
+                        getEnvironmentVariable, output, error, new DefaultHistoricalLocalReviewRuntime(),
+                        cancellationToken).ConfigureAwait(false);
+                case "issue-historical-local-continuity":
+                    return await RunHistoricalLocalContinuityIssueBoundaryAsync(invocation.ConfigPath,
+                        getEnvironmentVariable, output, error, new DefaultHistoricalLocalReviewRuntime(),
+                        cancellationToken).ConfigureAwait(false);
                 case "authorize-target-extension-repair":
                 case "apply-target-extension-repair":
                     return await RunExtensionRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
@@ -1367,9 +1377,12 @@ public static partial class MigrationConsole
         SigningRolesCommandConfiguration? SigningRoles = null,
         IncrementalCommandConfiguration? Incremental = null,
         DeltaCommandConfiguration? Delta = null,
+        PairedLocalTemplateCommandConfiguration? PairedLocalTemplate = null,
         CanonicalDatabaseBootstrapCommandConfiguration? CanonicalBootstrap = null,
         TargetExtensionRepairCommandConfiguration? TargetExtensionRepair = null,
-        QuotationTargetBootstrapCommandConfiguration? QuotationTargetBootstrap = null);
+        QuotationTargetBootstrapCommandConfiguration? QuotationTargetBootstrap = null,
+        HistoricalLocalReviewCommandConfiguration? HistoricalLocalReview = null,
+        HistoricalLocalContinuityIssueCommandConfiguration? HistoricalLocalContinuityIssue = null);
 
     private sealed record QuotationSchemaBaselineCommandConfiguration(
         string PlanPath,

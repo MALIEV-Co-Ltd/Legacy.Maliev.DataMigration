@@ -5,7 +5,58 @@ namespace Legacy.Maliev.DataMigration;
 
 /// <summary>Authenticated catalog data must be supplied by a separate read-only observer.</summary>
 public sealed record ProductionSchemaObservation(
-    string Database, IReadOnlyList<ObservedTargetTable> Tables, string SchemaSha256);
+    string Database, IReadOnlyList<ObservedTargetTable> Tables, string SchemaSha256)
+{
+    /// <summary>PII-free structural digests, captured in the same read-only snapshot.</summary>
+    public IReadOnlyList<ProductionSchemaTableComponents> TableComponents { get; init; } = [];
+
+    /// <summary>Diagnostic comparison to the expected final target, never migration authorization.</summary>
+    public IReadOnlyList<ProductionSchemaTableDiagnostic> TableDiagnostics { get; init; } = [];
+
+    /// <summary>PII-free per-column structural labels from the same catalog snapshot.</summary>
+    public IReadOnlyList<ProductionSchemaColumnDiagnostic> ColumnDiagnostics { get; init; } = [];
+}
+
+/// <summary>Per-table digests over the same five structural facets as the whole-schema hash.</summary>
+public sealed record ProductionSchemaTableComponents(
+    string Schema, string Table, string ColumnsSha256, string ConstraintsSha256,
+    string IndexesSha256, string ForeignKeysSha256, string WholeTableSha256);
+
+/// <summary>Names and structural facet labels only; no row values or SQL expressions.</summary>
+public sealed record ProductionSchemaTableDiagnostic(
+    string Schema, string Table, string Status, IReadOnlyList<string> ChangedComponents);
+
+/// <summary>Column names and changed facet names only; never default or generated SQL text.</summary>
+public sealed record ProductionSchemaColumnDiagnostic(
+    string Schema, string Table, string Column, string Status, IReadOnlyList<string> ChangedComponents)
+{
+    /// <summary>Fixed vocabulary only; never the raw PostgreSQL type declaration.</summary>
+    public string ActualTypeCategory { get; init; } = "not-observed";
+
+    /// <summary>Inherited or explicit; never the raw collation name.</summary>
+    public string ActualCollationMode { get; init; } = "not-observed";
+
+    /// <summary>Built-in allowlist identity or explicit-unreviewed.</summary>
+    public string ActualCollationIdentity { get; init; } = "not-observed";
+
+    /// <summary>Fixed PostgreSQL provider category; never a raw locale or collation name.</summary>
+    public string ActualCollationProvider { get; init; } = "not-observed";
+
+    /// <summary>Fixed deterministic/nondeterministic classification.</summary>
+    public string ActualCollationDeterminism { get; init; } = "not-observed";
+
+    /// <summary>Recorded versus current provider version state, without either version value.</summary>
+    public string ActualCollationVersionState { get; init; } = "not-observed";
+
+    /// <summary>Whether the catalog namespace is pg_catalog, without publishing other names.</summary>
+    public string ActualCollationCatalogScope { get; init; } = "not-observed";
+
+    /// <summary>Presence and equality classification, never the expression.</summary>
+    public string DefaultState { get; init; } = "not-observed";
+
+    /// <summary>Presence and equality classification, never the expression.</summary>
+    public string GeneratedState { get; init; } = "not-observed";
+}
 
 /// <summary>A reviewed object name; this is diagnostic, never executable SQL or DDL permission.</summary>
 public sealed record ProductionSchemaAlignmentStep(string Kind, string ObjectName, bool PreserveSourceRows = false);

@@ -24,3 +24,26 @@ function Assert-ProductionExecTunnelIdentity {
         throw 'production_delta_tunnel_identity_invalid'
     }
 }
+
+function Assert-ProductionExecTunnelDurability {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Databases,
+        [Parameter(Mandatory = $true)][string]$ExpectedSystemIdentifier,
+        [Parameter(Mandatory = $true)][scriptblock]$Query
+    )
+
+    if ($Databases.Count -ne 23 -or
+        @($Databases | Select-Object -Unique).Count -ne 23 -or
+        $ExpectedSystemIdentifier -cnotmatch '^\d+$') {
+        throw 'production_delta_tunnel_preflight_invalid'
+    }
+    foreach ($database in $Databases) {
+        try { $result = & $Query $database }
+        catch { throw 'production_delta_tunnel_durability_failed' }
+        if ($null -eq $result -or $result.ExitCode -ne 0 -or
+            @($result.Lines).Count -ne 1 -or
+            [string]$result.Lines[0] -cne $ExpectedSystemIdentifier) {
+            throw 'production_delta_tunnel_durability_failed'
+        }
+    }
+}

@@ -291,6 +291,102 @@ public sealed class SqlServerMigrationSourceIntegrationTests
     }
 
     [SqlServerIntegrationFact]
+    public async Task IdentityProgress_DoesNotChangeSchemaFingerprint_ButDdlStillDoes()
+    {
+        await using MsSqlContainer container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
+            .WithPassword("MALIEV_test_Only!123456")
+            .Build();
+        await container.StartAsync();
+
+        const string database = "IdentityFingerprintTest";
+        await using (var master = new SqlConnection(container.GetConnectionString()))
+        {
+            await master.OpenAsync();
+            await using var create = new SqlCommand($"CREATE DATABASE [{database}]; ALTER DATABASE [{database}] SET ALLOW_SNAPSHOT_ISOLATION ON;", master);
+            _ = await create.ExecuteNonQueryAsync();
+        }
+
+        var builder = new SqlConnectionStringBuilder(container.GetConnectionString()) { InitialCatalog = database };
+        await using (var setup = new SqlConnection(builder.ConnectionString))
+        {
+            await setup.OpenAsync();
+            await using var create = new SqlCommand("""
+                CREATE TABLE dbo.Parent (Id bigint IDENTITY(100, 5) NOT NULL CONSTRAINT PK_Parent PRIMARY KEY);
+                CREATE TABLE dbo.Child (Id int NOT NULL CONSTRAINT PK_Child PRIMARY KEY,
+                    ParentId bigint NOT NULL CONSTRAINT FK_Child_Parent REFERENCES dbo.Parent(Id));
+                INSERT INTO dbo.Parent DEFAULT VALUES;
+                INSERT INTO dbo.Child (Id, ParentId) VALUES (1, 100);
+                """, setup);
+            _ = await create.ExecuteNonQueryAsync();
+        }
+
+        await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(builder.ConnectionString));
+        await source.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
+        SourceSchemaEvidence before = await source.InspectSchemaAsync(database, CancellationToken.None);
+        DatabaseSchemaPlan baseline = await source.GenerateDatabasePlanAsync(database, CancellationToken.None);
+        await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
+
+        await using (var progress = new SqlConnection(builder.ConnectionString))
+        {
+            await progress.OpenAsync();
+            await using var insert = new SqlCommand("INSERT INTO dbo.Parent DEFAULT VALUES;", progress);
+            _ = await insert.ExecuteNonQueryAsync();
+        }
+
+        await source.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
+        SourceSchemaEvidence after = await source.InspectSchemaAsync(database, CancellationToken.None);
+        SourceSchemaEvidence againstPlan = await source.InspectSchemaForPlanAsync(baseline, CancellationToken.None);
+        DatabaseSchemaPlan progressed = await source.GenerateDatabasePlanAsync(database, CancellationToken.None);
+        Assert.Equal(before.SchemaSha256, after.SchemaSha256);
+        Assert.Equal(before.SchemaSha256, againstPlan.SchemaSha256);
+        Assert.Equal(before.Tables.SelectMany(table => table.Columns).Select(column => column.MetadataSha256),
+            after.Tables.SelectMany(table => table.Columns).Select(column => column.MetadataSha256));
+        IdentityCopyPlan firstIdentity = Assert.Single(Assert.Single(baseline.Tables, table => table.SourceTable == "Parent").Identities);
+        IdentityCopyPlan nextIdentity = Assert.Single(Assert.Single(progressed.Tables, table => table.SourceTable == "Parent").Identities);
+        Assert.Equal((100L, 5L, 100L), (firstIdentity.SeedValue, firstIdentity.IncrementValue, firstIdentity.CurrentValue));
+        Assert.Equal((100L, 5L, 105L), (nextIdentity.SeedValue, nextIdentity.IncrementValue, nextIdentity.CurrentValue));
+        Assert.Equal(["Id"], Assert.Single(progressed.Tables, table => table.SourceTable == "Parent").PrimaryKey!.Columns);
+        Assert.Equal("FK_Child_Parent", Assert.Single(Assert.Single(progressed.Tables, table => table.SourceTable == "Child").ForeignKeys).Name);
+        await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
+
+        await using (var ddl = new SqlConnection(builder.ConnectionString))
+        {
+            await ddl.OpenAsync();
+            await using var alter = new SqlCommand("ALTER TABLE dbo.Parent ADD StructuralMarker int NULL;", ddl);
+            _ = await alter.ExecuteNonQueryAsync();
+        }
+        await source.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
+        SourceSchemaEvidence changed = await source.InspectSchemaAsync(database, CancellationToken.None);
+        Assert.NotEqual(before.SchemaSha256, changed.SchemaSha256);
+        await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
+
+        await using (var ddl = new SqlConnection(builder.ConnectionString))
+        {
+            await ddl.OpenAsync();
+            await using var alter = new SqlCommand("""
+                ALTER TABLE dbo.Parent DROP COLUMN StructuralMarker;
+                ALTER TABLE dbo.Child DROP CONSTRAINT FK_Child_Parent;
+                """, ddl);
+            _ = await alter.ExecuteNonQueryAsync();
+        }
+        await source.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
+        SourceSchemaEvidence withoutForeignKey = await source.InspectSchemaAsync(database, CancellationToken.None);
+        Assert.NotEqual(before.SchemaSha256, withoutForeignKey.SchemaSha256);
+        await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
+
+        await using (var ddl = new SqlConnection(builder.ConnectionString))
+        {
+            await ddl.OpenAsync();
+            await using var alter = new SqlCommand("ALTER TABLE dbo.Parent DROP CONSTRAINT PK_Parent;", ddl);
+            _ = await alter.ExecuteNonQueryAsync();
+        }
+        await source.BeginDatabaseSnapshotAsync(database, CancellationToken.None);
+        SourceSchemaEvidence withoutPrimaryKey = await source.InspectSchemaAsync(database, CancellationToken.None);
+        Assert.NotEqual(withoutForeignKey.SchemaSha256, withoutPrimaryKey.SchemaSha256);
+        await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None);
+    }
+
+    [SqlServerIntegrationFact]
     public async Task SnapshotCatalogStreamingAndDispose_PreserveProductionSemantics()
     {
         const string password = "MALIEV_test_Only!123456";

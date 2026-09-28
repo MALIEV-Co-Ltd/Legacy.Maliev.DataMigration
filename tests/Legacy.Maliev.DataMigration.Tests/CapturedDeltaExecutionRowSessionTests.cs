@@ -5,6 +5,44 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class CapturedDeltaExecutionRowSessionTests
 {
     [Fact]
+    public async Task Local_preflight_consumes_captured_streaming_values_before_fingerprinting()
+    {
+        string directory = NewDirectory();
+        try
+        {
+            TableCopyPlan table = Table();
+            byte[] key = RandomNumberGenerator.GetBytes(32);
+            byte[] content = "ข้อความทดสอบ"u8.ToArray();
+            MigrationRow source = new(new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["ID"] = 1,
+                ["Name"] = new BufferedStreamingLob(StreamingLobKind.Text, content),
+            });
+            var archive = new DeltaCapturedTableArchive(directory);
+            DeltaCapturedTableArtifact full = await archive.CaptureAsync("Quotation", table,
+                new('a', 64), Rows([source]), key, CancellationToken.None);
+            CanonicalTableDelta delta = await CanonicalAsyncDeltaPlanner.PlanAsync(table,
+                archive.ReplayAsync(full, "Quotation", table, new('a', 64), key, CancellationToken.None),
+                Rows([]), CancellationToken.None);
+            var tablePlan = new DeltaTablePlan(delta.Table, delta.InsertCount, delta.UpdateCount,
+                delta.DeleteCount, delta.UnchangedCount,
+                DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(delta.Operations), delta.Operations);
+            DeltaCapturedTableArtifact selected = await archive.CapturePlannedRowsAsync(full,
+                "Quotation", table, new('a', 64), tablePlan, key, CancellationToken.None);
+            using var captured = new DeltaCapturedTableRowSource(archive, [selected], new('a', 64), key);
+            var database = new DeltaDatabasePlan("Quotation", [tablePlan]);
+            var schema = new DatabaseSchemaPlan("Quotation", "1.0", new('b', 64), new('c', 64), [table]);
+
+            Assert.Equal(1, await PairedLocalTransitionPreflight.VerifyCapturedRowsAsync(database,
+                schema, captured, new InMemoryTarget([]), CancellationToken.None));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Local_preflight_replays_signed_rows_and_rejects_changed_target_preimage()
     {
         string directory = NewDirectory();

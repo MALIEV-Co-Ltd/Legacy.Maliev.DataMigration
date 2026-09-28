@@ -193,6 +193,183 @@ disposable apply/reconciliation and separately signed schema-1.4 LOCAL
 admission are still required.
 The retained public outboxes are never row-delta targets or retired here.
 
+After separately reviewing the disposable and persistent LOCAL target
+identities, a fresh owner-only paired template may run the same capture all
+the way through with `-ExecutePairedLocal` instead of `-PlanPaired`. It requires
+`useCapturedSource=true`, `useQuotationPhysicalTransition=true`, a disposable
+ordinary target, a distinct `pairedPersistentTarget` with persistent-LOCAL
+authority, `allowAuthorizationSigning=true`, and `allowExecution=true`.
+The helper still requires clean synchronized protected main and green exact-head
+CI. It creates one new protected capture/key, signs one schema-1.4 pair, and
+rejects any planned delete before executing the disposable half. It signs a
+short-lived disposable authorization, applies/reconciles all 23 databases on
+that disposable target, then obtains a fresh LOCAL-only authorization and
+read-only preflight against the same pair and proof. Only then does it invoke
+the guarded atomic LOCAL apply, whose output is the signed checkpoint-bound
+exact-23 reconciliation. Each phase has a create-new owner-only config and
+output; a failure stops the run without retry or fallback. Do not reuse an
+expired authorization, old run directory, or earlier target observation.
+An interrupted LOCAL run may have committed some database transactions; inspect
+checkpoints and use a fresh admission for deliberate same-pair replay rather
+than rerunning this helper with a new capture. This option never targets
+production, deletes rows, replaces a database, or deploys an application.
+On a later daily run, previously reconciled LOCAL metadata is accepted only
+when its Docker container lineage still matches, every historical journal
+checkpoint is complete, and the prior fence observation belongs to a
+reconciled checkpoint. A legacy short Docker generation may be advanced to the
+same container's freshly observed timestamp-bound generation. The old fence's
+physical-schema hash may differ after a separately reviewed additive migration;
+the current full physical schema must match the new signed plan in read-only
+preflight and again inside each serializable LOCAL transaction. Preflight
+fingerprints the settled history; the executor rechecks it and re-fences to the
+new signed plan inside that same transaction before row DML. An incomplete or
+changed checkpoint, wrong container, unverified current schema, or conflicting
+current plan still fails closed. There is no standalone metadata update or
+replay of a failed capture.
+For a container rollover, the separate owner-only
+`issue-historical-local-continuity` command can publish a create-new bundle
+containing a fresh paired LOCAL authorization and signed prospective continuity
+attestation. It requires protected historical plan/receipt/schema, future
+paired plan/disposable proof/schema, independent trusted signing roles, the
+current loopback target connection, and an expiry no more than 15 minutes after
+issuance. It rereads all 23 old fences and settled journals around an exact-row
+read-only comparison and independently checks Docker volume lineage and the
+PostgreSQL system identifier. The old container must be absent. This bundle
+does not grant execution or adopt a fence; no executor currently consumes it.
+Any Quotation row-content drift or incomplete journal blocks issuance.
+The success marker means a signed result was published for independent review,
+not that current live SQL rows equal the capture cutoff. Retain the protected
+pair, proof, authorization, reconciliation, encrypted capture, and key while
+review or any same-pair replay remains possible. On failure, especially after
+a partial 23-database commit, preserve those run-owned files and database
+journals for recovery; do not automatically retry or erase them. Only after
+independent verification accepts the signed reconciliation and no replay is
+needed should the owner remove the run-owned capture key and temporary
+credential/signing-key projections under the local retention policy. The
+helper never deletes caller-owned connection or signing-key files itself.
+
+The off-repository `new-local-delta-template.ps1` remains a persistent-only
+helper. It does not create `pairedPersistentTarget` and must not be passed to
+`-ExecutePairedLocal`. From clean protected main with exact-head green CI,
+the owner can instead run `project-paired-local-template --config
+<owner-only-candidate.json>` immediately before the paired daily run. The
+candidate contains `pairedLocalTemplate`, not `delta`:
+
+```json
+{
+  "pairedLocalTemplate": {
+    "schemaPlanPath": "<fresh owner-only exact-23 source schema plan>",
+    "outputPath": "<new file in owner-only local directory>",
+    "sourceConnectionFile": "<owner-only SQL source connection file>",
+    "runnerAssemblyPath": "<reviewed protected-main Console DLL>",
+    "backupManifestSha256": "<fresh backup/capture baseline hash>",
+    "backupKeyFingerprintSha256": "<distinct backup key fingerprint>",
+    "disposable": {
+      "targetConnectionFile": "<owner-only isolated disposable PG connection file>",
+      "dockerContainerId": "<full 64-character container ID claim>",
+      "dockerVolumeName": "legacy-delta-proof-<unique-run>",
+      "planKey": { "keyId": "<unique disposable plan ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" },
+      "authorizationKey": { "keyId": "<unique disposable auth ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" },
+      "evidenceKey": { "keyId": "<unique disposable evidence ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" }
+    },
+    "persistent": {
+      "targetConnectionFile": "<owner-only existing LOCAL PG connection file>",
+      "dockerContainerId": "<full 64-character container ID claim>",
+      "dockerVolumeName": "legacy-maliev-exact23-postgres-data",
+      "planKey": { "keyId": "<unique persistent plan ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" },
+      "authorizationKey": { "keyId": "<unique persistent auth ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" },
+      "evidenceKey": { "keyId": "<unique persistent evidence ID>", "subjectPublicKeyInfoPath": "<owner-only public key file>" }
+    }
+  }
+}
+```
+
+The six distinct owner-only private signer paths are supplied through the
+disposable `LEGACY_MIGRATION_DELTA_{PLAN,AUTHORIZATION,EVIDENCE}_SIGNING_KEY_FILE`
+and persistent
+`LEGACY_MIGRATION_PERSISTENT_DELTA_{PLAN,AUTHORIZATION,EVIDENCE}_SIGNING_KEY_FILE`
+environment variables. Set `LEGACY_DEPLOY_ENABLED=false` and
+`LEGACY_MIGRATION_CALLER=owner`. The projector reads each private signer and
+checks its fingerprint against the separate protected public key; no private
+path or key is written to the resulting template. It requires a fresh
+schema-2.0 exact-23 source plan with the reviewed Quotation disposition,
+separate connection files, six different roles and fingerprints, and the
+backup key fingerprint distinct from all six. It independently runs Docker
+inspect for each full container ID and named local volume, checks a running
+container, its writable PGDATA volume mount, exact loopback port binding,
+and at least 10 GiB available on that mount, then
+opens both PostgreSQL targets with read-only transactions to verify system
+identifiers, exact-23 inventory, and all 23 full physical schemas. Quotation
+must match the additive retained-public-outbox transition schema. The
+caller-supplied IDs and volume names are claims, never observations.
+
+Only after every check passes does it publish a create-new owner-only `delta`
+template with distinct disposable/persistent authorities, Docker-container
+generation bindings, observation hashes, and schema-1.4 paired fields. The
+Docker generation is a container/volume identity observation, **not** a
+cryptographic attestation of volume contents. The schema-1.4 LOCAL apply
+requires the signed Docker generation tuple (full container ID, container
+creation/start times, and volume creation time) and re-observes
+the canonical persistent container, named volume, loopback binding, capacity,
+and PostgreSQL authority before admission, before each database's atomic
+metadata/DML transaction, and after reconciliation. The signed plan and
+atomic apply also recheck physical schema, captured-row preimages, metadata
+fences, and proof. Regenerate the
+candidate, keys, schema plan, and template for each run; do not reuse an old
+template after restart or target drift. A projector result alone is not an
+apply authorization or a claim of current SQL production parity. The
+following is the projected target/key portion for operator review:
+
+```json
+{
+  "delta": {
+    "targetConnectionFile": "<owner-only disposable connection file>",
+    "targetNamespace": "local-aspire",
+    "targetCluster": "legacy-postgres-main-local",
+    "targetGeneration": "<fresh disposable generation>",
+    "targetObservationSha256": "<fresh disposable observation hash>",
+    "targetAuthority": {
+      "kind": "local-aspire",
+      "authorityId": "aspire://legacy-postgres-main-local/disposable-<run>",
+      "systemIdentifierSha256": "<disposable system hash>"
+    },
+    "planKey": { "keyId": "<disposable plan key>", "subjectPublicKeyInfoPath": "<protected path>" },
+    "authorizationKey": { "keyId": "<disposable authorization key>", "subjectPublicKeyInfoPath": "<protected path>" },
+    "evidenceKey": { "keyId": "<disposable evidence key>", "subjectPublicKeyInfoPath": "<protected path>" },
+    "pairedPersistentTarget": {
+      "targetConnectionFile": "<owner-only persistent LOCAL connection file>",
+      "targetNamespace": "local-aspire",
+      "targetCluster": "legacy-postgres-main-local",
+      "targetGeneration": "<fresh persistent generation>",
+      "targetObservationSha256": "<fresh persistent observation hash>",
+      "targetAuthority": {
+        "kind": "local-aspire",
+        "authorityId": "aspire://legacy-postgres-main-local/persistent-<run>",
+        "systemIdentifierSha256": "<persistent system hash>"
+      },
+      "planKey": { "keyId": "<persistent plan key>", "subjectPublicKeyInfoPath": "<protected path>" },
+      "authorizationKey": { "keyId": "<persistent authorization key>", "subjectPublicKeyInfoPath": "<protected path>" },
+      "evidenceKey": { "keyId": "<persistent evidence key>", "subjectPublicKeyInfoPath": "<protected path>" }
+    }
+  }
+}
+```
+
+The disposable and persistent private signing-key paths are projected only
+through the console's distinct environment variables; none belongs in JSON.
+The paired run requires separate protected
+`LEGACY_MIGRATION_DELTA_AUTHORIZATION_SIGNING_KEY_FILE` and
+`LEGACY_MIGRATION_PERSISTENT_DELTA_AUTHORIZATION_SIGNING_KEY_FILE` paths, and
+likewise separate `LEGACY_MIGRATION_DELTA_EVIDENCE_SIGNING_KEY_FILE` and
+`LEGACY_MIGRATION_PERSISTENT_DELTA_EVIDENCE_SIGNING_KEY_FILE` paths. The helper
+temporarily selects each persistent path only for its LOCAL signing phase and
+restores the disposable path afterward; missing or identical paths fail closed.
+The console still validates each private key against its distinct trusted
+public-key fingerprint.
+If the paired template projection, target observation, or fresh distinct keys
+are unavailable, stop before invoking the execution switch. No automatic
+same-pair fresh-authorization resume exists yet after expiry or partial commit.
+
 `authorize-paired-local-transition` is an owner-only admission command for a
 fresh, same-capture pair and independently signed disposable exact-23 proof.
 Its protected configuration references the schema, complete pair, proof, five
@@ -269,13 +446,18 @@ time. No existing public Quotation outbox is deleted or targeted by this check.
 After generating the current source schema plan, use
 `scripts/new-production-delta-template.ps1` from clean, exact-head-green
 protected main to project a fresh production target connection and observation
-into a new owner-only key directory. Its loopback tunnel must be either the
-observed `maliev-legacy/legacy-postgres-main-rw` port-forward or the exact-main
-identity-checked exec tunnel created with
+into a new owner-only key directory. The CRI port-forward has repeatedly reset
+after one authenticated PostgreSQL connection, so it is no longer admitted for
+this template. Use the exact-main identity-checked, loopback-only exec tunnel
+created with
 `scripts/new-production-exec-tunnel-config.ps1` and admitted through
-`-ExecTunnelConfigPath`. The latter is plan-only and cannot authorize or apply
-production rows. Both paths verify cluster
-health, archiving, primary identity, capacity, and all 23 canonical databases.
+`-ExecTunnelConfigPath`. Before publishing an owner-only connection or template,
+the projector checks the cluster, archiving, primary identity, capacity, and
+inventory, then opens 23 separate authenticated, read-only connections, one to
+each canonical database. Every connection must return the same PostgreSQL system
+identifier; the listener process, config hash, cluster and primary are rechecked
+afterward. One successful query is insufficient. The template remains plan-only
+and cannot authorize or apply production rows.
 Supply the independently verified current source commit with
 `-ExpectedSourceCommitSha`; a stale schema plan is rejected.
 The generated template permits planning only; it cannot sign an execution

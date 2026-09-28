@@ -466,7 +466,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             foreach (IndexCopyPlan index in table.Indexes)
             {
                 string unique = index.Unique ? "UNIQUE " : string.Empty;
-                string nulls = index.Unique && index.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any()
+                string nulls = PostgreSqlIndexNullSemantics.RequiresNullsNotDistinct(index, table)
                     ? " NULLS NOT DISTINCT"
                     : string.Empty;
                 string keyColumns = string.Join(", ", index.Columns.Select(column =>
@@ -629,6 +629,13 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         DatabaseSchemaPlan plan,
         CancellationToken cancellationToken)
     {
+        return (await InspectSchemaWithComponentsAsync(plan, cancellationToken).ConfigureAwait(false)).SchemaSha256;
+    }
+
+    internal async Task<(string SchemaSha256, IReadOnlyList<ProductionSchemaTableComponents> Components,
+        IReadOnlyList<PostgreSqlSchemaFingerprint.ColumnShape> Columns)>
+        InspectSchemaWithComponentsAsync(DatabaseSchemaPlan plan, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(plan);
         _inspectionStarted = true;
         List<PostgreSqlSchemaFingerprint.TableShape> tables = [];
@@ -685,7 +692,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     reader.GetBoolean(5),
                     reader.GetBoolean(6),
                     reader.GetString(7),
-                    NormalizeExpression(reader.GetString(8)),
+                    PostgreSqlGeneratedExpressionCanonicalizer.Canonicalize(reader.GetString(8)),
                     reader.GetString(9)));
             }
         }
@@ -831,7 +838,9 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         }
 
         _schemaInspected = true;
-        return PostgreSqlSchemaFingerprint.Compute(tables, columns, constraints, indexes, foreignKeys);
+        return (PostgreSqlSchemaFingerprint.Compute(tables, columns, constraints, indexes, foreignKeys),
+            PostgreSqlSchemaFingerprint.ComputeComponents(tables, columns, constraints, indexes, foreignKeys),
+            columns);
     }
 
     public async Task<TableReconciliationEvidence> InspectTableAsync(
@@ -1247,19 +1256,7 @@ internal static class PostgreSqlSchemaFingerprint
     {
         List<TableShape> tables = [.. schemaTables.Select(table => new TableShape(table.TargetSchema, table.TargetTable))];
         List<ColumnShape> columns = [.. schemaTables.SelectMany(table => table.OrderedColumns.Select((column, ordinal) =>
-            new ColumnShape(
-                table.TargetSchema,
-                table.TargetTable,
-                ordinal + 1,
-                column,
-                PostgreSqlTypePolicy.Validate(table.ColumnTypes[column]),
-                table.NullableColumns.Contains(column, StringComparer.Ordinal),
-                table.Identities.Any(identity => string.Equals(identity.Column, column, StringComparison.Ordinal)),
-                PostgreSqlDefaultExpressionCanonicalizer.Expected(
-                    table.DefaultExpressions.GetValueOrDefault(column, string.Empty),
-                    PostgreSqlTypePolicy.Validate(table.ColumnTypes[column])),
-                table.GeneratedColumns.SingleOrDefault(item => string.Equals(item.Column, column, StringComparison.Ordinal))?.Expression ?? string.Empty,
-                table.Collations.GetValueOrDefault(column, string.Empty))))];
+            ExpectedColumn(table, column, ordinal + 1)))];
         List<ConstraintShape> constraints = [.. schemaTables.SelectMany(table =>
             (table.PrimaryKey is null
                 ? Enumerable.Empty<ConstraintShape>()
@@ -1300,7 +1297,7 @@ internal static class PostgreSqlSchemaFingerprint
                     .Select(item => item.ordinal)],
                 index.FilterPredicate ?? string.Empty)
             {
-                NullsNotDistinct = index.Unique && index.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any(),
+                NullsNotDistinct = PostgreSqlIndexNullSemantics.RequiresNullsNotDistinct(index, table),
             }))];
         List<ForeignKeyShape> foreignKeys = [.. schemaTables.SelectMany(table => table.ForeignKeys.Select(foreignKey =>
             new ForeignKeyShape(
@@ -1315,6 +1312,76 @@ internal static class PostgreSqlSchemaFingerprint
                 foreignKey.OnUpdate,
                 true)))];
         return Compute(tables, columns, constraints, indexes, foreignKeys);
+    }
+
+    internal static ColumnShape ExpectedColumn(TableCopyPlan table, string column, int ordinal)
+    {
+        string type = PostgreSqlTypePolicy.Validate(table.ColumnTypes[column]);
+        return new ColumnShape(table.TargetSchema, table.TargetTable, ordinal, column, type,
+            table.NullableColumns.Contains(column, StringComparer.Ordinal),
+            table.Identities.Any(identity => string.Equals(identity.Column, column, StringComparison.Ordinal)),
+            PostgreSqlDefaultExpressionCanonicalizer.Expected(
+                table.DefaultExpressions.GetValueOrDefault(column, string.Empty), type),
+            table.GeneratedColumns.SingleOrDefault(item => string.Equals(item.Column, column, StringComparison.Ordinal))?.Expression ?? string.Empty,
+            table.Collations.GetValueOrDefault(column, string.Empty));
+    }
+
+    internal static ProductionSchemaTableComponents ComputeExpectedComponents(TableCopyPlan table)
+    {
+        TableCopyPlan columns = table with
+        {
+            PrimaryKey = null,
+            UniqueConstraints = [],
+            CheckConstraints = [],
+            Indexes = [],
+            ForeignKeys = [],
+        };
+        TableCopyPlan constraints = table with
+        {
+            OrderedColumns = [],
+            Indexes = [],
+            ForeignKeys = [],
+        };
+        TableCopyPlan indexes = table with
+        {
+            OrderedColumns = [],
+            PrimaryKey = null,
+            UniqueConstraints = [],
+            CheckConstraints = [],
+            ForeignKeys = [],
+        };
+        TableCopyPlan foreignKeys = table with
+        {
+            OrderedColumns = [],
+            PrimaryKey = null,
+            UniqueConstraints = [],
+            CheckConstraints = [],
+            Indexes = [],
+        };
+        return new(table.TargetSchema, table.TargetTable,
+            ComputeExpectedTables([columns]), ComputeExpectedTables([constraints]),
+            ComputeExpectedTables([indexes]), ComputeExpectedTables([foreignKeys]),
+            ComputeExpectedTables([table]));
+    }
+
+    internal static IReadOnlyList<ProductionSchemaTableComponents> ComputeComponents(
+        IReadOnlyList<TableShape> tables, IReadOnlyList<ColumnShape> columns,
+        IReadOnlyList<ConstraintShape> constraints, IReadOnlyList<IndexShape> indexes,
+        IReadOnlyList<ForeignKeyShape> foreignKeys)
+    {
+        return [.. tables.Select(table =>
+        {
+            bool InTable(string schema, string name) { return schema == table.Schema && name == table.Table; } ColumnShape[] tableColumns = [.. columns.Where(item => InTable(item.Schema, item.Table))];
+            ConstraintShape[] tableConstraints = [.. constraints.Where(item => InTable(item.Schema, item.Table))];
+            IndexShape[] tableIndexes = [.. indexes.Where(item => InTable(item.Schema, item.Table))];
+            ForeignKeyShape[] tableForeignKeys = [.. foreignKeys.Where(item => InTable(item.Schema, item.Table))];
+            return new ProductionSchemaTableComponents(table.Schema, table.Table,
+                Compute([table], tableColumns, [], [], []),
+                Compute([table], [], tableConstraints, [], []),
+                Compute([table], [], [], tableIndexes, []),
+                Compute([table], [], [], [], tableForeignKeys),
+                Compute([table], tableColumns, tableConstraints, tableIndexes, tableForeignKeys));
+        })];
     }
 
     internal static string Compute(
@@ -1349,7 +1416,7 @@ internal static class PostgreSqlSchemaFingerprint
                 writer.Write(column.Nullable);
                 writer.Write(column.Identity);
                 Write(writer, PostgreSqlDefaultExpressionCanonicalizer.Canonicalize(column.DefaultExpression));
-                Write(writer, NormalizeExpression(column.GeneratedExpression));
+                Write(writer, PostgreSqlGeneratedExpressionCanonicalizer.Canonicalize(column.GeneratedExpression));
                 Write(writer, column.Collation);
             }
 
@@ -1565,7 +1632,7 @@ internal static partial class PostgreSqlTypePolicy
     {
         string normalized = value.Trim().ToLowerInvariant();
         return !ApprovedType().IsMatch(normalized)
-            ? throw new MigrationExecutionException("target_type_forbidden", $"PostgreSQL target type '{value}' is not approved.")
+            ? throw new MigrationExecutionException("target_type_forbidden", "The PostgreSQL target type is not approved.")
             : normalized;
     }
 

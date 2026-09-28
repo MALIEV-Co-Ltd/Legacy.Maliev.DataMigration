@@ -82,7 +82,21 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
         Assert.True(fixture.Target.RolledBack);
     }
 
-    private Fixture CreateFixture(DeltaExecutionDisposition disposition = DeltaExecutionDisposition.Pending)
+    [Fact]
+    public async Task Runtime_generation_admission_failure_stops_before_target_transaction()
+    {
+        Fixture fixture = CreateFixture(authorization: new RejectGenerationAuthorization());
+        DeltaExecutionException failure = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+            fixture.Coordinator.ExecuteDatabaseAsync(fixture.Plan, fixture.Schema,
+                fixture.Database, CancellationToken.None));
+        Assert.Equal("delta_paired_local_docker_generation_drift", failure.Code);
+        Assert.False(fixture.Target.Began);
+        Assert.False(fixture.Target.Checkpointed);
+        Assert.Empty(fixture.Target.Applied);
+    }
+
+    private Fixture CreateFixture(DeltaExecutionDisposition disposition = DeltaExecutionDisposition.Pending,
+        IDeltaExecutionAuthorizationGate? authorization = null)
     {
         const string database = "ContactRequest";
         TableCopyPlan parents = Table("parents");
@@ -130,7 +144,8 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
             database,
             new DatabaseSchemaPlan(database, "1.0", hashA, new('b', 64), [parents, children]),
             plan,
-            new DeltaExecutionCoordinator(target, rows, new AllowAuthorization(), new FakeSourceReconciliation(database, [parents, children]), trust, TimeProvider.System),
+            new DeltaExecutionCoordinator(target, rows, authorization ?? new AllowAuthorization(),
+                new FakeSourceReconciliation(database, [parents, children]), trust, TimeProvider.System),
             target,
             rows,
             parentInsert);
@@ -230,9 +245,11 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
         internal bool RolledBack { get; private set; }
         internal bool Checkpointed { get; private set; }
         internal bool FailReconciliation { get; set; }
+        internal bool Began { get; private set; }
 
         public Task<IDeltaCanonicalTransaction> BeginAsync(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema, string database, CancellationToken token)
         {
+            Began = true;
             return Task.FromResult<IDeltaCanonicalTransaction>(new Transaction(this, disposition));
         }
 
@@ -282,6 +299,15 @@ public sealed class DeltaExecutionCoordinatorTests : IDisposable
                 ForeignKeyRelationshipCounts = table.ForeignKeys.ToDictionary(foreignKey => foreignKey.Name, _ => 0L, StringComparer.Ordinal),
             })];
             return Task.FromResult(new DatabaseReconciliationEvidence(database, schema.SourceSchemaSha256, schema.TargetSchemaSha256, evidence));
+        }
+    }
+
+    private sealed class RejectGenerationAuthorization : IDeltaExecutionAuthorizationGate
+    {
+        public Task ValidateAsync(DeltaSynchronizationPlan plan, string database, CancellationToken cancellationToken)
+        {
+            throw new DeltaExecutionException("delta_paired_local_docker_generation_drift",
+                "The runtime generation changed.");
         }
     }
 

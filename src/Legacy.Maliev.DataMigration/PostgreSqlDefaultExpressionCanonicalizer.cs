@@ -18,6 +18,14 @@ internal static partial class PostgreSqlDefaultExpressionCanonicalizer
     internal static string Canonicalize(string expression)
     {
         string unwrapped = Unwrap(expression);
+        // PostgreSQL reports timezone('UTC'::text, CURRENT_TIMESTAMP) in its
+        // equivalent AT TIME ZONE form. Admit only these exact UTC clock forms;
+        // another zone or clock function remains a schema difference.
+        if (unwrapped is "timezone('UTC'::text, CURRENT_TIMESTAMP)" or
+            "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text")
+        {
+            return "utc-current-timestamp";
+        }
         // Keep quoted defaults verbatim, including explicit casts and escaped literals. Being
         // conservative about surrounding whitespace is preferable to accepting a changed value.
         return unwrapped.Contains('\'', StringComparison.Ordinal)

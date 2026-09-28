@@ -12,6 +12,10 @@ public sealed class MigrationScriptContractTests
         Assert.Contains("production_delta_exec_config_outside_root", script, StringComparison.Ordinal);
         Assert.Contains("production_delta_exec_config_unprotected", script, StringComparison.Ordinal);
         Assert.Contains("Assert-ProductionExecTunnelIdentity", script, StringComparison.Ordinal);
+        Assert.Contains("Assert-ProductionExecTunnelDurability", script, StringComparison.Ordinal);
+        Assert.Contains("production_delta_tunnel_changed_during_preflight", script, StringComparison.Ordinal);
+        Assert.Contains("[string]::IsNullOrWhiteSpace($ExecTunnelConfigPath)", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("$transport = 'kubectl-port-forward'", script, StringComparison.Ordinal);
         Assert.Contains("tunnelConfigSha256", script, StringComparison.Ordinal);
         Assert.Contains("production_delta_canonical_database_missing", script, StringComparison.Ordinal);
         Assert.Contains("legacy-postgres-main-rw", script, StringComparison.Ordinal);
@@ -41,7 +45,7 @@ public sealed class MigrationScriptContractTests
     {
         string script = File.ReadAllText(SourcePath("invoke-daily-readonly-delta.ps1"));
         int proof = script.IndexOf("Invoke-GuardedCommand 'verify-disposable-delta-proof'", StringComparison.Ordinal);
-        int authorization = script.IndexOf("Invoke-GuardedCommand 'authorize-delta'", StringComparison.Ordinal);
+        int authorization = script.LastIndexOf("Invoke-GuardedCommand 'authorize-delta'", StringComparison.Ordinal);
         Assert.True(proof >= 0);
         Assert.True(authorization > proof);
         Assert.Contains("daily_delta_disposable_proof_required", script, StringComparison.Ordinal);
@@ -79,6 +83,69 @@ public sealed class MigrationScriptContractTests
         int pairedReturn = script.IndexOf("daily_delta_paired_plans_ready_for_review", StringComparison.Ordinal);
         int authorization = script.IndexOf("Invoke-GuardedCommand 'authorize-delta'", StringComparison.Ordinal);
         Assert.True(pairedReturn >= 0 && authorization > pairedReturn);
+    }
+
+    [Fact]
+    public void Daily_paired_local_execution_uses_one_capture_disposable_proof_then_fresh_local_admission()
+    {
+        string script = File.ReadAllText(SourcePath("invoke-daily-readonly-delta.ps1"));
+        string console = File.ReadAllText(ConsoleSourceCodePath("MigrationConsole.cs"));
+        Assert.Contains("JsonSerializerDefaults.Web", console, StringComparison.Ordinal);
+        Assert.Contains("[switch]$ExecutePairedLocal", script, StringComparison.Ordinal);
+        Assert.Contains("daily_delta_paired_mode_conflict", script, StringComparison.Ordinal);
+        Assert.Contains("daily_delta_paired_local_execution_invalid", script, StringComparison.Ordinal);
+        Assert.Contains("if ($LASTEXITCODE -ne 0) { Fail \"daily_delta_${Command}_failed\" }", script,
+            StringComparison.Ordinal);
+        Assert.Contains("$config.delta.pairedPersistentTarget.targetAuthority.kind -cne 'local-aspire'", script,
+            StringComparison.Ordinal);
+        Assert.Contains("aspire://legacy-postgres-main-local/persistent-", script, StringComparison.Ordinal);
+        Assert.Contains("$phaseConfig.delta.disposableProofPairPath = $planPath", script, StringComparison.Ordinal);
+        Assert.Contains("$phaseConfig.delta.disposableProofResultPath = $disposableProofPath", script,
+            StringComparison.Ordinal);
+        Assert.Contains("$phaseConfig.delta.disposableProofPlanKey = $config.delta.planKey", script,
+            StringComparison.Ordinal);
+        Assert.Contains("$phaseConfig.delta.disposableProofEvidenceKey = $config.delta.evidenceKey", script,
+            StringComparison.Ordinal);
+        Assert.Contains("$pairDocument.RootElement.GetProperty('disposable').GetRawText()", script,
+            StringComparison.Ordinal);
+        Assert.Contains("Write-ProtectedRawJson $disposablePlanPath", script, StringComparison.Ordinal);
+        Assert.Contains("$null = $phaseConfig.delta.Remove('pairedPersistentTarget')", script,
+            StringComparison.Ordinal);
+        Assert.Contains("Assert-OwnerOnlyFile $disposableProofPath", script, StringComparison.Ordinal);
+        Assert.Contains("Assert-OwnerOnlyFile $localAuthorizationPath", script, StringComparison.Ordinal);
+        Assert.Contains("Assert-OwnerOnlyFile (Join-Path $runDirectory 'local-apply-result.json')", script,
+            StringComparison.Ordinal);
+        Assert.Contains("daily_delta_paired_local_signed_result_ready_for_review", script,
+            StringComparison.Ordinal);
+        int pair = script.IndexOf("Invoke-GuardedCommand 'plan-paired-delta'", StringComparison.Ordinal);
+        int deleteGate = script.IndexOf("daily_delta_paired_plan_invalid", StringComparison.Ordinal);
+        int disposableAuthorization = script.IndexOf("Invoke-GuardedCommand 'authorize-delta' $phasePath",
+            StringComparison.Ordinal);
+        int disposableApply = script.IndexOf("Invoke-GuardedCommand 'apply-delta-local' $phasePath", StringComparison.Ordinal);
+        int disposableProof = script.IndexOf("Invoke-GuardedCommand 'reconcile-delta' $phasePath", StringComparison.Ordinal);
+        int localAuthorization = script.IndexOf("Invoke-GuardedWithPersistentSigner 'authorize-paired-local-transition' $phasePath",
+            StringComparison.Ordinal);
+        int localPreflight = script.IndexOf("Invoke-GuardedCommand 'preflight-paired-local-transition' $phasePath",
+            StringComparison.Ordinal);
+        int localApply = script.IndexOf("Invoke-GuardedWithPersistentSigner 'apply-paired-local-transition' $phasePath",
+            StringComparison.Ordinal);
+        Assert.True(pair >= 0 && pair < deleteGate && deleteGate < disposableAuthorization &&
+            disposableAuthorization < disposableApply &&
+            disposableApply < disposableProof && disposableProof < localAuthorization &&
+            localAuthorization < localPreflight && localPreflight < localApply);
+        Assert.Contains("$pair.disposable.databases", script, StringComparison.Ordinal);
+        Assert.Contains("$pair.persistent.databases", script, StringComparison.Ordinal);
+        string pairedExecution = script[disposableAuthorization..localApply];
+        Assert.DoesNotContain("apply-delta-production", pairedExecution, StringComparison.Ordinal);
+        Assert.DoesNotContain("Remove-Item", pairedExecution, StringComparison.Ordinal);
+        Assert.DoesNotContain("apply-delta-production' $phasePath", script, StringComparison.Ordinal);
+        Assert.Contains("LEGACY_MIGRATION_PERSISTENT_DELTA_AUTHORIZATION_SIGNING_KEY_FILE", script,
+            StringComparison.Ordinal);
+        Assert.Contains("LEGACY_MIGRATION_PERSISTENT_DELTA_EVIDENCE_SIGNING_KEY_FILE", script,
+            StringComparison.Ordinal);
+        Assert.Contains("daily_delta_persistent_signer_projection_invalid", script, StringComparison.Ordinal);
+        Assert.Contains("[Environment]::SetEnvironmentVariable($DisposableVariable, $original, 'Process')", script,
+            StringComparison.Ordinal);
     }
 
     [Theory]
