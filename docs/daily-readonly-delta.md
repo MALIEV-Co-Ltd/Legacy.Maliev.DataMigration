@@ -226,6 +226,17 @@ new signed plan inside that same transaction before row DML. An incomplete or
 changed checkpoint, wrong container, unverified current schema, or conflicting
 current plan still fails closed. There is no standalone metadata update or
 replay of a failed capture.
+For a container rollover, the separate owner-only
+`issue-historical-local-continuity` command can publish a create-new bundle
+containing a fresh paired LOCAL authorization and signed prospective continuity
+attestation. It requires protected historical plan/receipt/schema, future
+paired plan/disposable proof/schema, independent trusted signing roles, the
+current loopback target connection, and an expiry no more than 15 minutes after
+issuance. It rereads all 23 old fences and settled journals around an exact-row
+read-only comparison and independently checks Docker volume lineage and the
+PostgreSQL system identifier. The old container must be absent. This bundle
+does not grant execution or adopt a fence; no executor currently consumes it.
+Any Quotation row-content drift or incomplete journal blocks issuance.
 The success marker means a signed result was published for independent review,
 not that current live SQL rows equal the capture cutoff. Retain the protected
 pair, proof, authorization, reconciliation, encrypted capture, and key while

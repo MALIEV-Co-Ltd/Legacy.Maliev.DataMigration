@@ -457,6 +457,8 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                         futureAuthorization, trust, at ?? issuedAt.AddMinutes(1))).Code);
         }
         Reject(signed with { CurrentReviewSha256 = Hash('9') });
+        Reject(signed with { AttestationSignature = Convert.ToBase64String(new byte[64]) });
+        Reject(Sign(unsigned with { FutureAuthorizationId = Guid.NewGuid() }));
         Reject(Sign(unsigned with { FormerContainerAbsentObserved = false }));
         Reject(Sign(unsigned with { PriorMetadata = metadata[..^1] }));
         HistoricalLocalMetadataBinding[] pending = [.. metadata];
@@ -478,6 +480,115 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
                 HistoricalLocalContinuityAttestationCanonicalizer.CreatePayload(reusedUnsigned))),
         };
         Reject(reused);
+    }
+
+    [Fact]
+    public async Task Historical_continuity_issuer_binds_fresh_authorization_and_rejects_drift()
+    {
+        Fixture historical = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true);
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(historical);
+        Fixture future = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, matchingInsertOperations: true, historicalLocal: true,
+            futureDocker: true, at: historical.Now.AddDays(1));
+        HistoricalCurrentLocalObservation observation = CurrentObservation(historical);
+        HistoricalLocalMetadataBinding[] metadata = [.. DatabaseInventory.ActiveDatabases.Select(database =>
+            new HistoricalLocalMetadataBinding(database, PairedLocalTransitionMetadataState.SettledPrior, Hash('f')))];
+        using var authorizationSigner = new P256MigrationEvidenceSigner("local-transition-authorization",
+            _authorizationKey.ExportECPrivateKeyPem());
+        using var continuitySigner = new P256MigrationEvidenceSigner("continuity-review",
+            _continuityKey.ExportECPrivateKeyPem());
+        var trust = new ReceiptAttestationTrustStore(
+            [new(historical.LocalPlan.AttestationKeyId, _localPlanKey.ExportSubjectPublicKeyInfo()),
+                new(receipt.AttestationKeyId, _evidenceKey.ExportSubjectPublicKeyInfo()),
+                new(future.ProofPlan.AttestationKeyId, _planKey.ExportSubjectPublicKeyInfo()),
+                new(authorizationSigner.KeyId, authorizationSigner.ExportSubjectPublicKeyInfo()),
+                new(continuitySigner.KeyId, continuitySigner.ExportSubjectPublicKeyInfo())]);
+        DateTimeOffset issuedAt = future.Now.AddMinutes(1);
+        var plans = new PairedCapturedDeltaPlans(future.ProofPlan, future.LocalPlan);
+
+        Task<HistoricalLocalContinuityIssuance> Issue(
+            HistoricalCurrentLocalObservation? observed = null,
+            HistoricalLocalMetadataBinding[]? prior = null,
+            PairedCapturedDeltaPlans? candidatePlans = null,
+            IDeltaReconciliationInspector? inspector = null,
+            DateTimeOffset? expiry = null)
+        {
+            return HistoricalLocalContinuityIssuer.IssueAsync(historical.LocalPlan, receipt,
+                historical.Schema, candidatePlans ?? plans, future.ProofResult, future.Schema, trust,
+                _ => Task.FromResult(observed ?? observation),
+                inspector ?? new CurrentEvidenceInspector(historical.Schema),
+                _ => Task.FromResult<IReadOnlyList<HistoricalLocalMetadataBinding>>(prior ?? metadata),
+                expiry ?? issuedAt.AddMinutes(10), authorizationSigner, continuitySigner,
+                new FixedTime(issuedAt), CancellationToken.None);
+        }
+
+        HistoricalLocalContinuityIssuance issued = await Issue();
+        Assert.False(HistoricalLocalContinuityIssuance.AuthorizesExecution);
+        Assert.Equal(future.LocalPlan.PlanId, issued.FutureAuthorization.PersistentPlanId);
+        Assert.Equal(issued.FutureAuthorization.AuthorizationId, issued.Attestation.FutureAuthorizationId);
+        Assert.Equal(DeltaSynchronizationPlanCanonicalizer.ComputeSha256(future.LocalPlan),
+            issued.Attestation.FuturePlanSha256);
+        Assert.Equal(23, issued.Attestation.PriorMetadata.Count);
+        Assert.Equal("shadow_reconciliation_failed", (await Assert.ThrowsAsync<MigrationExecutionException>(
+            () => Issue(inspector: new CurrentEvidenceInspector(historical.Schema, driftContent: true)))).Code);
+        Assert.Equal("delta_historical_local_current_target_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => Issue(observed: observation with
+            {
+                SystemIdentifierSha256 = Hash('9'),
+            }))).Code);
+        int observations = 0;
+        Assert.Equal("delta_historical_local_current_target_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                HistoricalLocalContinuityIssuer.IssueAsync(historical.LocalPlan, receipt,
+                    historical.Schema, plans, future.ProofResult, future.Schema, trust,
+                    _ => Task.FromResult(++observations == 1 ? observation : observation with
+                    {
+                        VolumeMountpoint = "/replaced-volume",
+                    }), new CurrentEvidenceInspector(historical.Schema),
+                    _ => Task.FromResult<IReadOnlyList<HistoricalLocalMetadataBinding>>(metadata),
+                    issuedAt.AddMinutes(10), authorizationSigner, continuitySigner,
+                    new FixedTime(issuedAt), CancellationToken.None))).Code);
+        HistoricalLocalMetadataBinding[] pending = [.. metadata];
+        pending[0] = pending[0] with { State = PairedLocalTransitionMetadataState.Pending };
+        Assert.Equal("delta_historical_local_continuity_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => Issue(prior: pending))).Code);
+        int metadataReads = 0;
+        Assert.Equal("delta_historical_local_continuity_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                HistoricalLocalContinuityIssuer.IssueAsync(historical.LocalPlan, receipt,
+                    historical.Schema, plans, future.ProofResult, future.Schema, trust,
+                    _ => Task.FromResult(observation), new CurrentEvidenceInspector(historical.Schema),
+                    _ => Task.FromResult<IReadOnlyList<HistoricalLocalMetadataBinding>>(
+                        ++metadataReads == 1 ? metadata : pending),
+                    issuedAt.AddMinutes(10), authorizationSigner, continuitySigner,
+                    new FixedTime(issuedAt), CancellationToken.None))).Code);
+        Assert.Equal(2, metadataReads);
+        Assert.Equal("delta_paired_local_transition_authorization_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => Issue(expiry: issuedAt))).Code);
+        Assert.Equal("delta_historical_local_continuity_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => Issue(candidatePlans:
+                plans with { Persistent = plans.Persistent with { TargetGeneration = Hash('9') } }))).Code);
+    }
+
+    [Fact]
+    public async Task Historical_continuity_issue_command_is_owner_only_before_reading_config()
+    {
+        Fixture fixture = await CreateAsync();
+        var runtime = new HistoricalRuntime(fixture);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        int result = await MigrationConsole.RunHistoricalLocalContinuityIssueForTestsAsync(
+            ["issue-historical-local-continuity", "--config", "nonexistent.json"],
+            output, error, key => key switch
+            {
+                "LEGACY_DEPLOY_ENABLED" => "false",
+                "LEGACY_MIGRATION_CALLER" => "operator",
+                _ => null,
+            }, runtime, CancellationToken.None);
+        Assert.Equal(65, result);
+        Assert.Equal("delta_caller_invalid", error.ToString().Trim());
+        Assert.Equal(0, runtime.Observations);
     }
 
     private static async Task WriteOwnerOnlyTextAsync(string path, string content)
@@ -1419,9 +1530,10 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         bool deleteOperations = false, bool matchingInsertOperations = false,
         bool pairedTransition = false, bool changedLocalTransitionHash = false,
         bool reuseProofEvidenceAsAuthorization = false, bool historicalLocal = false,
-        string? localSystemHash = null, bool physicalTargetHashes = false)
+        string? localSystemHash = null, bool physicalTargetHashes = false,
+        bool futureDocker = false, DateTimeOffset? at = null)
     {
-        DateTimeOffset now = new(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
+        DateTimeOffset now = at ?? new DateTimeOffset(2026, 9, 25, 8, 0, 0, TimeSpan.Zero);
         TableCopyPlan[] quotationOutboxes =
         [
             ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.GoogleAnalyticsOutbox,
@@ -1494,7 +1606,9 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             var request = new DeltaPlanSigningRequest(schema.SourceCommitSha, now.AddMinutes(-5), Hash('3'),
                 SchemaPlanCanonicalizer.ComputeSha256(schema), Hash('4'), "local-aspire",
                 "legacy-postgres-main-local",
-                historicalLocal && id == "persistent-main" ? $"docker:{Hash('7')}:1:2:3" : "generation-1",
+                historicalLocal && id == "persistent-main" ?
+                    futureDocker ? $"docker:{Hash('8')}:4:5:3" :
+                        $"docker:{Hash('7')}:1:2:3" : "generation-1",
                 Hash('5'), Hash('6'),
                 reuseProofEvidenceAsAuthorization ? evidenceSigner.PublicKeyFingerprintSha256 :
                     authorizationSigner.PublicKeyFingerprintSha256,
@@ -1502,7 +1616,7 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             {
                 TargetAuthority = new(DeltaTargetAuthorityKind.LocalAspire,
                     historicalLocal && id == "persistent-main"
-                        ? $"aspire://legacy-postgres-main-local/persistent-{Hash('7')[..12]}"
+                        ? $"aspire://legacy-postgres-main-local/persistent-{Hash(futureDocker ? '8' : '7')[..12]}"
                         : $"aspire://legacy-postgres-main-local/{id}", systemHash),
                 SourceMode = DeltaSourceMode.LiveReadOnly,
                 SourceObservationSha256 = Hash('8'),
