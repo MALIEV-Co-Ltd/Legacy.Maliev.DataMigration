@@ -331,7 +331,10 @@ public static partial class SchemaPlanCanonicalizer
 
                 foreach ((string column, string sourceType) in table.SourceColumnTypes)
                 {
-                    if (!ValidTemporalMapping(sourceType, table.ColumnTypes.GetValueOrDefault(column, string.Empty)))
+                    string targetType = table.ColumnTypes.GetValueOrDefault(column, string.Empty);
+                    if (!ValidTemporalMapping(sourceType, targetType) &&
+                        !ApprovedIdentityLockoutEndPrecision.Applies(database.Database,
+                            table.SourceSchema, table.SourceTable, column, sourceType, targetType))
                     {
                         errors.Add(new("temporal_mapping_invalid", $"{database.Database}.{table.SourceTable}.{column} has an unsafe temporal mapping."));
                     }
