@@ -14,6 +14,16 @@ public sealed class CnpgExecTunnelTests
         15438);
 
     [Fact]
+    public void FailureCode_ReportsOnlySafeCategoryOrPinnedErrorCode()
+    {
+        Assert.Equal("cnpg_exec_tunnel_observation_timeout", CnpgExecTunnel.FailureCode(
+            new MigrationConsoleException("cnpg_exec_tunnel_observation_timeout", "sensitive detail")));
+        Assert.Equal("io_error", CnpgExecTunnel.FailureCode(new IOException("sensitive detail")));
+        Assert.Equal("socket_error", CnpgExecTunnel.FailureCode(
+            new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.TimedOut)));
+    }
+
+    [Fact]
     public void Validate_AcceptsOnlyPinnedContextIdentityAndLoopbackPort()
     {
         CnpgExecTunnel.Validate(Valid);
