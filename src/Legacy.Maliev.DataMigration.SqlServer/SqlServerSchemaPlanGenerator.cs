@@ -46,7 +46,11 @@ public sealed partial class SqlServerMigrationSource
             string targetSchema = TargetSchema(inventory.SourceSchema);
             IReadOnlyDictionary<string, string> targetColumnTypes = inventory.Columns.ToDictionary(
                 column => column.Column,
-                column => SqlServerTypeMapping.Map(column.DeclaredType),
+                column => ApprovedIdentityLockoutEndPrecision.Applies(
+                    database, inventory.SourceSchema, inventory.SourceTable, column.Column,
+                    column.DeclaredType, ApprovedIdentityLockoutEndPrecision.TargetType)
+                    ? ApprovedIdentityLockoutEndPrecision.TargetType
+                    : SqlServerTypeMapping.Map(column.DeclaredType),
                 StringComparer.Ordinal);
             IReadOnlyDictionary<string, string> sourceColumnTypes = inventory.Columns.ToDictionary(
                 column => column.Column,

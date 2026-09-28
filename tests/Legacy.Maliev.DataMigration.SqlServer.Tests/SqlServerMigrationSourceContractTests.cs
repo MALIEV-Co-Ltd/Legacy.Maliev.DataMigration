@@ -525,6 +525,20 @@ public sealed class SqlServerMigrationSourceContractTests
         Assert.Equal("2026-08-29T17:45:12.1234567+07:00", result);
     }
 
+    [Fact]
+    public void NormalizeSourceValue_ApprovedRuntimeTimestamp_UsesUtcMicrosecondProjection()
+    {
+        var input = new DateTimeOffset(2026, 8, 29, 17, 45, 12, TimeSpan.FromHours(7)).AddTicks(1_234_567);
+
+        object result = SqlServerMigrationSource.NormalizeSourceValue(
+            input, "datetimeoffset(7)", "timestamp with time zone")!;
+
+        Assert.Equal(new DateTime(2026, 8, 29, 10, 45, 12, DateTimeKind.Utc).AddTicks(1_234_560),
+            Assert.IsType<DateTime>(result));
+        Assert.Equal("2026-08-29T17:45:12.1234567+07:00",
+            SqlServerMigrationSource.NormalizeSourceValue(input, "datetimeoffset(7)", "text"));
+    }
+
     [Theory]
     [InlineData("archive", "Customers", "Id")]
     [InlineData("crm", "ArchivedCustomers", "Id")]

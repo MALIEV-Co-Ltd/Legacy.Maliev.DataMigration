@@ -5,6 +5,52 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class SchemaPlanSemanticsTests
 {
+    [Fact]
+    public void Validate_IdentityLockoutEndRuntimeMapping_OnlyAcceptedOnReviewedColumns()
+    {
+        var table = new TableCopyPlan("dbo", "AspNetUsers", "public", "AspNetUsers",
+            ["Id", "LockoutEnd"], ["Id"])
+        {
+            SourceColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "nvarchar(450)",
+                ["LockoutEnd"] = "datetimeoffset(7)",
+            },
+            SourceColumns =
+            [
+                new("Id", "nvarchar(450)", Hash("Id"), null),
+                new("LockoutEnd", "datetimeoffset(7)", Hash("LockoutEnd"), null),
+            ],
+            ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Id"] = "character varying(450)",
+                ["LockoutEnd"] = "timestamp with time zone",
+            },
+            NullableColumns = ["LockoutEnd"],
+            PrimaryKey = new PrimaryKeyCopyPlan("PK_AspNetUsers", ["Id"]),
+        };
+        FreshSchemaPlan plan = new("2.0", CapturedAt, SourceCommit,
+            [.. DatabaseInventory.ActiveDatabases.Select(database => new DatabaseSchemaPlan(
+                database, "1.0", Hash($"source:{database}"), Hash($"target:{database}"),
+                database is "CustomerIdentity" or "EmployeeIdentity" ? [table] : []))]);
+
+        IReadOnlyList<PreflightError> errors = SchemaPlanCanonicalizer.Validate(plan,
+            new GuardedRunnerPolicy(SourceCommit, RunnerDigest), CapturedAt.AddMinutes(1),
+            TimeSpan.FromHours(1));
+        Assert.DoesNotContain(errors, error => error.Code == "temporal_mapping_invalid");
+
+        FreshSchemaPlan wrongColumn = plan with
+        {
+            Databases = [.. plan.Databases.Select(database => database.Database == "CustomerIdentity"
+                ? database with { Tables = [table with { SourceTable = "OtherUsers" }] }
+                : database)],
+        };
+        IReadOnlyList<PreflightError> wrongErrors = SchemaPlanCanonicalizer.Validate(wrongColumn,
+            new GuardedRunnerPolicy(SourceCommit, RunnerDigest), CapturedAt.AddMinutes(1),
+            TimeSpan.FromHours(1));
+        Assert.Contains(wrongErrors, error => error.Code == "temporal_mapping_invalid");
+    }
+
     [Theory]
     [InlineData("datetime2(7)", "timestamp without time zone")]
     [InlineData("datetimeoffset(7)", "timestamp with time zone")]

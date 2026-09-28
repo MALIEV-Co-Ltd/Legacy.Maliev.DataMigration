@@ -886,6 +886,8 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
                     .ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff", System.Globalization.CultureInfo.InvariantCulture),
             ("datetimeoffset", "text", DateTimeOffset offset) =>
                 offset.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffffzzz", System.Globalization.CultureInfo.InvariantCulture),
+            ("datetimeoffset", "timestamp with time zone", DateTimeOffset offset) =>
+                new DateTime(offset.UtcTicks - (offset.UtcTicks % 10), DateTimeKind.Utc),
             ("datetime" or "datetime2" or "smalldatetime", _, DateTime dateTime) =>
                 DateTime.SpecifyKind(dateTime, DateTimeKind.Unspecified),
             _ => value,
