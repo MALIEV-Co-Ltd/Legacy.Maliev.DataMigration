@@ -647,6 +647,149 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
     }
 
     [Fact]
+    public async Task Historical_local_metadata_binds_all_settled_journals_to_signed_receipt()
+    {
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true);
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(fixture);
+        HistoricalLocalMetadataSnapshot[] snapshots = [.. DatabaseInventory.ActiveDatabases.Select(database =>
+            new HistoricalLocalMetadataSnapshot(database,
+                new HistoricalLocalFence(database, fixture.LocalPlan.SchemaPlanSha256,
+                    receipt.Databases.Single(item => item.Database == database).TargetSchemaSha256,
+                    fixture.LocalPlan.TargetGeneration, fixture.LocalPlan.TargetObservationSha256),
+                [receipt.Checkpoints.Single(item => item.Database == database)]))];
+        IReadOnlyList<HistoricalLocalMetadataBinding> bound = HistoricalLocalMetadataReceiptBinder.Bind(
+            fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust, snapshots, fixture.Now.AddDays(1));
+        Assert.Equal(DatabaseInventory.ActiveDatabases, bound.Select(item => item.Database));
+        Assert.All(bound, item => Assert.Equal(PairedLocalTransitionMetadataState.SettledPrior, item.State));
+        HistoricalLocalMetadataSnapshot[] withEarlierJournal =
+            [snapshots[0] with { Journal = [snapshots[0].Journal[0] with
+                { PlanSha256 = Hash('9'), PlanId = Guid.NewGuid(),
+                    CommittedAtUtc = snapshots[0].Journal[0].CommittedAtUtc.AddMinutes(-1) },
+                snapshots[0].Journal[0]] }, .. snapshots.Skip(1)];
+        Assert.Equal(23, HistoricalLocalMetadataReceiptBinder.Bind(fixture.LocalPlan, receipt,
+            fixture.Schema, fixture.Trust, withEarlierJournal, fixture.Now.AddDays(1)).Count);
+
+        void Reject(HistoricalLocalMetadataSnapshot[] changed)
+        {
+            Assert.Equal("delta_historical_local_metadata_invalid",
+                Assert.Throws<DeltaExecutionException>(() => HistoricalLocalMetadataReceiptBinder.Bind(
+                    fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust, changed,
+                    fixture.Now.AddDays(1))).Code);
+        }
+        Reject(snapshots[..^1]);
+        Reject([snapshots[0] with { Fence = snapshots[0].Fence with { TargetGeneration = $"docker:{Hash('9')}:1:2:3" } }, .. snapshots.Skip(1)]);
+        Reject([snapshots[0] with { Fence = snapshots[0].Fence with { TargetSchemaSha256 = Hash('9') } }, .. snapshots.Skip(1)]);
+        Reject([snapshots[0] with { Journal = [] }, .. snapshots.Skip(1)]);
+        Reject([snapshots[0] with { Journal = [snapshots[0].Journal[0] with { ReconciliationSha256 = Hash('9') }] }, .. snapshots.Skip(1)]);
+        Reject([snapshots[0] with { Journal = [snapshots[0].Journal[0] with { OperationsSha256 = Hash('9') }] }, .. snapshots.Skip(1)]);
+        Reject([snapshots[0] with { Journal = [snapshots[0].Journal[0] with { ReconciliationSha256 = null! }] }, .. snapshots.Skip(1)]);
+        Reject([snapshots[0] with { Journal = [snapshots[0].Journal[0] with { CommittedAtUtc =
+            snapshots[0].Journal[0].CommittedAtUtc.AddSeconds(1) }] }, .. snapshots.Skip(1)]);
+        Reject([snapshots[0] with { Journal = [snapshots[0].Journal[0], snapshots[0].Journal[0]] }, .. snapshots.Skip(1)]);
+        Reject([snapshots[0] with { Journal = [snapshots[0].Journal[0], snapshots[0].Journal[0] with
+            { PlanSha256 = Hash('9'), PlanId = Guid.NewGuid(), CommittedAtUtc = receipt.ReconciledAtUtc.AddSeconds(1) }] }, .. snapshots.Skip(1)]);
+    }
+
+    [Fact]
+    public async Task Historical_local_metadata_reader_uses_disposable_read_only_exact23_snapshots()
+    {
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await container.StartAsync();
+        var settings = new NpgsqlConnectionStringBuilder(container.GetConnectionString())
+        {
+            Host = "127.0.0.1",
+            Database = "postgres",
+        };
+        string admin = settings.ConnectionString;
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true);
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(fixture);
+        foreach (string database in DatabaseInventory.ActiveDatabases)
+        {
+            await using (var connection = new NpgsqlConnection(admin))
+            {
+                await connection.OpenAsync();
+                await using var create = new NpgsqlCommand($"CREATE DATABASE \"{database}\" TEMPLATE template0;", connection);
+                _ = await create.ExecuteNonQueryAsync();
+            }
+            string target = new NpgsqlConnectionStringBuilder(admin) { Database = database }.ConnectionString;
+            DeltaDatabaseCheckpointEvidence checkpoint = receipt.Checkpoints.Single(item => item.Database == database);
+            string physical = receipt.Databases.Single(item => item.Database == database).TargetSchemaSha256;
+            await using var targetConnection = new NpgsqlConnection(target);
+            await targetConnection.OpenAsync();
+            await using var setup = new NpgsqlCommand("""
+                CREATE SCHEMA legacy_migration_internal;
+                CREATE TABLE legacy_migration_internal.delta_fence(
+                    database_name text PRIMARY KEY, schema_plan_sha256 text NOT NULL,
+                    target_schema_sha256 text NOT NULL, target_generation text NOT NULL,
+                    target_observation_sha256 text NOT NULL);
+                CREATE TABLE legacy_migration_internal.delta_journal(
+                    plan_sha256 text PRIMARY KEY, plan_id uuid NOT NULL UNIQUE,
+                    source_cutoff_utc timestamptz NOT NULL, target_observation_sha256 text NOT NULL,
+                    operations_sha256 text NOT NULL, reconciliation_sha256 text NOT NULL,
+                    committed_at_utc timestamptz NOT NULL);
+                """, targetConnection);
+            _ = await setup.ExecuteNonQueryAsync();
+            await using var fence = new NpgsqlCommand(
+                "INSERT INTO legacy_migration_internal.delta_fence VALUES ($1,$2,$3,$4,$5);", targetConnection);
+            _ = fence.Parameters.AddWithValue(database);
+            _ = fence.Parameters.AddWithValue(fixture.LocalPlan.SchemaPlanSha256);
+            _ = fence.Parameters.AddWithValue(physical);
+            _ = fence.Parameters.AddWithValue(fixture.LocalPlan.TargetGeneration);
+            _ = fence.Parameters.AddWithValue(fixture.LocalPlan.TargetObservationSha256);
+            _ = await fence.ExecuteNonQueryAsync();
+            await using var journal = new NpgsqlCommand(
+                "INSERT INTO legacy_migration_internal.delta_journal VALUES ($1,$2,$3,$4,$5,$6,$7);",
+                targetConnection);
+            _ = journal.Parameters.AddWithValue(checkpoint.PlanSha256);
+            _ = journal.Parameters.AddWithValue(checkpoint.PlanId);
+            _ = journal.Parameters.AddWithValue(checkpoint.SourceCutoffUtc);
+            _ = journal.Parameters.AddWithValue(checkpoint.TargetObservationSha256);
+            _ = journal.Parameters.AddWithValue(checkpoint.OperationsSha256);
+            _ = journal.Parameters.AddWithValue(checkpoint.ReconciliationSha256);
+            _ = journal.Parameters.AddWithValue(checkpoint.CommittedAtUtc);
+            _ = await journal.ExecuteNonQueryAsync();
+        }
+        var reader = new HistoricalPostgreSqlLocalMetadataInspector(admin);
+        IReadOnlyList<HistoricalLocalMetadataBinding> observed = await reader.InspectAsync(
+            fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+            fixture.Now.AddDays(1), CancellationToken.None);
+        Assert.Equal(23, observed.Count);
+        Assert.False(HistoricalLocalMetadataReceiptBinder.AuthorizesExecution);
+
+        string first = DatabaseInventory.ActiveDatabases[0];
+        var futurePlan = fixture.LocalPlan with
+        {
+            PlanId = Guid.NewGuid(),
+            SchemaPlanSha256 = Hash('9'),
+            TargetObservationSha256 = Hash('8'),
+        };
+        PairedLocalTransitionMetadataObservation transactionalShape =
+            await new PairedLocalTransitionMetadataInspector(admin).InspectAsync(futurePlan,
+                fixture.Schema.Databases.Single(item => item.Database == first), CancellationToken.None);
+        Assert.Equal(PairedLocalTransitionMetadataState.SettledPrior, transactionalShape.State);
+        Assert.Equal(observed[0].FingerprintSha256, transactionalShape.FingerprintSha256);
+        string changedTarget = new NpgsqlConnectionStringBuilder(admin) { Database = first }.ConnectionString;
+        await using (var connection = new NpgsqlConnection(changedTarget))
+        {
+            await connection.OpenAsync();
+            await using var change = new NpgsqlCommand(
+                "UPDATE legacy_migration_internal.delta_journal SET reconciliation_sha256=$1;", connection);
+            _ = change.Parameters.AddWithValue(Hash('9'));
+            _ = await change.ExecuteNonQueryAsync();
+        }
+        Assert.Equal("delta_historical_local_metadata_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => reader.InspectAsync(
+                fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
+                fixture.Now.AddDays(1), CancellationToken.None))).Code);
+        Assert.Equal("delta_historical_local_metadata_invalid",
+            Assert.Throws<DeltaExecutionException>(() =>
+                new HistoricalPostgreSqlLocalMetadataInspector(
+                    new NpgsqlConnectionStringBuilder(admin) { Host = "remote.example" }.ConnectionString)).Code);
+    }
+
+    [Fact]
     public async Task Fresh_signed_disposable_reconciliation_admits_distinct_local_target()
     {
         Fixture fixture = await CreateAsync();
