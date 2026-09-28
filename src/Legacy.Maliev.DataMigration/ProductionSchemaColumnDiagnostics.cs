@@ -73,8 +73,8 @@ internal static class ProductionSchemaColumnDiagnostics
                     .. PostgreSqlDefaultExpressionCanonicalizer.Canonicalize(wanted.DefaultExpression) ==
                         PostgreSqlDefaultExpressionCanonicalizer.Canonicalize(column.DefaultExpression)
                         ? [] : new[] { "default" },
-                    .. SchemaExpressionCanonicalizer.Canonicalize(wanted.GeneratedExpression) ==
-                        SchemaExpressionCanonicalizer.Canonicalize(column.GeneratedExpression)
+                    .. PostgreSqlGeneratedExpressionCanonicalizer.Canonicalize(wanted.GeneratedExpression) ==
+                        PostgreSqlGeneratedExpressionCanonicalizer.Canonicalize(column.GeneratedExpression)
                         ? [] : new[] { "generated" },
                     .. wanted.Collation == column.Collation ? [] : new[] { "collation" },
                 ];
@@ -97,7 +97,7 @@ internal static class ProductionSchemaColumnDiagnostics
                     DefaultState = ExpressionState(wanted.DefaultExpression, column.DefaultExpression,
                         PostgreSqlDefaultExpressionCanonicalizer.Canonicalize),
                     GeneratedState = ExpressionState(wanted.GeneratedExpression, column.GeneratedExpression,
-                        SchemaExpressionCanonicalizer.Canonicalize),
+                        PostgreSqlGeneratedExpressionCanonicalizer.Canonicalize),
                 });
             }
             result.AddRange(columns.Where(column => !planned.OrderedColumns.Contains(column.Column,

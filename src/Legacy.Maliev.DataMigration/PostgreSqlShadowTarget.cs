@@ -692,7 +692,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                     reader.GetBoolean(5),
                     reader.GetBoolean(6),
                     reader.GetString(7),
-                    NormalizeExpression(reader.GetString(8)),
+                    PostgreSqlGeneratedExpressionCanonicalizer.Canonicalize(reader.GetString(8)),
                     reader.GetString(9)));
             }
         }
@@ -1416,7 +1416,7 @@ internal static class PostgreSqlSchemaFingerprint
                 writer.Write(column.Nullable);
                 writer.Write(column.Identity);
                 Write(writer, PostgreSqlDefaultExpressionCanonicalizer.Canonicalize(column.DefaultExpression));
-                Write(writer, NormalizeExpression(column.GeneratedExpression));
+                Write(writer, PostgreSqlGeneratedExpressionCanonicalizer.Canonicalize(column.GeneratedExpression));
                 Write(writer, column.Collation);
             }
 
