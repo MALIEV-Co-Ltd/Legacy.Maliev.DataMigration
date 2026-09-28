@@ -229,38 +229,28 @@ public sealed class SqlServerMigrationSourceContractTests
     }
 
     [Theory]
-    [InlineData("columns", 12, "dbo", "Customer", "ID", "70000", "69789")]
-    [InlineData("columns", 11, "dbo", "Customer", "ID", "1", "1")]
-    [InlineData("keys-indexes", 12, "dbo", "Customer", "ID", "70000", "70000")]
-    [InlineData("columns", 12, "dbo", "Customer", "Name", "70000", "70000")]
-    public void ResolveSchemaHashValue_ReplacesOnlyPlannedIdentityCurrentValue(
+    [InlineData("columns", 12, "70000", "<identity-current>")]
+    [InlineData("inventory", 13, "70000", "<identity-current>")]
+    [InlineData("columns", 10, "100", "100")]
+    [InlineData("columns", 11, "5", "5")]
+    [InlineData("inventory", 11, "100", "100")]
+    [InlineData("inventory", 12, "5", "5")]
+    [InlineData("keys-indexes", 12, "70000", "70000")]
+    [InlineData("foreign-keys", 13, "70000", "70000")]
+    public void ResolveSchemaHashValue_ExcludesOnlyVolatileIdentityCurrentValue(
         string section,
         int ordinal,
-        string schema,
-        string table,
-        string column,
         string observed,
         string expected)
     {
-        var baseline = new Dictionary<(string Schema, string Table, string Column), string?>
-        {
-            [("dbo", "Customer", "ID")] = "69789",
-        };
-
-        Assert.Equal(expected, SqlServerMigrationSource.ResolveSchemaHashValue(
-            section, ordinal, schema, table, column, observed, baseline));
+        Assert.Equal(expected, SqlServerMigrationSource.ResolveSchemaHashValue(section, ordinal, observed));
     }
 
     [Fact]
-    public void ResolveSchemaHashValue_UnusedIdentityRestoresNullBaseline()
+    public void ResolveSchemaHashValue_UnusedIdentityDoesNotDependOnLastValue()
     {
-        var baseline = new Dictionary<(string Schema, string Table, string Column), string?>
-        {
-            [("dbo", "Unused", "ID")] = null,
-        };
-
-        Assert.Equal("<null>", SqlServerMigrationSource.ResolveSchemaHashValue(
-            "columns", 12, "dbo", "Unused", "ID", "1", baseline));
+        Assert.Equal("<identity-current>", SqlServerMigrationSource.ResolveSchemaHashValue(
+            "columns", 12, "<null>"));
     }
 
     [Fact]

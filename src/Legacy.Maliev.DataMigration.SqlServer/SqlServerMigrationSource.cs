@@ -60,7 +60,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         string database,
         CancellationToken cancellationToken)
     {
-        return InspectSchemaCoreAsync(database, null, cancellationToken);
+        return InspectSchemaCoreAsync(database, cancellationToken);
     }
 
     public Task<SourceSchemaEvidence> InspectSchemaForPlanAsync(
@@ -68,12 +68,11 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        return InspectSchemaCoreAsync(plan.Database, plan, cancellationToken);
+        return InspectSchemaCoreAsync(plan.Database, cancellationToken);
     }
 
     private async Task<SourceSchemaEvidence> InspectSchemaCoreAsync(
         string database,
-        DatabaseSchemaPlan? baseline,
         CancellationToken cancellationToken)
     {
         SnapshotLease lease = GetSnapshot(database);
@@ -156,18 +155,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
             ORDER BY child_schema.name, child_table.name, foreign_key.name, mapping.constraint_column_id;
             """;
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        IReadOnlyDictionary<(string Schema, string Table, string Column), string?>? baselineIdentities =
-            baseline?.Tables
-                .SelectMany(table => table.Identities.Select(identity => new
-                {
-                    Key = (table.SourceSchema, table.SourceTable, identity.Column),
-                    Value = identity.IsCalled
-                        ? identity.CurrentValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                        : null,
-                }))
-                .ToDictionary(item => item.Key, item => item.Value);
-        await AppendSchemaQueryAsync(hash, lease, "columns", columnSql, cancellationToken,
-            baselineIdentities).ConfigureAwait(false);
+        await AppendSchemaQueryAsync(hash, lease, "columns", columnSql, cancellationToken).ConfigureAwait(false);
         await AppendSchemaQueryAsync(hash, lease, "keys-indexes", keyAndIndexSql, cancellationToken).ConfigureAwait(false);
         await AppendSchemaQueryAsync(hash, lease, "checks", checkSql, cancellationToken).ConfigureAwait(false);
         await AppendSchemaQueryAsync(hash, lease, "foreign-keys", foreignKeySql, cancellationToken).ConfigureAwait(false);
@@ -218,9 +206,10 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
                 using IncrementalHash metadataHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                 foreach (int ordinal in Enumerable.Range(4, reader.FieldCount - 4))
                 {
-                    AppendHashValue(metadataHash, reader.IsDBNull(ordinal)
+                    string value = reader.IsDBNull(ordinal)
                         ? "<null>"
-                        : Convert.ToString(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty);
+                        : Convert.ToString(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                    AppendHashValue(metadataHash, ResolveSchemaHashValue("inventory", ordinal, value));
                 }
                 rows.Add(new InventoryRow(
                     reader.GetString(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3), declaredType,
@@ -294,8 +283,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
         SnapshotLease lease,
         string section,
         string sql,
-        CancellationToken cancellationToken,
-        IReadOnlyDictionary<(string Schema, string Table, string Column), string?>? baselineIdentities = null)
+        CancellationToken cancellationToken)
     {
         AppendHashValue(hash, section);
         await using var command = new SqlCommand(sql, lease.Connection, lease.Transaction);
@@ -307,10 +295,7 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
                 string value = reader.IsDBNull(ordinal)
                     ? "<null>"
                     : Convert.ToString(reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
-                AppendHashValue(hash, section == "columns" && ordinal == 12
-                    ? ResolveSchemaHashValue(section, ordinal, reader.GetString(0), reader.GetString(1),
-                        reader.GetString(3), value, baselineIdentities)
-                    : value);
+                AppendHashValue(hash, ResolveSchemaHashValue(section, ordinal, value));
             }
         }
     }
@@ -318,15 +303,12 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
     internal static string ResolveSchemaHashValue(
         string section,
         int ordinal,
-        string schema,
-        string table,
-        string column,
-        string observedValue,
-        IReadOnlyDictionary<(string Schema, string Table, string Column), string?>? baselineIdentities)
+        string observedValue)
     {
-        return section == "columns" && ordinal == 12 && baselineIdentities is not null &&
-            baselineIdentities.TryGetValue((schema, table, column), out string? baselineValue)
-            ? baselineValue ?? "<null>"
+        // last_value is row/sequence state, not the IDENTITY definition. The
+        // captured IdentityCopyPlan retains it for sequence reconciliation.
+        return (section == "columns" && ordinal == 12) || (section == "inventory" && ordinal == 13)
+            ? "<identity-current>"
             : observedValue;
     }
 
