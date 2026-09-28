@@ -69,6 +69,44 @@ public sealed class PostgreSqlDeltaMetadataProvisionerTests(PostgreSqlAdapterFix
             "SELECT count(*) FROM information_schema.columns WHERE table_schema='legacy_migration_internal' AND table_name='delta_journal' AND column_name='reconciliation_sha256';"));
     }
 
+    [Fact]
+    public async Task ProvisionDatabase_PairedChangedGeneration_RejectsStandaloneFenceOverwrite()
+    {
+        (string connectionString, DatabaseSchemaPlan schema, DeltaSynchronizationPlan original) = CreateContract();
+        await ResetMetadataAsync(connectionString);
+        await using (var connection = new NpgsqlConnection(connectionString))
+        {
+            await connection.OpenAsync();
+            await using NpgsqlTransaction first = await connection.BeginTransactionAsync(IsolationLevel.Serializable);
+            await PostgreSqlDeltaMetadataProvisioner.ProvisionDatabaseAsync(connection, first,
+                original, schema, CancellationToken.None);
+            await first.CommitAsync();
+        }
+        string prior = $"docker:{Hash('a')}:1700000000000:1700000001000:1700000002000";
+        string current = $"docker:{Hash('b')}:1700000000000:1700000001000:1700000002000";
+        await ExecuteAsync(connectionString, "UPDATE legacy_migration_internal.delta_fence " +
+            "SET target_generation='" + prior + "' WHERE database_name='ContactRequest';");
+        DeltaSynchronizationPlan rollover = original with
+        {
+            SchemaVersion = "1.4",
+            PairedTransitionPlanOnly = true,
+            TargetGeneration = current,
+        };
+        await using (var connection = new NpgsqlConnection(connectionString))
+        {
+            await connection.OpenAsync();
+            await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable);
+            DeltaExecutionException failure = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                PostgreSqlDeltaMetadataProvisioner.ProvisionDatabaseAsync(connection, transaction,
+                    rollover, schema, CancellationToken.None));
+            Assert.Equal("delta_rollover_claim_required", failure.Code);
+            await transaction.RollbackAsync();
+        }
+        Assert.Equal(prior, await TextScalarAsync(connectionString,
+            "SELECT target_generation FROM legacy_migration_internal.delta_fence " +
+            "WHERE database_name='ContactRequest';"));
+    }
+
     private (string ConnectionString, DatabaseSchemaPlan Schema, DeltaSynchronizationPlan Plan) CreateContract()
     {
         string connectionString = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)

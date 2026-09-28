@@ -87,8 +87,12 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                         await PairedLocalTransitionMetadataInspector.InspectInTransactionAsync(
                             connection, transaction, plan, schema, cancellationToken, lockFence: true)
                             .ConfigureAwait(false);
-                    if (metadata.State is PairedLocalTransitionMetadataState.Unprovisioned or
-                        PairedLocalTransitionMetadataState.SettledPrior)
+                    if (metadata.State == PairedLocalTransitionMetadataState.SettledPrior)
+                    {
+                        throw Error("canonical_delta_rollover_claim_required",
+                            "A settled prior LOCAL fence requires atomic claim-bound adoption.");
+                    }
+                    if (metadata.State == PairedLocalTransitionMetadataState.Unprovisioned)
                     {
                         await PostgreSqlDeltaMetadataProvisioner.ProvisionDatabaseAsync(connection, transaction,
                             plan, schema, cancellationToken, localPermit).ConfigureAwait(false);

@@ -75,6 +75,11 @@ upsert is forbidden on this path. Only a new signed exact-23 terminal
 reconciliation completes the claim. A journal hash or global object alone is
 never a receipt.
 
+The existing canonical executor now rejects a `SettledPrior` LOCAL fence, and
+standalone paired-plan metadata provisioning rejects a different previously
+settled Docker generation. This is a fail-closed interim guard; it does not
+implement the claim-bound adoption transaction.
+
 Fresh continuation signing after a 15-minute authorization expires requires a
 new independently verified mixed-state scan and new authorization ID. The
 same captured plan and disposable proof may be reused only while their own
