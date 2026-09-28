@@ -42,7 +42,11 @@ public sealed class PostgreSqlRolloverExact23InterruptionTests(PostgreSqlAdapter
                     "aspire://legacy-postgres-main-local/persistent-test", Hash('c')),
                 Hash('d'), now.AddMinutes(-1), now.AddMinutes(10), "test", null);
             var permit = new LocalRolloverAdoptionPermit(claim, continuation,
-                authorization, TimeProvider.System);
+                authorization, TimeProvider.System,
+                _ => Task.FromResult(new HistoricalCurrentLocalObservation(
+                    claim.TargetGeneration.Split(':')[1], claim.TargetGeneration,
+                    claim.VolumeName, claim.VolumeCreatedAtUtc, "/volume", "/data", "/data",
+                    claim.SystemIdentifierSha256)));
             var schema = new Dictionary<string, DatabaseSchemaPlan>(StringComparer.Ordinal);
             foreach (string name in names)
             {

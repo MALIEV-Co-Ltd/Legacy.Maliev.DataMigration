@@ -331,7 +331,11 @@ public sealed class PostgreSqlRolloverAdoptionTests(PostgreSqlAdapterFixture fix
             new DeltaTargetAuthority(DeltaTargetAuthorityKind.LocalAspire,
                 "aspire://legacy-postgres-main-local/persistent-test", Hash('e')),
             Hash('f'), now.AddMinutes(-1), now.AddMinutes(10), "test", null);
-        return new(claim, continuation, authorization, TimeProvider.System);
+        return new(claim, continuation, authorization, TimeProvider.System,
+            _ => Task.FromResult(new HistoricalCurrentLocalObservation(
+                claim.TargetGeneration.Split(':')[1], claim.TargetGeneration,
+                claim.VolumeName, claim.VolumeCreatedAtUtc, "/volume", "/data", "/data",
+                claim.SystemIdentifierSha256)));
     }
 
     private static async Task InsertJournalAsync(NpgsqlConnection connection,

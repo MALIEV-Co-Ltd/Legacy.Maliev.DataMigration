@@ -37,6 +37,11 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         }
         localPermit?.Require(plan, schema, localPermit.NowUtc);
         _ = rolloverPermit?.Require(plan, schema);
+        if (rolloverPermit is not null)
+        {
+            await rolloverPermit.RequireFreshTargetIdentityAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
         string planSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
         string operationsSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(
             plan.Databases.Single(item => string.Equals(item.Database, database, StringComparison.Ordinal)));
@@ -67,6 +72,11 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                 .ConfigureAwait(false);
             try
             {
+                if (rolloverPermit is not null)
+                {
+                    await rolloverPermit.RequireFreshTargetIdentityAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 if (localPermit is not null)
                 {
                     await VerifyLocalIdentityAsync(connection, transaction, plan, cancellationToken)

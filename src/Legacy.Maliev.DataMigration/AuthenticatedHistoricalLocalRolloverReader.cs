@@ -23,6 +23,12 @@ internal sealed class AuthenticatedHistoricalLocalRolloverReader(
     Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> observeTarget,
     TimeProvider clock)
 {
+    internal Task<HistoricalCurrentLocalObservation> ObserveTargetAsync(
+        CancellationToken cancellationToken)
+    {
+        return observeTarget(cancellationToken);
+    }
+
     internal async Task<AuthenticatedHistoricalLocalRolloverSnapshot> ReadAsync(
         Guid claimId, HistoricalLocalContinuityAttestation attestation,
         DeltaSynchronizationPlan historicalPlan,

@@ -79,7 +79,7 @@ internal static class LocalRolloverContinuationIssuer
                 disposableProof, authorization, futureSchema, trust, authority,
                 futurePlans.Persistent.TargetObservationSha256, clock);
         var rolloverPermit = new LocalRolloverAdoptionPermit(after.Claim,
-            continuation, authorization, clock);
+            continuation, authorization, clock, reader.ObserveTargetAsync);
         return new(continuation, authorization, pairedPermit, rolloverPermit);
     }
 

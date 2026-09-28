@@ -13,12 +13,35 @@ internal sealed class LocalRolloverAdoptionPermit(
     ImmutableRolloverClaim claim,
     HistoricalLocalMixedContinuation continuation,
     PairedLocalTransitionAuthorization authorization,
-    TimeProvider clock)
+    TimeProvider clock,
+    Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> observeTarget)
 {
     internal ImmutableRolloverClaim Claim => claim;
     internal HistoricalLocalMixedContinuation Continuation => continuation;
     internal PairedLocalTransitionAuthorization Authorization => authorization;
     internal DateTimeOffset NowUtc => clock.GetUtcNow();
+
+    internal async Task RequireFreshTargetIdentityAsync(CancellationToken cancellationToken)
+    {
+        HistoricalCurrentLocalObservation current = await observeTarget(cancellationToken)
+            .ConfigureAwait(false);
+        string[] parts = current.DockerGeneration?.Split(':') ?? [];
+        if (parts.Length != 5 || parts[0] != "docker" ||
+            parts[1] != current.ContainerId ||
+            current.DockerGeneration != claim.TargetGeneration ||
+            current.VolumeName != claim.VolumeName ||
+            current.VolumeCreatedAtUtc != claim.VolumeCreatedAtUtc ||
+            !PostgreSqlDeltaCanonicalTarget.Fixed(current.SystemIdentifierSha256,
+                claim.SystemIdentifierSha256) ||
+            string.IsNullOrWhiteSpace(current.VolumeMountpoint) ||
+            string.IsNullOrWhiteSpace(current.VolumeDestination) ||
+            !(current.PgData == current.VolumeDestination ||
+              current.PgData.StartsWith(current.VolumeDestination.TrimEnd('/') + "/",
+                  StringComparison.Ordinal)))
+        {
+            throw Invalid("delta_rollover_target_identity_changed");
+        }
+    }
 
     internal HistoricalLocalRolloverDatabaseState Require(
         DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema)

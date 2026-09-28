@@ -102,7 +102,10 @@ PostgreSQL tests prove rollback, marker readback, and one-use replay behavior.
 The canonical metadata preflight admits a different full Docker generation
 only when an internal rollover permit is present, the prior and current
 generations share the exact volume creation identity, and the later CAS matches
-the signed prior metadata fingerprint. A changed volume is rejected.
+the signed prior metadata fingerprint. A changed volume is rejected. The
+canonical target also re-observes the exact Docker, volume, and PostgreSQL
+identity before and after opening each database transaction; a restart on the
+same volume is rejected before DML.
 One disposable 23-database PostgreSQL test walks the claim through 0, 1, 22,
 and 23 committed adoptions, checks every fence and marker at each boundary,
 rolls back an interrupted transaction, and rejects duplicate adoption.
