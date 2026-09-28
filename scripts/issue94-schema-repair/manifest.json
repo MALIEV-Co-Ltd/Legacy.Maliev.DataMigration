@@ -1,0 +1,82 @@
+[
+  {
+    "name": "repair-additive-Country.sql",
+    "sha256": "41f6467c478c26d5f623d9f7ac03253c6e1c027a5f20aa1b01ff2239e87d6efc"
+  },
+  {
+    "name": "repair-additive-Currency.sql",
+    "sha256": "5703f579f1355d27604b99917a4554bfe6e3951b32ea991acf8aef50a74d5c59"
+  },
+  {
+    "name": "repair-additive-CustomerIdentity.sql",
+    "sha256": "e87732136ddae1bf2173fc5c44a83d2349ea4654f7b289a88edba2ff3fb9449f"
+  },
+  {
+    "name": "repair-additive-Customer.sql",
+    "sha256": "63354e6e69e464e7af065162b04762e9230f4220b42d002ecde572e97ca21ab8"
+  },
+  {
+    "name": "repair-additive-DataProtectionKeys.sql",
+    "sha256": "bc1f91321efa998e92bb6dbe64e5adee511b3106742a5315de0feefec9272bc5"
+  },
+  {
+    "name": "repair-additive-EmployeeIdentity.sql",
+    "sha256": "10314f1e8a70984010ad6dd8f5eabe35e8b542e5c1d8097e1465a20a69e4b4c8"
+  },
+  {
+    "name": "repair-additive-Employee.sql",
+    "sha256": "e7e8672cfd477d04e912496ae483f3a341262f8f0e60a169d7c0e14b014c36aa"
+  },
+  {
+    "name": "repair-additive-Invoice.sql",
+    "sha256": "6559749e212792c63e442e214911679b3d9323f696c51a67a88bef957431ecd8"
+  },
+  {
+    "name": "repair-additive-JobOffers.sql",
+    "sha256": "02314f518f86113c0067262a2fad17ed1114cb6d7e8fe7f71201bea3b2ae4365"
+  },
+  {
+    "name": "repair-additive-Material.sql",
+    "sha256": "6f409c288558ecf3334d0e2590ce484681b983165617eed75c2a05d3658bf99e"
+  },
+  {
+    "name": "repair-additive-Message.sql",
+    "sha256": "2ffe104f941337e26237f3aba44fce843f55013bf63e6cf550ee966797f800a4"
+  },
+  {
+    "name": "repair-additive-Order.sql",
+    "sha256": "36d6df2a1852b8805f165c5755eef19ddecad728fa775af5fc618b5629efc7a1"
+  },
+  {
+    "name": "repair-additive-OrderStatus.sql",
+    "sha256": "dcc78ca9299f85033688a14290d66cfc5b6069e418c3cfa18dfc93e041ad1ab0"
+  },
+  {
+    "name": "repair-additive-Payment.sql",
+    "sha256": "9287e231b171e886772639a06d3202370d78a28e87f2740f01e9a568438c1337"
+  },
+  {
+    "name": "repair-additive-PurchaseOrder.sql",
+    "sha256": "30b302dd404e8069b95da89f63c781e6eee456c50425e908a602fdeacf05c7ee"
+  },
+  {
+    "name": "repair-additive-QuotationRequest.sql",
+    "sha256": "2095533f39a98544a7c28a87df6d9c26b928cc92fa05bad5e45eab419848e804"
+  },
+  {
+    "name": "repair-additive-Quotation.sql",
+    "sha256": "7d6f3e0c7e39faa77c8f5f9de776de3b6d6c80f9024bf3ab0fed40cb1f37385f"
+  },
+  {
+    "name": "repair-additive-Receipt.sql",
+    "sha256": "cab19d7f07b5896dae7e176fe23a78de3d5d5c69451f4b9e5a07cc739baf3917"
+  },
+  {
+    "name": "repair-additive-Supplier.sql",
+    "sha256": "f8930148735512adda5038d5109f27cd81da59dbcd5f3adedc12c965869b2178"
+  },
+  {
+    "name": "repair-bangkok-defaults.sql",
+    "sha256": "7fa0bb79ed3a7d817007afe82d7e8221b53d12abd2ba7736d760cfc9bbcba029"
+  }
+]
