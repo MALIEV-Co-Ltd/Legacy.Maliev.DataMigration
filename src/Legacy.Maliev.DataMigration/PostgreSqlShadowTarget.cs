@@ -402,6 +402,29 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
                 cancellationToken).ConfigureAwait(false);
         }
 
+        if (schemaTables.Any(table => table.Collations.Values.Contains(
+            ApprovedProductionCollationManifest.Collation, StringComparer.Ordinal)))
+        {
+            await ExecuteAsync("""
+                CREATE COLLATION IF NOT EXISTS public."legacy_ci_as"
+                    (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+                """, cancellationToken).ConfigureAwait(false);
+            await using var collationCheck = new NpgsqlCommand("""
+                SELECT count(*) FROM pg_catalog.pg_collation AS c
+                JOIN pg_catalog.pg_namespace AS n ON n.oid = c.collnamespace
+                WHERE n.nspname = 'public' AND c.collname = 'legacy_ci_as'
+                  AND c.collprovider = 'i' AND NOT c.collisdeterministic
+                  AND c.colllocale = 'und-u-ks-level2'
+                  AND c.collversion = pg_catalog.pg_collation_actual_version(c.oid);
+                """, connection, transaction);
+            if (Convert.ToInt32(await collationCheck.ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false), CultureInfo.InvariantCulture) != 1)
+            {
+                throw new MigrationExecutionException("production_collation_definition_drift",
+                    "The reviewed target collation definition or provider version changed.");
+            }
+        }
+
         foreach (TableCopyPlan table in schemaTables)
         {
             string columns = string.Join(", ", table.OrderedColumns.Select(column =>

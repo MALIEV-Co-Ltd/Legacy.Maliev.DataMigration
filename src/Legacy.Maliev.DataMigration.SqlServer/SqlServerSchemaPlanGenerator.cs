@@ -64,6 +64,8 @@ public sealed partial class SqlServerMigrationSource
                 SourceColumnTypes = sourceColumnTypes,
                 SourceColumns = inventory.Columns,
                 ColumnTypes = targetColumnTypes,
+                Collations = ApprovedProductionCollationManifest.ForTable(
+                    database, targetSchema, inventory.SourceTable, inventory.OrderedColumns),
                 NullableColumns = nullable,
                 IdentityColumns = [.. tableColumns.Where(column => column.Identity).Select(column => column.Column)],
                 Identities = [.. tableColumns.Where(column => column.Identity).Select(column => new IdentityCopyPlan(

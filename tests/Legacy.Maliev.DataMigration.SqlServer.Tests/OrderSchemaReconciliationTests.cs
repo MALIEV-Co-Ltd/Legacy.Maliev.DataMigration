@@ -15,10 +15,10 @@ public sealed class OrderSchemaReconciliationTests(PostgreSqlAdapterFixture fixt
         await using (var setup = new SqlConnection(sqlServer.GetConnectionString()))
         {
             await setup.OpenAsync();
-            await using var createDatabase = new SqlCommand("CREATE DATABASE [Order]; ALTER DATABASE [Order] SET ALLOW_SNAPSHOT_ISOLATION ON;", setup);
+            await using var createDatabase = new SqlCommand("CREATE DATABASE [OrderReconciliation]; ALTER DATABASE [OrderReconciliation] SET ALLOW_SNAPSHOT_ISOLATION ON;", setup);
             _ = await createDatabase.ExecuteNonQueryAsync();
         }
-        string sourceConnection = new SqlConnectionStringBuilder(sqlServer.GetConnectionString()) { InitialCatalog = "Order" }.ConnectionString;
+        string sourceConnection = new SqlConnectionStringBuilder(sqlServer.GetConnectionString()) { InitialCatalog = "OrderReconciliation" }.ConnectionString;
         await using (var setup = new SqlConnection(sourceConnection))
         {
             await setup.OpenAsync();
@@ -35,15 +35,15 @@ public sealed class OrderSchemaReconciliationTests(PostgreSqlAdapterFixture fixt
         }
 
         await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(sourceConnection));
-        await source.BeginDatabaseSnapshotAsync("Order", CancellationToken.None);
-        DatabaseSchemaPlan plan = await source.GenerateDatabasePlanAsync("Order", CancellationToken.None);
+        await source.BeginDatabaseSnapshotAsync("OrderReconciliation", CancellationToken.None);
+        DatabaseSchemaPlan plan = await source.GenerateDatabasePlanAsync("OrderReconciliation", CancellationToken.None);
         TableCopyPlan table = Assert.Single(plan.Tables);
         Assert.Equal("('unnamed')", table.DefaultExpressions["Name"]);
         Assert.Equal("character varying(100)", table.ColumnTypes["Name"]);
 
         PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         Guid runId = Guid.NewGuid();
-        var shadow = new ShadowDatabase($"legacy_shadow_order_{runId:N}", runId.ToString("D"), "Order")
+        var shadow = new ShadowDatabase($"legacy_shadow_order_{runId:N}", runId.ToString("D"), "OrderReconciliation")
         {
             OwnerAttempt = 1,
             FencingToken = Guid.NewGuid(),
@@ -54,7 +54,7 @@ public sealed class OrderSchemaReconciliationTests(PostgreSqlAdapterFixture fixt
             await using IPostgreSqlWholeDatabaseTransaction transaction = await target.BeginWholeDatabaseTransactionAsync(shadow, CancellationToken.None);
             await transaction.ApplySchemaAsync(plan, CancellationToken.None);
             var rows = new List<MigrationRow>();
-            await foreach (MigrationRow row in source.ReadTableAsync("Order", table, CancellationToken.None))
+            await foreach (MigrationRow row in source.ReadTableAsync("OrderReconciliation", table, CancellationToken.None))
             {
                 rows.Add(row);
             }
@@ -67,13 +67,13 @@ public sealed class OrderSchemaReconciliationTests(PostgreSqlAdapterFixture fixt
             rows.ForEach(collector.Append);
             TableReconciliationEvidence expected = collector.Finish();
             TableReconciliationEvidence observed = await transaction.InspectTableAsync(table, CancellationToken.None);
-            ReconciliationDiagnostics.CompareTable("Order", expected, observed);
+            ReconciliationDiagnostics.CompareTable("OrderReconciliation", expected, observed);
             Assert.Equal(3, observed.RowCount);
             ReconciliationDiagnostics.CompareSequences(plan,
-                await source.InspectSequenceNextValuesAsync("Order", plan, CancellationToken.None),
+                await source.InspectSequenceNextValuesAsync("OrderReconciliation", plan, CancellationToken.None),
                 await transaction.InspectSequenceNextValuesAsync(plan, CancellationToken.None));
             await transaction.CommitAsync(CancellationToken.None);
-            await source.CompleteDatabaseSnapshotAsync("Order", CancellationToken.None);
+            await source.CompleteDatabaseSnapshotAsync("OrderReconciliation", CancellationToken.None);
         }
         finally
         {

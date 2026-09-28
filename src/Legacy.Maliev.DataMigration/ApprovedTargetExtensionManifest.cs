@@ -59,6 +59,9 @@ internal static class ApprovedTargetExtensionManifest
             Identities = [new IdentityCopyPlan("ID", 1, 1, 1, false)],
             PrimaryKey = new PrimaryKeyCopyPlan("PK_Country", ["ID"]),
             DefaultExpressions = UtcTimestampDefaults(),
+            Collations = ApprovedProductionCollationManifest.ForTable(
+                "Material", "public", "Country",
+                ["ID", "Name", "Continent", "CountryCode", "ISO2", "ISO3", "CreatedDate", "ModifiedDate"]),
         };
     }
 
@@ -80,6 +83,9 @@ internal static class ApprovedTargetExtensionManifest
             Identities = [new IdentityCopyPlan("ID", 1, 1, 1, false)],
             PrimaryKey = new PrimaryKeyCopyPlan("PK_Currency", ["ID"]),
             DefaultExpressions = UtcTimestampDefaults(),
+            Collations = ApprovedProductionCollationManifest.ForTable(
+                "Material", "public", "Currency",
+                ["ID", "ShortName", "LongName", "CreatedDate", "ModifiedDate"]),
         };
     }
 
