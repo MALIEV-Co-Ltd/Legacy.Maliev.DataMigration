@@ -99,6 +99,9 @@ constraints are checked before use and on readback. A read-only marker reader
 joins the settled journal and checks the stored claim, plan, authorization ID,
 prior metadata, and adoption time against a retained signed ordinal. Disposable
 PostgreSQL tests prove rollback, marker readback, and one-use replay behavior.
+One disposable 23-database PostgreSQL test walks the claim through 0, 1, 22,
+and 23 committed adoptions, checks every fence and marker at each boundary,
+rolls back an interrupted transaction, and rejects duplicate adoption.
 The path has no public permit producer yet; an
 authenticated exact-23 mixed-state reader that checks the retained ordinal against
 every adopted marker is still needed
@@ -111,3 +114,14 @@ freshness policy accepts them. If either expires, this claim stops; no plan is
 silently renewed or substituted. Persistent Quotation content drift remains a
 separate live-data stop. No application deployment or traffic cutover is part
 of this contract.
+
+The internal continuation issuer now performs the fresh double scan, signs a
+new bounded authorization and exact-23 continuation, reserves the next
+immutable ordinal, performs another double scan, and only then constructs the
+separate paired-plan and rollover transaction permits. An all-adopted
+continuation can supply a fresh paired permit for a read-only terminal
+reconciliation; terminal completion still requires a new signed exact-23
+receipt. No console command invokes this issuer or enables a live rollover.
+An internal terminal reviewer requires all 23 observed adopted states and a
+fresh signed exact-23 receipt with the same plan, operation hashes, and
+disposable-proof row evidence. It never declares generic success.
