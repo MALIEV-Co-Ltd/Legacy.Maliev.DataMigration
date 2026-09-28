@@ -3,6 +3,38 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class ProductionSchemaColumnDiagnosticsTests
 {
     [Fact]
+    public void Compare_RecognizesPostgreSqlUtcClockDeparserWithoutAcceptingAnotherZone()
+    {
+        var plan = new TableCopyPlan("dbo", "Sample", "public", "Sample", ["CreatedDate"], ["CreatedDate"])
+        {
+            ColumnTypes = new Dictionary<string, string>
+            {
+                ["CreatedDate"] = "timestamp without time zone",
+            },
+            DefaultExpressions = new Dictionary<string, string>
+            {
+                ["CreatedDate"] = "(timezone('UTC'::text, CURRENT_TIMESTAMP))",
+            },
+        };
+        var observation = new ProductionSchemaObservation("Test",
+            [new ObservedTargetTable("public", "Sample", ["CreatedDate"])], new string('a', 64));
+        PostgreSqlSchemaFingerprint.ColumnShape expected =
+            PostgreSqlSchemaFingerprint.ExpectedColumn(plan, "CreatedDate", 1);
+
+        ProductionSchemaColumnDiagnostic equivalent = Assert.Single(ProductionSchemaColumnDiagnostics.Compare(
+            [plan], observation,
+            [expected with { DefaultExpression = "(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text)" }], []));
+        Assert.Equal("match", equivalent.Status);
+        Assert.Equal("match", equivalent.DefaultState);
+
+        ProductionSchemaColumnDiagnostic different = Assert.Single(ProductionSchemaColumnDiagnostics.Compare(
+            [plan], observation,
+            [expected with { DefaultExpression = "(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Bangkok'::text)" }], []));
+        Assert.Equal("shape-drift", different.Status);
+        Assert.Equal("present-different", different.DefaultState);
+    }
+
+    [Fact]
     public void Compare_ClassifiesColumnFacetsWithoutPublishingExpressions()
     {
         var plan = new TableCopyPlan("dbo", "Sample", "public", "Sample", ["ID"], ["ID"])
