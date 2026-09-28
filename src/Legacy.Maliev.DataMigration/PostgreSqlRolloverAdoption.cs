@@ -275,6 +275,13 @@ internal static class PostgreSqlRolloverAdoption
                 adopted_at_utc timestamptz NOT NULL);
             """, connection, transaction);
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await VerifyMarkerTableAsync(connection, transaction, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal static async Task VerifyMarkerTableAsync(NpgsqlConnection connection,
+        NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
         await using var catalog = new NpgsqlCommand("""
             SELECT
                 (SELECT string_agg(a.attname || ':' || format_type(a.atttypid,a.atttypmod) || ':' ||

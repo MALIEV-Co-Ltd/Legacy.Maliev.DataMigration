@@ -49,6 +49,18 @@ public sealed class PostgreSqlRolloverAdoptionTests(PostgreSqlAdapterFixture fix
             {
                 await connection.OpenAsync();
                 await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
+                    IsolationLevel.RepeatableRead);
+                await ExecuteAsync(connection, transaction, "SET TRANSACTION READ ONLY;");
+                DeltaExecutionException malformedRead = await Assert.ThrowsAsync<DeltaExecutionException>(
+                    () => RolloverAdoptionMarkerReader.ReadAsync(connection, transaction,
+                        schema.Database, CancellationToken.None));
+                Assert.Equal("delta_rollover_adoption_marker_schema_invalid", malformedRead.Code);
+                await transaction.RollbackAsync();
+            }
+            await using (var connection = new NpgsqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
                     IsolationLevel.Serializable);
                 DeltaExecutionException malformed = await Assert.ThrowsAsync<DeltaExecutionException>(() =>
                     PostgreSqlRolloverAdoption.AdoptPriorFenceAsync(connection, transaction,
@@ -122,6 +134,35 @@ public sealed class PostgreSqlRolloverAdoptionTests(PostgreSqlAdapterFixture fix
                 "SELECT count(*) FROM legacy_migration_internal.delta_journal;"));
             Assert.Equal(1L, await ScalarAsync(connectionString,
                 "SELECT count(*) FROM legacy_migration_internal.delta_rollover_adoption;"));
+
+            await using (var connection = new NpgsqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
+                    IsolationLevel.RepeatableRead);
+                await ExecuteAsync(connection, transaction, "SET TRANSACTION READ ONLY;");
+                RolloverAdoptionMarkerEvidence marker = Assert.IsType<RolloverAdoptionMarkerEvidence>(
+                    await RolloverAdoptionMarkerReader.ReadAsync(connection, transaction,
+                        schema.Database, CancellationToken.None));
+                var ordinal = new ImmutableRolloverClaimStore.SignedClaimOrdinal("1.0",
+                    claim.ClaimId, 1, prior, permit.Authorization, now.AddMinutes(-1));
+                HistoricalLocalRolloverDatabaseState state =
+                    RolloverAdoptionMarkerReader.Authenticate(marker, claim, ordinal, newPlan);
+                Assert.Equal(HistoricalLocalRolloverDatabasePhase.Adopted, state.Phase);
+                Assert.Equal(PostgreSqlRolloverAdoption.ComputeJournalSha256(schema.Database,
+                    claim.ClaimId, newPlanSha256, reconciliation,
+                    HistoricalLocalMixedContinuationCanonicalizer.ComputeSha256(prior)),
+                    state.AdoptionJournalSha256);
+                Assert.Equal("delta_rollover_adoption_marker_invalid",
+                    Assert.Throws<DeltaExecutionException>(() =>
+                        RolloverAdoptionMarkerReader.Authenticate(marker with
+                        { AuthorizationId = Guid.NewGuid() }, claim, ordinal, newPlan)).Code);
+                Assert.Equal("delta_rollover_adoption_marker_invalid",
+                    Assert.Throws<DeltaExecutionException>(() =>
+                        RolloverAdoptionMarkerReader.Authenticate(marker, claim, ordinal,
+                            newPlan with { PlanId = Guid.NewGuid() })).Code);
+                await transaction.RollbackAsync();
+            }
 
             string journalSha = PostgreSqlRolloverAdoption.ComputeJournalSha256(schema.Database,
                 claim.ClaimId, newPlanSha256, reconciliation,

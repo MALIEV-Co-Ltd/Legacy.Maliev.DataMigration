@@ -87,8 +87,11 @@ implement the claim-bound adoption transaction.
 An internal adoption transaction path now conditionally changes one verified
 prior fence and writes a claim-bound marker only after the settled journal is
 present in that same serializable transaction. The marker table's columns and
-constraints are checked before use. Disposable PostgreSQL tests prove rollback
-and one-use replay behavior. The path has no public permit producer yet; an
+constraints are checked before use and on readback. A read-only marker reader
+joins the settled journal and checks the stored claim, plan, authorization ID,
+prior metadata, and adoption time against a retained signed ordinal. Disposable
+PostgreSQL tests prove rollback, marker readback, and one-use replay behavior.
+The path has no public permit producer yet; an
 authenticated exact-23 mixed-state reader that checks the retained ordinal against
 every adopted marker is still needed
 before it can be used for a real rollover.
