@@ -48,9 +48,12 @@ generation, retention expiration, and exact readback bytes.
 5. Consume a continuation ordinal by conditionally creating
    `ordinals/<claim ID>/<20-digit ordinal>`. Ordinal one requires the active
    claim; later ordinals require the exact preceding ordinal object and a
-   fresh signed continuation/authorization. A used ordinal cannot be
-   overwritten or replayed. A gap, conflict, missing object, or expired
-   claim fails closed. The runner must not issue a subsequent ordinal while a
+   fresh signed continuation/authorization. The ordinal object retains both
+   signed documents, the issuance time, and the ordered 23 database states so
+   later reads can authenticate an adopted marker's historical authorization.
+   A used ordinal cannot be overwritten or replayed. A gap, conflict, missing
+   object, reused authorization ID, regressed adopted state, or expired claim
+   fails closed. The runner must not issue a subsequent ordinal while a
    previous authorization can still have an in-flight transaction.
 
 The bucket is a one-use claim ledger, not a transaction coordinator for 23
@@ -58,7 +61,7 @@ databases. The first claim is published only after independently verifying the
 signed historical receipt, current exact-23 rows/schema/sequence evidence,
 current Docker/volume/PostgreSQL identity, and the zero-delete paired proof.
 The current store implements reservation, exact readback, retention checks,
-one-use ordinals, and a public read that reauthenticates the original signed
+one-use signed ordinals, and a public read that reauthenticates the original signed
 attestation against the signed historical plan and 23-database receipt. It does
 not grant execution authority. The following mixed-state reader and transaction
 checks are required before any rollover can be enabled.
@@ -86,7 +89,8 @@ prior fence and writes a claim-bound marker only after the settled journal is
 present in that same serializable transaction. The marker table's columns and
 constraints are checked before use. Disposable PostgreSQL tests prove rollback
 and one-use replay behavior. The path has no public permit producer yet; an
-authenticated exact-23 mixed-state reader and signed ordinal are still needed
+authenticated exact-23 mixed-state reader that checks the retained ordinal against
+every adopted marker is still needed
 before it can be used for a real rollover.
 
 Fresh continuation signing after a 15-minute authorization expires requires a

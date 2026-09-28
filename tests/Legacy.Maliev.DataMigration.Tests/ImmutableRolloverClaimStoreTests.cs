@@ -106,29 +106,57 @@ public sealed class ImmutableRolloverClaimStoreTests
     }
 
     [Fact]
-    public async Task Ordinal_ConcurrentCreateReplayAndGap_FailClosed()
+    public async Task SignedOrdinal_ConcurrentCreateReplayGapAndExpiredAuthorization_FailClosed()
     {
+        using var signatures = new OrdinalSignatures();
         var gateway = new MemoryGateway(Now);
         var store = new ImmutableRolloverClaimStore(gateway);
         ImmutableRolloverClaim claim = await store.ReserveVerifiedAsync(Claim(), Now,
             CancellationToken.None);
+        var (Continuation, Authorization) = signatures.Create(claim, 1, Now);
+        var earlyEvidence = signatures.Create(claim, 2, Now.AddMinutes(4));
+        var secondEvidence = signatures.Create(claim, 2, Now.AddMinutes(11));
         await AssertCodeAsync("delta_rollover_claim_object_missing", () =>
-            store.ReserveOrdinalAsync(claim, 2, Hash('a'), Guid.NewGuid(), Now,
-                CancellationToken.None));
+            store.ReserveSignedOrdinalAsync(claim, secondEvidence.Continuation,
+                secondEvidence.Authorization, secondEvidence.Continuation.Databases,
+                signatures.Trust, Now.AddMinutes(11), CancellationToken.None));
 
-        Task first = store.ReserveOrdinalAsync(claim, 1, Hash('b'), Guid.NewGuid(), Now,
-            CancellationToken.None);
-        Task second = store.ReserveOrdinalAsync(claim, 1, Hash('c'), Guid.NewGuid(), Now,
-            CancellationToken.None);
+        Task first = store.ReserveSignedOrdinalAsync(claim, Continuation,
+            Authorization, Continuation.Databases,
+            signatures.Trust, Now, CancellationToken.None);
+        Task second = store.ReserveSignedOrdinalAsync(claim, Continuation,
+            Authorization, Continuation.Databases,
+            signatures.Trust, Now, CancellationToken.None);
         Exception?[] outcomes = await Task.WhenAll(ObserveAsync(first), ObserveAsync(second));
         _ = Assert.Single(outcomes, outcome => outcome is null);
         _ = Assert.Single(outcomes, outcome => outcome is DeltaExecutionException
         { Code: "delta_rollover_claim_conflict" });
 
-        await store.ReserveOrdinalAsync(claim, 2, Hash('d'), Guid.NewGuid(), Now,
-            CancellationToken.None);
+        ImmutableRolloverClaimStore.SignedClaimOrdinal retained =
+            await store.ReadSignedOrdinalAsync(claim, 1, signatures.Trust, Now,
+                CancellationToken.None);
+        Assert.Equal(HistoricalLocalMixedContinuationCanonicalizer.ComputeSha256(
+            Continuation), HistoricalLocalMixedContinuationCanonicalizer
+            .ComputeSha256(retained.Continuation));
+        await AssertCodeAsync("delta_rollover_claim_ordinal_invalid", () =>
+            store.ReserveSignedOrdinalAsync(claim, earlyEvidence.Continuation,
+                earlyEvidence.Authorization, earlyEvidence.Continuation.Databases,
+                signatures.Trust, Now.AddMinutes(4), CancellationToken.None));
+        _ = await store.ReserveSignedOrdinalAsync(claim, secondEvidence.Continuation,
+            secondEvidence.Authorization, secondEvidence.Continuation.Databases,
+            signatures.Trust, Now.AddMinutes(11), CancellationToken.None);
         await AssertCodeAsync("delta_rollover_claim_conflict", () =>
-            store.ReserveOrdinalAsync(claim, 2, Hash('e'), Guid.NewGuid(), Now,
+            store.ReserveSignedOrdinalAsync(claim, secondEvidence.Continuation,
+                secondEvidence.Authorization, secondEvidence.Continuation.Databases,
+                signatures.Trust, Now.AddMinutes(11), CancellationToken.None));
+        gateway.Replace("claims/v1/ordinals/" + claim.ClaimId.ToString("D") + "/" +
+            1L.ToString("D20", System.Globalization.CultureInfo.InvariantCulture),
+            System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(retained with
+            {
+                Continuation = retained.Continuation with { AttestationSignature = "forged" },
+            }));
+        await AssertCodeAsync("delta_historical_local_mixed_continuation_invalid", () =>
+            store.ReadSignedOrdinalAsync(claim, 1, signatures.Trust, Now.AddMinutes(11),
                 CancellationToken.None));
     }
 
@@ -221,6 +249,67 @@ public sealed class ImmutableRolloverClaimStoreTests
         return new(value, 64);
     }
 
+    private sealed class OrdinalSignatures : IDisposable
+    {
+        private readonly ECDsa _authorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        private readonly ECDsa _continuationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        private readonly P256MigrationEvidenceSigner _authorizationSigner;
+        private readonly P256MigrationEvidenceSigner _continuationSigner;
+
+        public OrdinalSignatures()
+        {
+            _authorizationSigner = new("ordinal-authorization", _authorizationKey.ExportECPrivateKeyPem());
+            _continuationSigner = new("ordinal-continuation", _continuationKey.ExportECPrivateKeyPem());
+            Trust = new ReceiptAttestationTrustStore(
+                [new(_authorizationSigner.KeyId, _authorizationSigner.ExportSubjectPublicKeyInfo()),
+                    new(_continuationSigner.KeyId, _continuationSigner.ExportSubjectPublicKeyInfo())]);
+        }
+
+        public ReceiptAttestationTrustStore Trust { get; }
+
+        public (HistoricalLocalMixedContinuation Continuation,
+            PairedLocalTransitionAuthorization Authorization) Create(
+            ImmutableRolloverClaim claim, long ordinal, DateTimeOffset at)
+        {
+            var unsignedAuthorization = new PairedLocalTransitionAuthorization("1.0",
+                Guid.NewGuid(), Guid.NewGuid(), claim.FuturePlanSha256, Hash('3'), Hash('4'),
+                Hash('5'), Hash('6'), new DeltaTargetAuthority(
+                    DeltaTargetAuthorityKind.LocalAspire,
+                    "aspire://legacy-postgres-main-local/persistent-target", Hash('7')),
+                Hash('8'), at.AddMinutes(-1), at.AddMinutes(10),
+                _authorizationSigner.KeyId, null);
+            PairedLocalTransitionAuthorization authorization = unsignedAuthorization with
+            {
+                AttestationSignature = Convert.ToBase64String(_authorizationSigner.Sign(
+                    PairedLocalTransitionAuthorizationCanonicalizer.CreatePayload(
+                        unsignedAuthorization))),
+            };
+            HistoricalLocalRolloverDatabaseState[] states =
+                [.. DatabaseInventory.ActiveDatabases.Select(database =>
+                    new HistoricalLocalRolloverDatabaseState(database,
+                        HistoricalLocalRolloverDatabasePhase.Prior, Hash('6'), null))];
+            var unsignedContinuation = new HistoricalLocalMixedContinuation("1.0", claim.ClaimId,
+                claim.InitialAttestationSha256, claim.FuturePlanSha256, claim.TargetGeneration,
+                authorization.AuthorizationId, ordinal, states, at, at.AddMinutes(5),
+                _continuationSigner.KeyId, null);
+            HistoricalLocalMixedContinuation continuation = unsignedContinuation with
+            {
+                AttestationSignature = Convert.ToBase64String(_continuationSigner.Sign(
+                    HistoricalLocalMixedContinuationCanonicalizer.CreatePayload(
+                        unsignedContinuation))),
+            };
+            return (continuation, authorization);
+        }
+
+        public void Dispose()
+        {
+            _authorizationSigner.Dispose();
+            _continuationSigner.Dispose();
+            _authorizationKey.Dispose();
+            _continuationKey.Dispose();
+        }
+    }
+
     private sealed class MemoryGateway(DateTimeOffset now) : IRolloverClaimObjectGateway
     {
         private readonly ConcurrentDictionary<string, RolloverClaimObject> _objects =
@@ -260,6 +349,13 @@ public sealed class ImmutableRolloverClaimStoreTests
         public void Remove(string name)
         {
             _ = _objects.TryRemove(name, out _);
+        }
+
+        public void Replace(string name, byte[] content)
+        {
+            _ = _objects.AddOrUpdate(name,
+                _ => throw new InvalidOperationException("Object missing."),
+                (_, existing) => existing with { Content = content });
         }
     }
 }

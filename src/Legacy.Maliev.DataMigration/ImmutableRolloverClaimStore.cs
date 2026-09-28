@@ -259,41 +259,104 @@ public sealed class ImmutableRolloverClaimStore
         }
     }
 
-    /// <summary>Storage-level one-use ordinal; this does not verify a signed continuation.</summary>
-    internal async Task ReserveOrdinalAsync(ImmutableRolloverClaim claim, long ordinal,
-        string continuationSha256, Guid authorizationId, DateTimeOffset nowUtc,
+    /// <summary>
+    /// Retains both signed documents for later historical verification. This is
+    /// storage evidence only; a caller-created observation cannot grant a write.
+    /// </summary>
+    internal async Task<HistoricalLocalMixedContinuationReview> ReserveSignedOrdinalAsync(
+        ImmutableRolloverClaim claim, HistoricalLocalMixedContinuation continuation,
+        PairedLocalTransitionAuthorization authorization,
+        IReadOnlyList<HistoricalLocalRolloverDatabaseState> observedDatabases,
+        IReceiptAttestationTrustStore trust, DateTimeOffset nowUtc,
         CancellationToken cancellationToken)
     {
         ImmutableRolloverClaim observed = await ReadAsync(claim.ClaimId,
             claim.InitialAttestationSha256, nowUtc, cancellationToken).ConfigureAwait(false);
         if (!JsonSerializer.SerializeToUtf8Bytes(observed).AsSpan()
                 .SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(claim)) ||
-            ordinal is < 1 or > 999_999 ||
-            !Hash(continuationSha256) || authorizationId == Guid.Empty)
+            continuation.ContinuationOrdinal is < 1 or > 999_999 ||
+            nowUtc >= continuation.ExpiresAtUtc)
         {
             throw Invalid("delta_rollover_claim_ordinal_invalid");
         }
+        long ordinal = continuation.ContinuationOrdinal;
+        HistoricalLocalRolloverClaimSnapshot snapshot = Snapshot(claim, ordinal);
+        HistoricalLocalMixedContinuationReview review = HistoricalLocalMixedContinuationVerifier
+            .Verify(continuation, snapshot, observedDatabases, authorization, trust, nowUtc);
         if (ordinal > 1)
         {
-            RolloverClaimObject previous = await ReadRequiredAsync(OrdinalName(claim.ClaimId,
-                ordinal - 1), cancellationToken).ConfigureAwait(false);
-            RequireRetained(previous, claim.ExpiresAtUtc);
-            ClaimOrdinal? prior;
-            try { prior = JsonSerializer.Deserialize<ClaimOrdinal>(previous.Content); }
-            catch (JsonException) { throw Invalid("delta_rollover_claim_ordinal_invalid"); }
-            if (prior is null || prior.SchemaVersion != "1.0" ||
-                prior.ClaimId != claim.ClaimId || prior.Ordinal != ordinal - 1 ||
-                !Hash(prior.ContinuationSha256) || prior.AuthorizationId == Guid.Empty ||
-                prior.CreatedAtUtc.Offset != TimeSpan.Zero || prior.CreatedAtUtc > nowUtc)
+            SignedClaimOrdinal prior = await ReadSignedOrdinalAsync(claim, ordinal - 1,
+                trust, nowUtc, cancellationToken).ConfigureAwait(false);
+            if (prior.Continuation.ExpiresAtUtc > nowUtc ||
+                prior.Authorization.AuthorizationId == authorization.AuthorizationId ||
+                prior.Continuation.Databases.Count != continuation.Databases.Count ||
+                prior.Continuation.Databases.Zip(continuation.Databases).Any(pair =>
+                    pair.First.Phase == HistoricalLocalRolloverDatabasePhase.Adopted &&
+                    pair.Second.Phase != HistoricalLocalRolloverDatabasePhase.Adopted))
             {
                 throw Invalid("delta_rollover_claim_ordinal_invalid");
             }
         }
-        byte[] content = JsonSerializer.SerializeToUtf8Bytes(new ClaimOrdinal(
-            "1.0", claim.ClaimId, ordinal, continuationSha256,
-            authorizationId, nowUtc));
+        byte[] content = JsonSerializer.SerializeToUtf8Bytes(new SignedClaimOrdinal(
+            "1.0", claim.ClaimId, ordinal, continuation, authorization, nowUtc));
         await CreateAndVerifyAsync(OrdinalName(claim.ClaimId, ordinal), content,
             claim.ExpiresAtUtc, cancellationToken).ConfigureAwait(false);
+        _ = await ReadSignedOrdinalAsync(claim, ordinal, trust, nowUtc,
+            cancellationToken).ConfigureAwait(false);
+        return review;
+    }
+
+    internal async Task<SignedClaimOrdinal> ReadSignedOrdinalAsync(ImmutableRolloverClaim claim,
+        long ordinal, IReceiptAttestationTrustStore trust, DateTimeOffset nowUtc,
+        CancellationToken cancellationToken)
+    {
+        ImmutableRolloverClaim current = await ReadAsync(claim.ClaimId,
+            claim.InitialAttestationSha256, nowUtc, cancellationToken).ConfigureAwait(false);
+        if (!JsonSerializer.SerializeToUtf8Bytes(current).AsSpan()
+                .SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(claim)))
+        {
+            throw Invalid("delta_rollover_claim_identity_invalid");
+        }
+        if (ordinal is < 1 or > 999_999)
+        {
+            throw Invalid("delta_rollover_claim_ordinal_invalid");
+        }
+        RolloverClaimObject retained = await ReadRequiredAsync(OrdinalName(claim.ClaimId,
+            ordinal), cancellationToken).ConfigureAwait(false);
+        RequireRetained(retained, claim.ExpiresAtUtc);
+        SignedClaimOrdinal document;
+        try
+        {
+            document = JsonSerializer.Deserialize<SignedClaimOrdinal>(retained.Content)
+                ?? throw Invalid("delta_rollover_claim_ordinal_invalid");
+        }
+        catch (JsonException)
+        {
+            throw Invalid("delta_rollover_claim_ordinal_invalid");
+        }
+        if (document.SchemaVersion != "1.0" || document.ClaimId != claim.ClaimId ||
+            document.Ordinal != ordinal || document.CreatedAtUtc.Offset != TimeSpan.Zero ||
+            document.CreatedAtUtc > nowUtc || document.Continuation is null ||
+            document.Authorization is null ||
+            document.CreatedAtUtc < document.Continuation.IssuedAtUtc ||
+            document.CreatedAtUtc >= document.Continuation.ExpiresAtUtc ||
+            document.CreatedAtUtc < document.Authorization.IssuedAtUtc ||
+            document.CreatedAtUtc >= document.Authorization.ExpiresAtUtc)
+        {
+            throw Invalid("delta_rollover_claim_ordinal_invalid");
+        }
+        _ = HistoricalLocalMixedContinuationVerifier.Verify(document.Continuation,
+            Snapshot(claim, ordinal), document.Continuation.Databases,
+            document.Authorization, trust, document.CreatedAtUtc);
+        return document;
+    }
+
+    private static HistoricalLocalRolloverClaimSnapshot Snapshot(
+        ImmutableRolloverClaim claim, long ordinal)
+    {
+        return new(claim.ClaimId, claim.InitialAttestationSha256,
+            claim.FuturePlanSha256, claim.TargetGeneration, ordinal,
+            claim.InitialMetadata);
     }
 
     private async Task CreateAndVerifyAsync(string name, byte[] bytes,
@@ -427,8 +490,9 @@ public sealed class ImmutableRolloverClaimStore
     }
 
     private sealed record ClaimReservation(string SchemaVersion, Guid ClaimId, string ClaimSha256);
-    private sealed record ClaimOrdinal(string SchemaVersion, Guid ClaimId, long Ordinal,
-        string ContinuationSha256, Guid AuthorizationId, DateTimeOffset CreatedAtUtc);
+    internal sealed record SignedClaimOrdinal(string SchemaVersion, Guid ClaimId, long Ordinal,
+        HistoricalLocalMixedContinuation Continuation,
+        PairedLocalTransitionAuthorization Authorization, DateTimeOffset CreatedAtUtc);
 }
 
 internal sealed class GoogleCloudRolloverClaimGateway(StorageClient client, string bucket)
