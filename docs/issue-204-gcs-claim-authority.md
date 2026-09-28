@@ -75,10 +75,19 @@ upsert is forbidden on this path. Only a new signed exact-23 terminal
 reconciliation completes the claim. A journal hash or global object alone is
 never a receipt.
 
-The existing canonical executor now rejects a `SettledPrior` LOCAL fence, and
+The existing canonical executor now rejects a `SettledPrior` LOCAL fence without
+an internal claim-bound adoption permit, and
 standalone paired-plan metadata provisioning rejects a different previously
 settled Docker generation. This is a fail-closed interim guard; it does not
 implement the claim-bound adoption transaction.
+
+An internal adoption transaction path now conditionally changes one verified
+prior fence and writes a claim-bound marker only after the settled journal is
+present in that same serializable transaction. The marker table's columns and
+constraints are checked before use. Disposable PostgreSQL tests prove rollback
+and one-use replay behavior. The path has no public permit producer yet; an
+authenticated exact-23 mixed-state reader and signed ordinal are still needed
+before it can be used for a real rollover.
 
 Fresh continuation signing after a 15-minute authorization expires requires a
 new independently verified mixed-state scan and new authorization ID. The

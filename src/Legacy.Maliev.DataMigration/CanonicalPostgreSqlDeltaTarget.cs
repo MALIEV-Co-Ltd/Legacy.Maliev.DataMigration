@@ -11,6 +11,7 @@ public sealed record PostgreSqlDeltaCanonicalTargetOptions(
     string ExpectedTargetGeneration)
 {
     public PairedLocalTransitionExecutionPermit? LocalTransitionPermit { get; init; }
+    internal LocalRolloverAdoptionPermit? RolloverPermit { get; init; }
 }
 
 internal sealed record CanonicalDeltaTargetBinding(Guid PlanId, string PlanSha256, DateTimeOffset SourceCutoffUtc,
@@ -28,7 +29,14 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(schema);
         PairedLocalTransitionExecutionPermit? localPermit = options.LocalTransitionPermit;
+        LocalRolloverAdoptionPermit? rolloverPermit = options.RolloverPermit;
+        if (rolloverPermit is not null && localPermit is null)
+        {
+            throw Error("canonical_delta_rollover_permit_invalid",
+                "A rollover adoption requires the separately signed paired transition permit.");
+        }
         localPermit?.Require(plan, schema, localPermit.NowUtc);
+        _ = rolloverPermit?.Require(plan, schema);
         string planSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
         string operationsSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(
             plan.Databases.Single(item => string.Equals(item.Database, database, StringComparison.Ordinal)));
@@ -89,13 +97,34 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                             .ConfigureAwait(false);
                     if (metadata.State == PairedLocalTransitionMetadataState.SettledPrior)
                     {
-                        throw Error("canonical_delta_rollover_claim_required",
-                            "A settled prior LOCAL fence requires atomic claim-bound adoption.");
+                        if (rolloverPermit is null)
+                        {
+                            throw Error("canonical_delta_rollover_claim_required",
+                                "A settled prior LOCAL fence requires atomic claim-bound adoption.");
+                        }
+                        await PostgreSqlRolloverAdoption.AdoptPriorFenceAsync(connection, transaction,
+                            plan, schema, metadata.FingerprintSha256, localPermit, rolloverPermit,
+                            cancellationToken).ConfigureAwait(false);
                     }
                     if (metadata.State == PairedLocalTransitionMetadataState.Unprovisioned)
                     {
+                        if (rolloverPermit is not null)
+                        {
+                            throw Error("canonical_delta_rollover_preimage_invalid",
+                                "An admitted rollover requires the settled prior LOCAL fence.");
+                        }
                         await PostgreSqlDeltaMetadataProvisioner.ProvisionDatabaseAsync(connection, transaction,
                             plan, schema, cancellationToken, localPermit).ConfigureAwait(false);
+                    }
+                    if (rolloverPermit is not null && metadata.State == PairedLocalTransitionMetadataState.Pending)
+                    {
+                        throw Error("canonical_delta_rollover_preimage_invalid",
+                            "An admitted rollover cannot continue from an unjournaled fence.");
+                    }
+                    if (rolloverPermit is null && metadata.State == PairedLocalTransitionMetadataState.Replayed)
+                    {
+                        await PostgreSqlRolloverAdoption.RequireNoAdoptionMarkerAsync(connection,
+                            transaction, schema.Database, cancellationToken).ConfigureAwait(false);
                     }
                 }
                 await ValidateFenceAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
@@ -106,13 +135,19 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                     await VerifyReplayedEvidenceAsync(connection, transaction, schema, binding,
                         replayReconciliationSha256, cancellationToken).ConfigureAwait(false);
                 }
+                if (rolloverPermit is not null && replayReconciliationSha256 is not null)
+                {
+                    _ = await PostgreSqlRolloverAdoption.VerifyReplayedMarkerAsync(connection,
+                        transaction, plan, schema, replayReconciliationSha256, rolloverPermit,
+                        cancellationToken).ConfigureAwait(false);
+                }
                 ApprovedTargetExtensionState? extensionState = replayReconciliationSha256 is null
                     ? await ApprovedTargetExtensionStateInspector.InspectAsync(
                         connection, transaction, schema, cancellationToken).ConfigureAwait(false)
                     : null;
                 IReadOnlyDictionary<string, int> upsertOrder = CanonicalForeignKeyOrder.Build(schema);
                 return new PostgreSqlDeltaCanonicalTransaction(connection, transaction, binding, schema, replayReconciliationSha256,
-                    extensionState, upsertOrder, operationsSha256);
+                    extensionState, upsertOrder, operationsSha256, rolloverPermit);
             }
             catch
             {
@@ -326,7 +361,8 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
     string? replayReconciliationSha256,
     ApprovedTargetExtensionState? extensionState,
     IReadOnlyDictionary<string, int> upsertOrder,
-    string operationsSha256) : IDeltaCanonicalTransaction
+    string operationsSha256,
+    LocalRolloverAdoptionPermit? rolloverPermit) : IDeltaCanonicalTransaction
 {
     private bool _completed;
     private bool _checkpointRecorded;
@@ -547,6 +583,12 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         if (Disposition == DeltaExecutionDisposition.Pending)
         {
             await RecordCheckpointAsync(cancellationToken).ConfigureAwait(false);
+            if (rolloverPermit is not null)
+            {
+                await PostgreSqlRolloverAdoption.RecordMarkerAsync(connection, transaction,
+                    binding.Database, binding.PlanSha256, _reconciliationSha256,
+                    rolloverPermit, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
