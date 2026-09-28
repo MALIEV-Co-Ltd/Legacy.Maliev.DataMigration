@@ -175,6 +175,90 @@ public sealed class ImmutableRolloverClaimStore
         return claim;
     }
 
+    /// <summary>
+    /// Reauthenticates the retained claim against the original signed continuity
+    /// attestation and historical exact-23 completion. This is read-only evidence,
+    /// never a continuation or database write permit.
+    /// </summary>
+    public async Task<ImmutableRolloverClaim> ReadAuthenticatedAsync(Guid claimId,
+        HistoricalLocalContinuityAttestation attestation,
+        DeltaSynchronizationPlan historicalPlan,
+        Exact23DeltaReconciliationResult historicalReceipt,
+        IReceiptAttestationTrustStore trust,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken)
+    {
+        HistoricalPairedLocalEvidenceReview historical = HistoricalPairedLocalEvidenceReviewer.Verify(
+            historicalPlan, historicalReceipt, trust, nowUtc);
+        ImmutableRolloverClaim claim = await ReadAsync(claimId,
+            HistoricalLocalContinuityAttestationCanonicalizer.ComputeSha256(attestation),
+            nowUtc, cancellationToken).ConfigureAwait(false);
+        VerifyStoredAttestation(claim, attestation, historical, historicalPlan, historicalReceipt,
+            trust);
+        return claim;
+    }
+
+    internal static void VerifyStoredAttestation(ImmutableRolloverClaim claim,
+        HistoricalLocalContinuityAttestation attestation,
+        HistoricalPairedLocalEvidenceReview historical,
+        DeltaSynchronizationPlan historicalPlan,
+        Exact23DeltaReconciliationResult historicalReceipt,
+        IReceiptAttestationTrustStore trust)
+    {
+        ArgumentNullException.ThrowIfNull(trust);
+        if (attestation.SchemaVersion != "1.0" ||
+            attestation.AttestationId != claim.ClaimId ||
+            !Fixed(claim.InitialAttestationSha256,
+                HistoricalLocalContinuityAttestationCanonicalizer.ComputeSha256(attestation)) ||
+            !Fixed(claim.HistoricalPlanSha256, historical.PlanSha256) ||
+            !Fixed(claim.HistoricalReceiptSha256, historical.ReconciliationSha256) ||
+            !Fixed(attestation.HistoricalPlanSha256, claim.HistoricalPlanSha256) ||
+            !Fixed(attestation.HistoricalReceiptSha256, claim.HistoricalReceiptSha256) ||
+            !Fixed(attestation.FuturePlanSha256, claim.FuturePlanSha256) ||
+            !Fixed(attestation.HistoricalSchemaSha256, historicalPlan.SchemaPlanSha256) ||
+            attestation.HistoricalSourceCutoffUtc != historical.SourceCutoffUtc ||
+            attestation.PriorDockerGeneration != historicalPlan.TargetGeneration ||
+            attestation.CurrentDockerGeneration != claim.TargetGeneration ||
+            attestation.FutureAuthorizationId == Guid.Empty ||
+            !attestation.FormerContainerAbsentObserved ||
+            attestation.IssuedAtUtc.Offset != TimeSpan.Zero ||
+            attestation.ExpiresAtUtc.Offset != TimeSpan.Zero ||
+            attestation.IssuedAtUtc > claim.CreatedAtUtc ||
+            claim.CreatedAtUtc >= attestation.ExpiresAtUtc ||
+            attestation.PriorMetadata is null ||
+            !attestation.PriorMetadata.SequenceEqual(claim.InitialMetadata) ||
+            string.IsNullOrWhiteSpace(attestation.AttestationKeyId) ||
+            string.IsNullOrWhiteSpace(attestation.AttestationSignature) ||
+            !trust.TryGetPublicKeyFingerprintSha256(attestation.AttestationKeyId,
+                out string continuityKey) ||
+            !trust.TryGetPublicKeyFingerprintSha256(historicalPlan.AttestationKeyId,
+                out string planKey) ||
+            !trust.TryGetPublicKeyFingerprintSha256(historicalReceipt.AttestationKeyId,
+                out string receiptKey) ||
+            Fixed(continuityKey, planKey) || Fixed(continuityKey, receiptKey) ||
+            Fixed(continuityKey, historicalPlan.ExecutionAuthorizationKeyFingerprintSha256) ||
+            Fixed(continuityKey, historicalPlan.BackupKeyFingerprintSha256) ||
+            !VerifyAttestationSignature(attestation, trust))
+        {
+            throw Invalid("delta_rollover_claim_attestation_invalid");
+        }
+    }
+
+    private static bool VerifyAttestationSignature(
+        HistoricalLocalContinuityAttestation attestation, IReceiptAttestationTrustStore trust)
+    {
+        try
+        {
+            return trust.Verify(attestation.AttestationKeyId,
+                HistoricalLocalContinuityAttestationCanonicalizer.CreatePayload(attestation),
+                Convert.FromBase64String(attestation.AttestationSignature!));
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Storage-level one-use ordinal; this does not verify a signed continuation.</summary>
     internal async Task ReserveOrdinalAsync(ImmutableRolloverClaim claim, long ordinal,
         string continuationSha256, Guid authorizationId, DateTimeOffset nowUtc,

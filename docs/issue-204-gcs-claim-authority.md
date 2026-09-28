@@ -58,10 +58,10 @@ databases. The first claim is published only after independently verifying the
 signed historical receipt, current exact-23 rows/schema/sequence evidence,
 current Docker/volume/PostgreSQL identity, and the zero-delete paired proof.
 The current store implements reservation, exact readback, retention checks,
-and one-use ordinals. Its internal read verifies storage object integrity but
-does not authenticate the original signed attestation again. It does not grant
-execution authority. The following reader and transaction checks are required
-before any rollover can be enabled.
+one-use ordinals, and a public read that reauthenticates the original signed
+attestation against the signed historical plan and 23-database receipt. It does
+not grant execution authority. The following mixed-state reader and transaction
+checks are required before any rollover can be enabled.
 
 Before and after a mixed-state scan, the reader re-observes the claim and its
 ordinal. Each database is either the exact prior signed state or has an atomic

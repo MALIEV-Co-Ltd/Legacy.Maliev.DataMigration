@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -129,6 +130,66 @@ public sealed class ImmutableRolloverClaimStoreTests
         await AssertCodeAsync("delta_rollover_claim_conflict", () =>
             store.ReserveOrdinalAsync(claim, 2, Hash('e'), Guid.NewGuid(), Now,
                 CancellationToken.None));
+    }
+
+    [Fact]
+    public void AuthenticatedRead_RejectsForgedOrChangedHistoricalAttestation()
+    {
+        using ECDsa continuityKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using ECDsa planKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using ECDsa receiptKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var signer = new P256MigrationEvidenceSigner("rollover-continuity",
+            continuityKey.ExportECPrivateKeyPem());
+        using var planSigner = new P256MigrationEvidenceSigner("historical-plan",
+            planKey.ExportECPrivateKeyPem());
+        using var receiptSigner = new P256MigrationEvidenceSigner("historical-receipt",
+            receiptKey.ExportECPrivateKeyPem());
+        var trust = new ReceiptAttestationTrustStore(
+            [new(signer.KeyId, signer.ExportSubjectPublicKeyInfo()),
+                new(planSigner.KeyId, planSigner.ExportSubjectPublicKeyInfo()),
+                new(receiptSigner.KeyId, receiptSigner.ExportSubjectPublicKeyInfo())]);
+        ImmutableRolloverClaim claim = Claim();
+        DateTimeOffset cutoff = Now.AddDays(-1);
+        var plan = new DeltaSynchronizationPlan("1.4", Guid.NewGuid(), new string('a', 40),
+            cutoff, Hash('e'), Hash('b'), Hash('f'), "LOCAL", "LOCAL",
+            "docker:historical", Hash('a'), Hash('c'), Hash('d'), cutoff,
+            [], planSigner.KeyId, null);
+        var receipt = new Exact23DeltaReconciliationResult("1.0", plan.PlanId,
+            claim.HistoricalPlanSha256, cutoff, Now.AddHours(-1), [], receiptSigner.KeyId, null);
+        var historical = new HistoricalPairedLocalEvidenceReview(claim.HistoricalPlanSha256,
+            claim.HistoricalReceiptSha256, cutoff, receipt.ReconciledAtUtc, 23);
+        var unsigned = new HistoricalLocalContinuityAttestation("1.0", claim.ClaimId,
+            claim.HistoricalPlanSha256, claim.HistoricalReceiptSha256, plan.SchemaPlanSha256,
+            cutoff, plan.TargetGeneration, claim.TargetGeneration, Hash('7'), Hash('8'),
+            true, claim.InitialMetadata, claim.FuturePlanSha256, Guid.NewGuid(),
+            Now.AddMinutes(-1), Now.AddMinutes(10), signer.KeyId, null);
+        HistoricalLocalContinuityAttestation signed = unsigned with
+        {
+            AttestationSignature = Convert.ToBase64String(signer.Sign(
+                HistoricalLocalContinuityAttestationCanonicalizer.CreatePayload(unsigned))),
+        };
+        claim = claim with
+        {
+            InitialAttestationSha256 = HistoricalLocalContinuityAttestationCanonicalizer
+                .ComputeSha256(signed),
+        };
+        ImmutableRolloverClaimStore.VerifyStoredAttestation(claim, signed, historical,
+            plan, receipt, trust);
+        Assert.Equal("delta_rollover_claim_attestation_invalid",
+            Assert.Throws<DeltaExecutionException>(() =>
+                ImmutableRolloverClaimStore.VerifyStoredAttestation(claim,
+                    signed with { AttestationSignature = Convert.ToBase64String(new byte[64]) },
+                    historical, plan, receipt, trust)).Code);
+        Assert.Equal("delta_rollover_claim_attestation_invalid",
+            Assert.Throws<DeltaExecutionException>(() =>
+                ImmutableRolloverClaimStore.VerifyStoredAttestation(
+                    claim with { FuturePlanSha256 = Hash('9') }, signed, historical,
+                    plan, receipt, trust)).Code);
+        Assert.Equal("delta_rollover_claim_attestation_invalid",
+            Assert.Throws<DeltaExecutionException>(() =>
+                ImmutableRolloverClaimStore.VerifyStoredAttestation(
+                    claim with { InitialMetadata = [] }, signed, historical,
+                    plan, receipt, trust)).Code);
     }
 
     private static async Task<Exception?> ObserveAsync(Task task)
