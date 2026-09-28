@@ -29,7 +29,7 @@ public static class HistoricalLocalMetadataReceiptBinder
         ArgumentNullException.ThrowIfNull(trust);
         HistoricalPairedLocalEvidenceReview historical =
             HistoricalPairedLocalEvidenceReviewer.Verify(plan, receipt, trust, nowUtc);
-        if (schema.Databases is null || snapshots is null ||
+        if (schema.SchemaVersion != "2.0" || schema.Databases is null || snapshots is null ||
             !schema.Databases.Select(item => item.Database).SequenceEqual(
                 DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
             !Fixed(plan.SchemaPlanSha256, SchemaPlanCanonicalizer.ComputeSha256(schema)) ||
@@ -165,7 +165,8 @@ public sealed class HistoricalPostgreSqlLocalMetadataInspector(string administra
         CancellationToken cancellationToken)
     {
         _ = HistoricalPairedLocalEvidenceReviewer.Verify(plan, receipt, trust, nowUtc);
-        if (schema.Databases is null || !schema.Databases.Select(item => item.Database)
+        if (schema.SchemaVersion != "2.0" || schema.Databases is null ||
+            !schema.Databases.Select(item => item.Database)
                 .SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
             !DeltaSynchronizationPlanProducer.FixedHashEquals(
                 SchemaPlanCanonicalizer.ComputeSha256(schema), plan.SchemaPlanSha256))

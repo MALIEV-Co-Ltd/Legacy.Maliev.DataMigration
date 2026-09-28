@@ -662,6 +662,10 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust, snapshots, fixture.Now.AddDays(1));
         Assert.Equal(DatabaseInventory.ActiveDatabases, bound.Select(item => item.Database));
         Assert.All(bound, item => Assert.Equal(PairedLocalTransitionMetadataState.SettledPrior, item.State));
+        Assert.Equal("delta_historical_local_metadata_invalid",
+            Assert.Throws<DeltaExecutionException>(() => HistoricalLocalMetadataReceiptBinder.Bind(
+                fixture.LocalPlan, receipt, fixture.Schema with { SchemaVersion = "1.0" },
+                fixture.Trust, snapshots, fixture.Now.AddDays(1))).Code);
         HistoricalLocalMetadataSnapshot[] withEarlierJournal =
             [snapshots[0] with { Journal = [snapshots[0].Journal[0] with
                 { PlanSha256 = Hash('9'), PlanId = Guid.NewGuid(),
@@ -757,6 +761,10 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             fixture.Now.AddDays(1), CancellationToken.None);
         Assert.Equal(23, observed.Count);
         Assert.False(HistoricalLocalMetadataReceiptBinder.AuthorizesExecution);
+        Assert.Equal("delta_historical_local_metadata_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() => reader.InspectAsync(
+                fixture.LocalPlan, receipt, fixture.Schema with { SchemaVersion = "1.0" },
+                fixture.Trust, fixture.Now.AddDays(1), CancellationToken.None))).Code);
 
         string first = DatabaseInventory.ActiveDatabases[0];
         var futurePlan = fixture.LocalPlan with
