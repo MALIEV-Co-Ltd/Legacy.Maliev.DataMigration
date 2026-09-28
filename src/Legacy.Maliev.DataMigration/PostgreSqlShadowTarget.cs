@@ -466,7 +466,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             foreach (IndexCopyPlan index in table.Indexes)
             {
                 string unique = index.Unique ? "UNIQUE " : string.Empty;
-                string nulls = index.Unique && index.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any()
+                string nulls = PostgreSqlIndexNullSemantics.RequiresNullsNotDistinct(index, table)
                     ? " NULLS NOT DISTINCT"
                     : string.Empty;
                 string keyColumns = string.Join(", ", index.Columns.Select(column =>
@@ -1297,7 +1297,7 @@ internal static class PostgreSqlSchemaFingerprint
                     .Select(item => item.ordinal)],
                 index.FilterPredicate ?? string.Empty)
             {
-                NullsNotDistinct = index.Unique && index.Columns.Intersect(table.NullableColumns, StringComparer.Ordinal).Any(),
+                NullsNotDistinct = PostgreSqlIndexNullSemantics.RequiresNullsNotDistinct(index, table),
             }))];
         List<ForeignKeyShape> foreignKeys = [.. schemaTables.SelectMany(table => table.ForeignKeys.Select(foreignKey =>
             new ForeignKeyShape(
