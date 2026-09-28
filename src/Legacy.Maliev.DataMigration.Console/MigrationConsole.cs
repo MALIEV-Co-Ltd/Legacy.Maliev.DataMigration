@@ -153,6 +153,10 @@ public static partial class MigrationConsole
                     return await RunHistoricalLocalReviewBoundaryAsync(invocation.ConfigPath,
                         getEnvironmentVariable, output, error, new DefaultHistoricalLocalReviewRuntime(),
                         cancellationToken).ConfigureAwait(false);
+                case "issue-historical-local-continuity":
+                    return await RunHistoricalLocalContinuityIssueBoundaryAsync(invocation.ConfigPath,
+                        getEnvironmentVariable, output, error, new DefaultHistoricalLocalReviewRuntime(),
+                        cancellationToken).ConfigureAwait(false);
                 case "authorize-target-extension-repair":
                 case "apply-target-extension-repair":
                     return await RunExtensionRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
@@ -1377,7 +1381,8 @@ public static partial class MigrationConsole
         CanonicalDatabaseBootstrapCommandConfiguration? CanonicalBootstrap = null,
         TargetExtensionRepairCommandConfiguration? TargetExtensionRepair = null,
         QuotationTargetBootstrapCommandConfiguration? QuotationTargetBootstrap = null,
-        HistoricalLocalReviewCommandConfiguration? HistoricalLocalReview = null);
+        HistoricalLocalReviewCommandConfiguration? HistoricalLocalReview = null,
+        HistoricalLocalContinuityIssueCommandConfiguration? HistoricalLocalContinuityIssue = null);
 
     private sealed record QuotationSchemaBaselineCommandConfiguration(
         string PlanPath,
