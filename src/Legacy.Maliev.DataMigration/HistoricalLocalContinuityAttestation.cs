@@ -75,6 +75,60 @@ public static class HistoricalLocalContinuityAttestationCanonicalizer
 
 public static class HistoricalLocalContinuityAttestationVerifier
 {
+    /// <summary>
+    /// Rebuilds the current-target review from fresh read-only observations before
+    /// checking the signed claim. This never grants a transition permit or writes
+    /// a generation fence. A changed row digest prevents any review from being
+    /// returned, even when the signed historical receipt is authentic.
+    /// </summary>
+    public static async Task<HistoricalLocalContinuityReview> VerifyFreshAsync(
+        HistoricalLocalContinuityAttestation? attestation,
+        DeltaSynchronizationPlan historicalPlan,
+        Exact23DeltaReconciliationResult historicalReceipt,
+        FreshSchemaPlan historicalSchema,
+        HistoricalPairedLocalCurrentTargetReview signedReview,
+        Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> observeCurrentTarget,
+        IDeltaReconciliationInspector currentTarget,
+        Func<CancellationToken, Task<IReadOnlyList<HistoricalLocalMetadataBinding>>> observePriorMetadata,
+        string expectedFuturePlanSha256,
+        Guid expectedFutureAuthorizationId,
+        IReceiptAttestationTrustStore trust,
+        TimeProvider clock,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(observeCurrentTarget);
+        ArgumentNullException.ThrowIfNull(currentTarget);
+        ArgumentNullException.ThrowIfNull(observePriorMetadata);
+        ArgumentNullException.ThrowIfNull(clock);
+        IReadOnlyList<HistoricalLocalMetadataBinding> before =
+            await observePriorMetadata(cancellationToken).ConfigureAwait(false);
+        HistoricalPairedLocalCurrentTargetReview freshReview =
+            await HistoricalPairedLocalCurrentTargetReviewer.CompareAsync(historicalPlan,
+                historicalReceipt, historicalSchema, trust, observeCurrentTarget,
+                currentTarget, clock, cancellationToken).ConfigureAwait(false);
+        if (signedReview is null ||
+            signedReview.HistoricalPlanSha256 != freshReview.HistoricalPlanSha256 ||
+            signedReview.HistoricalReceiptSha256 != freshReview.HistoricalReceiptSha256 ||
+            signedReview.HistoricalSourceCutoffUtc != freshReview.HistoricalSourceCutoffUtc ||
+            signedReview.CurrentDockerGeneration != freshReview.CurrentDockerGeneration ||
+            signedReview.DatabasesCompared != freshReview.DatabasesCompared ||
+            signedReview.ComparedAtUtc > freshReview.ComparedAtUtc)
+        {
+            throw Invalid();
+        }
+        IReadOnlyList<HistoricalLocalMetadataBinding> after =
+            await observePriorMetadata(cancellationToken).ConfigureAwait(false);
+        if (before is null || after is null || !before.SequenceEqual(after))
+        {
+            throw Invalid();
+        }
+        HistoricalCurrentLocalObservation observation =
+            await observeCurrentTarget(cancellationToken).ConfigureAwait(false);
+        return Verify(attestation, historicalPlan, historicalReceipt, historicalSchema,
+            signedReview, observation, after, expectedFuturePlanSha256,
+            expectedFutureAuthorizationId, trust, clock.GetUtcNow());
+    }
+
     public static HistoricalLocalContinuityReview Verify(
         HistoricalLocalContinuityAttestation? attestation,
         DeltaSynchronizationPlan historicalPlan,

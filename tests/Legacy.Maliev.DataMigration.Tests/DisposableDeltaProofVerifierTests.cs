@@ -405,6 +405,40 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         HistoricalLocalContinuityReview result = HistoricalLocalContinuityAttestationVerifier.Verify(
             signed, fixture.LocalPlan, receipt, fixture.Schema, review, observation, metadata,
             futurePlan, futureAuthorization, trust, issuedAt.AddMinutes(1));
+        HistoricalLocalContinuityReview fresh = await HistoricalLocalContinuityAttestationVerifier
+            .VerifyFreshAsync(signed, fixture.LocalPlan, receipt, fixture.Schema, review,
+                _ => Task.FromResult(observation), new CurrentEvidenceInspector(fixture.Schema),
+                _ => Task.FromResult<IReadOnlyList<HistoricalLocalMetadataBinding>>(metadata),
+                futurePlan, futureAuthorization, trust, new FixedTime(issuedAt.AddMinutes(1)),
+                CancellationToken.None);
+        Assert.Equal(result.AttestationSha256, fresh.AttestationSha256);
+        Assert.Equal("shadow_reconciliation_failed", (await Assert.ThrowsAsync<MigrationExecutionException>(
+            () => HistoricalLocalContinuityAttestationVerifier.VerifyFreshAsync(signed,
+                fixture.LocalPlan, receipt, fixture.Schema, review, _ => Task.FromResult(observation),
+                new CurrentEvidenceInspector(fixture.Schema, driftContent: true),
+                _ => Task.FromResult<IReadOnlyList<HistoricalLocalMetadataBinding>>(metadata),
+                futurePlan, futureAuthorization, trust, new FixedTime(issuedAt.AddMinutes(1)),
+                CancellationToken.None))).Code);
+        int metadataObservations = 0;
+        Assert.Equal("delta_historical_local_continuity_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                HistoricalLocalContinuityAttestationVerifier.VerifyFreshAsync(signed,
+                    fixture.LocalPlan, receipt, fixture.Schema, review,
+                    _ => Task.FromResult(observation), new CurrentEvidenceInspector(fixture.Schema),
+                    _ => Task.FromResult<IReadOnlyList<HistoricalLocalMetadataBinding>>(
+                        ++metadataObservations == 1 ? metadata : metadata[..^1]),
+                    futurePlan, futureAuthorization, trust, new FixedTime(issuedAt.AddMinutes(1)),
+                    CancellationToken.None))).Code);
+        Assert.Equal(2, metadataObservations);
+        Assert.Equal("delta_historical_local_continuity_invalid",
+            (await Assert.ThrowsAsync<DeltaExecutionException>(() =>
+                HistoricalLocalContinuityAttestationVerifier.VerifyFreshAsync(signed,
+                    fixture.LocalPlan, receipt, fixture.Schema, review,
+                    _ => Task.FromResult(observation with { VolumeMountpoint = "/replaced-volume" }),
+                    new CurrentEvidenceInspector(fixture.Schema),
+                    _ => Task.FromResult<IReadOnlyList<HistoricalLocalMetadataBinding>>(metadata),
+                    futurePlan, futureAuthorization, trust, new FixedTime(issuedAt.AddMinutes(1)),
+                    CancellationToken.None))).Code);
         Assert.Equal(DatabaseInventory.ActiveDatabases.Count, result.MetadataBindingsVerified);
         Assert.Equal(fixture.LocalPlan.SourceCutoffUtc, result.HistoricalSourceCutoffUtc);
         Assert.False(HistoricalLocalContinuityAttestation.AuthorizesExecution);
