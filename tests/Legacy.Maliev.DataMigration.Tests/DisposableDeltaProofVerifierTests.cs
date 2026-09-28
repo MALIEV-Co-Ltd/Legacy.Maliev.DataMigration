@@ -754,8 +754,24 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
             _ = journal.Parameters.AddWithValue(checkpoint.ReconciliationSha256);
             _ = journal.Parameters.AddWithValue(checkpoint.CommittedAtUtc);
             _ = await journal.ExecuteNonQueryAsync();
+            if (database == DatabaseInventory.ActiveDatabases[0])
+            {
+                await using var earlier = new NpgsqlCommand(
+                    "INSERT INTO legacy_migration_internal.delta_journal VALUES ($1,$2,$3,$4,$5,$6,$7);",
+                    targetConnection);
+                _ = earlier.Parameters.AddWithValue(Hash('0'));
+                _ = earlier.Parameters.AddWithValue(Guid.NewGuid());
+                _ = earlier.Parameters.AddWithValue(checkpoint.SourceCutoffUtc.AddMinutes(-1));
+                _ = earlier.Parameters.AddWithValue(checkpoint.TargetObservationSha256);
+                _ = earlier.Parameters.AddWithValue(Hash('1'));
+                _ = earlier.Parameters.AddWithValue(Hash('2'));
+                _ = earlier.Parameters.AddWithValue(checkpoint.CommittedAtUtc.AddMinutes(-1));
+                _ = await earlier.ExecuteNonQueryAsync();
+            }
         }
         var reader = new HistoricalPostgreSqlLocalMetadataInspector(admin);
+        Assert.Equal(2, (await reader.ReadDatabaseAsync(DatabaseInventory.ActiveDatabases[0],
+            CancellationToken.None)).Journal.Count);
         IReadOnlyList<HistoricalLocalMetadataBinding> observed = await reader.InspectAsync(
             fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust,
             fixture.Now.AddDays(1), CancellationToken.None);

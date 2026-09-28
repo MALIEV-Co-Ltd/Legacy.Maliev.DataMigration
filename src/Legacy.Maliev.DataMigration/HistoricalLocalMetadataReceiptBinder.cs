@@ -15,7 +15,8 @@ public sealed record HistoricalLocalMetadataSnapshot(string Database, Historical
 
 /// <summary>
 /// Binds historical LOCAL fences and every settled journal entry to a separately
-/// signed exact-23 terminal receipt. This cannot authorize execution or adoption.
+/// signed exact-23 terminal receipt. Journal inputs must retain PostgreSQL
+/// ORDER BY plan_sha256 order. This cannot authorize execution or adoption.
 /// </summary>
 public static class HistoricalLocalMetadataReceiptBinder
 {
@@ -94,7 +95,8 @@ public static class HistoricalLocalMetadataReceiptBinder
             {
                 throw Invalid();
             }
-            entries.Sort(StringComparer.Ordinal);
+            // Keep the PostgreSQL ORDER BY plan_sha256 sequence supplied by the reader.
+            // A .NET ordinal re-sort could disagree with the target column collation.
             string payload = string.Join("\0", ["paired-local-transition-metadata-v1",
                 PairedLocalTransitionMetadataState.SettledPrior.ToString(), database,
                 fence.SchemaPlanSha256, fence.TargetSchemaSha256, fence.TargetGeneration,
@@ -224,6 +226,8 @@ public sealed class HistoricalPostgreSqlLocalMetadataInspector(string administra
                 }
             }
             var journal = new List<DeltaDatabaseCheckpointEvidence>();
+            // Match PairedLocalTransitionMetadataInspector.ObserveSettledPriorAsync exactly:
+            // the same ORDER BY uses the target database's plan_sha256 collation.
             await using (var command = new NpgsqlCommand("""
                 SELECT plan_id, plan_sha256, source_cutoff_utc, target_observation_sha256,
                        operations_sha256, reconciliation_sha256, committed_at_utc
