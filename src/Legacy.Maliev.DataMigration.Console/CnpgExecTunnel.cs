@@ -145,7 +145,8 @@ internal static class CnpgExecTunnel
             catch (Exception exception) when (exception is IOException or SocketException or InvalidOperationException or
                 MigrationConsoleException or JsonException or KeyNotFoundException or System.ComponentModel.Win32Exception)
             {
-                await error.WriteLineAsync("cnpg_exec_tunnel_connection_failed").ConfigureAwait(false);
+                await error.WriteLineAsync($"cnpg_exec_tunnel_connection_failed:{FailureCode(exception)}")
+                    .ConfigureAwait(false);
                 stop.Cancel();
             }
             finally
@@ -153,6 +154,20 @@ internal static class CnpgExecTunnel
                 _ = slots.Release();
             }
         }
+    }
+
+    internal static string FailureCode(Exception exception)
+    {
+        return exception switch
+        {
+            MigrationConsoleException migration => migration.Code,
+            SocketException => "socket_error",
+            IOException => "io_error",
+            JsonException => "observation_json_invalid",
+            KeyNotFoundException => "observation_field_missing",
+            System.ComponentModel.Win32Exception => "kubectl_start_failed",
+            _ => "relay_state_invalid",
+        };
     }
 
     private static async Task ObserveRelayTasksAsync(params Task[] tasks)
@@ -226,7 +241,10 @@ internal static class CnpgExecTunnel
     {
         using Process process = StartKubectl(arguments);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        // Twenty-three held SQL Server snapshots can contend with the target's
+        // Kubernetes admission query. Keep the identity check strict while
+        // allowing the observation enough time under that load.
+        timeout.CancelAfter(TimeSpan.FromSeconds(60));
         Task<string> stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
         Task stderr = DrainAsync(process.StandardError, timeout.Token);
         try
