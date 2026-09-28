@@ -49,6 +49,100 @@ public sealed class ProductionDefaultDriftReviewBoundaryTests
 public sealed class ProductionDefaultDriftReviewTests(PostgreSqlAdapterFixture fixture)
 {
     [Fact]
+    public async Task PlanDatabase_DisposableBangkokClockDefaults_StayDistinctFromUtcFutureWrites()
+    {
+        var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+        {
+            Database = fixture.CanonicalDatabase,
+        };
+        await using var connection = new NpgsqlConnection(builder.ConnectionString);
+        await connection.OpenAsync();
+        await using (var setup = new NpgsqlCommand("""
+            CREATE SCHEMA timezone_default_probe;
+            CREATE TABLE timezone_default_probe."Sample" (
+                "Id" integer NOT NULL,
+                "CreatedDate" timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Bangkok'),
+                "ModifiedDate" timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Bangkok'));
+            """, connection))
+        {
+            _ = await setup.ExecuteNonQueryAsync();
+        }
+        try
+        {
+            await using var timezone = new NpgsqlCommand("SET TIME ZONE 'UTC';", connection);
+            _ = await timezone.ExecuteNonQueryAsync();
+            var table = new TableCopyPlan("dbo", "Sample", "timezone_default_probe", "Sample",
+                ["Id", "CreatedDate", "ModifiedDate"], ["Id", "CreatedDate", "ModifiedDate"])
+            {
+                ColumnTypes = new Dictionary<string, string>
+                {
+                    ["Id"] = "integer",
+                    ["CreatedDate"] = "timestamp without time zone",
+                    ["ModifiedDate"] = "timestamp without time zone",
+                },
+                NullableColumns = ["CreatedDate", "ModifiedDate"],
+                DefaultExpressions = new Dictionary<string, string>
+                {
+                    ["CreatedDate"] = "(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text)",
+                    ["ModifiedDate"] = "(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text)",
+                },
+            };
+            var database = new DatabaseSchemaPlan(fixture.CanonicalDatabase, "1.0", new string('a', 64), "",
+                [table]);
+            database = database with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(database) };
+            ProductionSchemaObservation observation = await ProductionSchemaCatalogInspector.InspectDatabaseAsync(
+                database, fixture.ConnectionString, CancellationToken.None);
+            ProductionDefaultDriftDatabaseReview review = ProductionDefaultDriftReviewPlanner.PlanDatabase(
+                database, observation);
+            ProductionDefaultDriftTableReview drift = Assert.Single(review.Tables);
+            Assert.True(drift.Columns.SequenceEqual(["CreatedDate", "ModifiedDate"], StringComparer.Ordinal));
+            Assert.All(drift.Expressions, expression => Assert.Equal("default", expression.Kind));
+            Assert.All(observation.ColumnDiagnostics.Where(column => column.Column is "CreatedDate" or "ModifiedDate"),
+                column =>
+                {
+                    Assert.Equal("present-different", column.DefaultState);
+                    Assert.Contains("default", column.ChangedComponents);
+                });
+            Assert.NotEqual(drift.ObservedWholeTableSha256, drift.ExpectedFinalWholeTableSha256);
+
+            await using var transaction = await connection.BeginTransactionAsync();
+            await using (var insert = new NpgsqlCommand("""
+                INSERT INTO timezone_default_probe."Sample" ("Id") VALUES (1);
+                INSERT INTO timezone_default_probe."Sample" ("Id", "CreatedDate", "ModifiedDate")
+                    VALUES (2, NULL, NULL);
+                UPDATE timezone_default_probe."Sample" SET "Id" = 3 WHERE "Id" = 1;
+                """, connection, transaction))
+            {
+                _ = await insert.ExecuteNonQueryAsync();
+            }
+            await using (var values = new NpgsqlCommand("""
+                SELECT "Id",
+                    EXTRACT(EPOCH FROM ("CreatedDate" - (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'))),
+                    EXTRACT(EPOCH FROM ("ModifiedDate" - (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')))
+                FROM timezone_default_probe."Sample" ORDER BY "Id";
+                """, connection, transaction))
+            await using (var reader = await values.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(2, reader.GetInt32(0));
+                Assert.True(await reader.IsDBNullAsync(1));
+                Assert.True(await reader.IsDBNullAsync(2));
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(3, reader.GetInt32(0));
+                Assert.Equal(25200m, reader.GetDecimal(1));
+                Assert.Equal(25200m, reader.GetDecimal(2));
+                Assert.False(await reader.ReadAsync());
+            }
+            await transaction.RollbackAsync();
+        }
+        finally
+        {
+            await using var cleanup = new NpgsqlCommand("DROP SCHEMA timezone_default_probe CASCADE;", connection);
+            _ = await cleanup.ExecuteNonQueryAsync();
+        }
+    }
+
+    [Fact]
     public async Task PlanDatabase_DisposableCatalog_BindsDefaultPreimageWithoutExpressionLeak()
     {
         var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
