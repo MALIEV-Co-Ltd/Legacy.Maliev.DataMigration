@@ -201,7 +201,7 @@ public sealed class Exact23DeltaReconciliationCoordinator(
             leftTicks - (leftTicks % ticksPerMicrosecond) == rightTicks - (rightTicks % ticksPerMicrosecond);
     }
 
-    private static byte[] CreatePayload(Exact23DeltaReconciliationResult result)
+    internal static byte[] CreatePayload(Exact23DeltaReconciliationResult result)
     {
         byte[] domain = "legacy-maliev-exact23-delta-reconciliation-v1.1\0"u8.ToArray();
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(result with { AttestationSignature = null });

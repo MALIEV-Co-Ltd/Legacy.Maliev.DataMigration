@@ -109,6 +109,26 @@ public sealed class PostgreSqlDeltaMetadataProvisioner(PostgreSqlDeltaMetadataPr
         await ExecuteAsync(connection, transaction,
             "ALTER TABLE legacy_migration_internal.delta_journal ALTER COLUMN reconciliation_sha256 SET NOT NULL;",
             cancellationToken).ConfigureAwait(false);
+        if (plan.SchemaVersion == "1.4" && plan.PairedTransitionPlanOnly == true)
+        {
+            await using var existing = new NpgsqlCommand("""
+                SELECT target_generation FROM legacy_migration_internal.delta_fence
+                WHERE database_name=$1 FOR UPDATE;
+                """, connection, transaction);
+            _ = existing.Parameters.AddWithValue(schema.Database);
+            string? priorGeneration = (string?)await existing.ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false);
+            string[] generation = plan.TargetGeneration.Split(':');
+            string initialGeneration = generation.Length == 5 && generation[0] == "docker"
+                ? $"docker:{generation[1]}" : string.Empty;
+            if (priorGeneration is not null &&
+                priorGeneration != plan.TargetGeneration &&
+                priorGeneration != initialGeneration)
+            {
+                throw new DeltaExecutionException("delta_rollover_claim_required",
+                    "A prior LOCAL generation cannot be replaced by standalone metadata provisioning.");
+            }
+        }
         await using var fence = new NpgsqlCommand("""
             INSERT INTO legacy_migration_internal.delta_fence
                 (database_name, schema_plan_sha256, target_schema_sha256, target_generation, target_observation_sha256)

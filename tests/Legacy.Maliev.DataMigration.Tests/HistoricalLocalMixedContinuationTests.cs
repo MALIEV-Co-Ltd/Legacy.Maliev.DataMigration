@@ -19,6 +19,23 @@ public sealed class HistoricalLocalMixedContinuationTests
         Assert.False(HistoricalLocalMixedContinuationReview.AuthorizesExecution);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(22)]
+    [InlineData(23)]
+    public void Issue_FreshSignedExact23Continuation_ValidatesAtIssuance(int adopted)
+    {
+        using Fixture fixture = new(adopted);
+        HistoricalLocalMixedContinuation issued = fixture.Issue();
+        HistoricalLocalMixedContinuationReview review =
+            HistoricalLocalMixedContinuationVerifier.Verify(issued, fixture.Claim,
+                fixture.Observed, fixture.Authorization, fixture.Trust, fixture.Now);
+        Assert.Equal(adopted, review.AdoptedDatabases);
+        Assert.Equal(fixture.Authorization.ExpiresAtUtc, issued.ExpiresAtUtc);
+        Assert.NotNull(issued.AttestationSignature);
+    }
+
     [Fact]
     public void Verify_UnknownClaimOrReplayOrChangedGeneration_Rejects()
     {
@@ -112,6 +129,12 @@ public sealed class HistoricalLocalMixedContinuationTests
                 AttestationSignature = Convert.ToBase64String(_continuationSigner.Sign(
                 HistoricalLocalMixedContinuationCanonicalizer.CreatePayload(candidate))),
             };
+        }
+
+        public HistoricalLocalMixedContinuation Issue()
+        {
+            return HistoricalLocalMixedContinuationIssuer.Issue(Claim, Observed,
+                Authorization, _continuationSigner, Trust, Now);
         }
 
         public HistoricalLocalMixedContinuationReview Verify()
