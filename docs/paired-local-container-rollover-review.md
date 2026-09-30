@@ -1,5 +1,16 @@
 # Paired LOCAL container rollover: fail-closed review contract
 
+Current implementation note: #204's internal claim/adoption/continuation and
+terminal primitives are now present; later sections below record their staged
+design history. The published initial continuity bundle retains the exact
+`currentTargetReview` hashed into its attestation. The new
+`HistoricalLocalContinuityClaimIssuer` consumer revalidates the future paired
+authorization and rescans current evidence before immutable claim creation;
+older bundles missing that review fail closed. No public rollover/recovery
+command invokes those internal execution or terminal primitives yet. See
+`issue-204-gcs-claim-authority.md` for the current prerequisite contract. This
+is not authority to create a live claim, update a fence, or execute data changes.
+
 Issue #193 concerns a persistent PostgreSQL named volume mounted by a replacement Docker container. A matching volume name and PostgreSQL system identifier do **not** prove that the previous reconciled row set is still present. The existing `delta_paired_local_metadata_preimage_invalid` rejection is correct until an independently signed continuity proof is available. This document is a prospective contract, not execution authority or an instruction to alter a persistent database.
 
 ## Required evidence before fence adoption
@@ -48,10 +59,10 @@ Before and after the 23-database scan, the command independently checks the loca
 
 For a typed reconciliation failure, stderr reports the stable failure code followed by a JSON diagnostic containing only the allowlisted database, qualified table (or `null`), and check category. It never reports row values, expected/observed hashes or counts, provider exception text, or connection details. Invalid diagnostic identifiers are suppressed. No result artifact is published on failure.
 
-## Prospective continuity attestation shape
+## Prospective continuity attestation shape (historical stage notes)
 
 `HistoricalLocalContinuityAttestationVerifier` accepts only a separately signed, short-lived evidence document. It binds the trusted historical plan/receipt/schema hashes and cutoff, the full old/new Docker generations, complete current observation/review hashes, former-container-absent assertion, ordered settled-prior metadata fingerprints for all 23 databases, and one future plan hash/authorization ID. Its signer must be distinct from historical plan/evidence, backup, and execution-authorization roles. The verifier checks the supplied read-only evidence and returns a non-authorizing review; it does not issue an attestation, perform an observation, adopt a fence, or grant replay protection. Future issuance must independently re-observe old metadata and current physical state, then sign fresh evidence; future transaction admission must reverify it atomically with a one-use journal and rollback proof. Neither this contract nor a valid signature is sufficient to run an incremental apply.
 
-The non-authorizing `VerifyFreshAsync` variant rescans the present exact-23 target against the independently signed historical terminal receipt, brackets the scan with settled-metadata observations, and re-observes Docker/volume/PostgreSQL identity before accepting the signed continuity claim. A changed row-content digest, sequence, schema, metadata fingerprint, or physical observation rejects the review. This is a validation primitive for a future guarded issuer/admission path, not that path itself: no CLI issues a continuity signature, no one-use journal exists, and the transaction executor still rejects cross-container fence adoption. The observed Quotation content drift therefore remains a hard stop.
+The non-authorizing `VerifyFreshAsync` variant rescans the present exact-23 target against the independently signed historical terminal receipt, brackets the scan with settled-metadata observations, and re-observes Docker/volume/PostgreSQL identity before accepting the signed continuity claim. A changed row-content digest, sequence, schema, metadata fingerprint, or physical observation rejects the review. This paragraph records the verifier-only stage, not current missing primitives: `issue-historical-local-continuity` now signs an initial non-authorizing bundle, and #204 supplies retained one-use claims, internal fresh continuation admission and atomic claim-bound adoption journals. The remaining public gap is an owner-only rollover/recovery caller connecting those reviewed primitives to guarded execution and verified terminal publication. The verifier alone is never a permit. The observed Quotation content drift remains a separate hard stop.
 
 `HistoricalPostgreSqlLocalMetadataInspector` is an additional read-only input for that future proof. It opens each of the exact 23 databases through loopback with default and transaction read-only settings, reads the sole generation fence and complete journal in a repeatable-read snapshot, and passes the PII-free records to `HistoricalLocalMetadataReceiptBinder`. The binder first verifies the distinct signed historical plan and terminal receipt, then requires the old signed fence fields, one exact journal checkpoint per database matching every signed receipt field, no incomplete or later checkpoint, and unique settled journal identities. Its ordered fingerprints match the existing settled-prior metadata fingerprint contract. This step neither creates/signs an attestation nor changes `PairedLocalTransitionExecutionPermit` or `delta_fence`; the current Quotation content drift still prevents continuity.

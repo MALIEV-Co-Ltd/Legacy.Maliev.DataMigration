@@ -237,6 +237,14 @@ read-only comparison and independently checks Docker volume lineage and the
 PostgreSQL system identifier. The old container must be absent. This bundle
 does not grant execution or adopt a fence; no executor currently consumes it.
 Any Quotation row-content drift or incomplete journal blocks issuance.
+The published bundle retains `currentTargetReview`, including its original
+comparison time, because its canonical hash is signed into the attestation.
+The initial claim consumer rejects older bundles without this review; it never
+reconstructs the review from a later scan or substitutes caller metadata.
+Retaining this evidence does not enable a rollover command: fresh authenticated
+claim/continuation admission, guarded execution and verified terminal publication
+still require separately reviewed operator wiring. Do not run the daily helper
+as a container-rollover workaround or treat issuance as reconciled execution.
 The success marker means a signed result was published for independent review,
 not that current live SQL rows equal the capture cutoff. Retain the protected
 pair, proof, authorization, reconciliation, encrypted capture, and key while
