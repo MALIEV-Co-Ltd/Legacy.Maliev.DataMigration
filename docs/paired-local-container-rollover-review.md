@@ -1,5 +1,16 @@
 # Paired LOCAL container rollover: fail-closed review contract
 
+Current implementation note: #204's internal claim/adoption/continuation and
+terminal primitives are now present; later sections below record their staged
+design history. The published initial continuity bundle retains the exact
+`currentTargetReview` hashed into its attestation. The new
+`HistoricalLocalContinuityClaimIssuer` consumer revalidates the future paired
+authorization and rescans current evidence before immutable claim creation;
+older bundles missing that review fail closed. No public rollover/recovery
+command invokes those internal execution or terminal primitives yet. See
+`issue-204-gcs-claim-authority.md` for the current prerequisite contract. This
+is not authority to create a live claim, update a fence, or execute data changes.
+
 Issue #193 concerns a persistent PostgreSQL named volume mounted by a replacement Docker container. A matching volume name and PostgreSQL system identifier do **not** prove that the previous reconciled row set is still present. The existing `delta_paired_local_metadata_preimage_invalid` rejection is correct until an independently signed continuity proof is available. This document is a prospective contract, not execution authority or an instruction to alter a persistent database.
 
 ## Required evidence before fence adoption

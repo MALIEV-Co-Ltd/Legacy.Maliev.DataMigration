@@ -132,3 +132,37 @@ receipt. No console command invokes this issuer or enables a live rollover.
 An internal terminal reviewer requires all 23 observed adopted states and a
 fresh signed exact-23 receipt with the same plan, operation hashes, and
 disposable-proof row evidence. It never declares generic success.
+
+## Published initial continuity bundle prerequisite (#193)
+
+The `issue-historical-local-continuity` create-only JSON bundle now retains
+`currentTargetReview`: the exact PII-free review whose canonical hash is signed
+as `attestation.currentReviewSha256`. Its fields are `historicalPlanSha256`,
+`historicalReceiptSha256`, `historicalSourceCutoffUtc`, `currentDockerGeneration`,
+`databasesCompared`, and **the original** `comparedAtUtc`. Repeating the scan at a
+later time cannot recreate that signed hash. Existing `futureAuthorization` and
+`attestation` fields and their canonical signature schemas are unchanged.
+
+`HistoricalLocalContinuityClaimIssuer.CreateAsync` consumes the published bundle,
+validates its authorization against the same future pair/schema/disposable proof
+and trusted signing roles, then calls the reviewed claim store's fresh-evidence
+path. That path independently rescans the target and old metadata and verifies
+the attestation signature, physical identity, exact-23 digests and retained
+claim objects. The retained review is not caller-created authority or permission
+to skip fresh scanning. It grants no database write permit.
+
+Old two-field bundles remain deserializable with a null review, but this claim
+consumer rejects them as `delta_historical_local_issuance_invalid` before any
+observation or claim reservation. Missing/modified comparison time, modified
+review, forged attestation or authorization, untrusted continuity signer,
+expired authorization, current row/identity drift and inadequate object retention
+fail closed. Changing both the review and its claimed hash cannot substitute for
+a trusted attestation signature. Generate new evidence; never reconstruct,
+re-sign, or silently promote an old bundle.
+
+This prerequisite does not add a public rollover/recovery command. No console
+caller invokes the rollover continuation issuer, rollover permit or terminal reviewer;
+no live claim or fence is created by these tests. Operator wiring and a full
+disposable issuer-to-executor-to-terminal regression remain a separate slice.
+The known persistent Quotation digest drift remains an independent admission stop;
+issue #193 stays open until a separately authorized LOCAL execution reconciles.

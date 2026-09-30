@@ -7,7 +7,7 @@ using Testcontainers.PostgreSql;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
-public sealed class DisposableDeltaProofVerifierTests : IDisposable
+public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
 {
     [Fact]
     public void Local_transition_preflight_rejects_mid_scan_metadata_replay_or_rollback()
@@ -524,6 +524,17 @@ public sealed class DisposableDeltaProofVerifierTests : IDisposable
         }
 
         HistoricalLocalContinuityIssuance issued = await Issue();
+        // The public bundle must retain the exact review signed into the attestation.
+        // Recomputing this scan at a later time changes ComparedAtUtc and its hash.
+        var wireOptions = new JsonSerializerOptions(
+            JsonSerializerDefaults.Web);
+        byte[] wire = JsonSerializer.SerializeToUtf8Bytes(issued, wireOptions);
+        using var document = JsonDocument.Parse(wire);
+        Assert.True(document.RootElement.TryGetProperty("currentTargetReview", out var reviewJson));
+        HistoricalPairedLocalCurrentTargetReview publishedReview =
+            reviewJson.Deserialize<HistoricalPairedLocalCurrentTargetReview>(wireOptions)!;
+        Assert.Equal(issued.Attestation.CurrentReviewSha256,
+            HistoricalLocalContinuityAttestationCanonicalizer.ComputeReviewSha256(publishedReview));
         Assert.False(HistoricalLocalContinuityIssuance.AuthorizesExecution);
         Assert.Equal(future.LocalPlan.PlanId, issued.FutureAuthorization.PersistentPlanId);
         Assert.Equal(issued.FutureAuthorization.AuthorizationId, issued.Attestation.FutureAuthorizationId);

@@ -1,14 +1,20 @@
 namespace Legacy.Maliev.DataMigration;
 
 /// <summary>
-/// A create-only candidate for owner-controlled publication. Neither member is
-/// accepted by an executor as a cross-container permit.
+/// A create-only candidate for owner-controlled publication. This bundle is
+/// not accepted by an executor as a cross-container permit.
 /// </summary>
 public sealed record HistoricalLocalContinuityIssuance(
     PairedLocalTransitionAuthorization FutureAuthorization,
     HistoricalLocalContinuityAttestation Attestation)
 {
     public static bool AuthorizesExecution => false;
+
+    /// <summary>
+    /// The exact review hashed into the signed attestation, including its original
+    /// comparison timestamp. Older bundles omit it and cannot create a claim.
+    /// </summary>
+    public HistoricalPairedLocalCurrentTargetReview? CurrentTargetReview { get; init; }
 }
 
 public static class HistoricalLocalContinuityIssuer
@@ -98,7 +104,7 @@ public static class HistoricalLocalContinuityIssuer
         _ = HistoricalLocalContinuityAttestationVerifier.Verify(signed, historicalPlan,
             historicalReceipt, historicalSchema, review, observation, after, futurePlanHash,
             authorization.AuthorizationId, trust, verifiedAtUtc);
-        return new(authorization, signed);
+        return new(authorization, signed) { CurrentTargetReview = review };
     }
 
     private static DeltaExecutionException Invalid()
