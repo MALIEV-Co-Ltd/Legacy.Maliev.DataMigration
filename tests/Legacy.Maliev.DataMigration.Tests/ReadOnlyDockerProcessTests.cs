@@ -11,12 +11,36 @@ public sealed class ReadOnlyDockerProcessTests
         string root = Path.Combine(Path.GetTempPath(), "source-observer-process-" + Guid.NewGuid().ToString("N"));
         _ = Directory.CreateDirectory(root);
         string pidPath = Path.Combine(root, "pid");
+        string readyPath = pidPath + ".writer-ready";
+        string releasePath = pidPath + ".release";
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var start = CreateStart("[System.IO.File]::WriteAllText($env:MALIEV_OBSERVER_PID_PATH, [string]$PID); Start-Sleep -Seconds 30");
+        // Hold the writer until the parent has checked publication readiness.
+        // A final PID must never become visible while its exclusive writer is open.
+        var start = CreateStart("""
+            $ErrorActionPreference = 'Stop';
+            $pending = $env:MALIEV_OBSERVER_PID_PATH + '.pending';
+            $file = [System.IO.File]::Open($pending, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None);
+            try {
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$PID);
+                $file.Write($bytes, 0, $bytes.Length);
+                $file.Flush();
+                [System.IO.File]::WriteAllText($env:MALIEV_OBSERVER_PID_PATH + '.writer-ready', 'ready');
+                while (-not [System.IO.File]::Exists($env:MALIEV_OBSERVER_PID_PATH + '.release')) { Start-Sleep -Milliseconds 20; }
+            } finally { $file.Dispose(); }
+            [System.IO.File]::Move($pending, $env:MALIEV_OBSERVER_PID_PATH);
+            Start-Sleep -Seconds 30;
+            """);
         start.Environment["MALIEV_OBSERVER_PID_PATH"] = pidPath;
         Task<BackupProcessResult> running = ReadOnlyDockerProcess.ExecuteAsync(start, cancellation.Token);
         try
         {
+            while (!File.Exists(readyPath) && !running.IsCompleted)
+            {
+                await Task.Delay(20, cancellation.Token);
+            }
+            Assert.True(File.Exists(readyPath), "The child must hold its PID writer before publication is assessed.");
+            Assert.False(File.Exists(pidPath), "An open PID writer must not publish the final readiness path.");
+            await File.WriteAllTextAsync(releasePath, "release", cancellation.Token);
             int? pid = null;
             while (pid is null && !running.IsCompleted)
             {
