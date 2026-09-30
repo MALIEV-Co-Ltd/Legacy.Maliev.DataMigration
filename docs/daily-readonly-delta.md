@@ -1,5 +1,31 @@
 # Daily read-only SQL Server comparison
 
+## LOCAL full-catalog diagnostics
+
+`inspect-local-schema-catalog --config <owner-only-config.json>` reads the same
+full physical catalogs and fixed-vocabulary table/column diagnostics as the
+production inspection command, for a LOCAL authority only. Use a new protected
+`delta` configuration with the fresh schema-2.0 plan, a loopback-only target
+connection file, newly observed LOCAL authority/system identifier, exact-23
+inventory and create-new output path. The source plan must be fresh and its
+expected fingerprints must match the compiled runner. Signing keys are not
+required or accessed for this read-only command.
+
+The command is owner-only; operator and AppHost callers are rejected. LOCAL
+connections must use `127.0.0.1`. Production authority remains accepted only by
+`inspect-production-schema-catalog`; cross-kind requests fail before target
+access. Identity and exact-23 inventory are verified before and after the scan.
+Every database catalog is read in a repeatable-read, read-only transaction; no
+application rows or SQL/default/generated expression text is published.
+
+Its `read-only-full-catalog-not-reconciliation` output helps explain a physical
+hash mismatch that a names-only inspection missed, such as LOCAL Country in
+#218. It is not a Docker-volume continuity proof, row parity, schema-repair
+manifest, signing authorization or apply permit. It does not alter the paired
+projector, generation fence, production DDL gate or row executor. Independently
+review the observed facets and prove any additive repair on a new disposable
+copy before asking the guarded paired projector to admit another fresh run.
+
 The live read-only planner accepts Quotation source outboxes only with their
 reviewed, signed dispositions: `QuotationOutcomeOutbox` must be adopted into
 `QuotationAcceptedOutcome`, and `GoogleAnalyticsOutbox` must be preserved in the

@@ -22,6 +22,7 @@ public sealed class ConsoleCommandContractTests
         "plan-paired-delta",
         "inspect-target-schema-gaps",
         "inspect-production-schema-catalog",
+        "inspect-local-schema-catalog",
         "verify-disposable-delta-proof",
         "authorize-delta",
         "apply-delta-local",

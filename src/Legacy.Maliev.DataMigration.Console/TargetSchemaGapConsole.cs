@@ -4,21 +4,27 @@ namespace Legacy.Maliev.DataMigration.Console;
 
 public static partial class MigrationConsole
 {
-    private static async Task<object> InspectProductionSchemaCatalogAsync(
-        DeltaCommandConfiguration configuration, CancellationToken cancellationToken)
+    private static async Task<object> InspectSchemaCatalogAsync(
+        DeltaCommandConfiguration configuration, string expectedAuthorityKind, CancellationToken cancellationToken)
     {
         FreshSchemaPlan schema = await ReadProtectedJsonAsync<FreshSchemaPlan>(configuration.SchemaPlanPath,
             "delta_schema_plan_unprotected", cancellationToken).ConfigureAwait(false);
         DateTimeOffset observedAtUtc = DateTimeOffset.UtcNow;
-        if (configuration.TargetAuthority.Kind != DeltaTargetAuthorityKind.ProductionCloudNativePg)
+        if (configuration.TargetAuthority.Kind != expectedAuthorityKind)
         {
             throw new MigrationConsoleException("delta_schema_catalog_boundary_invalid",
-                "The catalog inspection requires production authority.");
+                "The catalog inspection requires the command's target authority.");
         }
         ProductionSchemaCatalogInspector.ValidatePlan(schema, observedAtUtc);
 
         string target = await ReadProtectedTextAsync(configuration.TargetConnectionFile,
             "delta_target_connection_unprotected", cancellationToken).ConfigureAwait(false);
+        if (expectedAuthorityKind == DeltaTargetAuthorityKind.LocalAspire &&
+            new NpgsqlConnectionStringBuilder(target).Host != "127.0.0.1")
+        {
+            throw new MigrationConsoleException("delta_schema_catalog_local_loopback_required",
+                "Local catalog inspection requires a loopback target connection.");
+        }
         await DefaultGuardedDeltaConsoleRuntime.VerifyTargetAuthorityAsync(
             target, configuration.TargetAuthority, cancellationToken).ConfigureAwait(false);
         var databases = new List<ProductionSchemaObservation>(schema.Databases.Count);

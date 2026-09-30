@@ -31,6 +31,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "issue-historical-local-continuity",
         "inspect-target-schema-gaps",
         "inspect-production-schema-catalog",
+        "inspect-local-schema-catalog",
         "authorize-target-extension-repair",
         "apply-target-extension-repair",
         "authorize-quotation-target-bootstrap",
