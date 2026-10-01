@@ -35,6 +35,13 @@ jobs:
       - name: Validate production exec-tunnel admission
         shell: pwsh
         run: ./tests/powershell/production-exec-tunnel-admission.test.ps1
+      - name: Set up .NET for owner migration proof
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          dotnet-version: 10.0.x
+      - name: Prepare exact-pinned consumer owner migrations
+        shell: pwsh
+        run: ./scripts/prepare-consumer-owner-migration-proof.ps1
       - name: Validate .NET solution
         uses: MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@6017816fa67f369d785ed30794f002cfd6299af7
         with:
