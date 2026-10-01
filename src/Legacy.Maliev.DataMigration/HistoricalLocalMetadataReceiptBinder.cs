@@ -54,7 +54,7 @@ public static class HistoricalLocalMetadataReceiptBinder
                 !CanonicalHash(fence.SchemaPlanSha256) || !CanonicalHash(fence.TargetSchemaSha256) ||
                 !CanonicalHash(fence.TargetObservationSha256) ||
                 signed.PlanId != plan.PlanId || !Fixed(signed.PlanSha256, historical.PlanSha256) ||
-                signed.SourceCutoffUtc != plan.SourceCutoffUtc ||
+                !SamePostgreSqlTimestamp(signed.SourceCutoffUtc, plan.SourceCutoffUtc) ||
                 !Fixed(signed.ReconciliationSha256,
                     DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(
                         receipt.Databases.Single(item => item.Database == database))) ||
