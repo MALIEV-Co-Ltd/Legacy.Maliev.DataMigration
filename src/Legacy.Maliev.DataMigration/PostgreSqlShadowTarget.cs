@@ -661,6 +661,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     {
         ArgumentNullException.ThrowIfNull(plan);
         _inspectionStarted = true;
+        await RequireSupportedPhysicalBehaviorAsync(cancellationToken).ConfigureAwait(false);
         List<PostgreSqlSchemaFingerprint.TableShape> tables = [];
         const string tableSql = """
             SELECT n.nspname, c.relname
@@ -864,6 +865,63 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         return (PostgreSqlSchemaFingerprint.Compute(tables, columns, constraints, indexes, foreignKeys),
             PostgreSqlSchemaFingerprint.ComputeComponents(tables, columns, constraints, indexes, foreignKeys),
             columns);
+    }
+
+    private async Task RequireSupportedPhysicalBehaviorAsync(CancellationToken cancellationToken)
+    {
+        // Admission, not a new fingerprint format: supported historical schemas keep
+        // their existing hashes. Unsupported behavior must not masquerade as an
+        // ordinary reviewed table merely because its visible columns match.
+        const string sql = """
+            WITH user_relations AS (
+                SELECT c.oid, c.relkind
+                FROM pg_catalog.pg_class AS c
+                JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                WHERE c.relkind IN ('r', 'p')
+                  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'legacy_migration_internal')
+                  AND n.nspname NOT LIKE 'pg_toast%'
+            ), unsupported AS (
+                SELECT 1 AS priority, 'target_schema_relation_unsupported' AS code
+                WHERE EXISTS (SELECT 1 FROM user_relations WHERE relkind <> 'r')
+                UNION ALL
+                SELECT 2, 'target_schema_unvalidated_check'
+                WHERE EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_constraint AS k
+                    JOIN user_relations AS r ON r.oid = k.conrelid
+                    WHERE k.contype = 'c' AND NOT k.convalidated)
+                UNION ALL
+                SELECT 3, 'target_schema_rewrite_rule_unsupported'
+                WHERE EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_rewrite AS rule
+                    JOIN user_relations AS r ON r.oid = rule.ev_class)
+                UNION ALL
+                SELECT 4, 'target_schema_index_semantics_unsupported'
+                WHERE EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_index AS i
+                    JOIN user_relations AS r ON r.oid = i.indrelid
+                    CROSS JOIN LATERAL unnest(i.indclass) AS selected(opclass)
+                    JOIN pg_catalog.pg_opclass AS operator ON operator.oid = selected.opclass
+                    WHERE NOT operator.opcdefault)
+                UNION ALL
+                SELECT 4, 'target_schema_index_semantics_unsupported'
+                WHERE EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_index AS i
+                    JOIN user_relations AS r ON r.oid = i.indrelid
+                    CROSS JOIN LATERAL unnest(i.indkey, i.indcollation)
+                        WITH ORDINALITY AS key_column(attnum, collation_oid, ordinal)
+                    JOIN pg_catalog.pg_attribute AS a
+                        ON a.attrelid = i.indrelid AND a.attnum = key_column.attnum
+                    WHERE key_column.ordinal <= i.indnkeyatts
+                      AND key_column.collation_oid <> a.attcollation)
+            )
+            SELECT code FROM unsupported ORDER BY priority LIMIT 1;
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string code)
+        {
+            throw new MigrationExecutionException(code,
+                "The observed target contains physical behavior outside the reviewed schema contract.");
+        }
     }
 
     public async Task<TableReconciliationEvidence> InspectTableAsync(
