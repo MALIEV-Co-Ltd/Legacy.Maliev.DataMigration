@@ -10,7 +10,7 @@ internal sealed record SourceRepairRelationPreimage(string Schema, string Table,
     long Rows, string RowMultisetSha256, string CatalogSha256);
 internal sealed record SourceRepairSequencePreimage(string Schema, string Name,
     string Type, long Start, long Increment, long Minimum, long Maximum,
-    long Cache, bool Cycle, long LastValue, bool IsCalled);
+    long Cache, bool Cycle, long LastValue, bool IsCalled, string CatalogSha256);
 internal sealed record SourceBackedLocalRepairDatabasePreimage(string Database,
     string ObservedPhysicalSchemaSha256, string CatalogObjectsSha256, IReadOnlyList<SourceRepairRelationPreimage> Relations,
     IReadOnlyList<SourceRepairSequencePreimage> Sequences)
@@ -110,9 +110,19 @@ internal static class SourceBackedLocalRepairPreimage
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) { throw Invalid("delta_source_repair_preimage_rows_invalid"); }
             relations.Add(new(ns, name, reader.GetInt64(0), reader.GetString(1), hash));
         }
-        var definitions = new List<(string Schema, string Name, string Type, long Start, long Increment, long Minimum, long Maximum, long Cache, bool Cycle)>();
+        var definitions = new List<(string Schema, string Name, string Type, long Start, long Increment, long Minimum, long Maximum, long Cache, bool Cycle, string CatalogSha256)>();
         const string sequenceSql = """
-            SELECT n.nspname,c.relname,s.seqtypid::regtype::text,s.seqstart,s.seqincrement,s.seqmin,s.seqmax,s.seqcache,s.seqcycle
+            SELECT n.nspname,c.relname,s.seqtypid::regtype::text,s.seqstart,s.seqincrement,s.seqmin,s.seqmax,s.seqcache,s.seqcycle,
+              jsonb_build_object('owner',pg_get_userbyid(c.relowner),'acl',c.relacl,
+                'persistence',c.relpersistence,'options',c.reloptions,
+                'dependencies',(SELECT jsonb_agg(jsonb_build_object('type',d.deptype,
+                  'tableSchema',rn.nspname,'table',rc.relname,'column',a.attname)
+                  ORDER BY rn.nspname COLLATE "C",rc.relname COLLATE "C",a.attname COLLATE "C",d.deptype)
+                  FROM pg_depend d JOIN pg_class rc ON rc.oid=d.refobjid
+                  JOIN pg_namespace rn ON rn.oid=rc.relnamespace
+                  LEFT JOIN pg_attribute a ON a.attrelid=rc.oid AND a.attnum=d.refobjsubid
+                  WHERE d.classid='pg_class'::regclass AND d.objid=c.oid
+                    AND d.refclassid='pg_class'::regclass AND d.deptype IN ('a','i')))::text
             FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_sequence s ON s.seqrelid=c.oid
             WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'
             ORDER BY n.nspname COLLATE "C",c.relname COLLATE "C";
@@ -122,7 +132,7 @@ internal static class SourceBackedLocalRepairPreimage
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                definitions.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6), reader.GetInt64(7), reader.GetBoolean(8)));
+                definitions.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6), reader.GetInt64(7), reader.GetBoolean(8), HashText(reader.GetString(9))));
             }
         }
         var sequences = new List<SourceRepairSequencePreimage>();
@@ -132,10 +142,17 @@ internal static class SourceBackedLocalRepairPreimage
             await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) { throw Invalid("delta_source_repair_preimage_sequence_invalid"); }
             sequences.Add(new(item.Schema, item.Name, item.Type, item.Start, item.Increment, item.Minimum, item.Maximum,
-                item.Cache, item.Cycle, reader.GetInt64(0), reader.GetBoolean(1)));
+                item.Cache, item.Cycle, reader.GetInt64(0), reader.GetBoolean(1), item.CatalogSha256));
         }
         const string objectsSql = """
             SELECT jsonb_build_object(
+              'schemas',(SELECT jsonb_agg(jsonb_build_object('name',nspname,
+                'owner',pg_get_userbyid(nspowner),'acl',nspacl) ORDER BY nspname COLLATE "C")
+                FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname<>'information_schema'),
+              'defaultPrivileges',(SELECT jsonb_agg(jsonb_build_object('owner',pg_get_userbyid(d.defaclrole),
+                'schema',n.nspname,'objectType',d.defaclobjtype,'acl',d.defaclacl)
+                ORDER BY pg_get_userbyid(d.defaclrole) COLLATE "C",n.nspname COLLATE "C",d.defaclobjtype)
+                FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace),
               'database',(SELECT jsonb_build_object('owner',pg_get_userbyid(datdba),'encoding',encoding,
                 'localeProvider',datlocprovider,'collate',datcollate,'ctype',datctype,'locale',datlocale,
                 'icuRules',daticurules,'collationVersion',datcollversion,'acl',datacl,
@@ -147,19 +164,23 @@ internal static class SourceBackedLocalRepairPreimage
                   ELSE to_jsonb(p)::text END) ORDER BY n.nspname COLLATE "C",p.proname COLLATE "C",pg_get_function_identity_arguments(p.oid) COLLATE "C")
                 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
                 WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'),
-              'collations',(SELECT jsonb_agg(jsonb_build_object('schema',n.nspname,
+              'collations',(SELECT jsonb_agg(jsonb_build_object('schema',n.nspname,'owner',pg_get_userbyid(co.collowner),
                 'definition',to_jsonb(co)-'oid'-'collnamespace'-'collowner',
                 'actualVersion',pg_collation_actual_version(co.oid)) ORDER BY n.nspname COLLATE "C",co.collname COLLATE "C")
                 FROM pg_collation co JOIN pg_namespace n ON n.oid=co.collnamespace
                 WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'),
               'types',(SELECT jsonb_agg(jsonb_build_object('schema',n.nspname,'name',t.typname,
                 'kind',t.typtype,'baseType',format_type(t.typbasetype,t.typtypmod),
-                'notNull',t.typnotnull,'default',t.typdefault,'owner',pg_get_userbyid(t.typowner),
+                'notNull',t.typnotnull,'default',t.typdefault,'owner',pg_get_userbyid(t.typowner),'acl',t.typacl,
+                'attributes',(SELECT jsonb_agg(jsonb_build_object('name',a.attname,'type',format_type(a.atttypid,a.atttypmod),
+                  'collation',co.collname) ORDER BY a.attnum) FROM pg_attribute a
+                  LEFT JOIN pg_collation co ON co.oid=a.attcollation
+                  WHERE a.attrelid=t.typrelid AND a.attnum>0 AND NOT a.attisdropped),
                 'enumLabels',(SELECT jsonb_agg(enumlabel ORDER BY enumsortorder) FROM pg_enum WHERE enumtypid=t.oid),
                 'constraints',(SELECT jsonb_agg(pg_get_constraintdef(oid) ORDER BY conname COLLATE "C") FROM pg_constraint WHERE contypid=t.oid))
                 ORDER BY n.nspname COLLATE "C",t.typname COLLATE "C")
                 FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
-                WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND t.typrelid=0),
+                WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'),
               'extensions',(SELECT jsonb_agg(jsonb_build_object('name',e.extname,'version',e.extversion,
                 'schema',n.nspname,'owner',pg_get_userbyid(e.extowner)) ORDER BY e.extname COLLATE "C")
                 FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace))::text;

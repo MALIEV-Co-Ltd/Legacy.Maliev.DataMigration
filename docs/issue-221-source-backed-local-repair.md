@@ -123,3 +123,28 @@ unsettled journal rejection and serializable caller rollback preserve all rows,
 metadata and a sequence above 2^53. Full formatting and scoped/staged scans must
 pass before committing this slice. The baseline scanner findings recorded above
 remain unchanged and are not waived.
+
+## Catalog coverage correction
+
+Three genuine regression cases initially failed against the implemented reader:
+sequence ACL changes, sequence OWNED BY dependency changes, and schema ACL changes
+left the preimage digest unchanged. The reader now includes sequence owner/ACL,
+persistence/options/dependencies, schema owner/ACL and default privileges,
+collation owner, type ACL and standalone composite attributes. The expanded
+14-case actual PostgreSQL preimage suite passes with no skips. This is still
+observed evidence and does not approve a schema, lock concurrent allocators,
+issue a signed repair admission, or grant execution.
+
+The narrow settled-receipt timestamp defect is a separate commit: a valid signed
+seven-digit source header and six-digit PostgreSQL checkpoints now bind using
+the existing PostgreSQL storage precision rule. Exact signed headers remain
+unchanged; a one-microsecond changed actual journal still rejects. This has no
+bearing on preserving the exact SQL Server user datetimeoffset values, which
+remain governed by the separate exact-capture contract.
+
+Validation after rebasing onto accepted consumer profiles main e2f63f1:
+Release build zero warnings/errors; expanded preimage focus 14 passed, no skips;
+whole core suite 1,581 passed, 19 unchanged opt-in/platform prerequisites skipped,
+zero failures. Whole DataMigration formatting verification passed. Staged diff
+and credential checks are required before committing. No persistent runtime
+or console admission is created by this correction.

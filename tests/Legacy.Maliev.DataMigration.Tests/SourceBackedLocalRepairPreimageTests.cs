@@ -12,6 +12,11 @@ public sealed class SourceBackedLocalRepairPreimageTests(PostgreSqlAdapterFixtur
     [InlineData("metadata")]
     [InlineData("sequence-state")]
     [InlineData("sequence-cache")]
+    [InlineData("sequence-privilege")]
+    [InlineData("sequence-dependency")]
+    [InlineData("schema-privilege")]
+    [InlineData("default-privilege")]
+    [InlineData("composite-type")]
     [InlineData("internal-schema")]
     [InlineData("function")]
     [InlineData("database-config")]
@@ -46,6 +51,11 @@ public sealed class SourceBackedLocalRepairPreimageTests(PostgreSqlAdapterFixtur
                 "unchanged-source" => "UPDATE public.source_rows SET value='changed' WHERE id=1;",
                 "extension" => "UPDATE legacy_migration_internal.effects SET value='changed' WHERE id=9007199254740993;",
                 "metadata" => "UPDATE legacy_migration_internal.delta_fence SET database_name='other';",
+                "sequence-privilege" => "GRANT SELECT ON SEQUENCE legacy_migration_internal.authority_seq TO PUBLIC;",
+                "sequence-dependency" => "ALTER SEQUENCE legacy_migration_internal.authority_seq OWNED BY legacy_migration_internal.effects.id;",
+                "default-privilege" => "ALTER DEFAULT PRIVILEGES IN SCHEMA legacy_migration_internal GRANT SELECT ON TABLES TO PUBLIC;",
+                "composite-type" => "CREATE TYPE legacy_migration_internal.probe_type AS (value bigint);",
+                "schema-privilege" => "GRANT USAGE ON SCHEMA legacy_migration_internal TO PUBLIC;",
                 "sequence-state" => "SELECT nextval('legacy_migration_internal.authority_seq');",
                 "internal-schema" => "ALTER TABLE legacy_migration_internal.effects ADD COLUMN extra text;",
                 "function" => "CREATE FUNCTION legacy_migration_internal.probe() RETURNS integer LANGUAGE sql AS 'SELECT 1';",
