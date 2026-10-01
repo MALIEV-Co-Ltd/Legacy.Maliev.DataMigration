@@ -15,6 +15,8 @@ internal static class ApprovedTargetExtensionStateInspector
         CancellationToken cancellationToken)
     {
         IReadOnlyList<TableCopyPlan> extensions = ApprovedTargetExtensionManifest.TablesFor(schema);
+        await ConsumerTargetExtensionSequenceValidator.ValidateAsync(connection, transaction, schema, cancellationToken)
+            .ConfigureAwait(false);
         await using var inspection = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
         var tables = new List<TableReconciliationEvidence>(extensions.Count);
         foreach (TableCopyPlan table in extensions)

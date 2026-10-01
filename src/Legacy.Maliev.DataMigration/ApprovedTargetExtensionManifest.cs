@@ -8,6 +8,9 @@ internal static class ApprovedTargetExtensionManifest
 {
     internal const string MaterialCatalogV1 = "material-catalog-v1";
     internal const string QuotationRequestIdempotencyV1 = "quotation-request-idempotency-v1";
+    internal const string AccountingInvoiceAuthorityV1 = "accounting-invoice-authority-v1";
+    internal const string AuthCustomerCreateAuthorityV1 = "auth-customer-create-authority-v1";
+    internal const string AuthEmployeeRecoveryAuthorityV1 = "auth-employee-recovery-authority-v1";
 
     internal static string? ProfileForDatabase(string database)
     {
@@ -15,6 +18,9 @@ internal static class ApprovedTargetExtensionManifest
         {
             "Material" => MaterialCatalogV1,
             "QuotationRequest" => QuotationRequestIdempotencyV1,
+            "Invoice" => AccountingInvoiceAuthorityV1,
+            "CustomerIdentity" => AuthCustomerCreateAuthorityV1,
+            "EmployeeIdentity" => AuthEmployeeRecoveryAuthorityV1,
             _ => null,
         };
     }
@@ -27,6 +33,9 @@ internal static class ApprovedTargetExtensionManifest
             (_, null) => [],
             ("Material", MaterialCatalogV1) => [Country(), Currency()],
             ("QuotationRequest", QuotationRequestIdempotencyV1) => [RequestCreateIdempotency()],
+            ("Invoice", AccountingInvoiceAuthorityV1) => ApprovedConsumerTargetExtensionShapes.Invoice(),
+            ("CustomerIdentity", AuthCustomerCreateAuthorityV1) => ApprovedConsumerTargetExtensionShapes.CustomerIdentity(),
+            ("EmployeeIdentity", AuthEmployeeRecoveryAuthorityV1) => ApprovedConsumerTargetExtensionShapes.EmployeeIdentity(),
             _ => throw new MigrationExecutionException("target_extension_profile_invalid",
                 "The target extension profile is not approved for this database."),
         };
