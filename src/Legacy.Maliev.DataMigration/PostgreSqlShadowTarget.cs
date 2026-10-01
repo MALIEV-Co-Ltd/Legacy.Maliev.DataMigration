@@ -1511,7 +1511,7 @@ internal static class PostgreSqlSchemaFingerprint
                 Write(writer, constraint.Name);
                 writer.Write(constraint.Kind);
                 Write(writer, constraint.Columns);
-                Write(writer, QuotationCheckPredicateCompatibility.Canonicalize(constraint));
+                Write(writer, ConsumerCheckPredicateCompatibility.Canonicalize(constraint));
                 writer.Write(constraint.NullsNotDistinct);
             }
 
