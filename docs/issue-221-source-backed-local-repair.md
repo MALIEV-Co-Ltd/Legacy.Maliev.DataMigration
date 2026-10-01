@@ -148,3 +148,31 @@ whole core suite 1,581 passed, 19 unchanged opt-in/platform prerequisites skippe
 zero failures. Whole DataMigration formatting verification passed. Staged diff
 and credential checks are required before committing. No persistent runtime
 or console admission is created by this correction.
+
+## Signed observed preimage evidence
+
+The new internal preimage attestation signs the entire ordered exact-23
+observed database preimages and full Docker/volume/system identity. Its separate
+domain binds the paired plan digests, the same-capture disposable receipt and
+capture digest, and the fresh authorization ID. The signer must be the trusted
+independent proof-evidence role. The lifetime cannot exceed 15 minutes or the
+paired authorization. Verification rechecks fresh paired proof/authorization,
+identity and each complete observed database digest. Serialize/deserialize
+round trips retain verification.
+
+This capsule is observed evidence: it does not approve the physical schema,
+attest allocator quiescence or locks, establish cross-database atomic snapshots,
+prove future exact-source precision, reserve an immutable claim, create a CLI
+or permit persistent execution. A future trusted issuer still must obtain
+locked/quiescent live preimages, recheck identity and evidence, and complete the
+retained ordinal/marker/atomic-adoption/terminal gates. No persistent target or
+live cloud authority is accessed by this slice.
+
+The eight cases reject signature, observed preimage, identity, capture, proof,
+authorization, expiry and inventory changes. The binding mutations are re-signed
+with the trusted evidence key so signature rejection alone cannot satisfy them.
+There is no claimed historical runtime regression or RED phase for this new
+non-executing evidence contract. Build and core suite passed: zero warnings/errors,
+1,589 core tests passed with 19 unchanged opt-in/platform prerequisite skips.
+Final stronger focused checks, formatting and staged scans must pass before
+commit. SQL adapter code and CLI execution contracts are unchanged.
