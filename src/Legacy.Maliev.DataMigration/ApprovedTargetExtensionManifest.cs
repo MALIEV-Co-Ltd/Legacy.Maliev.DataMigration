@@ -35,10 +35,14 @@ internal static class ApprovedTargetExtensionManifest
             ("QuotationRequest", QuotationRequestIdempotencyV1) => [RequestCreateIdempotency()],
             ("Invoice", AccountingInvoiceAuthorityV1) => ApprovedConsumerTargetExtensionShapes.Invoice(),
             ("CustomerIdentity", AuthCustomerCreateAuthorityV1) => ApprovedConsumerTargetExtensionShapes.CustomerIdentity(),
+            ("CustomerIdentity", ApprovedConsumerColumnOverlayManifest.CustomerV2) => ApprovedConsumerTargetExtensionShapes.CustomerIdentity(),
+            ("Quotation", ApprovedConsumerColumnOverlayManifest.QuotationV1) => [],
             ("EmployeeIdentity", AuthEmployeeRecoveryAuthorityV1) => ApprovedConsumerTargetExtensionShapes.EmployeeIdentity(),
             _ => throw new MigrationExecutionException("target_extension_profile_invalid",
                 "The target extension profile is not approved for this database."),
         };
+
+        _ = ApprovedConsumerColumnOverlayManifest.For(plan);
 
         HashSet<string> sourceTables = [.. plan.Tables.Select(table => $"{table.TargetSchema}.{table.TargetTable}")];
         return extensions.Any(table => sourceTables.Contains($"{table.TargetSchema}.{table.TargetTable}"))

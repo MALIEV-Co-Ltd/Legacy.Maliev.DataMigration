@@ -202,7 +202,7 @@ public sealed class HistoricalPostgreSqlDeltaReconciliationInspector(
             IReadOnlyDictionary<string, long> sequences = await inspector
                 .InspectSequenceNextValuesAsync(mapped, cancellationToken).ConfigureAwait(false);
             string? extensionState = null;
-            if (ApprovedTargetExtensionManifest.TablesFor(historicalDatabase).Count != 0)
+            if (ApprovedConsumerColumnOverlayManifest.HasState(historicalDatabase))
             {
                 ApprovedTargetExtensionState extension = await ApprovedTargetExtensionStateInspector
                     .InspectAsync(connection, transaction, historicalDatabase, cancellationToken).ConfigureAwait(false);

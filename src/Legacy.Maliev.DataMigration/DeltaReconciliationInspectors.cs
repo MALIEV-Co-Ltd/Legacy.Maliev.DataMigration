@@ -167,7 +167,7 @@ public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconc
             IReadOnlyDictionary<string, long> sequences = await inspector
                 .InspectSequenceNextValuesAsync(targetSchema, cancellationToken).ConfigureAwait(false);
             string? extensionStateSha256 = null;
-            if (ApprovedTargetExtensionManifest.TablesFor(schema).Count != 0)
+            if (ApprovedConsumerColumnOverlayManifest.HasState(schema))
             {
                 ApprovedTargetExtensionState extensionState = await ApprovedTargetExtensionStateInspector
                     .InspectAsync(connection, transaction, schema, cancellationToken).ConfigureAwait(false);

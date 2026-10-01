@@ -187,7 +187,7 @@ internal sealed class PostgreSqlRolloverDatabaseReader(string administrativeConn
         IReadOnlyDictionary<string, long> sequences = await inspector
             .InspectSequenceNextValuesAsync(target, cancellationToken).ConfigureAwait(false);
         string? extensionSha256 = null;
-        if (ApprovedTargetExtensionManifest.TablesFor(schema).Count != 0)
+        if (ApprovedConsumerColumnOverlayManifest.HasState(schema))
         {
             ApprovedTargetExtensionState extension = await ApprovedTargetExtensionStateInspector
                 .InspectAsync(connection, transaction, schema, cancellationToken).ConfigureAwait(false);

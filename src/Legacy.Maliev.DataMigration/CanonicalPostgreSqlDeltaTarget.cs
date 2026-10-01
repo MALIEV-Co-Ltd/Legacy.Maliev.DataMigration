@@ -28,6 +28,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(schema);
+        IReadOnlySet<string> overlayInsertKeys = ApprovedConsumerColumnOverlayManifest.InsertKeys(schema, plan);
         PairedLocalTransitionExecutionPermit? localPermit = options.LocalTransitionPermit;
         LocalRolloverAdoptionPermit? rolloverPermit = options.RolloverPermit;
         if (rolloverPermit is not null && localPermit is null)
@@ -83,7 +84,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                         .ConfigureAwait(false);
                 }
                 await AcquireLocksAsync(connection, transaction, binding, schema, cancellationToken).ConfigureAwait(false);
-                if (schema.Database == "Quotation" || localPermit is not null)
+                if (schema.Database == "Quotation" || localPermit is not null || ApprovedConsumerColumnOverlayManifest.For(schema) is not null)
                 {
                     await using var schemaInspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction,
                         ownsResources: false);
@@ -142,7 +143,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                 await ValidateFenceAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
                 string? replayReconciliationSha256 = await ValidateReplayAsync(connection, transaction, binding,
                     operationsSha256, cancellationToken).ConfigureAwait(false);
-                if (localPermit is not null && replayReconciliationSha256 is not null)
+                if ((localPermit is not null || ApprovedConsumerColumnOverlayManifest.For(schema) is not null) && replayReconciliationSha256 is not null)
                 {
                     await VerifyReplayedEvidenceAsync(connection, transaction, schema, binding,
                         replayReconciliationSha256, cancellationToken).ConfigureAwait(false);
@@ -155,11 +156,11 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                 }
                 ApprovedTargetExtensionState? extensionState = replayReconciliationSha256 is null
                     ? await ApprovedTargetExtensionStateInspector.InspectAsync(
-                        connection, transaction, schema, cancellationToken).ConfigureAwait(false)
+                        connection, transaction, schema, cancellationToken, overlayInsertKeys).ConfigureAwait(false)
                     : null;
                 IReadOnlyDictionary<string, int> upsertOrder = CanonicalForeignKeyOrder.Build(schema);
                 return new PostgreSqlDeltaCanonicalTransaction(connection, transaction, binding, schema, replayReconciliationSha256,
-                    extensionState, upsertOrder, operationsSha256, rolloverPermit);
+                    extensionState, upsertOrder, operationsSha256, rolloverPermit, overlayInsertKeys);
             }
             catch
             {
@@ -304,7 +305,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         IReadOnlyDictionary<string, long> sequences = await inspection.InspectSequenceNextValuesAsync(schema,
             cancellationToken).ConfigureAwait(false);
         string? extensionHash = null;
-        if (ApprovedTargetExtensionManifest.TablesFor(schema).Count != 0)
+        if (ApprovedConsumerColumnOverlayManifest.HasState(schema))
         {
             ApprovedTargetExtensionState extensions = await ApprovedTargetExtensionStateInspector.InspectAsync(
                 connection, transaction, schema, cancellationToken).ConfigureAwait(false);
@@ -374,7 +375,8 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
     ApprovedTargetExtensionState? extensionState,
     IReadOnlyDictionary<string, int> upsertOrder,
     string operationsSha256,
-    LocalRolloverAdoptionPermit? rolloverPermit) : IDeltaCanonicalTransaction
+    LocalRolloverAdoptionPermit? rolloverPermit,
+    IReadOnlySet<string> overlayInsertKeys) : IDeltaCanonicalTransaction
 {
     private bool _completed;
     private bool _checkpointRecorded;
@@ -398,6 +400,10 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
         }
 
         ValidateTable(table);
+        var overlay = ApprovedConsumerColumnOverlayManifest.For(schema);
+        if (operation.Kind == DeltaOperationKind.Delete && overlay is not null &&
+            table.TargetSchema == overlay.Root.TargetSchema && table.TargetTable == overlay.Root.TargetTable)
+        { throw ApprovedConsumerColumnOverlayManifest.Invalid("target_extension_overlay_delete_forbidden"); }
         string tableName = $"{table.TargetSchema}.{table.TargetTable}";
         int upsertRank = upsertOrder[tableName];
         int deleteRank = schema.Tables.Count - 1 - upsertRank;
@@ -490,10 +496,10 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
             .InspectSequenceNextValuesAsync(schema, cancellationToken).ConfigureAwait(false);
         ReconciliationDiagnostics.CompareSequences(schema, expected.SequenceNextValues, sequences);
         string? extensionStateSha256 = null;
-        if (extensionState is not null && ApprovedTargetExtensionManifest.TablesFor(schema).Count != 0)
+        if (extensionState is not null && ApprovedConsumerColumnOverlayManifest.HasState(schema))
         {
             ApprovedTargetExtensionState observedExtensions = await ApprovedTargetExtensionStateInspector
-                .InspectAsync(connection, transaction, schema, cancellationToken).ConfigureAwait(false);
+                .InspectAsync(connection, transaction, schema, cancellationToken, overlayInsertKeys, afterApply: true).ConfigureAwait(false);
             ApprovedTargetExtensionStateInspector.Compare(schema, extensionState, observedExtensions);
             extensionStateSha256 = ApprovedTargetExtensionStateInspector.ComputeSha256(schema, observedExtensions);
         }

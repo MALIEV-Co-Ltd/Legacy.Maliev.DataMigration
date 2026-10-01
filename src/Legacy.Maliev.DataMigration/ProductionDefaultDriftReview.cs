@@ -63,11 +63,7 @@ public static class ProductionDefaultDriftReviewPlanner
         {
             throw Invalid();
         }
-        TableCopyPlan[] expectedTables =
-        [
-            .. ApprovedSourceDispositionManifest.TargetTablesFor(database),
-            .. ApprovedTargetExtensionManifest.TablesFor(database),
-        ];
+        TableCopyPlan[] expectedTables = [.. ApprovedConsumerColumnOverlayManifest.ComposePhysical(database)];
         IReadOnlyList<ProductionSchemaTableDiagnostic> recomputed =
             ProductionSchemaComponentDiagnostics.Compare(expectedTables, observed);
         if (recomputed.Count != observed.TableDiagnostics.Count ||

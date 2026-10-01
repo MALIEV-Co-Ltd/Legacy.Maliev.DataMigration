@@ -38,7 +38,8 @@ public static class TargetSchemaGapAnalyzer
         ArgumentNullException.ThrowIfNull(desired);
         ArgumentNullException.ThrowIfNull(observed);
 
-        IReadOnlyList<TableCopyPlan> targetTables = ApprovedSourceDispositionManifest.TargetTablesFor(desired);
+        IReadOnlyList<TableCopyPlan> targetTables = ApprovedConsumerColumnOverlayManifest.ComposePhysical(desired)
+            .Where(t => desired.Tables.Any(s => s.TargetSchema == t.TargetSchema && s.TargetTable == t.TargetTable) || t.SourceSchema == "disposition").ToArray();
         Dictionary<string, TableCopyPlan> planned = targetTables.ToDictionary(
             table => Qualified(table.TargetSchema, table.TargetTable), StringComparer.Ordinal);
         Dictionary<string, ObservedTargetTable> actual = observed.ToDictionary(
