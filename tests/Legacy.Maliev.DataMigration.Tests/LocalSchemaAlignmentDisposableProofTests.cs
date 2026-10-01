@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -19,6 +20,7 @@ public sealed class LocalSchemaAlignmentDisposableProofTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:18-alpine")
         .WithDatabase("postgres")
+        .WithPassword(Convert.ToHexString(RandomNumberGenerator.GetBytes(24)))
         .WithCreateParameterModifier(parameters =>
         {
             foreach (var bindings in parameters.HostConfig!.PortBindings!.Values)
@@ -29,6 +31,12 @@ public sealed class LocalSchemaAlignmentDisposableProofTests : IAsyncLifetime
                 }
             }
         }).Build();
+
+    private string ConnectionString => new NpgsqlConnectionStringBuilder(_container.GetConnectionString())
+    {
+        Host = "127.0.0.1",
+        Pooling = false,
+    }.ConnectionString;
 
     public Task InitializeAsync()
     {
@@ -45,7 +53,7 @@ public sealed class LocalSchemaAlignmentDisposableProofTests : IAsyncLifetime
     [InlineData(true)]
     public async Task Collation_rebuild_preserves_rows_and_sequence_or_rolls_back_collision(bool collision)
     {
-        await using var connection = new NpgsqlConnection(_container.GetConnectionString());
+        await using var connection = new NpgsqlConnection(ConnectionString);
         await connection.OpenAsync();
         await using (var seed = new NpgsqlCommand("""
             CREATE COLLATION public."legacy_ci_as"
@@ -73,7 +81,7 @@ public sealed class LocalSchemaAlignmentDisposableProofTests : IAsyncLifetime
         var preimage = new DatabaseSchemaPlan("postgres", "1.0", new string('a', 64), "", [table]);
         preimage = preimage with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(preimage) };
         ProductionSchemaObservation beforeSchema = await ProductionSchemaCatalogInspector.InspectDatabaseAsync(
-            preimage, _container.GetConnectionString(), CancellationToken.None);
+            preimage, ConnectionString, CancellationToken.None);
         Assert.Equal(preimage.TargetSchemaSha256, beforeSchema.SchemaSha256);
         await using var transaction = await connection.BeginTransactionAsync();
         await using var alter = new NpgsqlCommand("""
@@ -99,7 +107,7 @@ public sealed class LocalSchemaAlignmentDisposableProofTests : IAsyncLifetime
         };
         final = final with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(final) };
         ProductionSchemaObservation afterSchema = await ProductionSchemaCatalogInspector.InspectDatabaseAsync(
-            final, _container.GetConnectionString(), CancellationToken.None);
+            final, ConnectionString, CancellationToken.None);
         Assert.Equal(final.TargetSchemaSha256, afterSchema.SchemaSha256);
         await using var collation = new NpgsqlCommand("""
             SELECT co.collname FROM pg_attribute a JOIN pg_collation co ON co.oid=a.attcollation
@@ -120,7 +128,7 @@ public sealed class LocalSchemaAlignmentDisposableProofTests : IAsyncLifetime
         DateTimeOffset parsed = DateTimeOffset.ParseExact(exact, "yyyy-MM-dd'T'HH:mm:ss.fffffffzzz",
             CultureInfo.InvariantCulture);
         DateTime projected = new(parsed.UtcTicks - (parsed.UtcTicks % 10), DateTimeKind.Utc);
-        await using var connection = new NpgsqlConnection(_container.GetConnectionString());
+        await using var connection = new NpgsqlConnection(ConnectionString);
         await connection.OpenAsync();
         await using (var seed = new NpgsqlCommand("""
             CREATE TABLE public."AspNetUsers" ("Id" text PRIMARY KEY, "LockoutEnd" text);
@@ -166,6 +174,87 @@ public sealed class LocalSchemaAlignmentDisposableProofTests : IAsyncLifetime
         Assert.True(reader.IsDBNull(0));
         Assert.True(reader.IsDBNull(1));
         Assert.False(await reader.ReadAsync());
+    }
+
+    [Fact]
+    public async Task Disposable_restart_preserves_rows_and_uses_a_fresh_connection()
+    {
+        await using var before = new NpgsqlConnection(ConnectionString);
+        DateTime oldStart;
+        try
+        {
+            await before.OpenAsync();
+            await using (var seed = new NpgsqlCommand("""
+                CREATE TABLE public."RestartProbe" ("Id" integer PRIMARY KEY);
+                INSERT INTO public."RestartProbe" VALUES (42);
+                """, before))
+            {
+                _ = await seed.ExecuteNonQueryAsync();
+            }
+            await using (var start = new NpgsqlCommand("SELECT pg_postmaster_start_time();", before))
+            {
+                oldStart = (DateTime)(await start.ExecuteScalarAsync())!;
+            }
+            await before.CloseAsync();
+            await _container.StopAsync();
+            await _container.StartAsync();
+            await using var after = new NpgsqlConnection(ConnectionString);
+            await after.OpenAsync();
+            await using var readback = new NpgsqlCommand(
+                "SELECT \"Id\", pg_postmaster_start_time() FROM public.\"RestartProbe\";", after);
+            await using var reader = await readback.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(42, reader.GetInt32(0));
+            Assert.NotEqual(oldStart, reader.GetDateTime(1));
+            Assert.False(await reader.ReadAsync());
+        }
+        finally
+        {
+            // Only this random-credential disposable pool; never clear application pools.
+            NpgsqlConnection.ClearPool(before);
+        }
+    }
+
+    [Fact]
+    public async Task Disposable_replacement_on_reused_endpoint_observes_new_identity_and_rows()
+    {
+        string connectionString = ConnectionString;
+        var settings = new NpgsqlConnectionStringBuilder(connectionString);
+        string oldIdentity;
+        await using (var before = new NpgsqlConnection(connectionString))
+        {
+            await before.OpenAsync();
+            await using var identity = new NpgsqlCommand("SELECT system_identifier::text FROM pg_control_system();", before);
+            oldIdentity = (string)(await identity.ExecuteScalarAsync())!;
+        }
+        // Reuse only this test's dynamically allocated loopback port after stopping
+        // its original container. No persistent target or shared test port is used.
+        await _container.StopAsync();
+        await using var replacement = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithDatabase(settings.Database!)
+            .WithPassword(settings.Password!)
+            .WithPortBinding(settings.Port, 5432)
+            .WithCreateParameterModifier(parameters =>
+            {
+                foreach (var bindings in parameters.HostConfig!.PortBindings!.Values)
+                {
+                    foreach (var binding in bindings) { binding.HostIP = "127.0.0.1"; }
+                }
+            }).Build();
+        await replacement.StartAsync();
+        Assert.Equal(settings.Port, replacement.GetMappedPublicPort(5432));
+        await using var after = new NpgsqlConnection(connectionString);
+        await after.OpenAsync();
+        await using var readback = new NpgsqlCommand("SELECT system_identifier::text FROM pg_control_system();", after);
+        string newIdentity = (string)(await readback.ExecuteScalarAsync())!;
+        Assert.NotEqual(oldIdentity, newIdentity);
+        await using var seed = new NpgsqlCommand("""
+            CREATE TABLE public."ReplacementProbe" ("Id" integer PRIMARY KEY);
+            INSERT INTO public."ReplacementProbe" VALUES (84);
+            """, after);
+        _ = await seed.ExecuteNonQueryAsync();
+        await using var row = new NpgsqlCommand("SELECT \"Id\" FROM public.\"ReplacementProbe\";", after);
+        Assert.Equal(84, await row.ExecuteScalarAsync());
     }
 
     private static async Task<string> SnapshotAsync(NpgsqlConnection connection)
