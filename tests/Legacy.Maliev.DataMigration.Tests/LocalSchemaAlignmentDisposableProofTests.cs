@@ -4,10 +4,17 @@ using Testcontainers.PostgreSql;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class LocalSchemaAlignmentDisposableProofGroup
+{
+    public const string Name = "LOCAL schema alignment disposable proof";
+}
+
 /// <summary>
 /// Synthetic disposable experiments for #218. These prove repair mechanics, not a live
 /// schema authority, signed exact-23 reconciliation, or permission to change a shared target.
 /// </summary>
+[Collection(LocalSchemaAlignmentDisposableProofGroup.Name)]
 public sealed class LocalSchemaAlignmentDisposableProofTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:18-alpine")
