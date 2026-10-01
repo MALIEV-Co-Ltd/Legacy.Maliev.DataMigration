@@ -87,3 +87,39 @@ existing runtime regression. Remaining cases cover retained read tampering,
 partial publication, insufficient object retention, shape, expiry and
 concurrent competing claims. No test or this slice creates a live cloud claim
 or grants persistent execution.
+
+## Complete database snapshot reader and overlap correction
+
+The internal preimage reader is read-only when given a repeatable-read/read-only
+transaction. It also accepts a caller-owned serializable transaction and never
+commits it, provisions metadata, runs DDL, or calls nextval. It records every
+application/internal table row multiset, observed supported physical source
+schema, table/catalog owner and ACL state, collations and actual versions,
+functions/types/extensions/database settings, and every sequence's bigint
+physical definition and last_value/is_called. Pending journals and invalid
+fence cardinality fail closed. RequireMatches compares complete domain-separated
+digests, so unchanged source rows and preserved application effects are covered.
+The result is observed evidence, not approved schema or an execution permit.
+
+PostgreSQL sequence state is not MVCC snapshot data. This reader is not a claim
+that reading a sequence inside repeatable read freezes concurrent allocators.
+Signed issuer/transaction integration still must perform the approved quiescence,
+locking, repeated identity and sequence/preimage checks; no live caller invokes
+this reader. Profiles, exact source capture, staged marker, retained ordinal,
+atomic adoption and terminal publication remain separate incomplete gates.
+
+The claim competition test now uses an asynchronous two-arrival barrier on the
+shared generation reservation, with RunContinuationsAsynchronously and a bounded
+five-second timeout. It checks both arrivals, one winner/active claim, and both
+retained preimage reservations. The raw internal method is named ReserveAsync
+to avoid representing shape checks as signature verification.
+
+Validation: whole Release build zero warnings/errors; focused new/historical
+claim and actual disposable PostgreSQL preimage checks 35 passed, zero skips;
+core suite 1,509 passed, 15 unchanged opt-in/platform skips, zero failures.
+Eight churn cases include unchanged source row, preserved effect, old fence,
+sequence value/cache, internal schema, function and database configuration;
+unsettled journal rejection and serializable caller rollback preserve all rows,
+metadata and a sequence above 2^53. Full formatting and scoped/staged scans must
+pass before committing this slice. The baseline scanner findings recorded above
+remain unchanged and are not waived.

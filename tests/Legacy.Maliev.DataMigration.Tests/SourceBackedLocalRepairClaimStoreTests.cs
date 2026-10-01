@@ -12,12 +12,12 @@ public sealed class SourceBackedLocalRepairClaimStoreTests
         var gateway = new Gateway();
         var store = new SourceBackedLocalRepairClaimStore(gateway);
         SourceBackedLocalRepairClaim claim = Claim();
-        SourceBackedLocalRepairClaim observed = await store.ReserveVerifiedAsync(claim, Now, CancellationToken.None);
+        SourceBackedLocalRepairClaim observed = await store.ReserveAsync(claim, Now, CancellationToken.None);
         Assert.Equal(System.Text.Json.JsonSerializer.Serialize(claim), System.Text.Json.JsonSerializer.Serialize(observed));
         Assert.False(SourceBackedLocalRepairClaim.AuthorizesExecution);
         Assert.Contains(gateway.Names, name => name.StartsWith("source-backed-local-repair/v1/active/", StringComparison.Ordinal));
         Assert.DoesNotContain(gateway.Names, name => name.StartsWith("claims/v1/old-receipts/", StringComparison.Ordinal));
-        await Code("delta_rollover_claim_conflict", () => store.ReserveVerifiedAsync(claim, Now, CancellationToken.None));
+        await Code("delta_rollover_claim_conflict", () => store.ReserveAsync(claim, Now, CancellationToken.None));
     }
 
     [Theory]
@@ -34,13 +34,13 @@ public sealed class SourceBackedLocalRepairClaimStoreTests
             repair.SystemIdentifierSha256, repair.InitialMetadata, Now, repair.ExpiresAtUtc);
         if (repairFirst)
         {
-            _ = await repairStore.ReserveVerifiedAsync(repair, Now, CancellationToken.None);
+            _ = await repairStore.ReserveAsync(repair, Now, CancellationToken.None);
             await Code("delta_rollover_claim_conflict", () => historicalStore.ReserveVerifiedAsync(historical, Now, CancellationToken.None));
         }
         else
         {
             _ = await historicalStore.ReserveVerifiedAsync(historical, Now, CancellationToken.None);
-            await Code("delta_rollover_claim_conflict", () => repairStore.ReserveVerifiedAsync(repair, Now, CancellationToken.None));
+            await Code("delta_rollover_claim_conflict", () => repairStore.ReserveAsync(repair, Now, CancellationToken.None));
         }
     }
 
@@ -53,7 +53,7 @@ public sealed class SourceBackedLocalRepairClaimStoreTests
     {
         var gateway = new Gateway { Policy = new(locked, seconds, uniform, versioned) };
         var store = new SourceBackedLocalRepairClaimStore(gateway);
-        await Code("delta_source_repair_claim_policy_invalid", () => store.ReserveVerifiedAsync(Claim(), Now, CancellationToken.None));
+        await Code("delta_source_repair_claim_policy_invalid", () => store.ReserveAsync(Claim(), Now, CancellationToken.None));
         Assert.Empty(gateway.Names);
     }
 
@@ -78,7 +78,7 @@ public sealed class SourceBackedLocalRepairClaimStoreTests
         };
         var gateway = new Gateway();
         var store = new SourceBackedLocalRepairClaimStore(gateway);
-        await Code("delta_source_repair_claim_shape_invalid", () => store.ReserveVerifiedAsync(changed, Now, CancellationToken.None));
+        await Code("delta_source_repair_claim_shape_invalid", () => store.ReserveAsync(changed, Now, CancellationToken.None));
         Assert.Empty(gateway.Names);
     }
 
@@ -87,7 +87,7 @@ public sealed class SourceBackedLocalRepairClaimStoreTests
     {
         var gateway = new Gateway();
         var store = new SourceBackedLocalRepairClaimStore(gateway);
-        SourceBackedLocalRepairClaim claim = await store.ReserveVerifiedAsync(Claim(), Now, CancellationToken.None);
+        SourceBackedLocalRepairClaim claim = await store.ReserveAsync(Claim(), Now, CancellationToken.None);
         await Code("delta_source_repair_claim_identity_invalid", () => store.ReadAsync(claim.ClaimId, Hash('9'), Now, CancellationToken.None));
         await Code("delta_source_repair_claim_shape_invalid", () => store.ReadAsync(claim.ClaimId, claim.AdmissionSha256, claim.ExpiresAtUtc, CancellationToken.None));
         string preimage = "source-backed-local-repair/v1/preimages/" + claim.PreimageSha256;
@@ -102,7 +102,7 @@ public sealed class SourceBackedLocalRepairClaimStoreTests
     {
         var gateway = new Gateway { Retention = TimeSpan.FromMinutes(10) };
         var store = new SourceBackedLocalRepairClaimStore(gateway);
-        await Code("delta_source_repair_claim_retention_invalid", () => store.ReserveVerifiedAsync(Claim(), Now, CancellationToken.None));
+        await Code("delta_source_repair_claim_retention_invalid", () => store.ReserveAsync(Claim(), Now, CancellationToken.None));
         Assert.DoesNotContain(gateway.Names, name => name.Contains("/active/", StringComparison.Ordinal));
     }
 
@@ -112,22 +112,25 @@ public sealed class SourceBackedLocalRepairClaimStoreTests
         var gateway = new Gateway { FailCreateNumber = 3 };
         var store = new SourceBackedLocalRepairClaimStore(gateway);
         SourceBackedLocalRepairClaim first = Claim();
-        _ = await Assert.ThrowsAsync<IOException>(() => store.ReserveVerifiedAsync(first, Now, CancellationToken.None));
+        _ = await Assert.ThrowsAsync<IOException>(() => store.ReserveAsync(first, Now, CancellationToken.None));
         Assert.Equal(2, gateway.Names.Length);
         await Code("delta_source_repair_claim_object_missing", () => store.ReadAsync(first.ClaimId, first.AdmissionSha256, Now, CancellationToken.None));
-        await Code("delta_rollover_claim_conflict", () => store.ReserveVerifiedAsync(first with { ClaimId = Guid.NewGuid(), PreimageSha256 = Hash('9') }, Now, CancellationToken.None));
+        await Code("delta_rollover_claim_conflict", () => store.ReserveAsync(first with { ClaimId = Guid.NewGuid(), PreimageSha256 = Hash('9') }, Now, CancellationToken.None));
     }
 
     [Fact]
     public async Task ConcurrentClaimsForSameTargetHaveOneWinner()
     {
-        var gateway = new Gateway();
+        var gateway = new Gateway { UseCompetitionBarrier = true };
         var store = new SourceBackedLocalRepairClaimStore(gateway);
         SourceBackedLocalRepairClaim first = Claim();
         SourceBackedLocalRepairClaim second = Claim() with { PreimageSha256 = Hash('9'), FuturePlanSha256 = Hash('8') };
-        Task<Exception?>[] attempts = [Try(store.ReserveVerifiedAsync(first, Now, CancellationToken.None)),
-            Try(store.ReserveVerifiedAsync(second, Now, CancellationToken.None))];
+        Task<Exception?>[] attempts = [Try(store.ReserveAsync(first, Now, CancellationToken.None)),
+            Try(store.ReserveAsync(second, Now, CancellationToken.None))];
         Exception?[] results = await Task.WhenAll(attempts);
+        Assert.Equal(2, gateway.TargetArrivals);
+        Assert.Equal(2, gateway.Names.Count(name => name.Contains("/preimages/", StringComparison.Ordinal)));
+        _ = Assert.Single(gateway.Names, name => name.Contains("/active/", StringComparison.Ordinal));
         _ = Assert.Single(results, item => item is null);
         Assert.Equal("delta_rollover_claim_conflict", Assert.IsType<DeltaExecutionException>(Assert.Single(results, item => item is not null)).Code);
     }
@@ -160,6 +163,10 @@ public sealed class SourceBackedLocalRepairClaimStoreTests
     {
         private readonly ConcurrentDictionary<string, RolloverClaimObject> _objects = new(StringComparer.Ordinal);
         private long _generation;
+        private int _targetArrivals;
+        private readonly TaskCompletionSource _competition = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool UseCompetitionBarrier { get; init; }
+        public int TargetArrivals => Volatile.Read(ref _targetArrivals);
         public TimeSpan Retention { get; init; } = TimeSpan.FromDays(365.25);
         public int FailCreateNumber { get; init; }
         public void Remove(string name)
@@ -184,14 +191,19 @@ public sealed class SourceBackedLocalRepairClaimStoreTests
             return Task.FromResult(_objects.TryGetValue(name, out RolloverClaimObject? value) ? value : null);
         }
 
-        public Task<RolloverClaimObject> CreateOnlyAsync(string name, byte[] content, CancellationToken cancellationToken)
+        public async Task<RolloverClaimObject> CreateOnlyAsync(string name, byte[] content, CancellationToken cancellationToken)
         {
+            if (UseCompetitionBarrier && name.StartsWith("claims/v1/target-generations/", StringComparison.Ordinal))
+            {
+                if (Interlocked.Increment(ref _targetArrivals) == 2) { _ = _competition.TrySetResult(); }
+                await _competition.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            }
             long generation = Interlocked.Increment(ref _generation);
             if (generation == FailCreateNumber) { throw new IOException("Simulated publication interruption."); }
             var value = new RolloverClaimObject(generation, Now, Now.Add(Retention), [.. content]);
             return !_objects.TryAdd(name, value)
                 ? throw new DeltaExecutionException("delta_rollover_claim_conflict", "Already reserved.")
-                : Task.FromResult(value);
+                : value;
         }
     }
 }
