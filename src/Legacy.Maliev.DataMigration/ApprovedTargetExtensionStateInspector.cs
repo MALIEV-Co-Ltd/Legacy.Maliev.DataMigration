@@ -4,7 +4,10 @@ namespace Legacy.Maliev.DataMigration;
 
 internal sealed record ApprovedTargetExtensionState(
     IReadOnlyList<TableReconciliationEvidence> Tables,
-    IReadOnlyDictionary<string, long> SequenceNextValues);
+    IReadOnlyDictionary<string, long> SequenceNextValues)
+{
+    internal ConsumerColumnOverlayState? Overlay { get; init; }
+}
 
 internal static class ApprovedTargetExtensionStateInspector
 {
@@ -12,7 +15,9 @@ internal static class ApprovedTargetExtensionStateInspector
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         DatabaseSchemaPlan schema,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlySet<string>? insertKeys = null,
+        bool afterApply = false)
     {
         IReadOnlyList<TableCopyPlan> extensions = ApprovedTargetExtensionManifest.TablesFor(schema);
         await ConsumerTargetExtensionSequenceValidator.ValidateAsync(connection, transaction, schema, cancellationToken)
@@ -27,7 +32,11 @@ internal static class ApprovedTargetExtensionStateInspector
         DatabaseSchemaPlan extensionPlan = schema with { Tables = extensions };
         IReadOnlyDictionary<string, long> sequences = await inspection
             .InspectSequenceNextValuesAsync(extensionPlan, cancellationToken).ConfigureAwait(false);
-        return new(tables, sequences);
+        return new(tables, sequences)
+        {
+            Overlay = await ConsumerColumnOverlayStateInspector.InspectAsync(connection, transaction, schema,
+                insertKeys, afterApply, cancellationToken).ConfigureAwait(false),
+        };
     }
 
     internal static void Compare(
@@ -57,6 +66,7 @@ internal static class ApprovedTargetExtensionStateInspector
 
         ReconciliationDiagnostics.CompareSequences(schema with { Tables = extensions },
             expected.SequenceNextValues, observed.SequenceNextValues);
+        ConsumerColumnOverlayStateInspector.Compare(schema, expected.Overlay, observed.Overlay);
     }
 
     internal static string ComputeSha256(DatabaseSchemaPlan schema, ApprovedTargetExtensionState state)
@@ -66,7 +76,7 @@ internal static class ApprovedTargetExtensionStateInspector
         IReadOnlyList<TableCopyPlan> extensions = ApprovedTargetExtensionManifest.TablesFor(schema);
         string[] expectedSequences = [.. extensions.SelectMany(table => table.Identities.Select(identity =>
             $"{table.TargetSchema}.{table.TargetTable}.{identity.Column}")).Order(StringComparer.Ordinal)];
-        if (extensions.Count == 0 || state.Tables.Count != extensions.Count ||
+        if (!ApprovedConsumerColumnOverlayManifest.HasState(schema) || state.Tables.Count != extensions.Count ||
             !state.Tables.Select(table => table.Table).SequenceEqual(
                 extensions.Select(table => $"{table.TargetSchema}.{table.TargetTable}"), StringComparer.Ordinal) ||
             !state.SequenceNextValues.Keys.Order(StringComparer.Ordinal).SequenceEqual(expectedSequences, StringComparer.Ordinal))
@@ -80,6 +90,10 @@ internal static class ApprovedTargetExtensionStateInspector
         {
             SequenceNextValues = state.SequenceNextValues,
         };
-        return DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(evidence);
+        return ApprovedConsumerColumnOverlayManifest.For(schema) is not null
+            ? ConsumerColumnOverlayStateInspector.ComputeSha256(schema,
+                state.Overlay ?? throw ApprovedConsumerColumnOverlayManifest.Invalid("target_extension_overlay_state_invalid"),
+                extensions.Count == 0 ? null : DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(evidence))
+            : DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(evidence);
     }
 }

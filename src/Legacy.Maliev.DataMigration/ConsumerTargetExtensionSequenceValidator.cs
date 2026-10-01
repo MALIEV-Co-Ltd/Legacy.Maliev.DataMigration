@@ -9,7 +9,7 @@ internal static class ConsumerTargetExtensionSequenceValidator
         DatabaseSchemaPlan schema, CancellationToken cancellationToken)
     {
         if (schema.Database != "CustomerIdentity" ||
-            schema.TargetExtensionProfile != ApprovedTargetExtensionManifest.AuthCustomerCreateAuthorityV1)
+            schema.TargetExtensionProfile is not (ApprovedTargetExtensionManifest.AuthCustomerCreateAuthorityV1 or ApprovedConsumerColumnOverlayManifest.CustomerV2))
         {
             return;
         }

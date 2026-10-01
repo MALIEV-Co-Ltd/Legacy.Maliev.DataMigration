@@ -1301,8 +1301,7 @@ internal static class PostgreSqlSchemaFingerprint
     internal static string ComputeExpected(DatabaseSchemaPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        IReadOnlyList<TableCopyPlan> schemaTables =
-            [.. ApprovedSourceDispositionManifest.TargetTablesFor(plan), .. ApprovedTargetExtensionManifest.TablesFor(plan)];
+        IReadOnlyList<TableCopyPlan> schemaTables = ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan);
         return ComputeExpectedTables(schemaTables);
     }
 
