@@ -54,6 +54,23 @@ CustomerIdentity `PasswordSetupRequired` and Quotation `DecisionOrderVersion` ar
 
 No whole owner/canonical fingerprint parity, original complete Identity-table parity, API/IAM positive authority, live provider behavior, production-derived exact23 restore, destructive Down safety, timeout-fault injection or persistent bootstrap/repair is claimed. The three unchanged native skips retain owner-protected production-derived #94/full-schema gates and unsupported-platform control; they are not waived. #221/#186/operator authority and parent #97 remain separate.
 
+## Combined accepted-parent validation
+
+After Binder PR227 passed exact-head CI, it merged protected main at
+`5aee7ee0d23c6bc11d75b130f2eae07057c6435c`; post-main36920765984 succeeded.
+This candidate integrated that accepted main conflict-free at
+`8a7b3a2345a091c0b0ebc4ae8f015843298b9d5f` before fresh checks. Root rebuilt
+the solution and exact pinned helper/owner graph with zero warnings/errors,
+ran 67 combined owner/Binder focused tests (zero skips), then the unfiltered
+native suite: 1,579 passed, zero failures, three unchanged gated skips, 1,582
+total. TRX `TestResults/root-owner-cutoff-native-full/root-owner-cutoff-native-full.trx`
+SHA-256 `53EACAC2EF02B0B322E824ED6CC4E7AD7C419A7709FABADE45D777536A295F63`.
+Whole-solution formatting, actionlint and diff checks passed afterward. Earlier
+native/SQL suites above retain their exact bounded-base scope; the SQL adapter
+and its tests were unchanged by the accepted Binder integration.
+Initial PR228 head `4c57572b6018b14056a91597cfe52688f5813ed8` passed CI36920476872,
+but the integrated head must receive its own exact-head and post-main validation.
+
 ## Seven-file ownership / handoff
 
 Root independently read all seven files and the complete workflow delta, rebuilt
