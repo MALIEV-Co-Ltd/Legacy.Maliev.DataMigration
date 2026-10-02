@@ -208,6 +208,16 @@ facts, sole volume writer, session exclusion and exact HBA file/rules throughout
 execution. A physical recovery clone sharing a system identifier is not the
 persistent endpoint, and cannot serve as the distinct-system disposable proof.
 The provider never provisions a role or opens application access itself.
+Install the reviewed HBA allowlist, then perform the separately reviewed restart
+of the same container before capture or plans. Publish fresh target identity and
+maintenance pins from that restart: `postmasterStartedAtUtc` and
+`hbaFileStateSha256` are mandatory. Use the new
+`repair-operator-target-identity.json` generation for every downstream plan and
+command. HBA reload alone does not exclude previously authenticated sessions;
+even a same-byte HBA rewrite after the pinned start fails the maintained gate.
+Keep the original application HBA and its authenticated restoration provenance
+separate from the currently restricted operator HBA for the post-terminal
+lifecycle operation.
 The initial operator role is bounded to four hours and cannot be extended by
 renewing row authorization. Provision it before observing the signed catalog;
 changing it afterward is a preservation-state change, not an automatic renewal.
@@ -220,6 +230,19 @@ exact operation sets, and execute the same captured operations on a separately
 observed disposable PostgreSQL target. Require its independently signed actual
 reconciliation, distinct system identity and the normal freshness gates. Test
 fixtures and a successful logical copy cannot substitute for that proof.
+
+Use `authorize-source-backed-local-repair` to issue the initial paired row
+authorization and each fresh renewal authorization. Its protected
+`sourceBackedLocalRepair` configuration adds `authorizationKeyId` and
+`authorizationPrivateKeyFile`; `expiresAtUtc` is the fresh authorization expiry
+(at most 15 minutes). This signing command does not read `authorizationPath`,
+admission, capture AES material or evidence private keys, and creates no claim.
+It checks the actual maintained endpoint and all 23 selected physical schemas,
+plus the authenticated pair, source schema and disposable proof. Complete
+preimage or retained mixed-prefix verification remains mandatory in admission
+or renewal before any execution permit. The ordinary
+`authorize-paired-local-transition` command retains its original strict row
+preflight and cannot authorize this historical-generation repair.
 
 `stage-source-backed-local-repair` explicitly stages an empty
 `legacy_migration_internal.delta_source_backed_repair` table in each of the 23
@@ -245,7 +268,7 @@ source rows never belong in that retained authority object.
 
 For a refresh that outlasts its authorization, use
 `renew-source-backed-local-repair` with a newly signed paired authorization in
-`freshAuthorizationPath`, the retained database ordinal and
+`freshAuthorizationPath` from `authorize-source-backed-local-repair`, the retained database ordinal and
 `previousGrantCounter`. Retain a separate signed renewal epoch against the same
 original authority, claim, capture, plans, proof, target and actual progress.
 Select the verified epoch with `activeGrantCounter` for subsequent apply and

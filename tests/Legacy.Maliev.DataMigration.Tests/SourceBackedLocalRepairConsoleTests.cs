@@ -7,6 +7,17 @@ public sealed class SourceBackedLocalRepairConsoleTests
 {
     private const string Head = "0123456789abcdef0123456789abcdef01234567";
 
+    [Fact]
+    public void LiveConsoleComposition_RequiresConcreteMaintenanceAndHasNoConfigurableProvider()
+    {
+        var method = typeof(MigrationConsole).GetMethod(nameof(MigrationConsole.ComposeSourceBackedLocalRepairRuntime),
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        Assert.Equal(typeof(SourceBackedLocalRepairMaintenance), method.GetParameters()[1].ParameterType);
+        Assert.DoesNotContain(typeof(SourceBackedLocalRepairCommandConfiguration).GetProperties(),
+            property => typeof(ISourceBackedLocalRepairMaintenance).IsAssignableFrom(property.PropertyType));
+        Assert.Empty(typeof(SourceBackedLocalRepairRuntime).GetConstructors());
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
@@ -47,6 +58,7 @@ public sealed class SourceBackedLocalRepairConsoleTests
     [Theory]
     [InlineData("stage-source-backed-local-repair")]
     [InlineData("prepare-source-backed-local-repair-authority")]
+    [InlineData("authorize-source-backed-local-repair")]
     [InlineData("admit-source-backed-local-repair")]
     [InlineData("apply-source-backed-local-repair-next")]
     [InlineData("reconcile-source-backed-local-repair")]

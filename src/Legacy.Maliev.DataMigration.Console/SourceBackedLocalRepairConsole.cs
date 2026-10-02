@@ -9,13 +9,14 @@ namespace Legacy.Maliev.DataMigration.Console;
 internal sealed record SourceBackedLocalRepairAuthorityCommandConfiguration(string ArtifactRoot, string BindingOutputPath);
 
 internal sealed record SourceBackedLocalRepairCommandConfiguration(string PairPath, string ProofPath,
-    string SchemaPath, string AuthorizationPath, string OperatorConnectionFile, string MaintenancePinsPath,
+    string SchemaPath, string? AuthorizationPath, string OperatorConnectionFile, string MaintenancePinsPath,
     string RunBindingPath, string SigningPinsPath, IReadOnlyList<DeltaTrustedKeyReference> TrustedKeys,
     string EvidenceKeyId, string EvidencePrivateKeyFile, string TerminalSigningPinPath,
     string PersistentEvidenceKeyId, string PersistentEvidencePrivateKeyFile, string OutputPath, DateTimeOffset ExpiresAtUtc,
     string? AdmissionPath = null, long RetainedOrdinal = 0, string? CaptureDirectory = null,
     string? CaptureKeyFile = null, string? FreshAuthorizationPath = null,
-    long PreviousGrantCounter = 0, long ActiveGrantCounter = 0);
+    long PreviousGrantCounter = 0, long ActiveGrantCounter = 0,
+    string? AuthorizationKeyId = null, string? AuthorizationPrivateKeyFile = null);
 
 public static partial class MigrationConsole
 {
@@ -51,8 +52,6 @@ public static partial class MigrationConsole
                 "delta_source_repair_proof_unprotected", cancellationToken).ConfigureAwait(false);
             FreshSchemaPlan schema = await ReadProtectedJsonAsync<FreshSchemaPlan>(request.SchemaPath,
                 "delta_source_repair_schema_unprotected", cancellationToken).ConfigureAwait(false);
-            PairedLocalTransitionAuthorization authorization = await ReadProtectedJsonAsync<PairedLocalTransitionAuthorization>(
-                request.AuthorizationPath, "delta_source_repair_authorization_unprotected", cancellationToken).ConfigureAwait(false);
             if (plans.Persistent.SourceCommitSha != accepted || schema.SourceCommitSha != accepted ||
                 plans.Disposable.SourceCommitSha != accepted) { throw DeltaInvalid("delta_source_repair_source_unaccepted"); }
             SourceBackedLocalRepairMaintenancePins maintenancePins = await ReadProtectedJsonAsync<SourceBackedLocalRepairMaintenancePins>(
@@ -73,20 +72,38 @@ public static partial class MigrationConsole
                 new TrustedKeyReference(key.KeyId, key.SubjectPublicKeyInfoPath))], cancellationToken).ConfigureAwait(false);
             if (!trust.TryGetPublicKeyFingerprintSha256(request.EvidenceKeyId, out string fingerprint) || fingerprint != pins.EvidenceFingerprint)
             { throw DeltaInvalid("delta_source_repair_evidence_key_invalid"); }
-            using var signer = new P256MigrationEvidenceSigner(request.EvidenceKeyId,
-                await ReadProtectedTextAsync(request.EvidencePrivateKeyFile, "delta_source_repair_signer_unprotected",
-                    cancellationToken).ConfigureAwait(false));
             SourceBackedLocalRepairTerminalSigningPin terminalPin = await ReadProtectedJsonAsync<SourceBackedLocalRepairTerminalSigningPin>(
                 request.TerminalSigningPinPath, "delta_source_repair_terminal_pin_unprotected", cancellationToken).ConfigureAwait(false);
             if (terminalPin.KeyId != request.PersistentEvidenceKeyId ||
                 !trust.TryGetPublicKeyFingerprintSha256(request.PersistentEvidenceKeyId, out string persistentFingerprint) ||
                 persistentFingerprint != terminalPin.PublicKeyFingerprintSha256)
             { throw DeltaInvalid("delta_source_repair_terminal_key_invalid"); }
+            var sourceAcceptance = new ProtectedMainSourceRepairAcceptance();
+            if (command == "authorize-source-backed-local-repair")
+            {
+                string keyId = Required(request.AuthorizationKeyId);
+                if (!trust.TryGetPublicKeyFingerprintSha256(keyId, out string authorizationFingerprint) ||
+                    authorizationFingerprint != pins.AuthorizationFingerprint)
+                { throw DeltaInvalid("delta_source_repair_authorization_key_invalid"); }
+                using var authorizationSigner = new P256MigrationEvidenceSigner(keyId,
+                    await ReadProtectedTextAsync(Required(request.AuthorizationPrivateKeyFile),
+                        "delta_source_repair_authorization_signer_unprotected", cancellationToken).ConfigureAwait(false));
+                PairedLocalTransitionAuthorization signed = await SourceBackedLocalRepairRuntime.AuthorizeMaintainedAsync(
+                    connection, plans, proof, schema, trust, observe, maintenance, sourceAcceptance,
+                    TimeProvider.System, request.ExpiresAtUtc, authorizationSigner, cancellationToken).ConfigureAwait(false);
+                await WriteNewJsonAsync(request.OutputPath, signed, cancellationToken).ConfigureAwait(false);
+                await output.WriteLineAsync("authorize_source_backed_local_repair_complete").ConfigureAwait(false);
+                return 0;
+            }
+            PairedLocalTransitionAuthorization authorization = await ReadProtectedJsonAsync<PairedLocalTransitionAuthorization>(
+                Required(request.AuthorizationPath), "delta_source_repair_authorization_unprotected", cancellationToken).ConfigureAwait(false);
+            using var signer = new P256MigrationEvidenceSigner(request.EvidenceKeyId,
+                await ReadProtectedTextAsync(request.EvidencePrivateKeyFile, "delta_source_repair_signer_unprotected",
+                    cancellationToken).ConfigureAwait(false));
             // Same reviewed create/get gateway and fixed locked bucket for reservations,
             // ordinal progress and terminal publication. No caller bucket override.
             var gateway = new GoogleCloudRolloverClaimGateway(await StorageClient.CreateAsync().ConfigureAwait(false),
                 "maliev-legacy-rollover-claims");
-            var sourceAcceptance = new ProtectedMainSourceRepairAcceptance();
             var claims = new SourceBackedLocalRepairClaimStore(gateway);
             var continuations = new SourceBackedLocalRepairContinuationStore(gateway, claims, trust,
                 pins.AuthorizationFingerprint, pins.EvidenceFingerprint);
@@ -94,7 +111,7 @@ public static partial class MigrationConsole
                 pins, terminalPin, observe, TimeProvider.System, sourceAcceptance);
             var admissions = new SourceBackedLocalRepairAdmissionStore(claims, trust, pins, observe,
                 TimeProvider.System, renewals, sourceAcceptance);
-            var runtime = new SourceBackedLocalRepairRuntime(connection, maintenance, observe, admissions,
+            var runtime = ComposeSourceBackedLocalRepairRuntime(connection, maintenance, observe, admissions,
                 continuations, trust, TimeProvider.System, gateway, sourceAcceptance, pins, terminalPin, renewals);
             object result;
             if (command == "stage-source-backed-local-repair")
@@ -179,6 +196,16 @@ public static partial class MigrationConsole
             ActiveGrantCounter = activeGrantCounter
         };
     }
+
+    internal static SourceBackedLocalRepairRuntime ComposeSourceBackedLocalRepairRuntime(string connection,
+        SourceBackedLocalRepairMaintenance maintenance,
+        Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> observe,
+        SourceBackedLocalRepairAdmissionStore admissions, SourceBackedLocalRepairContinuationStore continuations,
+        IReceiptAttestationTrustStore trust, TimeProvider clock, IRolloverClaimObjectGateway gateway,
+        ISourceBackedLocalRepairSourceAcceptance sourceAcceptance, SourceBackedLocalRepairSigningPins pins,
+        SourceBackedLocalRepairTerminalSigningPin terminalPin, SourceBackedLocalRepairRenewalStore renewals) =>
+        new(connection, maintenance, observe, admissions, continuations, trust, clock, gateway,
+            sourceAcceptance, pins, terminalPin, renewals);
 
     private static async Task<HistoricalCurrentLocalObservation> ObserveSourceRepairTargetAsync(
         DeltaSynchronizationPlan plan, string connectionString, CancellationToken cancellationToken)

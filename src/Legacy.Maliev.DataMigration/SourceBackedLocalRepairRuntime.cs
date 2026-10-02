@@ -1,4 +1,6 @@
 using System.Data;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Npgsql;
 
@@ -19,7 +21,7 @@ internal sealed record SourceBackedLocalRepairTerminalSigningPin(string PublicKe
 internal sealed class SourceBackedLocalRepairRuntime
 {
     private readonly string _connection;
-    private readonly SourceBackedLocalRepairMaintenance _maintenance;
+    private readonly ISourceBackedLocalRepairMaintenance _maintenance;
     private readonly Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> _observe;
     private readonly SourceBackedLocalRepairAdmissionStore _admissions;
     private readonly SourceBackedLocalRepairContinuationStore _continuations;
@@ -38,10 +40,27 @@ internal sealed class SourceBackedLocalRepairRuntime
         IReceiptAttestationTrustStore trust, TimeProvider clock, IRolloverClaimObjectGateway gateway,
         ISourceBackedLocalRepairSourceAcceptance sourceAcceptance, SourceBackedLocalRepairSigningPins signingPins,
         SourceBackedLocalRepairTerminalSigningPin terminalPin, SourceBackedLocalRepairRenewalStore renewals)
+        : this(connection, (ISourceBackedLocalRepairMaintenance)maintenance, observe, admissions, continuations,
+            trust, clock, gateway, sourceAcceptance, signingPins, terminalPin, renewals)
+    {
+        maintenance.RequireConnection(connection);
+    }
+
+    // Internal component composition reuses the actual orchestration with the existing
+    // typed maintenance contract. The protected Console selects only the concrete overload;
+    // no CLI/configuration field can supply this provider or a maintenance assertion.
+    internal SourceBackedLocalRepairRuntime(string connection,
+        ISourceBackedLocalRepairMaintenance maintenance,
+        Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> observe,
+        SourceBackedLocalRepairAdmissionStore admissions, SourceBackedLocalRepairContinuationStore continuations,
+        IReceiptAttestationTrustStore trust, TimeProvider clock, IRolloverClaimObjectGateway gateway,
+        ISourceBackedLocalRepairSourceAcceptance sourceAcceptance, SourceBackedLocalRepairSigningPins signingPins,
+        SourceBackedLocalRepairTerminalSigningPin terminalPin, SourceBackedLocalRepairRenewalStore renewals)
     {
         _connection = LocalPostgreSqlResourceAuthority.Connection(connection).ConnectionString;
         _maintenance = maintenance ?? throw new ArgumentNullException(nameof(maintenance));
-        maintenance.RequireConnection(_connection);
+        if (maintenance is SourceBackedLocalRepairMaintenance concrete)
+        { concrete.RequireConnection(_connection); }
         _observe = observe ?? throw new ArgumentNullException(nameof(observe));
         _admissions = admissions ?? throw new ArgumentNullException(nameof(admissions));
         _continuations = continuations ?? throw new ArgumentNullException(nameof(continuations));
@@ -63,6 +82,83 @@ internal sealed class SourceBackedLocalRepairRuntime
         _terminalPin = terminalPin;
         _renewals = renewals ?? throw new ArgumentNullException(nameof(renewals));
         _reader = new(_connection, admissions, continuations, observe, maintenance, clock, renewals);
+    }
+
+    internal Task<PairedLocalTransitionAuthorization> AuthorizeAsync(PairedCapturedDeltaPlans plans,
+        Exact23DeltaReconciliationResult proof, FreshSchemaPlan schema, DateTimeOffset expiresAtUtc,
+        P256MigrationEvidenceSigner signer, CancellationToken cancellationToken) =>
+        AuthorizeMaintainedAsync(_connection, plans, proof, schema, _trust, _observe, _maintenance,
+            _sourceAcceptance, _clock, expiresAtUtc, signer, cancellationToken);
+
+    // Signing authenticates the current endpoint and physical contract. Original admission
+    // or renewal must subsequently verify the complete actual preimage/mixed prefix before
+    // any permit is issued. Ordinary transition row-preflight remains unchanged.
+    internal static async Task<PairedLocalTransitionAuthorization> AuthorizeMaintainedAsync(
+        string connectionString, PairedCapturedDeltaPlans plans, Exact23DeltaReconciliationResult proof,
+        FreshSchemaPlan schema, IReceiptAttestationTrustStore trust,
+        Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> observeTarget,
+        ISourceBackedLocalRepairMaintenance maintenance, ISourceBackedLocalRepairSourceAcceptance sourceAcceptance,
+        TimeProvider clock, DateTimeOffset expiresAtUtc, P256MigrationEvidenceSigner signer,
+        CancellationToken cancellationToken)
+    {
+        plans = Snapshot(plans); proof = Snapshot(proof); schema = Snapshot(schema);
+        ArgumentNullException.ThrowIfNull(maintenance);
+        ArgumentNullException.ThrowIfNull(sourceAcceptance);
+        var endpoint = LocalPostgreSqlResourceAuthority.Connection(connectionString);
+        if (maintenance is SourceBackedLocalRepairMaintenance concrete)
+        { concrete.RequireConnection(connectionString); }
+        if (!schema.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
+        { throw SourceBackedLocalRepairAdmissionPolicy.Invalid(); }
+        PairedCapturedDeltaPlanPublicationGate.Verify(plans, schema, trust, clock.GetUtcNow());
+        DisposableDeltaProofVerifier.Verify(plans.Disposable, proof, plans.Persistent, schema, trust, clock.GetUtcNow());
+        await sourceAcceptance.RequireAsync(plans.Persistent.SourceCommitSha, cancellationToken).ConfigureAwait(false);
+        HistoricalCurrentLocalObservation before = await observeTarget(cancellationToken).ConfigureAwait(false);
+        if (before.DockerGeneration != plans.Persistent.TargetGeneration ||
+            before.SystemIdentifierSha256 != plans.Persistent.TargetAuthority!.SystemIdentifierSha256)
+        { throw SourceBackedLocalRepairAdmissionPolicy.Invalid(); }
+        await using ISourceBackedLocalRepairMaintenanceLease lease =
+            await maintenance.AcquireAsync(before, cancellationToken).ConfigureAwait(false);
+        await lease.RequireStillQuiescentAsync(before, cancellationToken).ConfigureAwait(false);
+        string? quotationHash = null;
+        foreach (DatabaseSchemaPlan database in schema.Databases)
+        {
+            endpoint.Database = database.Database;
+            await using var connection = new NpgsqlConnection(endpoint.ConnectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using (var control = new NpgsqlCommand("SELECT system_identifier::text FROM pg_control_system();", connection))
+            {
+                string system = (string)(await control.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+                    ?? throw SourceBackedLocalRepairAdmissionPolicy.Invalid());
+                string hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(system))).ToLowerInvariant();
+                if (hash != before.SystemIdentifierSha256) { throw SourceBackedLocalRepairAdmissionPolicy.Invalid(); }
+            }
+            await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead,
+                cancellationToken).ConfigureAwait(false);
+            await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY;", connection, transaction))
+            { _ = await readOnly.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
+            await using var inspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
+            string actual = await inspector.InspectSchemaAsync(database, cancellationToken).ConfigureAwait(false);
+            string expected = database.Database == "Quotation"
+                ? ReviewedQuotationPhysicalSchemaResolver.RequireReviewedHash(database, plans.Persistent.QuotationTransitionSchemaSha256!)
+                : database.TargetSchemaSha256;
+            ReconciliationDiagnostics.CompareSchema(database.Database, expected, actual);
+            if (ApprovedConsumerColumnOverlayManifest.HasState(database))
+            {
+                _ = await ApprovedTargetExtensionStateInspector.InspectAsync(connection, transaction, database,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            if (database.Database == "Quotation") { quotationHash = actual; }
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        await lease.RequireStillQuiescentAsync(before, cancellationToken).ConfigureAwait(false);
+        if (await observeTarget(cancellationToken).ConfigureAwait(false) != before)
+        { throw SourceBackedLocalRepairAdmissionPolicy.Invalid(); }
+        await sourceAcceptance.RequireAsync(plans.Persistent.SourceCommitSha, cancellationToken).ConfigureAwait(false);
+        PairedLocalTransitionAuthorization authorization = PairedLocalTransitionAuthorizationPolicy.Produce(plans,
+            proof, schema, trust, plans.Persistent.TargetAuthority!, plans.Persistent.TargetObservationSha256,
+            quotationHash ?? throw SourceBackedLocalRepairAdmissionPolicy.Invalid(), clock.GetUtcNow(), expiresAtUtc, signer);
+        await lease.RequireStillQuiescentAsync(before, cancellationToken).ConfigureAwait(false);
+        return authorization;
     }
 
     internal async Task StageAsync(PairedCapturedDeltaPlans plans, Exact23DeltaReconciliationResult proof,

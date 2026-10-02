@@ -156,6 +156,7 @@ public static partial class MigrationConsole
                         cancellationToken).ConfigureAwait(false);
                 case "stage-source-backed-local-repair":
                 case "prepare-source-backed-local-repair-authority":
+                case "authorize-source-backed-local-repair":
                 case "admit-source-backed-local-repair":
                 case "apply-source-backed-local-repair-next":
                 case "reconcile-source-backed-local-repair":

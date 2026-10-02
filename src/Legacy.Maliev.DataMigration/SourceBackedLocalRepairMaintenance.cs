@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Npgsql;
 
 namespace Legacy.Maliev.DataMigration;
@@ -10,7 +12,11 @@ namespace Legacy.Maliev.DataMigration;
 internal sealed record SourceBackedLocalRepairMaintenancePins(string OperatorRole,
     DateTimeOffset RoleIssuedAtUtc, DateTimeOffset RoleExpiresAtUtc, string RestrictedHbaSha256,
     string ServerClientAddress, HistoricalCurrentLocalObservation TargetIdentity,
-    string ImageId, string LocalExecutionBindingSha256);
+    string ImageId, string LocalExecutionBindingSha256)
+{
+    public DateTimeOffset PostmasterStartedAtUtc { get; init; }
+    public string? HbaFileStateSha256 { get; init; }
+}
 
 /// <summary>
 /// Verifies an already installed exact operator allowlist. Never creates roles, rewrites HBA,
@@ -18,7 +24,7 @@ internal sealed record SourceBackedLocalRepairMaintenancePins(string OperatorRol
 /// and the protected operator connection are supplied only by trusted operator composition.
 /// Unix-control access still requires exclusive operator ownership throughout the run.
 /// </summary>
-internal sealed class SourceBackedLocalRepairMaintenance : ISourceBackedLocalRepairMaintenance
+internal sealed partial class SourceBackedLocalRepairMaintenance : ISourceBackedLocalRepairMaintenance
 {
     private readonly string _connectionString;
     private readonly SourceBackedLocalRepairMaintenancePins _pins;
@@ -26,6 +32,7 @@ internal sealed class SourceBackedLocalRepairMaintenance : ISourceBackedLocalRep
     private readonly TimeProvider _clock;
     private readonly WindowsLocalRunAuthority _authority;
     private readonly LocalDockerResourceObserver _docker = new();
+    internal const string HbaStatFormat = "%d|%i|%f|%u|%g|%h|%s|%y|%z";
 
     internal SourceBackedLocalRepairMaintenance(string connectionString,
         SourceBackedLocalRepairMaintenancePins pins,
@@ -39,6 +46,8 @@ internal sealed class SourceBackedLocalRepairMaintenance : ISourceBackedLocalRep
         var endpoint = LocalPostgreSqlResourceAuthority.Connection(connectionString);
         if (endpoint.Username != pins.OperatorRole || !RoleName(pins.OperatorRole) ||
             !Hash(pins.RestrictedHbaSha256) || !Hash(pins.LocalExecutionBindingSha256) ||
+            !Hash(pins.HbaFileStateSha256 ?? string.Empty) || pins.PostmasterStartedAtUtc == default ||
+            pins.PostmasterStartedAtUtc.Offset != TimeSpan.Zero || pins.PostmasterStartedAtUtc.Ticks % 10 != 0 ||
             !pins.ImageId.StartsWith("sha256:", StringComparison.Ordinal) || !Hash(pins.ImageId[7..]) ||
             pins.RoleIssuedAtUtc.Offset != TimeSpan.Zero ||
             pins.RoleExpiresAtUtc.Offset != TimeSpan.Zero || pins.RoleExpiresAtUtc <= pins.RoleIssuedAtUtc ||
@@ -113,12 +122,13 @@ internal sealed class SourceBackedLocalRepairMaintenance : ISourceBackedLocalRep
             identity.PgData + "/global/pg_control", "regular file", cancellationToken).ConfigureAwait(false);
         if (dataDirectory.Device != mount.FileSystemIdentity.Device || controlFile.Device != dataDirectory.Device)
         { throw Invalid(); }
+        await RequireHbaStartupStateAsync(docker, dataDirectory.Device, cancellationToken).ConfigureAwait(false);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         const string identitySql = """
             SELECT system_identifier::text,current_user,session_user,host(inet_client_addr()),
                 current_database(),current_setting('data_directory'),current_setting('hba_file'),pg_backend_pid(),
                 encode(sha256(convert_to(pg_read_file(current_setting('hba_file')),'UTF8')),'hex'),
-                host(inet_server_addr()),inet_server_port()
+                host(inet_server_addr()),inet_server_port(),pg_postmaster_start_time()
             FROM pg_control_system();
             """;
         await using (var command = new NpgsqlCommand(identitySql, connection))
@@ -130,7 +140,8 @@ internal sealed class SourceBackedLocalRepairMaintenance : ISourceBackedLocalRep
                 reader.GetString(3) != _pins.ServerClientAddress || reader.GetString(4) != "postgres" ||
                 reader.GetString(5) != identity.PgData || reader.GetString(6) != identity.PgData + "/pg_hba.conf" ||
                 reader.GetInt32(7) != connection.ProcessID || reader.GetString(8) != _pins.RestrictedHbaSha256 ||
-                !docker.Networks.Any(network => network.Address == reader.GetString(9)) || reader.GetInt32(10) != 5432)
+                !docker.Networks.Any(network => network.Address == reader.GetString(9)) || reader.GetInt32(10) != 5432 ||
+                reader.GetFieldValue<DateTimeOffset>(11) != _pins.PostmasterStartedAtUtc)
             { throw Invalid(); }
         }
         BackupProcessResult hbaFile = await new ReadOnlyDockerProcess().RunAsync(
@@ -191,10 +202,50 @@ internal sealed class SourceBackedLocalRepairMaintenance : ISourceBackedLocalRep
             _ = command.Parameters.AddWithValue(_pins.ServerClientAddress);
             if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) { throw Invalid(); }
         }
+        await RequireHbaStartupStateAsync(docker, dataDirectory.Device, cancellationToken).ConfigureAwait(false);
+        await using (var epoch = new NpgsqlCommand("SELECT pg_postmaster_start_time();", connection))
+        {
+            if (await epoch.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not DateTime started ||
+                new DateTimeOffset(started) != _pins.PostmasterStartedAtUtc) { throw Invalid(); }
+        }
         if (await _observe(cancellationToken).ConfigureAwait(false) != identity ||
             _clock.GetUtcNow() >= _pins.RoleExpiresAtUtc) { throw Invalid(); }
         RequireOwnership();
     }
+
+    private async Task RequireHbaStartupStateAsync(LocalDockerResourceState docker, string expectedDevice,
+        CancellationToken cancellationToken)
+    {
+        string path = _pins.TargetIdentity.PgData + "/pg_hba.conf";
+        FileSystemObjectIdentity file = await _docker.StatAsync(docker.DockerHost, docker.ContainerId,
+            path, "regular file", cancellationToken).ConfigureAwait(false);
+        BackupProcessResult state = await new ReadOnlyDockerProcess().RunAsync(
+            ["--host", docker.DockerHost, "exec", docker.ContainerId, "env", "TZ=UTC", "LC_ALL=C",
+                "stat", "--printf=" + HbaStatFormat, "--", path], cancellationToken).ConfigureAwait(false);
+        string[] fields = state.StandardOutput.Split('|');
+        if (state.ExitCode != 0 || fields.Length != 9 || file.Device != expectedDevice ||
+            fields[0] != file.Device || fields[1] != file.Inode ||
+            !uint.TryParse(fields[2], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint mode) ||
+            (mode & 0xf000) != 0x8000 || !uint.TryParse(fields[3], out _) || !uint.TryParse(fields[4], out _) ||
+            fields[5] != "1" || !long.TryParse(fields[6], out long size) || size <= 0 ||
+            !string.Equals(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(state.StandardOutput))), _pins.HbaFileStateSha256, StringComparison.OrdinalIgnoreCase) ||
+            !BeforeEpoch(fields[7], _pins.PostmasterStartedAtUtc) || !BeforeEpoch(fields[8], _pins.PostmasterStartedAtUtc))
+        { throw Invalid(); }
+    }
+
+    private static bool BeforeEpoch(string timestamp, DateTimeOffset epoch)
+    {
+        Match match = HbaTimestamp().Match(timestamp);
+        if (!match.Success || !DateTimeOffset.TryParseExact(match.Groups["seconds"].Value + " +00:00",
+            "yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset seconds) ||
+            !uint.TryParse(match.Groups["nanos"].Value, out uint nanos)) { return false; }
+        long epochSecond = epoch.UtcTicks - epoch.UtcTicks % TimeSpan.TicksPerSecond;
+        return seconds.UtcTicks < epochSecond || seconds.UtcTicks == epochSecond &&
+            nanos < epoch.UtcTicks % TimeSpan.TicksPerSecond * 100;
+    }
+
+    [GeneratedRegex(@"^(?<seconds>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.(?<nanos>\d{9}) \+0000$", RegexOptions.CultureInvariant)]
+    private static partial Regex HbaTimestamp();
 
     private void RequireOwnership()
     {

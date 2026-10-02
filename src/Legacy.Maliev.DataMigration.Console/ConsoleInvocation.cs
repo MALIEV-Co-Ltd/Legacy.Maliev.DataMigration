@@ -31,6 +31,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "issue-historical-local-continuity",
         "stage-source-backed-local-repair",
         "prepare-source-backed-local-repair-authority",
+        "authorize-source-backed-local-repair",
         "admit-source-backed-local-repair",
         "apply-source-backed-local-repair-next",
         "reconcile-source-backed-local-repair",

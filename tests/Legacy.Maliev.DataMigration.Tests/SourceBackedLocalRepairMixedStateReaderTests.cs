@@ -359,7 +359,7 @@ public sealed partial class DisposableDeltaProofVerifierTests
             var reader = new SourceBackedLocalRepairMixedStateReader(local, admissions, continuations,
                 _ => Task.FromResult(identity), maintenance, clock);
             return new(persistent, disposable, local, plans, proof, original.Schema, original.Trust,
-                authorization, identity, bundle, admissions, continuations, reader, clock, SourceRepairTerminalPin());
+                authorization, identity, bundle, admissions, continuations, reader, clock, SourceRepairTerminalPin(), gateway);
 
             DeltaSynchronizationPlan Rebind(DeltaSynchronizationPlan plan, P256MigrationEvidenceSigner signer)
             {
@@ -455,7 +455,7 @@ public sealed partial class DisposableDeltaProofVerifierTests
         HistoricalCurrentLocalObservation Identity, SourceBackedLocalRepairAdmissionBundle Bundle,
         SourceBackedLocalRepairAdmissionStore Admissions, SourceBackedLocalRepairContinuationStore Continuations,
         SourceBackedLocalRepairMixedStateReader Reader, AdmissionClock Clock,
-        SourceBackedLocalRepairTerminalSigningPin TerminalPin) : IAsyncDisposable
+        SourceBackedLocalRepairTerminalSigningPin TerminalPin, AdmissionGateway Gateway) : IAsyncDisposable
     {
         internal async Task ApplyNext(SourceBackedLocalRepairMixedStateReader.Observation observation)
         {
