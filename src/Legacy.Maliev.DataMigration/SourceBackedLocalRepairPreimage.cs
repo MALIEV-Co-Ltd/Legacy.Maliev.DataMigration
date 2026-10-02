@@ -154,6 +154,16 @@ internal static class SourceBackedLocalRepairPreimage
         }
         const string objectsSql = """
             SELECT jsonb_build_object(
+              'roles',(SELECT jsonb_agg(jsonb_build_object('name',rolname,
+                'superuser',rolsuper,'inherit',rolinherit,'createRole',rolcreaterole,
+                'createDatabase',rolcreatedb,'login',rolcanlogin,'replication',rolreplication,
+                'bypassRls',rolbypassrls,'connectionLimit',rolconnlimit,'validUntil',rolvaliduntil)
+                ORDER BY rolname COLLATE "C") FROM pg_roles),
+              'roleMemberships',(SELECT jsonb_agg(jsonb_build_object('role',pg_get_userbyid(roleid),
+                'member',pg_get_userbyid(member),'grantor',pg_get_userbyid(grantor),
+                'admin',admin_option,'inherit',inherit_option,'set',set_option)
+                ORDER BY pg_get_userbyid(roleid) COLLATE "C",pg_get_userbyid(member) COLLATE "C",
+                  pg_get_userbyid(grantor) COLLATE "C") FROM pg_auth_members),
               'schemas',(SELECT jsonb_agg(jsonb_build_object('name',nspname,
                 'owner',pg_get_userbyid(nspowner),'acl',nspacl) ORDER BY nspname COLLATE "C")
                 FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname<>'information_schema'),

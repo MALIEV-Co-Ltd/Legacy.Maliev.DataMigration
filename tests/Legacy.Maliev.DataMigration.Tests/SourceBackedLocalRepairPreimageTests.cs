@@ -23,6 +23,10 @@ public sealed class SourceBackedLocalRepairPreimageTests(PostgreSqlAdapterFixtur
     [InlineData("database-set")]
     [InlineData("role-set")]
     [InlineData("role-database-set")]
+    [InlineData("role-login")]
+    [InlineData("role-bypass-rls")]
+    [InlineData("role-membership")]
+    [InlineData("role-membership-options")]
     [InlineData("trigger-state")]
     [InlineData("internal-trigger-state")]
     [InlineData("policy")]
@@ -49,7 +53,13 @@ public sealed class SourceBackedLocalRepairPreimageTests(PostgreSqlAdapterFixtur
                 CREATE TABLE legacy_migration_internal.effects(id bigint PRIMARY KEY, value text NOT NULL);
                 INSERT INTO legacy_migration_internal.effects VALUES(9007199254740993,'application-effect');
                 CREATE SEQUENCE legacy_migration_internal.authority_seq AS bigint START 9007199254740993 CACHE 7;
+                CREATE ROLE source_repair_catalog_role NOLOGIN;
+                CREATE ROLE source_repair_catalog_member NOLOGIN;
                 """);
+            if (mutation == "role-membership-options")
+            {
+                await Execute(cs, "GRANT source_repair_catalog_role TO source_repair_catalog_member WITH INHERIT TRUE, SET TRUE;");
+            }
             SourceBackedLocalRepairDatabasePreimage before = await Read(cs, database);
             SourceBackedLocalRepairDatabasePreimage repeated = await Read(cs, database);
             SourceBackedLocalRepairPreimage.RequireMatches(before, repeated);
@@ -74,6 +84,10 @@ public sealed class SourceBackedLocalRepairPreimageTests(PostgreSqlAdapterFixtur
                 "database-set" => "ALTER DATABASE \"ContactRequest\" SET application_name='changed';",
                 "role-set" => "ALTER ROLE CURRENT_USER SET application_name='changed';",
                 "role-database-set" => "ALTER ROLE CURRENT_USER IN DATABASE \"ContactRequest\" SET statement_timeout='37s';",
+                "role-login" => "ALTER ROLE source_repair_catalog_role LOGIN;",
+                "role-bypass-rls" => "ALTER ROLE source_repair_catalog_role BYPASSRLS;",
+                "role-membership" => "GRANT source_repair_catalog_role TO source_repair_catalog_member;",
+                "role-membership-options" => "GRANT source_repair_catalog_role TO source_repair_catalog_member WITH INHERIT FALSE, SET FALSE;",
                 "trigger-state" => "ALTER TABLE public.source_rows DISABLE TRIGGER source_row_trigger;",
                 "internal-trigger-state" => "DO $x$ DECLARE trigger_name text; BEGIN SELECT tgname INTO trigger_name FROM pg_trigger WHERE tgrelid='public.source_rows'::regclass AND tgisinternal ORDER BY tgname LIMIT 1; EXECUTE format('ALTER TABLE public.source_rows DISABLE TRIGGER %I',trigger_name); END $x$;",
                 "policy" => "CREATE POLICY source_rows_policy ON public.source_rows USING (id>0);",
@@ -93,6 +107,7 @@ public sealed class SourceBackedLocalRepairPreimageTests(PostgreSqlAdapterFixtur
         {
             if (mutation == "role-set") { await Execute(fixture.ConnectionString, "ALTER ROLE CURRENT_USER RESET application_name;"); }
             await Execute(fixture.ConnectionString, "DROP DATABASE \"ContactRequest\" WITH (FORCE);");
+            await Execute(fixture.ConnectionString, "DROP ROLE IF EXISTS source_repair_catalog_member,source_repair_catalog_role;");
         }
     }
 
