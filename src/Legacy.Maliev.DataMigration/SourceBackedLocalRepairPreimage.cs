@@ -86,8 +86,16 @@ internal static class SourceBackedLocalRepairPreimage
                    WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),
                 'constraints',(SELECT jsonb_agg(jsonb_build_object('name',conname,'definition',pg_get_constraintdef(oid),'validated',convalidated)
                    ORDER BY conname COLLATE "C") FROM pg_constraint WHERE conrelid=c.oid),
-                'indexes',(SELECT jsonb_agg(pg_get_indexdef(indexrelid) ORDER BY pg_get_indexdef(indexrelid) COLLATE "C") FROM pg_index WHERE indrelid=c.oid),
-                'triggers',(SELECT jsonb_agg(pg_get_triggerdef(oid) ORDER BY tgname COLLATE "C") FROM pg_trigger WHERE tgrelid=c.oid AND NOT tgisinternal))::text
+                'indexes',(SELECT jsonb_agg(jsonb_build_object('definition',pg_get_indexdef(indexrelid),
+                   'valid',indisvalid,'ready',indisready,'live',indislive,'replicaIdentity',indisreplident,
+                   'clustered',indisclustered) ORDER BY pg_get_indexdef(indexrelid) COLLATE "C") FROM pg_index WHERE indrelid=c.oid),
+                'triggers',(SELECT jsonb_agg(jsonb_build_object('definition',pg_get_triggerdef(oid),
+                   'enabled',tgenabled,'internal',tgisinternal) ORDER BY tgname COLLATE "C") FROM pg_trigger WHERE tgrelid=c.oid),
+                'policies',(SELECT jsonb_agg(jsonb_build_object('name',polname,'command',polcmd,
+                   'permissive',polpermissive,'roles',(SELECT jsonb_agg(CASE WHEN role_oid=0 THEN 'PUBLIC' ELSE pg_get_userbyid(role_oid) END
+                     ORDER BY role_oid) FROM unnest(polroles) role_oid),
+                   'using',pg_get_expr(polqual,polrelid),'check',pg_get_expr(polwithcheck,polrelid))
+                   ORDER BY polname COLLATE "C") FROM pg_policy WHERE polrelid=c.oid))::text
             FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
             WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND c.relkind IN ('r','p','v','m','f')
             ORDER BY n.nspname COLLATE "C",c.relname COLLATE "C";
@@ -158,6 +166,12 @@ internal static class SourceBackedLocalRepairPreimage
                 'icuRules',daticurules,'collationVersion',datcollversion,'acl',datacl,
                 'allowConnections',datallowconn,'connectionLimit',datconnlimit)
                 FROM pg_database WHERE datname=current_database()),
+              'databaseRoleSettings',(SELECT jsonb_agg(jsonb_build_object('database',CASE WHEN s.setdatabase=0 THEN '*' ELSE d.datname END,
+                'role',CASE WHEN s.setrole=0 THEN '*' ELSE pg_get_userbyid(s.setrole) END,
+                'settings',(SELECT jsonb_agg(setting ORDER BY setting COLLATE "C") FROM unnest(s.setconfig) setting))
+                ORDER BY s.setdatabase,s.setrole) FROM pg_db_role_setting s
+                LEFT JOIN pg_database d ON d.oid=s.setdatabase
+                WHERE s.setdatabase=0 OR d.datname=current_database()),
               'functions',(SELECT jsonb_agg(jsonb_build_object('schema',n.nspname,'name',p.proname,
                 'arguments',pg_get_function_identity_arguments(p.oid),'owner',pg_get_userbyid(p.proowner),
                 'acl',p.proacl,'definition',CASE WHEN p.prokind IN ('f','p') THEN pg_get_functiondef(p.oid)

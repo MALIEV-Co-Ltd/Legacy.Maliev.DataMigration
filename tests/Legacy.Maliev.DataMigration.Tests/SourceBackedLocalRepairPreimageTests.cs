@@ -20,6 +20,14 @@ public sealed class SourceBackedLocalRepairPreimageTests(PostgreSqlAdapterFixtur
     [InlineData("internal-schema")]
     [InlineData("function")]
     [InlineData("database-config")]
+    [InlineData("database-set")]
+    [InlineData("role-set")]
+    [InlineData("role-database-set")]
+    [InlineData("trigger-state")]
+    [InlineData("internal-trigger-state")]
+    [InlineData("policy")]
+    [InlineData("index-valid")]
+    [InlineData("index-ready")]
     public async Task CompletePreimageDetectsChurnOutsideSelectedOperations(string mutation)
     {
         const string database = "ContactRequest";
@@ -30,6 +38,9 @@ public sealed class SourceBackedLocalRepairPreimageTests(PostgreSqlAdapterFixtur
             await Execute(cs, """
                 CREATE TABLE public.source_rows(id bigint PRIMARY KEY, value text NOT NULL);
                 INSERT INTO public.source_rows VALUES(1,'unchanged-source-row');
+                ALTER TABLE public.source_rows ADD CONSTRAINT source_self_fk FOREIGN KEY(id) REFERENCES public.source_rows(id);
+                CREATE FUNCTION public.source_row_trigger() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END';
+                CREATE TRIGGER source_row_trigger BEFORE UPDATE ON public.source_rows FOR EACH ROW EXECUTE FUNCTION public.source_row_trigger();
                 CREATE SCHEMA legacy_migration_internal;
                 CREATE TABLE legacy_migration_internal.delta_fence(database_name text NOT NULL);
                 INSERT INTO legacy_migration_internal.delta_fence VALUES('ContactRequest');
@@ -60,6 +71,14 @@ public sealed class SourceBackedLocalRepairPreimageTests(PostgreSqlAdapterFixtur
                 "internal-schema" => "ALTER TABLE legacy_migration_internal.effects ADD COLUMN extra text;",
                 "function" => "CREATE FUNCTION legacy_migration_internal.probe() RETURNS integer LANGUAGE sql AS 'SELECT 1';",
                 "database-config" => "ALTER DATABASE \"ContactRequest\" CONNECTION LIMIT 17;",
+                "database-set" => "ALTER DATABASE \"ContactRequest\" SET application_name='changed';",
+                "role-set" => "ALTER ROLE CURRENT_USER SET application_name='changed';",
+                "role-database-set" => "ALTER ROLE CURRENT_USER IN DATABASE \"ContactRequest\" SET statement_timeout='37s';",
+                "trigger-state" => "ALTER TABLE public.source_rows DISABLE TRIGGER source_row_trigger;",
+                "internal-trigger-state" => "DO $x$ DECLARE trigger_name text; BEGIN SELECT tgname INTO trigger_name FROM pg_trigger WHERE tgrelid='public.source_rows'::regclass AND tgisinternal ORDER BY tgname LIMIT 1; EXECUTE format('ALTER TABLE public.source_rows DISABLE TRIGGER %I',trigger_name); END $x$;",
+                "policy" => "CREATE POLICY source_rows_policy ON public.source_rows USING (id>0);",
+                "index-valid" => "UPDATE pg_index SET indisvalid=false WHERE indexrelid='public.source_rows_pkey'::regclass;",
+                "index-ready" => "UPDATE pg_index SET indisready=false WHERE indexrelid='public.source_rows_pkey'::regclass;",
                 _ => "ALTER SEQUENCE legacy_migration_internal.authority_seq CACHE 9;",
             });
             SourceBackedLocalRepairDatabasePreimage after = await Read(cs, database);
@@ -70,7 +89,11 @@ public sealed class SourceBackedLocalRepairPreimageTests(PostgreSqlAdapterFixtur
             DeltaExecutionException pending = await Assert.ThrowsAsync<DeltaExecutionException>(() => Read(cs, database));
             Assert.Equal("delta_source_repair_preimage_unsettled", pending.Code);
         }
-        finally { await Execute(fixture.ConnectionString, "DROP DATABASE \"ContactRequest\" WITH (FORCE);"); }
+        finally
+        {
+            if (mutation == "role-set") { await Execute(fixture.ConnectionString, "ALTER ROLE CURRENT_USER RESET application_name;"); }
+            await Execute(fixture.ConnectionString, "DROP DATABASE \"ContactRequest\" WITH (FORCE);");
+        }
     }
 
     [Fact]
