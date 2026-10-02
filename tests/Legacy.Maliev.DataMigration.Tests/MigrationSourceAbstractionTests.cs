@@ -51,7 +51,7 @@ public sealed class MigrationSourceAbstractionTests
     public void Friend_assembly_access_is_limited_to_required_boundaries()
     {
         Assert.Equal(
-            ["Legacy.Maliev.DataMigration.SqlServer", "Legacy.Maliev.DataMigration.SqlServer.Tests", "Legacy.Maliev.DataMigration.Tests"],
+            ["Legacy.Maliev.DataMigration.Console", "Legacy.Maliev.DataMigration.SqlServer", "Legacy.Maliev.DataMigration.SqlServer.Tests", "Legacy.Maliev.DataMigration.Tests"],
             Friends(typeof(IReadOnlyMigrationSource).Assembly));
         Assert.Equal(
             ["Legacy.Maliev.DataMigration.SqlServer.Tests", "Legacy.Maliev.DataMigration.Tests"],

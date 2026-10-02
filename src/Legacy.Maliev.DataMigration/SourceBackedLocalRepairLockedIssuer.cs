@@ -48,12 +48,17 @@ internal sealed class SourceBackedLocalRepairLockedIssuer(
         SourceBackedLocalRepairDatabasePreimage[] expected = Snapshot(expectedPreimages.ToArray());
         ArgumentNullException.ThrowIfNull(maintenance);
         var endpoint = LocalPostgreSqlResourceAuthority.Connection(localConnectionString);
+        if (maintenance is SourceBackedLocalRepairMaintenance protectedMaintenance)
+        { protectedMaintenance.RequireConnection(localConnectionString); }
         if (!expected.Select(item => item?.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
             !schema.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
         {
             throw Invalid();
         }
         RequireAuthorization(plans, proof, schema, authorization, trust);
+        PairedLocalTransitionExecutionPermit physicalPermit = PairedLocalTransitionExecutionPermit.Admit(
+            plans, proof, authorization, schema, trust, plans.Persistent.TargetAuthority!,
+            plans.Persistent.TargetObservationSha256, clock);
         HistoricalCurrentLocalObservation before = await observeTarget(cancellationToken).ConfigureAwait(false);
         if (before.SystemIdentifierSha256 != plans.Persistent.TargetAuthority!.SystemIdentifierSha256 ||
             before.DockerGeneration != plans.Persistent.TargetGeneration) { throw Invalid(); }
@@ -88,8 +93,12 @@ internal sealed class SourceBackedLocalRepairLockedIssuer(
                 }
                 leases.Add((connection, transaction));
                 // First transaction operation is the lock guard. No caller transaction is accepted.
-                observed.Add(await SourceBackedLocalRepairLockSet.AcquireAndVerifyAsync(connection,
-                    transaction, schema.Databases[ordinal], expected[ordinal], cancellationToken).ConfigureAwait(false));
+                SourceBackedLocalRepairDatabasePreimage actual = await SourceBackedLocalRepairLockSet.AcquireAndVerifyAsync(connection,
+                    transaction, schema.Databases[ordinal], expected[ordinal], cancellationToken).ConfigureAwait(false);
+                RequireReadyPreimage(plans.Persistent, schema.Databases[ordinal], actual, physicalPermit);
+                await SourceBackedLocalRepairPreimage.RequireMarkerCatalogAsync(connection, transaction, 0,
+                    cancellationToken).ConfigureAwait(false);
+                observed.Add(actual);
             }
             HistoricalCurrentLocalObservation after = await observeTarget(cancellationToken).ConfigureAwait(false);
             if (before != after) { throw Invalid(); }
@@ -123,6 +132,19 @@ internal sealed class SourceBackedLocalRepairLockedIssuer(
         }
         if (failure is not null) { ExceptionDispatchInfo.Capture(failure).Throw(); }
         return attestation ?? throw Invalid();
+    }
+
+    internal static void RequireReadyPreimage(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema,
+        SourceBackedLocalRepairDatabasePreimage observed, PairedLocalTransitionExecutionPermit physicalPermit)
+    {
+        string expected = QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema, physicalPermit);
+        bool extensions = ApprovedConsumerColumnOverlayManifest.HasState(schema);
+        if (observed.Database != schema.Database ||
+            !DeltaSynchronizationPlanProducer.FixedHashEquals(observed.ObservedPhysicalSchemaSha256, expected) ||
+            (extensions ? observed.TargetExtensionStateSha256 is not { Length: 64 } ||
+                !observed.TargetExtensionStateSha256.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'))
+                : observed.TargetExtensionStateSha256 is not null))
+        { throw Invalid(); }
     }
 
     private void RequireAuthorization(PairedCapturedDeltaPlans plans, Exact23DeltaReconciliationResult proof,

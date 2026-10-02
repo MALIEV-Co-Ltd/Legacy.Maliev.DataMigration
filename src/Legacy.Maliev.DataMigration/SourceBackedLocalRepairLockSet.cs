@@ -18,6 +18,20 @@ internal static class SourceBackedLocalRepairLockSet
         NpgsqlConnection connection, NpgsqlTransaction transaction, DatabaseSchemaPlan schema,
         SourceBackedLocalRepairDatabasePreimage expected, CancellationToken cancellationToken)
     {
+        expected = JsonSerializer.Deserialize<SourceBackedLocalRepairDatabasePreimage>(
+            JsonSerializer.SerializeToUtf8Bytes(expected)) ?? throw Invalid("delta_source_repair_lock_preimage_invalid");
+        SourceBackedLocalRepairDatabasePreimage observed = await AcquireForInspectionAsync(connection,
+            transaction, schema, expected, cancellationToken).ConfigureAwait(false);
+        SourceBackedLocalRepairPreimage.RequireMatches(expected, observed);
+        return observed;
+    }
+
+    // Never authority: the mixed reader must independently prove every permitted difference
+    // against authenticated source, staged marker and original signed preservation bindings.
+    internal static async Task<SourceBackedLocalRepairDatabasePreimage> AcquireForInspectionAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, DatabaseSchemaPlan schema,
+        SourceBackedLocalRepairDatabasePreimage expected, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(schema);
@@ -25,6 +39,11 @@ internal static class SourceBackedLocalRepairLockSet
         expected = JsonSerializer.Deserialize<SourceBackedLocalRepairDatabasePreimage>(
             JsonSerializer.SerializeToUtf8Bytes(expected)) ?? throw Invalid("delta_source_repair_lock_preimage_invalid");
         RequireExpected(expected);
+        if (ApprovedConsumerColumnOverlayManifest.HasState(schema) &&
+            expected.ObservedPhysicalSchemaSha256 == schema.TargetSchemaSha256 && !Hash(expected.TargetExtensionStateSha256))
+        {
+            throw Invalid("delta_source_repair_lock_preimage_invalid");
+        }
         if (transaction.Connection != connection || transaction.IsolationLevel != IsolationLevel.Serializable ||
             schema.Database != expected.Database || connection.Database != expected.Database)
         {
@@ -77,7 +96,6 @@ internal static class SourceBackedLocalRepairLockSet
         }
         SourceBackedLocalRepairDatabasePreimage observed = await SourceBackedLocalRepairPreimage
             .InspectAsync(connection, transaction, schema, cancellationToken).ConfigureAwait(false);
-        SourceBackedLocalRepairPreimage.RequireMatches(expected, observed);
         return observed;
     }
 
@@ -85,6 +103,7 @@ internal static class SourceBackedLocalRepairLockSet
     {
         if (expected is null || !DatabaseInventory.ActiveDatabases.Contains(expected.Database, StringComparer.Ordinal) ||
             !Hash(expected.ObservedPhysicalSchemaSha256) || !Hash(expected.CatalogObjectsSha256) ||
+            !Hash(expected.FenceAuxiliarySha256) ||
             expected.Relations is null || expected.Sequences is null || expected.Relations.Count == 0 ||
             expected.Relations.Any(item => item is null || !Identifier(item.Schema) || !Identifier(item.Table) ||
                 item.Rows < 0 || !Hash(item.RowMultisetSha256) || !Hash(item.CatalogSha256)) ||

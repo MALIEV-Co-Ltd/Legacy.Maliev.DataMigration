@@ -154,6 +154,14 @@ public static partial class MigrationConsole
                     return await RunHistoricalLocalReviewBoundaryAsync(invocation.ConfigPath,
                         getEnvironmentVariable, output, error, new DefaultHistoricalLocalReviewRuntime(),
                         cancellationToken).ConfigureAwait(false);
+                case "stage-source-backed-local-repair":
+                case "prepare-source-backed-local-repair-authority":
+                case "admit-source-backed-local-repair":
+                case "apply-source-backed-local-repair-next":
+                case "reconcile-source-backed-local-repair":
+                case "renew-source-backed-local-repair":
+                    return await RunSourceBackedLocalRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
                 case "issue-historical-local-continuity":
                     return await RunHistoricalLocalContinuityIssueBoundaryAsync(invocation.ConfigPath,
                         getEnvironmentVariable, output, error, new DefaultHistoricalLocalReviewRuntime(),
@@ -1383,7 +1391,9 @@ public static partial class MigrationConsole
         TargetExtensionRepairCommandConfiguration? TargetExtensionRepair = null,
         QuotationTargetBootstrapCommandConfiguration? QuotationTargetBootstrap = null,
         HistoricalLocalReviewCommandConfiguration? HistoricalLocalReview = null,
-        HistoricalLocalContinuityIssueCommandConfiguration? HistoricalLocalContinuityIssue = null);
+        HistoricalLocalContinuityIssueCommandConfiguration? HistoricalLocalContinuityIssue = null,
+        SourceBackedLocalRepairCommandConfiguration? SourceBackedLocalRepair = null,
+        SourceBackedLocalRepairAuthorityCommandConfiguration? SourceBackedLocalRepairAuthority = null);
 
     private sealed record QuotationSchemaBaselineCommandConfiguration(
         string PlanPath,

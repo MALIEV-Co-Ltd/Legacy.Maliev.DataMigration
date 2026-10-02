@@ -176,3 +176,137 @@ non-executing evidence contract. Build and core suite passed: zero warnings/erro
 1,589 core tests passed with 19 unchanged opt-in/platform prerequisite skips.
 Final stronger focused checks, formatting and staged scans must pass before
 commit. SQL adapter code and CLI execution contracts are unchanged.
+
+## Guarded execution integration
+
+The foundation validation above describes its individual commits. It does not
+establish that a later executor build passed, or that the persistent target was
+refreshed. Record the exact integrated source commit and its own validation
+results before using the execution commands below.
+
+The execution boundary checks the fixed canonical DataMigration repository,
+clean synchronized protected main, exact-head required GitHub Actions check,
+and the running frozen Release directory against the independently built
+canonical Release bytes. A caller configuration flag or historical green check
+cannot grant execution. Keep the accepted DataMigration main commit unchanged
+through the run; coordinate the single code acceptance lane and data writer.
+
+Prepare a fresh owner-only Windows run root with
+`prepare-source-backed-local-repair-authority`. Its protected minimal
+`sourceBackedLocalRepairAuthority` configuration contains `artifactRoot` and a
+`bindingOutputPath` immediately inside that root. This command creates the
+permanent run lock and records its actual filesystem binding. It does not
+provision PostgreSQL, read signing keys, or reserve a remote claim. Subsequent
+commands must reacquire that same binding; a copied directory is not authority.
+
+Before capture, plans or signed target preimages, provision a fresh run-specific
+operator role and reviewed HBA allowlist separately. Bind the role custody
+comment to the actual run-root binding. Pin the real Docker image, published
+loopback endpoint, persistent volume, PostgreSQL system identifier, observed
+client address and role expiration. The maintenance provider rechecks those
+facts, sole volume writer, session exclusion and exact HBA file/rules throughout
+execution. A physical recovery clone sharing a system identifier is not the
+persistent endpoint, and cannot serve as the distinct-system disposable proof.
+The provider never provisions a role or opens application access itself.
+The initial operator role is bounded to four hours and cannot be extended by
+renewing row authorization. Provision it before observing the signed catalog;
+changing it afterward is a preservation-state change, not an automatic renewal.
+
+Generate fresh distinct plan, authorization, proof-evidence and persistent
+terminal-evidence signing material in protected files. Project current approved
+credentials independently. Capture the approved 23 SQL Server databases through
+read-only source access, obtain fresh target-specific paired plans, inspect the
+exact operation sets, and execute the same captured operations on a separately
+observed disposable PostgreSQL target. Require its independently signed actual
+reconciliation, distinct system identity and the normal freshness gates. Test
+fixtures and a successful logical copy cannot substitute for that proof.
+
+`stage-source-backed-local-repair` explicitly stages an empty
+`legacy_migration_internal.delta_source_backed_repair` table in each of the 23
+databases before the preimage is signed. Its complete catalog, explicit NOT NULL
+constraints, sole primary key and existing journal-owner binding are verified.
+An existing empty conforming table is an idempotent retry. A nonempty or altered
+table fails closed. Row synchronization never creates the marker table.
+
+`admit-source-backed-local-repair` then obtains the locked exact-23 preimage and
+reserves the retained claim. `apply-source-backed-local-repair-next` admits only
+the next canonical database from a sealed actual mixed-state observation. Each
+database transaction verifies the full preserved preimage, applies the approved
+captured row operations, reconciles actual rows, and atomically commits the
+checkpoint and marker. Its immutable continuation is published after commit.
+If publication is interrupted, recover from the verified committed marker;
+do not replay DML or allocate another claim to escape the reservation.
+
+Before reserving the claim, retain the full original signed admission, capsule,
+authorization, paired plans, schema and proof with their public signing material.
+Bind the distinct persistent terminal signing key ID and fingerprint at that
+time too. Private signing keys, capture encryption keys, connections and raw
+source rows never belong in that retained authority object.
+
+For a refresh that outlasts its authorization, use
+`renew-source-backed-local-repair` with a newly signed paired authorization in
+`freshAuthorizationPath`, the retained database ordinal and
+`previousGrantCounter`. Retain a separate signed renewal epoch against the same
+original authority, claim, capture, plans, proof, target and actual progress.
+Select the verified epoch with `activeGrantCounter` for subsequent apply and
+terminal commands. Zero selects the original epoch only while it is fresh and
+has not been superseded. Publishing the first grant invalidates an original
+permit even if its old authorization has not expired yet.
+
+Renewal requires an actual maintained double scan, immutable chain readback and
+a unique fresh authorization. It does not extend a capsule, alter the original
+claim, waive source-plan/proof freshness or invent a historical execution clock.
+Old signed artifacts are verified at their authenticated issuance instant only
+as provenance. Each actual row transaction still requires a current sealed grant
+and fresh authorization before commit. A retained all-prior basis zero can
+recover interruption before ordinal one publication; it cannot admit an applied
+database. A committed prefix remains preserved across renewal.
+
+Create-only authorization-ID reservations cover original source-repair epochs
+and their renewals, including nonconsecutive and cross-claim replay attempts.
+This protocol does not claim that historical authorizations issued before its
+introduction were backfilled into that namespace. Keep fresh source-repair
+signing material distinct from historical runs.
+
+`reconcile-source-backed-local-repair` compares all 23 actual targets against
+the captured source through the real checkpoint reader and reconciliation
+coordinator. Checkpoints remain required; they do not replace the actual source
+comparison. A fresh distinct persistent-evidence signer signs terminal evidence,
+which is published create-only and independently read back. Repeated publication
+must match the retained claim and bytes. Only a verified ordinal-24 observation
+and retained terminal receipt establish completion of this target's refresh.
+
+Terminal success on the local target does not establish local-versus-production
+parity. Independently compare both targets' required table counts, semantic
+checksums, physical types/collations, sequence state, relationships and approved
+extensions against the same reviewed capture. Account explicitly for retained
+retired tables and environment-owned Auth data. Report capture windows and later
+source writes separately. Restore application access and retire the temporary
+operator only as a separately recorded post-terminal lifecycle operation;
+neither lease disposal nor an expired authorization opens the HBA automatically.
+
+### Reviewed final Quotation schema and daily refresh
+
+Paired capture accepts exactly two derived Quotation physical schemas: the
+reviewed retained-outbox transition schema and the complete mapped final schema
+from the signed current source schema plan. Both targets must use the same
+variant. The console observes the actual catalogs before capture and checks
+the selected variant again afterward. No configuration field supplies an
+arbitrary accepted schema hash. Final disposable execution requires the full
+verified source schema context; the persistent executor requires its sealed
+source-repair authority.
+
+For the existing persistent local target, separately review and prove the
+preservation-safe move of the two retired public Quotation outboxes into
+`legacy_migration_internal.LocalQuotationRetiredGoogleAnalyticsOutbox` and
+`legacy_migration_internal.LocalQuotationRetiredQuotationOutcomeOutbox`.
+Preserve their rows, object identities, owned sequences, privileges and
+dependencies. Do this before signing the new preimage, and bind the archived
+tables as immutable private state. This is explicit schema work, not a deletion
+inferred from a source delta or a generated Down migration.
+
+The resulting application schema admits the ordinary schema-1.2 daily path.
+The repair marker and retained private archives must survive subsequent daily
+refreshes. A successful first repair alone does not prove that boundary; verify
+a fresh ordinary plan, ordinary authorization, actual row apply and complete
+reconciliation with the same preservation constraints.

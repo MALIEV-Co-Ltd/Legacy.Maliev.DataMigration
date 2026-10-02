@@ -159,8 +159,10 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
         }
     }
 
-    [Fact]
-    public async Task Paired_quotation_transition_binds_retained_outboxes_without_admitting_persistent_apply()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Paired_quotation_transition_binds_retained_outboxes_without_admitting_persistent_apply(bool mappedFinal)
     {
         string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-transition-tests",
             Guid.NewGuid().ToString("N"));
@@ -183,11 +185,13 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
             Exact23DeltaPlanRequest disposable = Request(schema) with
             {
                 UseQuotationPhysicalTransition = true,
+                QuotationPhysicalVariant = mappedFinal ? ReviewedQuotationPhysicalVariant.MappedFinal : ReviewedQuotationPhysicalVariant.RetainedOutboxes,
                 ExecutionAuthorizationKeyFingerprintSha256 = authorizer.PublicKeyFingerprintSha256,
             };
             Exact23DeltaPlanRequest persistent = PersistentRequest(schema) with
             {
                 UseQuotationPhysicalTransition = true,
+                QuotationPhysicalVariant = disposable.QuotationPhysicalVariant,
                 ExecutionAuthorizationKeyFingerprintSha256 = authorizer.PublicKeyFingerprintSha256,
             };
 
@@ -205,8 +209,8 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
             Assert.Null(plans.Disposable.PairedTransitionPlanOnly);
             Assert.True(plans.Persistent.PairedTransitionPlanOnly);
             Assert.Same(plans.Disposable.SourceCaptureManifest, plans.Persistent.SourceCaptureManifest);
-            string expected = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(
-                schema.Databases.Single(database => database.Database == "Quotation"), true);
+            DatabaseSchemaPlan quotation = schema.Databases.Single(database => database.Database == "Quotation");
+            string expected = ReviewedQuotationPhysicalSchemaResolver.GetExpected(quotation, disposable.QuotationPhysicalVariant);
             Assert.Equal(expected, plans.Disposable.QuotationTransitionSchemaSha256);
             Assert.Equal(expected, plans.Persistent.QuotationTransitionSchemaSha256);
             Assert.Equal(["legacy_compatibility.GoogleAnalyticsOutbox", "public.QuotationAcceptedOutcome"],
@@ -232,6 +236,22 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
             Assert.Equal("delta_paired_plan_publication_invalid", Assert.Throws<DeltaPlanException>(() =>
                 PairedCapturedDeltaPlanPublicationGate.Verify(plans with { Persistent = wrongSigned },
                     schema, trust, Now())).Code);
+            ReviewedQuotationPhysicalVariant otherVariant = mappedFinal ? ReviewedQuotationPhysicalVariant.RetainedOutboxes : ReviewedQuotationPhysicalVariant.MappedFinal;
+            DeltaSynchronizationPlan mixedUnsigned = plans.Persistent with
+            {
+                QuotationTransitionSchemaSha256 = ReviewedQuotationPhysicalSchemaResolver.GetExpected(quotation, otherVariant),
+                AttestationSignature = null,
+            };
+            DeltaSynchronizationPlan mixedSigned = mixedUnsigned with
+            { AttestationSignature = Convert.ToBase64String(persistentSigner.Sign(DeltaSynchronizationPlanCanonicalizer.CreatePayload(mixedUnsigned))) };
+            Assert.Equal("delta_paired_plan_publication_invalid", Assert.Throws<DeltaPlanException>(() =>
+                PairedCapturedDeltaPlanPublicationGate.Verify(plans with { Persistent = mixedSigned }, schema, trust, Now())).Code);
+            Assert.Equal("delta_capture_paired_preflight_invalid", (await Assert.ThrowsAsync<DeltaPlanException>(() =>
+                coordinator.ProducePairedAsync(disposable, persistent with { QuotationPhysicalVariant = otherVariant },
+                    new EmptyTarget(), persistentSigner, RandomNumberGenerator.GetBytes(32), CancellationToken.None))).Code);
+            Assert.Equal("delta_quotation_transition_plan_invalid", (await Assert.ThrowsAsync<DeltaPlanException>(() =>
+                coordinator.ProducePairedAsync(disposable with { QuotationPhysicalVariant = (ReviewedQuotationPhysicalVariant)99 }, persistent,
+                    new EmptyTarget(), persistentSigner, RandomNumberGenerator.GetBytes(32), CancellationToken.None))).Code);
             DeltaSynchronizationPlan separateArchiveUnsigned = plans.Persistent with
             {
                 SourceCaptureManifest = plans.Persistent.SourceCaptureManifest! with
@@ -569,7 +589,10 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
                 archive, plan, trust, Now(), key);
             var targetRows = new PostgreSqlDeltaRowSource(new(fixture.ConnectionString));
             var coordinator = new DeltaExecutionCoordinator(
-                new PostgreSqlDeltaCanonicalTarget(new(connectionString, database, plan.TargetGeneration)),
+                new PostgreSqlDeltaCanonicalTarget(new(connectionString, database, plan.TargetGeneration)
+                {
+                    SignedSourceSchemaPlan = schemaPlan,
+                }),
                 new CapturedDeltaExecutionRowSessionProvider(replay, targetRows),
                 new AllowAuthorization(),
                 new SignedCapturedSourceReconciliationInspector(plan, schemaPlan, trust, new FixedTime()),
@@ -765,7 +788,10 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
                     Pooling = false,
                 }.ConnectionString;
                 return new(new PostgreSqlDeltaCanonicalTarget(new(connection, database,
-                        plan.TargetGeneration)),
+                        plan.TargetGeneration)
+                {
+                    SignedSourceSchemaPlan = schemaPlan,
+                }),
                     new CapturedDeltaExecutionRowSessionProvider(replay, targetRows), gate,
                     new SignedCapturedSourceReconciliationInspector(plan, schemaPlan, trust, TimeProvider.System),
                     trust, TimeProvider.System);
@@ -980,7 +1006,10 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
                     Pooling = false,
                 }.ConnectionString;
                 return new(new PostgreSqlDeltaCanonicalTarget(new(connection, database,
-                        disposable.TargetGeneration)),
+                        disposable.TargetGeneration)
+                {
+                    SignedSourceSchemaPlan = schema,
+                }),
                     new CapturedDeltaExecutionRowSessionProvider(disposableRows, disposableTargetRows),
                     disposableGate,
                     new SignedCapturedSourceReconciliationInspector(disposable, schema, trust,

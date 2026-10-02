@@ -120,15 +120,29 @@ public sealed class PostgreSqlDeltaReconciliationInspector(PostgreSqlDeltaReconc
         DatabaseSchemaPlan schema,
         CancellationToken cancellationToken)
     {
+        string retained = ReviewedQuotationPhysicalSchemaResolver.GetExpected(schema,
+            ReviewedQuotationPhysicalVariant.RetainedOutboxes);
+        string final = ReviewedQuotationPhysicalSchemaResolver.GetExpected(schema,
+            ReviewedQuotationPhysicalVariant.MappedFinal);
+        string observed = await InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
+        if (!DeltaSynchronizationPlanProducer.FixedHashEquals(observed, retained) &&
+            !DeltaSynchronizationPlanProducer.FixedHashEquals(observed, final))
+        {
+            ReconciliationDiagnostics.CompareSchema(schema.Database, retained, observed);
+        }
+    }
+
+    internal async Task<ReviewedQuotationPhysicalVariant> ObserveQuotationPhysicalVariantAsync(
+        DatabaseSchemaPlan schema, CancellationToken cancellationToken)
+    {
         if (schema.Database != "Quotation" ||
             schema.SourceDispositionProfile != ApprovedSourceDispositionManifest.QuotationOutboxesV1)
         {
             throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
                 "Only the reviewed Quotation disposition can use the physical transition schema.");
         }
-        string expected = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(schema, true);
         string observed = await InspectSchemaAsync(schema, cancellationToken).ConfigureAwait(false);
-        ReconciliationDiagnostics.CompareSchema(schema.Database, expected, observed);
+        return ReviewedQuotationPhysicalSchemaResolver.ClassifyObserved(schema, observed);
     }
 
     public async Task<DatabaseReconciliationEvidence> InspectAsync(

@@ -15,6 +15,8 @@ internal sealed record SourceBackedLocalRepairDatabasePreimage(string Database,
     string ObservedPhysicalSchemaSha256, string CatalogObjectsSha256, IReadOnlyList<SourceRepairRelationPreimage> Relations,
     IReadOnlyList<SourceRepairSequencePreimage> Sequences)
 {
+    public string? FenceAuxiliarySha256 { get; init; }
+    public string? TargetExtensionStateSha256 { get; init; }
     internal static bool AuthorizesExecution => false;
 }
 
@@ -154,10 +156,43 @@ internal static class SourceBackedLocalRepairPreimage
         }
         const string objectsSql = """
             SELECT jsonb_build_object(
+              'eventTriggers',(SELECT jsonb_agg(jsonb_build_object('name',evtname,'event',evtevent,
+                'enabled',evtenabled,'owner',pg_get_userbyid(evtowner),'function',evtfoid::regprocedure::text,
+                'tags',evttags) ORDER BY evtname COLLATE "C") FROM pg_event_trigger),
+              'operators',(SELECT jsonb_agg(to_jsonb(o)-'oid' ORDER BY n.nspname COLLATE "C",o.oprname COLLATE "C",o.oid)
+                FROM pg_operator o JOIN pg_namespace n ON n.oid=o.oprnamespace
+                WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'),
+              'operatorClasses',(SELECT jsonb_agg(to_jsonb(o)-'oid' ORDER BY n.nspname COLLATE "C",o.opcname COLLATE "C",o.oid)
+                FROM pg_opclass o JOIN pg_namespace n ON n.oid=o.opcnamespace
+                WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'),
+              'operatorFamilies',(SELECT jsonb_agg(jsonb_build_object('definition',to_jsonb(o)-'oid',
+                'operators',(SELECT jsonb_agg(to_jsonb(m)-'oid' ORDER BY m.oid) FROM pg_amop m WHERE m.amopfamily=o.oid),
+                'functions',(SELECT jsonb_agg(to_jsonb(m)-'oid' ORDER BY m.oid) FROM pg_amproc m WHERE m.amprocfamily=o.oid))
+                ORDER BY n.nspname COLLATE "C",o.opfname COLLATE "C",o.oid)
+                FROM pg_opfamily o JOIN pg_namespace n ON n.oid=o.opfnamespace
+                WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'),
+              'ranges',(SELECT jsonb_agg(to_jsonb(r) ORDER BY n.nspname COLLATE "C",t.typname COLLATE "C")
+                FROM pg_range r JOIN pg_type t ON t.oid=r.rngtypid JOIN pg_namespace n ON n.oid=t.typnamespace
+                WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'),
+              'casts',(SELECT jsonb_agg(to_jsonb(c)-'oid' ORDER BY c.castsource,c.casttarget)
+                FROM pg_cast c JOIN pg_type s ON s.oid=c.castsource JOIN pg_type t ON t.oid=c.casttarget
+                JOIN pg_namespace sn ON sn.oid=s.typnamespace JOIN pg_namespace tn ON tn.oid=t.typnamespace
+                WHERE (sn.nspname NOT LIKE 'pg_%' AND sn.nspname<>'information_schema')
+                  OR (tn.nspname NOT LIKE 'pg_%' AND tn.nspname<>'information_schema')),
+              'foreignDataWrappers',(SELECT jsonb_agg(to_jsonb(f)-'oid' ORDER BY fdwname COLLATE "C") FROM pg_foreign_data_wrapper f),
+              'foreignServers',(SELECT jsonb_agg(to_jsonb(s)-'oid' ORDER BY srvname COLLATE "C") FROM pg_foreign_server s),
+              'userMappings',(SELECT jsonb_agg(to_jsonb(m)-'oid' ORDER BY umuser,umserver) FROM pg_user_mapping m),
+              'publications',(SELECT jsonb_agg(jsonb_build_object('definition',to_jsonb(p)-'oid',
+                'tables',(SELECT jsonb_agg(to_jsonb(r)-'oid' ORDER BY prrelid) FROM pg_publication_rel r WHERE r.prpubid=p.oid),
+                'schemas',(SELECT jsonb_agg(to_jsonb(s)-'oid' ORDER BY pnnspid) FROM pg_publication_namespace s WHERE s.pnpubid=p.oid))
+                ORDER BY pubname COLLATE "C") FROM pg_publication p),
+              'subscriptions',(SELECT jsonb_agg(to_jsonb(s)-'oid' ORDER BY subname COLLATE "C") FROM pg_subscription s
+                WHERE s.subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())),
               'roles',(SELECT jsonb_agg(jsonb_build_object('name',rolname,
                 'superuser',rolsuper,'inherit',rolinherit,'createRole',rolcreaterole,
                 'createDatabase',rolcreatedb,'login',rolcanlogin,'replication',rolreplication,
-                'bypassRls',rolbypassrls,'connectionLimit',rolconnlimit,'validUntil',rolvaliduntil)
+                'bypassRls',rolbypassrls,'connectionLimit',rolconnlimit,'validUntil',rolvaliduntil,
+                'comment',shobj_description(oid,'pg_authid'))
                 ORDER BY rolname COLLATE "C") FROM pg_roles),
               'roleMemberships',(SELECT jsonb_agg(jsonb_build_object('role',pg_get_userbyid(roleid),
                 'member',pg_get_userbyid(member),'grantor',pg_get_userbyid(grantor),
@@ -212,7 +247,95 @@ internal static class SourceBackedLocalRepairPreimage
         await using var objects = new NpgsqlCommand(objectsSql, connection, transaction);
         string objectsJson = await objects.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string
             ?? throw Invalid("delta_source_repair_preimage_catalog_invalid");
-        return new(schema.Database, physical, HashText(objectsJson), relations, sequences);
+        await using var auxiliary = new NpgsqlCommand("""
+            SELECT encode(sha256(convert_to((to_jsonb(f)-ARRAY['schema_plan_sha256',
+              'target_schema_sha256','target_generation','target_observation_sha256']::text[])::text,'UTF8')),'hex')
+            FROM legacy_migration_internal.delta_fence f;
+            """, connection, transaction);
+        // Hash the PostgreSQL JSONB representation, never return private values in evidence.
+        string auxiliaryHash = await auxiliary.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string
+            ?? throw Invalid("delta_source_repair_preimage_fence_invalid");
+        string? extensionHash = null;
+        // Generic preimages also describe nonconforming databases during diagnosis. They are
+        // nonexecuting evidence; only a conforming declared physical schema can bind the
+        // approved owner state. The mixed reader rejects any nonconforming physical hash.
+        if (ApprovedConsumerColumnOverlayManifest.HasState(schema) &&
+            (physical == schema.TargetSchemaSha256 || schema.SourceDispositionProfile is not null &&
+                physical == PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(schema, true)))
+        {
+            ApprovedTargetExtensionState extensions = await ApprovedTargetExtensionStateInspector
+                .InspectAsync(connection, transaction, schema, cancellationToken).ConfigureAwait(false);
+            extensionHash = ApprovedTargetExtensionStateInspector.ComputeSha256(schema, extensions);
+        }
+        return new(schema.Database, physical, HashText(objectsJson), relations, sequences)
+        {
+            FenceAuxiliarySha256 = auxiliaryHash,
+            TargetExtensionStateSha256 = extensionHash,
+        };
+    }
+    internal static async Task RequireMarkerCatalogAsync(NpgsqlConnection connection,
+        NpgsqlTransaction transaction, long expectedRows, CancellationToken cancellationToken)
+    {
+        if (expectedRows is not (0 or 1) || transaction.Connection != connection)
+        {
+            throw Invalid("delta_source_repair_marker_catalog_invalid");
+        }
+        const string sql = """
+            SELECT c.reltype,t.typarray,
+              c.relkind='r' AND c.relpersistence='p' AND NOT c.relrowsecurity
+              AND NOT c.relforcerowsecurity AND c.reloptions IS NULL AND c.relacl IS NULL
+              AND c.relowner=j.relowner AND t.typowner=c.relowner AND t.typacl IS NULL
+              AND t.typtype='c' AND t.typrelid=c.oid AND a.typelem=t.oid
+              AND a.typowner=c.relowner AND a.typacl IS NULL AND a.typrelid=0
+              AND (SELECT count(*) FROM pg_type WHERE typrelid=c.oid)=1
+              AND (SELECT count(*) FROM pg_type WHERE typelem=t.oid)=1
+              AND (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull)
+                ORDER BY attnum) FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)
+                = '[ ["database_name","text",true],["admission_sha256","text",true],
+                  ["claim_id","uuid",true],["preimage_sha256","text",true],
+                  ["source_capture_sha256","text",true],["future_plan_sha256","text",true],
+                  ["continuation_ordinal","bigint",true],["continuation_sha256","text",true],
+                  ["authorization_sha256","text",true],["prior_internal_sha256","text",true],
+                  ["checkpoint_sha256","text",true],["reconciliation_sha256","text",true]]'::jsonb
+              AND NOT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=c.oid AND attnum>0
+                AND (attisdropped OR attidentity<>'' OR attgenerated<>''))
+              AND NOT EXISTS(SELECT 1 FROM pg_attrdef WHERE adrelid=c.oid)
+              AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=c.oid)
+              AND NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=c.oid)
+              AND NOT EXISTS(SELECT 1 FROM pg_rewrite WHERE ev_class=c.oid)
+              AND NOT EXISTS(SELECT 1 FROM pg_inherits WHERE inhrelid=c.oid OR inhparent=c.oid)
+              AND (SELECT count(*) FROM pg_constraint WHERE conrelid=c.oid AND contype='p')=1
+              AND (SELECT count(*) FROM pg_constraint WHERE conrelid=c.oid AND contype='n')=12
+              AND NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=c.oid
+                AND (contype NOT IN ('p','n') OR NOT convalidated OR NOT conenforced))
+              AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=c.oid AND contype='p'
+                AND conkey=ARRAY[1]::smallint[] AND convalidated AND NOT condeferrable AND NOT condeferred)
+              AND (SELECT count(*) FROM pg_index WHERE indrelid=c.oid)=1
+              AND EXISTS(SELECT 1 FROM pg_index i JOIN pg_class ix ON ix.oid=i.indexrelid
+                JOIN pg_am am ON am.oid=ix.relam WHERE i.indrelid=c.oid
+                AND i.indisprimary AND i.indisunique AND i.indisvalid AND i.indisready AND i.indislive
+                AND NOT i.indisclustered AND NOT i.indisreplident AND i.indnkeyatts=1 AND i.indnatts=1
+                AND i.indkey::text='1' AND i.indexprs IS NULL AND i.indpred IS NULL
+                AND ix.reloptions IS NULL AND am.amname='btree')
+            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+            JOIN pg_type t ON t.oid=c.reltype JOIN pg_type a ON a.oid=t.typarray
+            JOIN pg_class j ON j.oid='legacy_migration_internal.delta_journal'::regclass
+            WHERE n.nspname='legacy_migration_internal' AND c.relname='delta_source_backed_repair';
+            """;
+        await using (var command = new NpgsqlCommand(sql, connection, transaction))
+        await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.IsDBNull(2) || !reader.GetBoolean(2))
+            {
+                throw Invalid("delta_source_repair_marker_catalog_invalid");
+            }
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) { throw Invalid("delta_source_repair_marker_catalog_invalid"); }
+        }
+        await using var rows = new NpgsqlCommand("SELECT count(*) FROM legacy_migration_internal.delta_source_backed_repair;", connection, transaction);
+        if (Convert.ToInt64(await rows.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) != expectedRows)
+        {
+            throw Invalid("delta_source_repair_marker_catalog_invalid");
+        }
     }
     private static string Qualified(string ns, string table)
     {

@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Legacy.Maliev.DataMigration;
 
 /// <summary>
@@ -8,7 +10,7 @@ namespace Legacy.Maliev.DataMigration;
 internal static class QuotationDeltaPhysicalSchemaGuard
 {
     internal static string ExpectedPhysicalSchema(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema,
-        PairedLocalTransitionExecutionPermit? localPermit = null)
+        PairedLocalTransitionExecutionPermit? localPermit = null, FreshSchemaPlan? signedSourceSchemaPlan = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(schema);
@@ -19,23 +21,9 @@ internal static class QuotationDeltaPhysicalSchemaGuard
                     "A transition hash is not permitted by this signed plan version.")
                 : schema.TargetSchemaSha256;
         }
-        bool reviewedSource = schema.SourceDispositionProfile ==
-            ApprovedSourceDispositionManifest.QuotationOutboxesV1;
-        // The atomic target receives the mapped schema. Its source outbox shapes
-        // were checked against the signed hash by QuotationDeltaExecutionPreflight
-        // and DeltaExecutionCoordinator before BeginAsync.
-        bool reviewedMappedTarget = schema.SourceDispositionProfile is null &&
-            schema.Database == "Quotation" &&
-            schema.TargetSchemaSha256 == PostgreSqlSchemaFingerprint.ComputeExpected(schema) &&
-            schema.Tables.Count(table => table.SourceSchema == "disposition") == 2 &&
-            schema.Tables.Any(table => table.SourceSchema == "disposition" &&
-                table.TargetSchema == "legacy_compatibility" && table.TargetTable == "GoogleAnalyticsOutbox") &&
-            schema.Tables.Any(table => table.SourceSchema == "disposition" &&
-                table.TargetSchema == "public" && table.TargetTable == "QuotationAcceptedOutcome");
         if (DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(plan.TargetAuthority))
         {
-            if (localPermit is null || plan.PairedTransitionPlanOnly != true ||
-                (schema.Database == "Quotation" && !reviewedSource && !reviewedMappedTarget))
+            if (localPermit is null || plan.PairedTransitionPlanOnly != true)
             {
                 throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
                     "A signed paired LOCAL transition permit is required for this physical schema.");
@@ -43,32 +31,38 @@ internal static class QuotationDeltaPhysicalSchemaGuard
             localPermit.Require(plan, schema, localPermit.NowUtc);
             if (schema.Database == "Quotation")
             {
-                string derived = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(
-                    localPermit.SourceQuotationSchema, true);
-                return !DeltaSynchronizationPlanProducer.FixedHashEquals(
-                    plan.QuotationTransitionSchemaSha256 ?? string.Empty, derived)
-                    ? throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
-                        "The signed LOCAL transition hash does not derive from the reviewed Quotation schema.")
-                    : derived;
+                return RequireMappedOrSource(plan, schema, localPermit.SourceQuotationSchema);
             }
             return schema.TargetSchemaSha256;
         }
-        return plan.SourceCaptureManifest is null ||
-            !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(plan.TargetAuthority) ||
-            (schema.Database == "Quotation" &&
-                ((!reviewedSource && !reviewedMappedTarget) || (reviewedSource &&
-                 !DeltaSynchronizationPlanProducer.FixedHashEquals(
-                     plan.QuotationTransitionSchemaSha256 ?? string.Empty,
-                     PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(schema, true)))))
-            ? throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
-                "The signed disposable transition hash does not derive from the reviewed Quotation schema.")
-            : schema.Database == "Quotation" ? plan.QuotationTransitionSchemaSha256! : schema.TargetSchemaSha256;
+        if (plan.SourceCaptureManifest is null || !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(plan.TargetAuthority))
+        { throw ReviewedQuotationPhysicalSchemaResolver.Invalid(); }
+        if (schema.Database != "Quotation") { return schema.TargetSchemaSha256; }
+        if (schema.SourceDispositionProfile == ApprovedSourceDispositionManifest.QuotationOutboxesV1)
+        { return RequireMappedOrSource(plan, schema, schema); }
+        if (signedSourceSchemaPlan is null || SchemaPlanCanonicalizer.ComputeSha256(signedSourceSchemaPlan) != plan.SchemaPlanSha256)
+        { throw ReviewedQuotationPhysicalSchemaResolver.Invalid(); }
+        DatabaseSchemaPlan original = signedSourceSchemaPlan.Databases.Single(database => database.Database == "Quotation");
+        return RequireMappedOrSource(plan, schema, original);
+    }
+
+    private static string RequireMappedOrSource(DeltaSynchronizationPlan plan, DatabaseSchemaPlan supplied,
+        DatabaseSchemaPlan signedSource)
+    {
+        string expected = ReviewedQuotationPhysicalSchemaResolver.RequireReviewedHash(signedSource,
+            plan.QuotationTransitionSchemaSha256 ?? string.Empty);
+        string serialized = JsonSerializer.Serialize(supplied);
+        if (serialized != JsonSerializer.Serialize(signedSource) &&
+            serialized != JsonSerializer.Serialize(new QuotationDeltaExecutionMapping(signedSource).TargetSchema))
+        { throw ReviewedQuotationPhysicalSchemaResolver.Invalid(); }
+        return expected;
     }
 
     internal static void RequirePlanSchema(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema,
-        string observedSha256, PairedLocalTransitionExecutionPermit? localPermit = null)
+        string observedSha256, PairedLocalTransitionExecutionPermit? localPermit = null,
+        FreshSchemaPlan? signedSourceSchemaPlan = null)
     {
-        string expected = ExpectedPhysicalSchema(plan, schema, localPermit);
+        string expected = ExpectedPhysicalSchema(plan, schema, localPermit, signedSourceSchemaPlan);
         if (plan.SchemaVersion != "1.4")
         {
             RequireFinalSchema(schema, observedSha256);

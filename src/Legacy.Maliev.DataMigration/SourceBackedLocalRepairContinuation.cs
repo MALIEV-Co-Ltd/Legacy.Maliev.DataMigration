@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Legacy.Maliev.DataMigration;
 
@@ -16,6 +17,12 @@ internal sealed record SourceBackedLocalRepairContinuation(string SchemaVersion,
     IReadOnlyList<SourceBackedLocalRepairState> Databases, DateTimeOffset IssuedAtUtc,
     DateTimeOffset ExpiresAtUtc, string AttestationKeyId, string? AttestationSignature)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PairedLocalTransitionAuthorization? AuthorizationArtifact { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? RenewalCounter { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RenewalGrantSha256 { get; init; }
     internal static bool AuthorizesExecution => false;
 }
 
@@ -37,7 +44,8 @@ internal sealed class SourceBackedLocalRepairContinuationStore(IRolloverClaimObj
 
     internal async Task<SourceBackedLocalRepairContinuation> AppendAsync(
         SourceBackedLocalRepairContinuation continuation, PairedLocalTransitionAuthorization authorization,
-        IReadOnlyList<SourceBackedLocalRepairState> observed, DateTimeOffset nowUtc, CancellationToken cancellationToken)
+        IReadOnlyList<SourceBackedLocalRepairState> observed, DateTimeOffset nowUtc, CancellationToken cancellationToken,
+        SourceBackedLocalRepairRenewalStore.ActiveGrant? activeGrant = null)
     {
         if (continuation is null || authorization is null || observed is null) { throw Invalid(); }
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(continuation);
@@ -47,10 +55,17 @@ internal sealed class SourceBackedLocalRepairContinuationStore(IRolloverClaimObj
             continuation.AdmissionSha256, nowUtc, cancellationToken).ConfigureAwait(false);
         RequirePolicy(await gateway.ReadPolicyAsync(cancellationToken).ConfigureAwait(false));
         Verify(continuation, claim, authorization, nowUtc, true);
+        if (activeGrant is not null)
+        {
+            await activeGrant.RequireFreshAsync(authorization, cancellationToken).ConfigureAwait(false);
+            if (continuation.RenewalCounter != activeGrant.Counter || continuation.RenewalGrantSha256 !=
+                SourceBackedLocalRepairRenewalPolicy.ComputeSha256(activeGrant.SignedGrant)) { throw Invalid(); }
+        }
+        else if (continuation.RenewalCounter is not null) { throw Invalid(); }
         if (!continuation.Databases.SequenceEqual(observed)) { throw Invalid(); }
         SourceBackedLocalRepairContinuation? previous = continuation.Ordinal == 1 ? null :
             await ReadAsync(continuation.ClaimId, continuation.AdmissionSha256, continuation.Ordinal - 1,
-                authorization, nowUtc, cancellationToken).ConfigureAwait(false);
+                authorization, nowUtc, cancellationToken, activeGrant).ConfigureAwait(false);
         RequireProgress(continuation, previous);
         string name = Name(continuation.ClaimId, continuation.Ordinal);
         RolloverClaimObject created = await gateway.CreateOnlyAsync(name, bytes, cancellationToken).ConfigureAwait(false);
@@ -61,12 +76,45 @@ internal sealed class SourceBackedLocalRepairContinuationStore(IRolloverClaimObj
             !read.Content.AsSpan().SequenceEqual(bytes)
             ? throw Invalid()
             : await ReadAsync(continuation.ClaimId, continuation.AdmissionSha256, continuation.Ordinal,
-            authorization, nowUtc, cancellationToken).ConfigureAwait(false);
+            authorization, nowUtc, cancellationToken, activeGrant).ConfigureAwait(false);
     }
 
     internal async Task<SourceBackedLocalRepairContinuation> ReadAsync(Guid claimId, string admissionSha256,
         long ordinal, PairedLocalTransitionAuthorization authorization, DateTimeOffset nowUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, SourceBackedLocalRepairRenewalStore.ActiveGrant? activeGrant = null)
+    {
+        if (activeGrant is not null)
+        {
+            await activeGrant.RequireFreshAsync(authorization, cancellationToken).ConfigureAwait(false);
+            SourceBackedLocalRepairContinuation value = await ReadProvenanceAsync(claimId, admissionSha256,
+                ordinal, activeGrant.Epochs[0].Authorization, nowUtc, cancellationToken).ConfigureAwait(false);
+            SourceBackedLocalRepairRenewalGrant grant = activeGrant.SignedGrant;
+            if (grant.ClaimId != claimId || grant.AdmissionSha256 != admissionSha256 || ordinal < grant.BasisContinuationOrdinal ||
+                ordinal == grant.BasisContinuationOrdinal && ComputeSha256(value) != grant.BasisContinuationSha256 ||
+                value.Databases.Zip(grant.Databases).Where((_, index) => index < grant.BasisContinuationOrdinal - 1)
+                    .Any(pair => pair.First != pair.Second) ||
+                ordinal > grant.BasisContinuationOrdinal && value.Databases.Zip(grant.Databases)
+                    .Any(pair => pair.Second.Phase == SourceBackedLocalRepairPhase.Applied && pair.First != pair.Second)) { throw Invalid(); }
+            return value;
+        }
+        SourceBackedLocalRepairContinuation current = await ReadCoreAsync(claimId, admissionSha256,
+            ordinal, authorization, nowUtc, true, cancellationToken).ConfigureAwait(false);
+        if (current.AuthorizationSha256 != AuthorizationHash(authorization) || current.RenewalCounter is not null)
+        {
+            throw Invalid();
+        }
+        return current;
+    }
+
+    /// <summary>Authenticates immutable signed provenance only; expired evidence grants no current authority.</summary>
+    internal Task<SourceBackedLocalRepairContinuation> ReadProvenanceAsync(Guid claimId, string admissionSha256,
+        long ordinal, PairedLocalTransitionAuthorization originalAuthorization, DateTimeOffset nowUtc,
+        CancellationToken cancellationToken) => ReadCoreAsync(claimId, admissionSha256, ordinal,
+            originalAuthorization, nowUtc, false, cancellationToken);
+
+    private async Task<SourceBackedLocalRepairContinuation> ReadCoreAsync(Guid claimId, string admissionSha256,
+        long ordinal, PairedLocalTransitionAuthorization fallbackAuthorization, DateTimeOffset nowUtc,
+        bool requireFresh, CancellationToken cancellationToken)
     {
         if (ordinal is < 1 or > 24) { throw Invalid(); }
         SourceBackedLocalRepairClaim claim = await claims.ReadAsync(claimId, admissionSha256, nowUtc,
@@ -80,8 +128,11 @@ internal sealed class SourceBackedLocalRepairContinuationStore(IRolloverClaimObj
             SourceBackedLocalRepairContinuation value;
             try { value = JsonSerializer.Deserialize<SourceBackedLocalRepairContinuation>(retained.Content) ?? throw Invalid(); }
             catch (JsonException) { throw Invalid(); }
-            if (value.Ordinal != index || value.ClaimId != claimId) { throw Invalid(); }
-            Verify(value, claim, authorization, nowUtc, index == ordinal);
+            if (value.Ordinal != index || value.ClaimId != claimId || value.IssuedAtUtc > nowUtc ||
+                retained.CreatedAtUtc < value.IssuedAtUtc || retained.CreatedAtUtc >= value.ExpiresAtUtc) { throw Invalid(); }
+            PairedLocalTransitionAuthorization ownAuthorization = value.AuthorizationArtifact ?? fallbackAuthorization;
+            Verify(value, claim, ownAuthorization, requireFresh && index == ordinal ? nowUtc : value.IssuedAtUtc,
+                requireFresh && index == ordinal);
             RequireProgress(value, previous);
             previous = value;
         }
@@ -97,10 +148,13 @@ internal sealed class SourceBackedLocalRepairContinuationStore(IRolloverClaimObj
             value.TargetGeneration != claim.TargetGeneration || value.Ordinal is < 1 or > 24 ||
             authorization.SchemaVersion != "1.0" || authorization.AuthorizationId == Guid.Empty ||
             value.AuthorizationId != authorization.AuthorizationId || value.AuthorizationSha256 != AuthorizationHash(authorization) ||
+            value.AuthorizationArtifact is not null && AuthorizationHash(value.AuthorizationArtifact) != AuthorizationHash(authorization) ||
+            (value.RenewalCounter is null) != (value.RenewalGrantSha256 is null) ||
+            value.RenewalCounter is not null && (value.RenewalCounter < 1 || !Hash(value.RenewalGrantSha256) || value.AuthorizationArtifact is null) ||
             authorization.PersistentPlanSha256 != claim.FuturePlanSha256 ||
             authorization.TargetAuthority is null || authorization.TargetAuthority.Kind != DeltaTargetAuthorityKind.LocalAspire ||
             authorization.TargetAuthority.SystemIdentifierSha256 != claim.SystemIdentifierSha256 ||
-            !Time(authorization.IssuedAtUtc, authorization.ExpiresAtUtc, now, true) ||
+            !Time(authorization.IssuedAtUtc, authorization.ExpiresAtUtc, now, requireFresh) ||
             !Time(value.IssuedAtUtc, value.ExpiresAtUtc, now, requireFresh) ||
             value.IssuedAtUtc < authorization.IssuedAtUtc || value.ExpiresAtUtc > authorization.ExpiresAtUtc ||
             value.IssuedAtUtc < claim.CreatedAtUtc || value.ExpiresAtUtc > claim.ExpiresAtUtc ||
@@ -131,7 +185,8 @@ internal sealed class SourceBackedLocalRepairContinuationStore(IRolloverClaimObj
         int applied = checked((int)current.Ordinal - 1);
         if (prior is null ? current.Ordinal != 1 || current.PreviousContinuationSha256 is not null :
             current.Ordinal != prior.Ordinal + 1 || current.PreviousContinuationSha256 != ComputeSha256(prior) ||
-            current.IssuedAtUtc < prior.IssuedAtUtc || current.AuthorizationId != prior.AuthorizationId)
+            current.IssuedAtUtc < prior.IssuedAtUtc || current.AuthorizationId != prior.AuthorizationId &&
+                (current.RenewalCounter is null || current.AuthorizationArtifact is null))
         { throw Invalid(); }
         for (int index = 0; index < current.Databases.Count; index++)
         {

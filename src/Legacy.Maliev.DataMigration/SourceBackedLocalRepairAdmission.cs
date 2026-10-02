@@ -151,8 +151,15 @@ internal static class SourceBackedLocalRepairAdmissionPolicy
 /// <summary>Trusted composition only. No public factory, execution permit, CLI or cloud gateway construction.</summary>
 internal sealed class SourceBackedLocalRepairAdmissionStore(SourceBackedLocalRepairClaimStore claims,
     IReceiptAttestationTrustStore trust, SourceBackedLocalRepairSigningPins pins,
-    Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> observeTarget, TimeProvider clock)
+    Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> observeTarget, TimeProvider clock,
+    SourceBackedLocalRepairRenewalStore? renewals = null,
+    ISourceBackedLocalRepairSourceAcceptance? sourceAcceptance = null,
+    SourceBackedLocalRepairTerminalSigningPin? terminalPin = null)
 {
+    private readonly SourceBackedLocalRepairRenewalStore? _renewals = renewals ?? (terminalPin is null ? null : new(claims.Gateway,
+        claims, new SourceBackedLocalRepairContinuationStore(claims.Gateway, claims, trust,
+            pins.AuthorizationFingerprint, pins.EvidenceFingerprint), trust, pins, terminalPin, observeTarget, clock, sourceAcceptance));
+    internal SourceBackedLocalRepairRenewalStore Renewals => _renewals ?? throw SourceBackedLocalRepairAdmissionPolicy.Invalid();
     internal async Task<SourceBackedLocalRepairAdmissionBundle> CreateAsync(SourceBackedLocalRepairLockedIssuer issuer,
         PairedCapturedDeltaPlans plans, Exact23DeltaReconciliationResult proof, FreshSchemaPlan schema,
         PairedLocalTransitionAuthorization authorization, IReadOnlyList<SourceBackedLocalRepairDatabasePreimage> expectedPreimages,
@@ -177,7 +184,17 @@ internal sealed class SourceBackedLocalRepairAdmissionStore(SourceBackedLocalRep
         };
         SourceBackedLocalRepairAdmissionPolicy.Verify(admission, capsule, plans, proof, schema, authorization,
             identity, trust, pins, issued);
-        _ = await claims.ReserveAsync(SourceBackedLocalRepairAdmissionPolicy.ExpectedClaim(admission), issued,
+        await Renewals.RetainOriginalAsync(admission, capsule, authorization, plans, proof, schema,
+            cancellationToken).ConfigureAwait(false);
+        if (sourceAcceptance is not null)
+        {
+            await sourceAcceptance.RequireAsync(plans.Persistent.SourceCommitSha, cancellationToken).ConfigureAwait(false);
+        }
+        HistoricalCurrentLocalObservation beforeReservation = await observeTarget(cancellationToken).ConfigureAwait(false);
+        DateTimeOffset reservationNow = clock.GetUtcNow();
+        SourceBackedLocalRepairAdmissionPolicy.Verify(admission, capsule, plans, proof, schema, authorization,
+            beforeReservation, trust, pins, reservationNow);
+        _ = await claims.ReserveAsync(SourceBackedLocalRepairAdmissionPolicy.ExpectedClaim(admission), reservationNow,
             cancellationToken).ConfigureAwait(false);
         SourceBackedLocalRepairClaim claim = await VerifyRetainedAsync(admission, capsule, plans, proof, schema,
             authorization, cancellationToken).ConfigureAwait(false);
@@ -197,13 +214,36 @@ internal sealed class SourceBackedLocalRepairAdmissionStore(SourceBackedLocalRep
             identity, trust, pins, now);
         SourceBackedLocalRepairClaim retained = await claims.ReadAsync(admission.ClaimId,
             SourceBackedLocalRepairAdmissionPolicy.ComputeSha256(admission), now, cancellationToken).ConfigureAwait(false);
+        _ = await Renewals.VerifyOriginalRetainedAsync(new(admission, capsule, retained), plans, proof, schema,
+            cancellationToken).ConfigureAwait(false);
+        await Renewals.RequireNoRenewalAsync(admission.ClaimId, cancellationToken).ConfigureAwait(false);
         SourceBackedLocalRepairClaim expected = SourceBackedLocalRepairAdmissionPolicy.ExpectedClaim(admission);
         if (JsonSerializer.Serialize(expected) != JsonSerializer.Serialize(retained) ||
             !expected.InitialMetadata.SequenceEqual(retained.InitialMetadata)) { throw SourceBackedLocalRepairAdmissionPolicy.Invalid(); }
         HistoricalCurrentLocalObservation after = await observeTarget(cancellationToken).ConfigureAwait(false);
         SourceBackedLocalRepairAdmissionPolicy.Verify(admission, capsule, plans, proof, schema, authorization,
             after, trust, pins, clock.GetUtcNow());
+        await Renewals.RequireNoRenewalAsync(admission.ClaimId, cancellationToken).ConfigureAwait(false);
         return retained;
+    }
+
+    internal async Task<SourceBackedLocalRepairClaim> VerifyRetainedAsync(SourceBackedLocalRepairAdmission admission,
+        SourceBackedLocalRepairPreimageAttestation capsule, PairedCapturedDeltaPlans plans,
+        Exact23DeltaReconciliationResult proof, FreshSchemaPlan schema, PairedLocalTransitionAuthorization authorization,
+        SourceBackedLocalRepairRenewalStore.ActiveGrant activeGrant, CancellationToken cancellationToken)
+    {
+        admission = Snapshot(admission); capsule = Snapshot(capsule); plans = Snapshot(plans);
+        proof = Snapshot(proof); schema = Snapshot(schema); authorization = Snapshot(authorization);
+        HistoricalCurrentLocalObservation identity = await observeTarget(cancellationToken).ConfigureAwait(false);
+        SourceBackedLocalRepairClaim verified = await activeGrant.RequireFreshAsync(admission, capsule, plans,
+            proof, schema, authorization, identity, cancellationToken).ConfigureAwait(false);
+        SourceBackedLocalRepairClaim own = await claims.ReadAsync(admission.ClaimId,
+            SourceBackedLocalRepairAdmissionPolicy.ComputeSha256(admission), clock.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+        if (JsonSerializer.Serialize(verified) != JsonSerializer.Serialize(own) || identity != await observeTarget(cancellationToken).ConfigureAwait(false))
+        {
+            throw SourceBackedLocalRepairAdmissionPolicy.Invalid();
+        }
+        return own;
     }
 
     private static T Snapshot<T>(T value)

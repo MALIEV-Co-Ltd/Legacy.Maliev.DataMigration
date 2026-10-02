@@ -19,6 +19,7 @@ internal sealed class SourceBackedLocalRepairClaimStore(IRolloverClaimObjectGate
 {
     private const string Prefix = "source-backed-local-repair/v1/";
     private readonly IRolloverClaimObjectGateway _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
+    internal IRolloverClaimObjectGateway Gateway => _gateway;
 
     internal async Task<SourceBackedLocalRepairClaim> ReserveAsync(
         SourceBackedLocalRepairClaim claim, DateTimeOffset nowUtc, CancellationToken cancellationToken)

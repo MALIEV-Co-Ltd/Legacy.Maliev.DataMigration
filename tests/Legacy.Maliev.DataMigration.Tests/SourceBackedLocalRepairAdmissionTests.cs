@@ -85,13 +85,22 @@ public sealed partial class DisposableDeltaProofVerifierTests
     [InlineData("policy")]
     [InlineData("expiry-during-read")]
     [InlineData("target-during-read")]
+    [InlineData("superseded-original")]
     public async Task Source_repair_admission_reads_and_authenticates_retained_claim_without_accepting_caller_claim(string scenario)
     {
         AdmissionFixture state = await AdmissionState();
         var gateway = new AdmissionGateway(state.Fixture.Now);
         var claims = new SourceBackedLocalRepairClaimStore(gateway);
         SourceBackedLocalRepairClaim expected = SourceBackedLocalRepairAdmissionPolicy.ExpectedClaim(state.Admission);
-        if (scenario != "unretained") { _ = await claims.ReserveAsync(expected, state.Fixture.Now, CancellationToken.None); }
+        if (scenario != "unretained")
+        {
+            var retainer = new SourceBackedLocalRepairRenewalStore(gateway, claims,
+                new(gateway, claims, state.Fixture.Trust, state.Pins.AuthorizationFingerprint, state.Pins.EvidenceFingerprint),
+                state.Fixture.Trust, state.Pins, SourceRepairTerminalPin(), _ => Task.FromResult(state.Identity), new AdmissionClock(state.Fixture.Now));
+            await retainer.RetainOriginalAsync(state.Admission, state.Capsule, state.Authorization,
+                state.Plans, state.Fixture.ProofResult, state.Fixture.Schema, CancellationToken.None);
+            _ = await claims.ReserveAsync(expected, state.Fixture.Now, CancellationToken.None);
+        }
         if (scenario is "caller-claim" or "old-metadata" or "system")
         {
             SourceBackedLocalRepairClaim changed = scenario switch
@@ -105,6 +114,13 @@ public sealed partial class DisposableDeltaProofVerifierTests
             gateway.ForgeClaimAndReservations(changed);
         }
         if (scenario == "policy") { gateway.SafePolicy = false; }
+        if (scenario == "superseded-original")
+        {
+            // Even a still-fresh original permit must fail closed as soon as epoch1 is
+            // retained. An unreadable newer object cannot restore superseded authority.
+            _ = await gateway.CreateOnlyAsync("source-backed-local-repair/v1/renewals/" +
+                expected.ClaimId.ToString("D") + "/00000001", [1], CancellationToken.None);
+        }
         int observed = 0;
         var clock = new AdmissionClock(state.Fixture.Now);
         var store = new SourceBackedLocalRepairAdmissionStore(claims, state.Fixture.Trust, state.Pins, _ =>
@@ -112,14 +128,14 @@ public sealed partial class DisposableDeltaProofVerifierTests
             observed++;
             if (observed == 2 && scenario == "expiry-during-read") { clock.Now = state.Fixture.Now.AddMinutes(5); }
             return Task.FromResult(observed == 2 && scenario == "target-during-read" ? state.Identity with { ContainerId = Hash('f') } : state.Identity);
-        }, clock);
+        }, clock, terminalPin: SourceRepairTerminalPin());
         Task<SourceBackedLocalRepairClaim> verification = store.VerifyRetainedAsync(state.Admission, state.Capsule, state.Plans,
             state.Fixture.ProofResult, state.Fixture.Schema, state.Authorization, CancellationToken.None);
         if (scenario == "success")
         {
             SourceBackedLocalRepairClaim result = await verification;
             Assert.Equal(JsonSerializer.Serialize(expected), JsonSerializer.Serialize(result));
-            Assert.Equal(2, observed);
+            Assert.Equal(4, observed);
             _ = await Assert.ThrowsAsync<DeltaExecutionException>(() => claims.ReserveAsync(expected, state.Fixture.Now, CancellationToken.None));
         }
         else { _ = await Assert.ThrowsAsync<DeltaExecutionException>(() => verification); }
@@ -133,12 +149,31 @@ public sealed partial class DisposableDeltaProofVerifierTests
         string admin = new NpgsqlConnectionStringBuilder(container.GetConnectionString()) { Host = "127.0.0.1", Database = "postgres", Pooling = false, Enlist = false }.ConnectionString;
         string system = (string)(await LockedIssuerScalar(admin, "SELECT system_identifier::text FROM pg_control_system();"))!;
         string systemHash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(system))).ToLowerInvariant();
-        AdmissionFixture state = await AdmissionState(systemHash);
+        AdmissionFixture state = await AdmissionState(systemHash, physicalTargetHashes: true);
         var expected = new List<SourceBackedLocalRepairDatabasePreimage>();
         foreach (DatabaseSchemaPlan database in state.Fixture.Schema.Databases)
         {
             await LockedIssuerExecute(admin, $"CREATE DATABASE {PostgreSqlShadowTarget.QuoteIdentifier(database.Database)};");
             string cs = LockedIssuerDatabase(admin, database.Database);
+            await using (var connection = new NpgsqlConnection(cs))
+            {
+                await connection.OpenAsync();
+                await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync();
+                DatabaseSchemaPlan initial = database.SourceDispositionProfile is null ? database : database with
+                {
+                    Database = "QuotationBootstrapFixture",
+                    SourceDispositionProfile = null,
+                    SourceTableDispositions = [],
+                    TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpectedSourceShape(database),
+                };
+                await using var writer = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
+                await writer.ApplySchemaAsync(initial, CancellationToken.None);
+                await writer.FinalizeSchemaAsync(initial, CancellationToken.None);
+                await transaction.CommitAsync();
+            }
+            if (database.Database == "Quotation")
+            { _ = await QuotationDispositionTargetBootstrap.ExecuteAsync(database, cs, database.Database, systemHash, CancellationToken.None); }
+            else { await LockedIssuerExecute(cs, "INSERT INTO public.items(id) VALUES(1);"); }
             await LockedIssuerExecute(cs, """
                 CREATE SCHEMA legacy_migration_internal;
                 CREATE TABLE legacy_migration_internal.delta_fence(database_name text NOT NULL);
@@ -147,10 +182,15 @@ public sealed partial class DisposableDeltaProofVerifierTests
                 INSERT INTO legacy_migration_internal.delta_journal VALUES('settled');
                 CREATE TABLE legacy_migration_internal.effects(id bigint PRIMARY KEY);
                 INSERT INTO legacy_migration_internal.effects VALUES(9007199254740993);
-                CREATE TABLE public.items(id bigint PRIMARY KEY);
-                INSERT INTO public.items VALUES(9007199254740993);
-                CREATE SEQUENCE public.authority_seq AS bigint START 9007199254740993 CACHE 7;
+                CREATE SEQUENCE legacy_migration_internal.authority_seq AS bigint START 9007199254740993 CACHE 7;
                 """);
+            await using (var connection = new NpgsqlConnection(cs))
+            {
+                await connection.OpenAsync();
+                await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+                await PostgreSqlSourceBackedLocalRepair.StageAsync(connection, transaction, CancellationToken.None);
+                await transaction.CommitAsync();
+            }
             expected.Add(await LockedIssuerRead(cs, database));
         }
         var clock = new AdmissionClock(state.Fixture.Now);
@@ -163,14 +203,15 @@ public sealed partial class DisposableDeltaProofVerifierTests
         });
         var issuer = new SourceBackedLocalRepairLockedIssuer(admin, _ => Task.FromResult(state.Identity), maintenance, clock);
         var gateway = new AdmissionGateway(state.Fixture.Now);
-        var store = new SourceBackedLocalRepairAdmissionStore(new(gateway), state.Fixture.Trust, state.Pins, _ => Task.FromResult(state.Identity), clock);
+        var store = new SourceBackedLocalRepairAdmissionStore(new(gateway), state.Fixture.Trust, state.Pins, _ => Task.FromResult(state.Identity), clock,
+            terminalPin: SourceRepairTerminalPin());
         using var signer = new P256MigrationEvidenceSigner("proof-evidence", _evidenceKey.ExportECPrivateKeyPem());
         SourceBackedLocalRepairAdmissionBundle bundle = await store.CreateAsync(issuer, state.Plans, state.Fixture.ProofResult,
             state.Fixture.Schema, state.Authorization, expected, state.Fixture.Now.AddMinutes(5), signer, CancellationToken.None);
         Assert.Equal(SourceBackedLocalRepairAdmissionPolicy.ComputeSha256(bundle.Admission), bundle.VerifiedClaim.AdmissionSha256);
         Assert.Equal(23, bundle.VerifiedClaim.InitialMetadata.Count);
         Assert.Equal(SourceBackedLocalRepairAdmissionPolicy.Metadata(bundle.Capsule.Databases), bundle.Admission.InitialMetadata);
-        Assert.Equal(4, gateway.Count);
+        Assert.Equal(6, gateway.Count);
         Assert.Equal(2, maintenance.Checks);
         foreach (DatabaseSchemaPlan database in state.Fixture.Schema.Databases)
         {
@@ -181,9 +222,10 @@ public sealed partial class DisposableDeltaProofVerifierTests
             state.Fixture.Schema, state.Authorization, expected, state.Fixture.Now.AddMinutes(5), signer, CancellationToken.None));
     }
 
-    private async Task<AdmissionFixture> AdmissionState(string? systemHash = null)
+    private async Task<AdmissionFixture> AdmissionState(string? systemHash = null, bool physicalTargetHashes = false)
     {
-        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true, captured: true, historicalLocal: true, localSystemHash: systemHash);
+        Fixture fixture = AddSourceRepairTerminalTrust(await CreateAsync(pairedTransition: true, quotationDisposition: true, captured: true, historicalLocal: true,
+            localSystemHash: systemHash, physicalTargetHashes: physicalTargetHashes));
         var plans = new PairedCapturedDeltaPlans(fixture.ProofPlan, fixture.LocalPlan);
         using var authorizationSigner = new P256MigrationEvidenceSigner("local-transition-authorization", _authorizationKey.ExportECPrivateKeyPem());
         using var evidenceSigner = new P256MigrationEvidenceSigner("proof-evidence", _evidenceKey.ExportECPrivateKeyPem());
@@ -231,13 +273,14 @@ public sealed partial class DisposableDeltaProofVerifierTests
     private sealed class AdmissionClock(DateTimeOffset now) : TimeProvider
     {
         internal DateTimeOffset Now { get; set; } = now;
+        internal bool FollowWallClock { get; set; }
         public override DateTimeOffset GetUtcNow()
         {
-            return Now;
+            return FollowWallClock ? DateTimeOffset.UtcNow : Now;
         }
     }
 
-    private sealed class AdmissionGateway(DateTimeOffset now) : IRolloverClaimObjectGateway
+    private sealed class AdmissionGateway(DateTimeOffset now, TimeProvider? clock = null) : IRolloverClaimObjectGateway
     {
         private readonly ConcurrentDictionary<string, RolloverClaimObject> _objects = new(StringComparer.Ordinal);
         private long _generation;
@@ -255,7 +298,8 @@ public sealed partial class DisposableDeltaProofVerifierTests
 
         public Task<RolloverClaimObject> CreateOnlyAsync(string name, byte[] content, CancellationToken cancellationToken)
         {
-            var value = new RolloverClaimObject(Interlocked.Increment(ref _generation), now, now.AddDays(366), [.. content]);
+            DateTimeOffset createdAt = clock?.GetUtcNow() ?? now;
+            var value = new RolloverClaimObject(Interlocked.Increment(ref _generation), createdAt, createdAt.AddDays(366), [.. content]);
             return Task.FromResult(_objects.TryAdd(name, value) ? value : throw new DeltaExecutionException("delta_rollover_claim_conflict", "Already reserved."));
         }
         internal void ForgeClaimAndReservations(SourceBackedLocalRepairClaim claim)
