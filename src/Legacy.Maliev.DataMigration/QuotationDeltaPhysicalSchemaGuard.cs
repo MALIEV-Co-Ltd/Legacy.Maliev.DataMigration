@@ -29,11 +29,9 @@ internal static class QuotationDeltaPhysicalSchemaGuard
                     "A signed paired LOCAL transition permit is required for this physical schema.");
             }
             localPermit.Require(plan, schema, localPermit.NowUtc);
-            if (schema.Database == "Quotation")
-            {
-                return RequireMappedOrSource(plan, schema, localPermit.SourceQuotationSchema);
-            }
-            return schema.TargetSchemaSha256;
+            return schema.Database == "Quotation"
+                ? RequireMappedOrSource(plan, schema, localPermit.SourceQuotationSchema)
+                : schema.TargetSchemaSha256;
         }
         if (plan.SourceCaptureManifest is null || !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(plan.TargetAuthority))
         { throw ReviewedQuotationPhysicalSchemaResolver.Invalid(); }
@@ -52,10 +50,10 @@ internal static class QuotationDeltaPhysicalSchemaGuard
         string expected = ReviewedQuotationPhysicalSchemaResolver.RequireReviewedHash(signedSource,
             plan.QuotationTransitionSchemaSha256 ?? string.Empty);
         string serialized = JsonSerializer.Serialize(supplied);
-        if (serialized != JsonSerializer.Serialize(signedSource) &&
-            serialized != JsonSerializer.Serialize(new QuotationDeltaExecutionMapping(signedSource).TargetSchema))
-        { throw ReviewedQuotationPhysicalSchemaResolver.Invalid(); }
-        return expected;
+        return serialized != JsonSerializer.Serialize(signedSource) &&
+            serialized != JsonSerializer.Serialize(new QuotationDeltaExecutionMapping(signedSource).TargetSchema)
+            ? throw ReviewedQuotationPhysicalSchemaResolver.Invalid()
+            : expected;
     }
 
     internal static void RequirePlanSchema(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema,

@@ -26,7 +26,6 @@ internal sealed record SourceBackedLocalRepairMaintenancePins(string OperatorRol
 /// </summary>
 internal sealed partial class SourceBackedLocalRepairMaintenance : ISourceBackedLocalRepairMaintenance
 {
-    private readonly string _connectionString;
     private readonly SourceBackedLocalRepairMaintenancePins _pins;
     private readonly Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> _observe;
     private readonly TimeProvider _clock;
@@ -56,7 +55,7 @@ internal sealed partial class SourceBackedLocalRepairMaintenance : ISourceBacked
             !IPAddress.TryParse(pins.ServerClientAddress, out IPAddress? address) ||
             address.AddressFamily != AddressFamily.InterNetwork || address.Equals(IPAddress.Any) ||
             address.Equals(IPAddress.Broadcast)) { throw Invalid(); }
-        _connectionString = endpoint.ConnectionString;
+        ConnectionString = endpoint.ConnectionString;
         _pins = pins;
         _observe = observe;
         _clock = clock;
@@ -67,19 +66,18 @@ internal sealed partial class SourceBackedLocalRepairMaintenance : ISourceBacked
     internal static bool AuthorizesExecution => false;
 
     /// <summary>The sole verified endpoint; database selection is performed after admission.</summary>
-    internal string ConnectionString => _connectionString;
+    internal string ConnectionString { get; }
 
     internal static string RoleCustodyComment(string bindingSha256)
     {
-        if (!Hash(bindingSha256)) { throw Invalid(); }
-        return "legacy-maliev-source-repair-operator-v1:" + bindingSha256;
+        return !Hash(bindingSha256) ? throw Invalid() : "legacy-maliev-source-repair-operator-v1:" + bindingSha256;
     }
 
     internal void RequireConnection(string connectionString)
     {
         RequireOwnership();
         string canonical = LocalPostgreSqlResourceAuthority.Connection(connectionString).ConnectionString;
-        if (canonical != _connectionString) { throw Invalid(); }
+        if (canonical != ConnectionString) { throw Invalid(); }
     }
 
     public async Task<ISourceBackedLocalRepairMaintenanceLease> AcquireAsync(
@@ -96,24 +94,24 @@ internal sealed partial class SourceBackedLocalRepairMaintenance : ISourceBacked
         if (identity != _pins.TargetIdentity || _clock.GetUtcNow() < _pins.RoleIssuedAtUtc ||
             _clock.GetUtcNow() >= _pins.RoleExpiresAtUtc ||
             await _observe(cancellationToken).ConfigureAwait(false) != identity) { throw Invalid(); }
-        await using var connection = new NpgsqlConnection(_connectionString);
+        await using var connection = new NpgsqlConnection(ConnectionString);
         LocalDockerResourceState docker = await _docker.ObserveAsync(identity.ContainerId,
             cancellationToken, _pins.ImageId).ConfigureAwait(false);
         BackupProcessResult writers = await new ReadOnlyDockerProcess().RunAsync(
             ["--host", docker.DockerHost, "ps", "--no-trunc", "--filter", "volume=" + identity.VolumeName,
                 "--format", "{{.ID}}"], cancellationToken).ConfigureAwait(false);
         if (writers.ExitCode != 0 || writers.StandardOutput.Trim() != identity.ContainerId) { throw Invalid(); }
-        var endpoint = new NpgsqlConnectionStringBuilder(_connectionString);
+        var endpoint = new NpgsqlConnectionStringBuilder(ConnectionString);
         DockerObservedMount? mount = docker.Mounts.SingleOrDefault(item => item.Name == identity.VolumeName);
         string generation = string.Join(':', "docker", docker.ContainerId,
-            DateTimeOffset.Parse(docker.CreatedAt, System.Globalization.CultureInfo.InvariantCulture).ToUnixTimeMilliseconds(),
-            DateTimeOffset.Parse(docker.StartedAt, System.Globalization.CultureInfo.InvariantCulture).ToUnixTimeMilliseconds(),
+            DateTimeOffset.Parse(docker.CreatedAt, CultureInfo.InvariantCulture).ToUnixTimeMilliseconds(),
+            DateTimeOffset.Parse(docker.StartedAt, CultureInfo.InvariantCulture).ToUnixTimeMilliseconds(),
             mount is null ? 0 : DateTimeOffset.Parse(mount.Volume.CreatedAt,
-                System.Globalization.CultureInfo.InvariantCulture).ToUnixTimeMilliseconds());
+                CultureInfo.InvariantCulture).ToUnixTimeMilliseconds());
         if (generation != identity.DockerGeneration || mount is null || !mount.ReadWrite ||
             mount.Source != identity.VolumeMountpoint || mount.Destination != identity.VolumeDestination ||
             !(identity.PgData == mount.Destination || identity.PgData.StartsWith(mount.Destination + "/", StringComparison.Ordinal)) ||
-            DateTimeOffset.Parse(mount.Volume.CreatedAt, System.Globalization.CultureInfo.InvariantCulture) != identity.VolumeCreatedAtUtc ||
+            DateTimeOffset.Parse(mount.Volume.CreatedAt, CultureInfo.InvariantCulture) != identity.VolumeCreatedAtUtc ||
             docker.Ports.Count(port => port.HostAddress == "127.0.0.1" && port.HostPort == endpoint.Port && port.ContainerPort == 5432) != 1 ||
             docker.Ports.Where(port => port.ContainerPort == 5432).Any(port => port.HostAddress != "127.0.0.1")) { throw Invalid(); }
         FileSystemObjectIdentity dataDirectory = await _docker.StatAsync(docker.DockerHost, docker.ContainerId,
@@ -239,9 +237,9 @@ internal sealed partial class SourceBackedLocalRepairMaintenance : ISourceBacked
         if (!match.Success || !DateTimeOffset.TryParseExact(match.Groups["seconds"].Value + " +00:00",
             "yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset seconds) ||
             !uint.TryParse(match.Groups["nanos"].Value, out uint nanos)) { return false; }
-        long epochSecond = epoch.UtcTicks - epoch.UtcTicks % TimeSpan.TicksPerSecond;
-        return seconds.UtcTicks < epochSecond || seconds.UtcTicks == epochSecond &&
-            nanos < epoch.UtcTicks % TimeSpan.TicksPerSecond * 100;
+        long epochSecond = epoch.UtcTicks - (epoch.UtcTicks % TimeSpan.TicksPerSecond);
+        return seconds.UtcTicks < epochSecond || (seconds.UtcTicks == epochSecond &&
+            nanos < epoch.UtcTicks % TimeSpan.TicksPerSecond * 100);
     }
 
     [GeneratedRegex(@"^(?<seconds>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.(?<nanos>\d{9}) \+0000$", RegexOptions.CultureInvariant)]

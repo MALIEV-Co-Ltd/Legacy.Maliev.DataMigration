@@ -916,9 +916,11 @@ internal static class PairedDeltaTargetPhysicalSchemaFence
 {
     internal static Task<ReviewedQuotationPhysicalVariant> ObserveQuotationVariantAsync(DatabaseSchemaPlan schema,
         PostgreSqlDeltaReconciliationInspector disposable, PostgreSqlDeltaReconciliationInspector persistent,
-        ReviewedQuotationPhysicalVariant? expected, CancellationToken cancellationToken) =>
-        ObserveQuotationVariantAsync(schema, disposable.ObserveQuotationPhysicalVariantAsync,
+        ReviewedQuotationPhysicalVariant? expected, CancellationToken cancellationToken)
+    {
+        return ObserveQuotationVariantAsync(schema, disposable.ObserveQuotationPhysicalVariantAsync,
             persistent.ObserveQuotationPhysicalVariantAsync, expected, cancellationToken);
+    }
 
     internal static async Task<ReviewedQuotationPhysicalVariant> ObserveQuotationVariantAsync(DatabaseSchemaPlan schema,
         Func<DatabaseSchemaPlan, CancellationToken, Task<ReviewedQuotationPhysicalVariant>> disposable,
@@ -927,13 +929,11 @@ internal static class PairedDeltaTargetPhysicalSchemaFence
     {
         ReviewedQuotationPhysicalVariant left = await disposable(schema, cancellationToken).ConfigureAwait(false);
         ReviewedQuotationPhysicalVariant right = await persistent(schema, cancellationToken).ConfigureAwait(false);
-        if (left is not (ReviewedQuotationPhysicalVariant.RetainedOutboxes or ReviewedQuotationPhysicalVariant.MappedFinal) ||
-            left != right || expected.HasValue && left != expected.Value)
-        {
-            throw new DeltaExecutionException("delta_paired_quotation_physical_mismatch",
-            "Both actual Quotation physical schemas must match the same unchanged reviewed variant.");
-        }
-        return left;
+        return left is not (ReviewedQuotationPhysicalVariant.RetainedOutboxes or ReviewedQuotationPhysicalVariant.MappedFinal) ||
+            left != right || (expected.HasValue && left != expected.Value)
+            ? throw new DeltaExecutionException("delta_paired_quotation_physical_mismatch",
+            "Both actual Quotation physical schemas must match the same unchanged reviewed variant.")
+            : left;
     }
 
     internal static Task VerifyDatabaseAsync(DatabaseSchemaPlan schema, bool transition,

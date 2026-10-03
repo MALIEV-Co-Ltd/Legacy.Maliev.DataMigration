@@ -70,9 +70,9 @@ internal sealed class PostgreSqlSourceBackedLocalRepair
         _ = update.Parameters.AddWithValue(plan.TargetGeneration);
         _ = update.Parameters.AddWithValue(plan.TargetObservationSha256);
         _ = update.Parameters.AddWithValue(schema.Database);
-        if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-        { throw SourceBackedLocalRepairExecutionPermit.Invalid(); }
-        return new(permit, prior, journal, fence);
+        return await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1
+            ? throw SourceBackedLocalRepairExecutionPermit.Invalid()
+            : new(permit, prior, journal, fence);
     }
 
     internal async Task RecordAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,

@@ -156,10 +156,9 @@ internal sealed class SourceBackedLocalRepairAdmissionStore(SourceBackedLocalRep
     ISourceBackedLocalRepairSourceAcceptance? sourceAcceptance = null,
     SourceBackedLocalRepairTerminalSigningPin? terminalPin = null)
 {
-    private readonly SourceBackedLocalRepairRenewalStore? _renewals = renewals ?? (terminalPin is null ? null : new(claims.Gateway,
+    internal SourceBackedLocalRepairRenewalStore Renewals { get => field ?? throw SourceBackedLocalRepairAdmissionPolicy.Invalid(); } = renewals ?? (terminalPin is null ? null : new(claims.Gateway,
         claims, new SourceBackedLocalRepairContinuationStore(claims.Gateway, claims, trust,
             pins.AuthorizationFingerprint, pins.EvidenceFingerprint), trust, pins, terminalPin, observeTarget, clock, sourceAcceptance));
-    internal SourceBackedLocalRepairRenewalStore Renewals => _renewals ?? throw SourceBackedLocalRepairAdmissionPolicy.Invalid();
     internal async Task<SourceBackedLocalRepairAdmissionBundle> CreateAsync(SourceBackedLocalRepairLockedIssuer issuer,
         PairedCapturedDeltaPlans plans, Exact23DeltaReconciliationResult proof, FreshSchemaPlan schema,
         PairedLocalTransitionAuthorization authorization, IReadOnlyList<SourceBackedLocalRepairDatabasePreimage> expectedPreimages,
@@ -239,11 +238,9 @@ internal sealed class SourceBackedLocalRepairAdmissionStore(SourceBackedLocalRep
             proof, schema, authorization, identity, cancellationToken).ConfigureAwait(false);
         SourceBackedLocalRepairClaim own = await claims.ReadAsync(admission.ClaimId,
             SourceBackedLocalRepairAdmissionPolicy.ComputeSha256(admission), clock.GetUtcNow(), cancellationToken).ConfigureAwait(false);
-        if (JsonSerializer.Serialize(verified) != JsonSerializer.Serialize(own) || identity != await observeTarget(cancellationToken).ConfigureAwait(false))
-        {
-            throw SourceBackedLocalRepairAdmissionPolicy.Invalid();
-        }
-        return own;
+        return JsonSerializer.Serialize(verified) != JsonSerializer.Serialize(own) || identity != await observeTarget(cancellationToken).ConfigureAwait(false)
+            ? throw SourceBackedLocalRepairAdmissionPolicy.Invalid()
+            : own;
     }
 
     private static T Snapshot<T>(T value)

@@ -127,18 +127,22 @@ public sealed class SourceBackedLocalRepairConsoleTests
 
     private static JsonDocument Runs(string conclusion, bool includeOlderSuccess = false)
     {
-        object Run(string result, string updated) => new
+        static object Run(string result, string updated)
         {
-            head_sha = Head,
-            head_branch = "main",
-            path = ".github/workflows/ci-main.yml",
-            name = "CI - Main",
-            status = "completed",
-            conclusion = result,
-            @event = "push",
-            check_suite_id = 42,
-            updated_at = updated
-        };
+            return new
+            {
+                head_sha = Head,
+                head_branch = "main",
+                path = ".github/workflows/ci-main.yml",
+                name = "CI - Main",
+                status = "completed",
+                conclusion = result,
+                @event = "push",
+                check_suite_id = 42,
+                updated_at = updated
+            };
+        }
+
         object[] runs = includeOlderSuccess ? [Run("success", "2026-10-02T00:00:00Z"), Run(conclusion, "2026-10-02T00:01:00Z")]
             : [Run(conclusion, "2026-10-02T00:01:00Z")];
         return JsonDocument.Parse(JsonSerializer.Serialize(new { workflow_runs = runs }));

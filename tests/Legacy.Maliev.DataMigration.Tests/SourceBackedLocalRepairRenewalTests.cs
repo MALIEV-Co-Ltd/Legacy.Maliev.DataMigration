@@ -83,9 +83,13 @@ public sealed partial class DisposableDeltaProofVerifierTests
             index == 0 ? item with { SubjectPublicKeyInfo = alternate.ExportSubjectPublicKeyInfo() } : item)]
             };
         }
-        void Verify() => SourceBackedLocalRepairRenewalPolicy.Verify(signed, original,
+        void Verify()
+        {
+            SourceBackedLocalRepairRenewalPolicy.Verify(signed, original,
             scenario == "original-generation" ? 2 : 1, claim, null, null, state.Plans, state.Fixture.ProofResult,
             state.Fixture.Schema, state.Identity, trust, state.Pins, scenario == "expired" ? now.AddMinutes(15) : now);
+        }
+
         if (scenario == "success") { Verify(); }
         else { _ = Assert.Throws<DeltaExecutionException>(Verify); }
     }
@@ -135,8 +139,11 @@ public sealed partial class DisposableDeltaProofVerifierTests
         _ = Assert.Single(competing, task => task.IsCompletedSuccessfully);
         _ = Assert.Single(competing, task => task.IsFaulted);
         Assert.Equal(1, gateway.Count);
-        Task Run(Guid claim) => MigrationAuthorizationReservation.ReserveAsync(gateway, authorization, claim, 1,
+        Task Run(Guid claim)
+        {
+            return MigrationAuthorizationReservation.ReserveAsync(gateway, authorization, claim, 1,
             Hash('a'), now.Add(ImmutableRolloverClaimStore.MaximumClaimAge), CancellationToken.None);
+        }
     }
 
     [Fact]

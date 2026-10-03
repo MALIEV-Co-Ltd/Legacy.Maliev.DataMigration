@@ -136,7 +136,9 @@ public sealed class SourceBackedLocalRepairMaintenanceTests : IDisposable
                 parameters.HostConfig.MemorySwap = 384 * 1024 * 1024;
                 parameters.HostConfig.NanoCPUs = 500000000;
                 foreach (IList<Docker.DotNet.Models.PortBinding> bindings in parameters.HostConfig!.PortBindings!.Values)
+                {
                     foreach (Docker.DotNet.Models.PortBinding binding in bindings) { binding.HostIP = "127.0.0.1"; }
+                }
             }).Build();
         await container.StartAsync(token);
         string adminString = new NpgsqlConnectionStringBuilder(container.GetConnectionString())
@@ -144,7 +146,7 @@ public sealed class SourceBackedLocalRepairMaintenanceTests : IDisposable
         string password = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
         DateTimeOffset issued = DateTimeOffset.UtcNow;
         DateTimeOffset expiry = issued.AddMinutes(55);
-        expiry = new(expiry.Ticks - expiry.Ticks % 10, TimeSpan.Zero);
+        expiry = new(expiry.Ticks - (expiry.Ticks % 10), TimeSpan.Zero);
         string pgData, clientAddress, system;
         DateTimeOffset postmasterStarted;
         await using (var admin = new NpgsqlConnection(adminString))
@@ -350,7 +352,9 @@ public sealed class SourceBackedLocalRepairMaintenanceTests : IDisposable
                 parameters.HostConfig.MemorySwap = 384 * 1024 * 1024;
                 parameters.HostConfig.NanoCPUs = 500000000;
                 foreach (IList<Docker.DotNet.Models.PortBinding> bindings in parameters.HostConfig.PortBindings!.Values)
+                {
                     foreach (Docker.DotNet.Models.PortBinding binding in bindings) { binding.HostIP = "127.0.0.1"; }
+                }
             }).Build();
         await container.StartAsync(token);
         string adminString = new NpgsqlConnectionStringBuilder(container.GetConnectionString())
@@ -454,6 +458,9 @@ public sealed class SourceBackedLocalRepairMaintenanceTests : IDisposable
 
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => now;
+        public override DateTimeOffset GetUtcNow()
+        {
+            return now;
+        }
     }
 }

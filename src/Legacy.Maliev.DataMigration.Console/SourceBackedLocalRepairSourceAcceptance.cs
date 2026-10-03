@@ -45,9 +45,10 @@ internal static class SourceBackedLocalRepairSourceAcceptance
                 cancellationToken).ConfigureAwait(false))) { throw Invalid(); }
         await RequireMainCheckoutAsync(head, cancellationToken).ConfigureAwait(false);
         using JsonDocument final = await ApiAsync("branches/main", cancellationToken).ConfigureAwait(false);
-        if (!final.RootElement.GetProperty("protected").GetBoolean() ||
-            final.RootElement.GetProperty("commit").GetProperty("sha").GetString() != head) { throw Invalid(); }
-        return head;
+        return !final.RootElement.GetProperty("protected").GetBoolean() ||
+            final.RootElement.GetProperty("commit").GetProperty("sha").GetString() != head
+            ? throw Invalid()
+            : head;
     }
 
     private static async Task RequireMainCheckoutAsync(string head, CancellationToken cancellationToken)
@@ -109,7 +110,10 @@ internal static class SourceBackedLocalRepairSourceAcceptance
         return parts.Length == 2 && Sha(parts[1]) ? parts[1] : throw Invalid();
     }
 
-    private static bool Sha(string value) => value is { Length: 40 } && value.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
+    private static bool Sha(string value)
+    {
+        return value is { Length: 40 } && value.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
+    }
 
     private static async Task<JsonDocument> ApiAsync(string path, CancellationToken cancellationToken)
     {
@@ -127,8 +131,11 @@ internal static class SourceBackedLocalRepairSourceAcceptance
         return result.ExitCode == 0 ? result.StandardOutput : throw Invalid();
     }
 
-    private static MigrationConsoleException Invalid() => new("delta_source_repair_source_unaccepted",
+    private static MigrationConsoleException Invalid()
+    {
+        return new("delta_source_repair_source_unaccepted",
         "Source repair requires the protected exact main commit, its required successful CI and an identical protected frozen build.");
+    }
 }
 
 internal sealed class ProtectedMainSourceRepairAcceptance : ISourceBackedLocalRepairSourceAcceptance

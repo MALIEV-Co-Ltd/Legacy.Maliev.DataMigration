@@ -26,16 +26,21 @@ internal static class ReviewedQuotationPhysicalSchemaResolver
     {
         string retained = GetExpected(signedSource, ReviewedQuotationPhysicalVariant.RetainedOutboxes);
         string final = GetExpected(signedSource, ReviewedQuotationPhysicalVariant.MappedFinal);
-        if (DeltaSynchronizationPlanProducer.FixedHashEquals(observedSha256, retained))
-        { return ReviewedQuotationPhysicalVariant.RetainedOutboxes; }
-        if (DeltaSynchronizationPlanProducer.FixedHashEquals(observedSha256, final))
-        { return ReviewedQuotationPhysicalVariant.MappedFinal; }
-        throw Invalid();
+        return DeltaSynchronizationPlanProducer.FixedHashEquals(observedSha256, retained)
+            ? ReviewedQuotationPhysicalVariant.RetainedOutboxes
+            : DeltaSynchronizationPlanProducer.FixedHashEquals(observedSha256, final)
+            ? ReviewedQuotationPhysicalVariant.MappedFinal
+            : throw Invalid();
     }
 
-    internal static string RequireReviewedHash(DatabaseSchemaPlan signedSource, string observedSha256) =>
-        GetExpected(signedSource, ClassifyObserved(signedSource, observedSha256));
+    internal static string RequireReviewedHash(DatabaseSchemaPlan signedSource, string observedSha256)
+    {
+        return GetExpected(signedSource, ClassifyObserved(signedSource, observedSha256));
+    }
 
-    internal static DeltaPlanException Invalid() => new("delta_quotation_transition_plan_invalid",
+    internal static DeltaPlanException Invalid()
+    {
+        return new("delta_quotation_transition_plan_invalid",
         "Quotation physical state must derive from the reviewed signed retained or final source schema.");
+    }
 }

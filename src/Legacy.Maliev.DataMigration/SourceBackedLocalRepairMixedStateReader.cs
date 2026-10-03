@@ -23,21 +23,20 @@ internal sealed class SourceBackedLocalRepairMixedStateReader(string localConnec
     private SourceBackedLocalRepairRenewalStore RenewalStore => renewals ?? admissions.Renewals;
     internal sealed class Observation
     {
-        private readonly SourceBackedLocalRepairContinuation _continuation;
         internal Observation(object token, string admissionSha256, SourceBackedLocalRepairContinuation continuation,
             HistoricalCurrentLocalObservation identity, DateTimeOffset verifiedAtUtc,
             SourceBackedLocalRepairRenewalStore.ActiveGrant? activeGrant = null)
         {
             if (!ReferenceEquals(token, ProofToken)) { throw Invalid(); }
             AdmissionSha256 = admissionSha256;
-            _continuation = Snapshot(continuation);
+            Continuation = Snapshot(continuation);
             Identity = identity;
             VerifiedAtUtc = verifiedAtUtc;
             ActiveGrant = activeGrant;
         }
 
         internal string AdmissionSha256 { get; }
-        internal SourceBackedLocalRepairContinuation Continuation => Snapshot(_continuation);
+        internal SourceBackedLocalRepairContinuation Continuation => Snapshot(field);
         internal HistoricalCurrentLocalObservation Identity { get; }
         internal DateTimeOffset VerifiedAtUtc { get; }
         internal SourceBackedLocalRepairRenewalStore.ActiveGrant? ActiveGrant { get; }
@@ -48,17 +47,16 @@ internal sealed class SourceBackedLocalRepairMixedStateReader(string localConnec
 
     internal sealed class RenewalObservation
     {
-        private readonly SourceBackedLocalRepairContinuation? _basis;
         private readonly SourceBackedLocalRepairState[] _states;
         internal RenewalObservation(object token, string admissionSha256, SourceBackedLocalRepairContinuation? basis,
             IReadOnlyList<SourceBackedLocalRepairState> states, HistoricalCurrentLocalObservation identity, DateTimeOffset verifiedAtUtc)
         {
             if (!ReferenceEquals(token, ProofToken)) { throw Invalid(); }
-            AdmissionSha256 = admissionSha256; _basis = basis is null ? null : Snapshot(basis);
+            AdmissionSha256 = admissionSha256; Basis = basis is null ? null : Snapshot(basis);
             _states = Snapshot(states.ToArray()); Identity = identity; VerifiedAtUtc = verifiedAtUtc;
         }
         internal string AdmissionSha256 { get; }
-        internal SourceBackedLocalRepairContinuation? Basis => _basis is null ? null : Snapshot(_basis);
+        internal SourceBackedLocalRepairContinuation? Basis => field is null ? null : Snapshot(field);
         internal IReadOnlyList<SourceBackedLocalRepairState> Databases => Snapshot(_states);
         internal HistoricalCurrentLocalObservation Identity { get; }
         internal DateTimeOffset VerifiedAtUtc { get; }
@@ -114,12 +112,10 @@ internal sealed class SourceBackedLocalRepairMixedStateReader(string localConnec
         var endpoint = LocalPostgreSqlResourceAuthority.Connection(localConnectionString);
         async Task<SourceBackedLocalRepairClaim> VerifyAuthorityAsync()
         {
-            if (renewing)
-            {
-                return await RenewalStore.VerifyRenewalInputsAsync(bundle, plans, proof, schema,
-                    authorization, cancellationToken).ConfigureAwait(false);
-            }
-            return activeGrant is null ? await admissions.VerifyRetainedAsync(bundle.Admission,
+            return renewing
+                ? await RenewalStore.VerifyRenewalInputsAsync(bundle, plans, proof, schema,
+                    authorization, cancellationToken).ConfigureAwait(false)
+                : activeGrant is null ? await admissions.VerifyRetainedAsync(bundle.Admission,
                 bundle.Capsule, plans, proof, schema, authorization, cancellationToken).ConfigureAwait(false) :
                 await admissions.VerifyRetainedAsync(bundle.Admission, bundle.Capsule, plans, proof, schema,
                     authorization, activeGrant, cancellationToken).ConfigureAwait(false);
@@ -129,9 +125,12 @@ internal sealed class SourceBackedLocalRepairMixedStateReader(string localConnec
             await RenewalStore.ReadEpochsProvenanceAsync(bundle, plans, proof, schema, previousCounter, cancellationToken).ConfigureAwait(false) :
             activeGrant?.Epochs ?? [new(authorization, 1, bundle.Admission.IssuedAtUtc,
                 new[] { bundle.Admission.ExpiresAtUtc, bundle.Capsule.ExpiresAtUtc, authorization.ExpiresAtUtc }.Min())];
-        async Task<SourceBackedLocalRepairContinuation> ReadPredecessorAsync(long ordinal) =>
-            await continuations.ReadProvenanceAsync(claim.ClaimId, claim.AdmissionSha256, ordinal,
+        async Task<SourceBackedLocalRepairContinuation> ReadPredecessorAsync(long ordinal)
+        {
+            return await continuations.ReadProvenanceAsync(claim.ClaimId, claim.AdmissionSha256, ordinal,
                 epochs[0].Authorization, clock.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+        }
+
         HistoricalCurrentLocalObservation before = await observeTarget(cancellationToken).ConfigureAwait(false);
         if (before != bundle.Admission.TargetIdentity) { throw Invalid(); }
         SourceBackedLocalRepairContinuation? retained = retainedOrdinal == 0 ? null : renewing ?
@@ -409,6 +408,7 @@ internal sealed class SourceBackedLocalRepairMixedStateReader(string localConnec
         var mapped = target.Tables.Select(item => (item.TargetSchema, item.TargetTable)).ToHashSet();
         var identities = new HashSet<(string Schema, string Name)>();
         foreach (TableCopyPlan table in target.Tables)
+        {
             foreach (IdentityCopyPlan identity in table.Identities)
             {
                 await using var sequence = new NpgsqlCommand("""
@@ -427,12 +427,14 @@ internal sealed class SourceBackedLocalRepairMixedStateReader(string localConnec
                 // exact physical result is next/is_called=false, not merely an equivalent nextval.
                 if (physical.LastValue != expectedNext || physical.IsCalled || !identities.Add(name)) { throw Invalid(); }
             }
+        }
+
         var normalizedRelations = new List<SourceRepairRelationPreimage>();
         foreach (SourceRepairRelationPreimage relation in actual.Relations)
         {
             SourceRepairRelationPreimage original = prior.Relations.Single(item => item.Schema == relation.Schema && item.Table == relation.Table);
             bool allowedRows = mapped.Contains((relation.Schema, relation.Table)) ||
-                relation.Schema == "legacy_migration_internal" && relation.Table is "delta_fence" or "delta_journal" or "delta_source_backed_repair";
+                (relation.Schema == "legacy_migration_internal" && relation.Table is "delta_fence" or "delta_journal" or "delta_source_backed_repair");
             normalizedRelations.Add(allowedRows ? relation with { Rows = original.Rows, RowMultisetSha256 = original.RowMultisetSha256 } : relation);
         }
         var normalizedSequences = new List<SourceRepairSequencePreimage>();
@@ -496,8 +498,19 @@ internal sealed class SourceBackedLocalRepairMixedStateReader(string localConnec
         });
     }
 
-    private static T Snapshot<T>(T value) => JsonSerializer.Deserialize<T>(JsonSerializer.SerializeToUtf8Bytes(value)) ?? throw Invalid();
-    private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
-    private static DeltaExecutionException Invalid() => new("delta_source_repair_mixed_state_invalid",
-        "Actual exact-23 source repair state, original preservation, retained progress, identity and fresh authority must all agree.");
+    private static T Snapshot<T>(T value)
+    {
+        return JsonSerializer.Deserialize<T>(JsonSerializer.SerializeToUtf8Bytes(value)) ?? throw Invalid();
+    }
+
+    private static string Hash(string value)
+    {
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+    }
+
+    private static DeltaExecutionException Invalid()
+    {
+        return new("delta_source_repair_mixed_state_invalid",
+            "Actual exact-23 source repair state, original preservation, retained progress, identity and fresh authority must all agree.");
+    }
 }

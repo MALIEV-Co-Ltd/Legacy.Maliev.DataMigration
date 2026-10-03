@@ -86,9 +86,11 @@ internal sealed class SourceBackedLocalRepairRuntime
 
     internal Task<PairedLocalTransitionAuthorization> AuthorizeAsync(PairedCapturedDeltaPlans plans,
         Exact23DeltaReconciliationResult proof, FreshSchemaPlan schema, DateTimeOffset expiresAtUtc,
-        P256MigrationEvidenceSigner signer, CancellationToken cancellationToken) =>
-        AuthorizeMaintainedAsync(_connection, plans, proof, schema, _trust, _observe, _maintenance,
+        P256MigrationEvidenceSigner signer, CancellationToken cancellationToken)
+    {
+        return AuthorizeMaintainedAsync(_connection, plans, proof, schema, _trust, _observe, _maintenance,
             _sourceAcceptance, _clock, expiresAtUtc, signer, cancellationToken);
+    }
 
     // Signing authenticates the current endpoint and physical contract. Original admission
     // or renewal must subsequently verify the complete actual preimage/mixed prefix before
@@ -234,7 +236,10 @@ internal sealed class SourceBackedLocalRepairRuntime
     internal Task<SourceBackedLocalRepairRenewalStore.ActiveGrant> ReadActiveGrantAsync(
         SourceBackedLocalRepairAdmissionBundle bundle, PairedCapturedDeltaPlans plans,
         Exact23DeltaReconciliationResult proof, FreshSchemaPlan schema, long counter,
-        CancellationToken cancellationToken) => _renewals.ReadAsync(bundle, plans, proof, schema, counter, cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        return _renewals.ReadAsync(bundle, plans, proof, schema, counter, cancellationToken);
+    }
 
     internal async Task<SourceBackedLocalRepairRenewalStore.ActiveGrant> RenewAsync(
         SourceBackedLocalRepairAdmissionBundle bundle, PairedCapturedDeltaPlans plans,
@@ -275,7 +280,7 @@ internal sealed class SourceBackedLocalRepairRuntime
         using DeltaCapturedTableRowSource source = DeltaCapturedTableRowSource.FromSignedPlan(
             new DeltaCapturedTableArchive(protectedCaptureDirectory), plans.Persistent, _trust, _clock.GetUtcNow(), captureKey.Span);
         var target = new PostgreSqlDeltaCanonicalTarget(new(DatabaseConnection(database), database,
-            plans.Persistent.TargetGeneration!)
+            plans.Persistent.TargetGeneration)
         {
             LocalTransitionPermit = pairedPermit,
             SourceRepairPermit = repairPermit,
@@ -465,9 +470,9 @@ internal sealed class SourceBackedLocalRepairRuntime
 
     private string DatabaseConnection(string database)
     {
-        if (!DatabaseInventory.ActiveDatabases.Contains(database, StringComparer.Ordinal))
-        { throw SourceBackedLocalRepairAdmissionPolicy.Invalid(); }
-        return new NpgsqlConnectionStringBuilder(_connection) { Database = database }.ConnectionString;
+        return !DatabaseInventory.ActiveDatabases.Contains(database, StringComparer.Ordinal)
+            ? throw SourceBackedLocalRepairAdmissionPolicy.Invalid()
+            : new NpgsqlConnectionStringBuilder(_connection) { Database = database }.ConnectionString;
     }
 
     private async Task<ISourceBackedLocalRepairMaintenanceLease> AcquireExecutionLeaseAsync(
@@ -486,7 +491,10 @@ internal sealed class SourceBackedLocalRepairRuntime
             await sourceAcceptance.RequireAsync(sourceCommitSha, cancellationToken).ConfigureAwait(false);
             await maintenance.RequireStillQuiescentAsync(identity, cancellationToken).ConfigureAwait(false);
         }
-        public ValueTask DisposeAsync() => maintenance.DisposeAsync();
+        public ValueTask DisposeAsync()
+        {
+            return maintenance.DisposeAsync();
+        }
     }
 
     private static T Snapshot<T>(T value)

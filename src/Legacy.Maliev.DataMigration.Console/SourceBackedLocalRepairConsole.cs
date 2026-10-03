@@ -63,8 +63,11 @@ public static partial class MigrationConsole
             using WindowsLocalRunAuthority authority = WindowsLocalRunAuthority.AcquireResume(binding.ArtifactRootCanonicalPath, binding);
             string connection = await ReadProtectedTextAsync(request.OperatorConnectionFile,
                 "delta_source_repair_operator_unprotected", cancellationToken).ConfigureAwait(false);
-            Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> observe = token =>
-                ObserveSourceRepairTargetAsync(plans.Persistent, connection, token);
+            Task<HistoricalCurrentLocalObservation> observe(CancellationToken token)
+            {
+                return ObserveSourceRepairTargetAsync(plans.Persistent, connection, token);
+            }
+
             var maintenance = new SourceBackedLocalRepairMaintenance(connection, maintenancePins, observe, TimeProvider.System, authority);
             SourceBackedLocalRepairSigningPins pins = await ReadProtectedJsonAsync<SourceBackedLocalRepairSigningPins>(
                 request.SigningPinsPath, "delta_source_repair_signing_pins_unprotected", cancellationToken).ConfigureAwait(false);
@@ -203,9 +206,11 @@ public static partial class MigrationConsole
         SourceBackedLocalRepairAdmissionStore admissions, SourceBackedLocalRepairContinuationStore continuations,
         IReceiptAttestationTrustStore trust, TimeProvider clock, IRolloverClaimObjectGateway gateway,
         ISourceBackedLocalRepairSourceAcceptance sourceAcceptance, SourceBackedLocalRepairSigningPins pins,
-        SourceBackedLocalRepairTerminalSigningPin terminalPin, SourceBackedLocalRepairRenewalStore renewals) =>
-        new(connection, maintenance, observe, admissions, continuations, trust, clock, gateway,
+        SourceBackedLocalRepairTerminalSigningPin terminalPin, SourceBackedLocalRepairRenewalStore renewals)
+    {
+        return new(connection, maintenance, observe, admissions, continuations, trust, clock, gateway,
             sourceAcceptance, pins, terminalPin, renewals);
+    }
 
     private static async Task<HistoricalCurrentLocalObservation> ObserveSourceRepairTargetAsync(
         DeltaSynchronizationPlan plan, string connectionString, CancellationToken cancellationToken)

@@ -49,7 +49,7 @@ public sealed partial class DisposableDeltaProofVerifierTests
         }
         Assert.True(observation.IsTerminal);
         Assert.All(observation.Continuation.Databases, state => Assert.Equal(SourceBackedLocalRepairPhase.Applied, state.Phase));
-        await Assert.ThrowsAsync<DeltaExecutionException>(() => fixture.ApplyNext(observation));
+        _ = await Assert.ThrowsAsync<DeltaExecutionException>(() => fixture.ApplyNext(observation));
 
         (string Database, string Mutate, string Restore)[] churn =
         [
@@ -65,13 +65,13 @@ public sealed partial class DisposableDeltaProofVerifierTests
             ("Quotation", "UPDATE public.\"GoogleAnalyticsOutbox\" SET \"EventName\"='changed' WHERE \"ID\"=1;", "UPDATE public.\"GoogleAnalyticsOutbox\" SET \"EventName\"='preserved' WHERE \"ID\"=1;"),
             ("Quotation", "UPDATE public.\"QuotationOutcomeOutbox\" SET \"AcceptanceOrigin\"='changed' WHERE \"ID\"=1;", "UPDATE public.\"QuotationOutcomeOutbox\" SET \"AcceptanceOrigin\"='customer' WHERE \"ID\"=1;"),
         ];
-        foreach (var mutation in churn)
+        foreach (var (Database, Mutate, Restore) in churn)
         {
-            string cs = LockedIssuerDatabase(fixture.Connection, mutation.Database);
-            await LockedIssuerExecute(cs, "SET timezone='UTC'; " + mutation.Mutate);
-            await Assert.ThrowsAnyAsync<Exception>(() => fixture.Reader.ObserveAndAdvanceAsync(fixture.Bundle,
+            string cs = LockedIssuerDatabase(fixture.Connection, Database);
+            await LockedIssuerExecute(cs, "SET timezone='UTC'; " + Mutate);
+            _ = await Assert.ThrowsAnyAsync<Exception>(() => fixture.Reader.ObserveAndAdvanceAsync(fixture.Bundle,
                 fixture.Plans, fixture.Proof, fixture.Schema, fixture.Authorization, 24, signer, CancellationToken.None));
-            await LockedIssuerExecute(cs, "SET timezone='UTC'; " + mutation.Restore);
+            await LockedIssuerExecute(cs, "SET timezone='UTC'; " + Restore);
         }
         SourceBackedLocalRepairMixedStateReader.Observation terminal = await fixture.Reader.ObserveAndAdvanceAsync(
             fixture.Bundle, fixture.Plans, fixture.Proof, fixture.Schema, fixture.Authorization, 24, signer, CancellationToken.None);
@@ -79,7 +79,7 @@ public sealed partial class DisposableDeltaProofVerifierTests
             SourceBackedLocalRepairContinuationStore.ComputeSha256(terminal.Continuation));
         fixture.Clock.Now = fixture.Authorization.ExpiresAtUtc.AddTicks(1);
         fixture.Clock.FollowWallClock = false;
-        await Assert.ThrowsAsync<DeltaExecutionException>(() => fixture.Reader.ObserveAndAdvanceAsync(fixture.Bundle,
+        _ = await Assert.ThrowsAsync<DeltaExecutionException>(() => fixture.Reader.ObserveAndAdvanceAsync(fixture.Bundle,
             fixture.Plans, fixture.Proof, fixture.Schema, fixture.Authorization, 24, signer, CancellationToken.None));
     }
 
@@ -208,6 +208,7 @@ public sealed partial class DisposableDeltaProofVerifierTests
             Fixture original = AddSourceRepairTerminalTrust(await CreateAsync(pairedTransition: true, quotationDisposition: true, captured: true,
                 historicalLocal: true, localSystemHash: localSystem, physicalTargetHashes: true, at: DateTimeOffset.UtcNow));
             foreach (string admin in new[] { local, proofConnection })
+            {
                 foreach (DatabaseSchemaPlan database in original.Schema.Databases)
                 {
                     await LockedIssuerExecute(admin, $"CREATE DATABASE {PostgreSqlShadowTarget.QuoteIdentifier(database.Database)};");
@@ -235,6 +236,7 @@ public sealed partial class DisposableDeltaProofVerifierTests
                     }
                     else { await LockedIssuerExecute(cs, "INSERT INTO public.items(id) VALUES(1);"); }
                 }
+            }
             // Retired local-only public outboxes are preserved independently from the reviewed
             // mapped archive/outcome source parity. They cannot disappear through row refresh.
             await LockedIssuerExecute(LockedIssuerDatabase(local, "Quotation"), """
@@ -410,16 +412,30 @@ public sealed partial class DisposableDeltaProofVerifierTests
         }
     }
 
-    private static string HashText(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
-    private SourceBackedLocalRepairTerminalSigningPin SourceRepairTerminalPin() =>
-        new(Convert.ToHexString(SHA256.HashData(_continuityKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant(), "source-repair-terminal");
-    private Fixture AddSourceRepairTerminalTrust(Fixture source) => source with
+    private static string HashText(string value)
     {
-        Trust = new ReceiptAttestationTrustStore([.. source.Trust.ExportTrustedPublicKeys(
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+    }
+
+    private SourceBackedLocalRepairTerminalSigningPin SourceRepairTerminalPin()
+    {
+        return new(Convert.ToHexString(SHA256.HashData(_continuityKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant(), "source-repair-terminal");
+    }
+
+    private Fixture AddSourceRepairTerminalTrust(Fixture source)
+    {
+        return source with
+        {
+            Trust = new ReceiptAttestationTrustStore([.. source.Trust.ExportTrustedPublicKeys(
             [source.LocalPlan.AttestationKeyId, source.ProofPlan.AttestationKeyId, source.ProofResult.AttestationKeyId,
                 "local-transition-authorization"]), new("source-repair-terminal", _continuityKey.ExportSubjectPublicKeyInfo())]),
-    };
-    private static MigrationRow MixedInsertedRow() => new(new Dictionary<string, object?> { ["id"] = 2 });
+        };
+    }
+
+    private static MigrationRow MixedInsertedRow()
+    {
+        return new(new Dictionary<string, object?> { ["id"] = 2 });
+    }
 
     private sealed class MixedNativeInspector(string admin) : IDeltaReconciliationInspector
     {

@@ -11,8 +11,6 @@ internal sealed class SourceBackedLocalRepairExecutionPermit
     private readonly PairedCapturedDeltaPlans _plans;
     private readonly Exact23DeltaReconciliationResult _proof;
     private readonly FreshSchemaPlan _schema;
-    private readonly PairedLocalTransitionAuthorization _authorization;
-    private readonly SourceBackedLocalRepairContinuation _continuation;
     private readonly Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> _observe;
     private readonly ISourceBackedLocalRepairMaintenanceLease _maintenance;
     private readonly TimeProvider _clock;
@@ -27,15 +25,15 @@ internal sealed class SourceBackedLocalRepairExecutionPermit
         SourceBackedLocalRepairRenewalStore.ActiveGrant? activeGrant)
     {
         _admissions = admissions; _continuations = continuations; _bundle = bundle;
-        _plans = plans; _proof = proof; _schema = schema; _authorization = authorization;
-        _continuation = continuation; _observe = observe; _maintenance = maintenance; _clock = clock;
+        _plans = plans; _proof = proof; _schema = schema; Authorization = authorization;
+        Continuation = continuation; _observe = observe; _maintenance = maintenance; _clock = clock;
         _activeGrant = activeGrant;
     }
 
     internal SourceBackedLocalRepairAdmission Admission => _bundle.Admission;
-    internal SourceBackedLocalRepairContinuation Continuation => _continuation;
-    internal PairedLocalTransitionAuthorization Authorization => _authorization;
-    internal string ActiveAuthorizationSha256 => SourceBackedLocalRepairContinuationStore.AuthorizationHash(_authorization);
+    internal SourceBackedLocalRepairContinuation Continuation { get; }
+    internal PairedLocalTransitionAuthorization Authorization { get; }
+    internal string ActiveAuthorizationSha256 => SourceBackedLocalRepairContinuationStore.AuthorizationHash(Authorization);
     internal DateTimeOffset NowUtc => _clock.GetUtcNow();
 
     internal static async Task<SourceBackedLocalRepairExecutionPermit> AdmitAsync(
@@ -45,8 +43,9 @@ internal sealed class SourceBackedLocalRepairExecutionPermit
         long continuationOrdinal, Func<CancellationToken, Task<HistoricalCurrentLocalObservation>> observe,
         ISourceBackedLocalRepairMaintenanceLease maintenance, TimeProvider clock, CancellationToken cancellationToken)
     {
-        if (continuationOrdinal != 1) { throw Invalid(); }
-        return await AdmitCoreAsync(admissions, continuations, bundle, plans, proof, schema, authorization,
+        return continuationOrdinal != 1
+            ? throw Invalid()
+            : await AdmitCoreAsync(admissions, continuations, bundle, plans, proof, schema, authorization,
             continuationOrdinal, null, observe, maintenance, clock, cancellationToken).ConfigureAwait(false);
     }
 
@@ -103,18 +102,18 @@ internal sealed class SourceBackedLocalRepairExecutionPermit
 
     internal SourceBackedLocalRepairDatabasePreimage Require(DeltaSynchronizationPlan plan, DatabaseSchemaPlan schema)
     {
-        int ordinal = checked((int)_continuation.Ordinal - 1);
+        int ordinal = checked((int)Continuation.Ordinal - 1);
         if (ordinal >= DatabaseInventory.ActiveDatabases.Count || schema.Database != DatabaseInventory.ActiveDatabases[ordinal] ||
             DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan) != Admission.PersistentPlanSha256 ||
             !_schema.Databases.Any(item => item.Database == schema.Database &&
                 (JsonSerializer.Serialize(item) == JsonSerializer.Serialize(schema) ||
                 JsonSerializer.Serialize(new QuotationDeltaExecutionMapping(item).TargetSchema) == JsonSerializer.Serialize(schema))) ||
-            _continuation.Databases[ordinal].Phase != SourceBackedLocalRepairPhase.Prior ||
-            _continuation.Databases[ordinal].PriorMetadataSha256 != Admission.InitialMetadata[ordinal].FingerprintSha256 ||
+            Continuation.Databases[ordinal].Phase != SourceBackedLocalRepairPhase.Prior ||
+            Continuation.Databases[ordinal].PriorMetadataSha256 != Admission.InitialMetadata[ordinal].FingerprintSha256 ||
             NowUtc < Admission.IssuedAtUtc || NowUtc >= Admission.ClaimExpiresAtUtc ||
-            (_activeGrant is null && (NowUtc >= Admission.ExpiresAtUtc || NowUtc >= _continuation.ExpiresAtUtc)) ||
+            (_activeGrant is null && (NowUtc >= Admission.ExpiresAtUtc || NowUtc >= Continuation.ExpiresAtUtc)) ||
             (_activeGrant is not null && (NowUtc < _activeGrant.SignedGrant.IssuedAtUtc || NowUtc >= _activeGrant.ExpiresAtUtc)) ||
-            NowUtc >= _authorization.ExpiresAtUtc)
+            NowUtc >= Authorization.ExpiresAtUtc)
         { throw Invalid(); }
         // Each permit admits exactly the next fresh database. Applied replay needs independent
         // marker/checkpoint and complete preserved-internal evidence; it is deliberately unavailable.
@@ -123,26 +122,27 @@ internal sealed class SourceBackedLocalRepairExecutionPermit
 
     internal bool RequirePlanBinding(CanonicalDeltaTargetBinding binding)
     {
-        if (binding.PlanSha256 != Admission.PersistentPlanSha256 || binding.Database !=
-            DatabaseInventory.ActiveDatabases[checked((int)_continuation.Ordinal - 1)]) { throw Invalid(); }
-        return true;
+        return binding.PlanSha256 != Admission.PersistentPlanSha256 || binding.Database !=
+            DatabaseInventory.ActiveDatabases[checked((int)Continuation.Ordinal - 1)]
+            ? throw Invalid()
+            : true;
     }
 
     internal async Task RequireFreshAsync(CancellationToken cancellationToken)
     {
         SourceBackedLocalRepairClaim claim = _activeGrant is null
             ? await _admissions.VerifyRetainedAsync(Admission, _bundle.Capsule, _plans, _proof, _schema,
-                _authorization, cancellationToken).ConfigureAwait(false)
+                Authorization, cancellationToken).ConfigureAwait(false)
             : await _admissions.VerifyRetainedAsync(Admission, _bundle.Capsule, _plans, _proof, _schema,
-                _authorization, _activeGrant, cancellationToken).ConfigureAwait(false);
+                Authorization, _activeGrant, cancellationToken).ConfigureAwait(false);
         SourceBackedLocalRepairContinuation retained = await _continuations.ReadAsync(claim.ClaimId,
-            claim.AdmissionSha256, _continuation.Ordinal, _authorization, NowUtc, cancellationToken, _activeGrant).ConfigureAwait(false);
+            claim.AdmissionSha256, Continuation.Ordinal, Authorization, NowUtc, cancellationToken, _activeGrant).ConfigureAwait(false);
         if (SourceBackedLocalRepairContinuationStore.ComputeSha256(retained) !=
-            SourceBackedLocalRepairContinuationStore.ComputeSha256(_continuation)) { throw Invalid(); }
+            SourceBackedLocalRepairContinuationStore.ComputeSha256(Continuation)) { throw Invalid(); }
         HistoricalCurrentLocalObservation actual = await _observe(cancellationToken).ConfigureAwait(false);
         if (actual != Admission.TargetIdentity) { throw Invalid(); }
         await _maintenance.RequireStillQuiescentAsync(actual, cancellationToken).ConfigureAwait(false);
-        _ = Require(_plans.Persistent, _schema.Databases[checked((int)_continuation.Ordinal - 1)]);
+        _ = Require(_plans.Persistent, _schema.Databases[checked((int)Continuation.Ordinal - 1)]);
     }
 
     private static T Snapshot<T>(T value)

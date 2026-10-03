@@ -41,7 +41,7 @@ public sealed partial class DisposableDeltaProofVerifierTests
 
         var lost = new TerminalRuntimeGateway(fixture.Gateway, fixture.Clock) { LoseCreateAcknowledgement = true };
         SourceBackedLocalRepairRuntime interrupted = TerminalRuntime(fixture, lost, acceptance);
-        await Assert.ThrowsAsync<IOException>(() => Publish(interrupted));
+        _ = await Assert.ThrowsAsync<IOException>(() => Publish(interrupted));
         Assert.Equal(1, lost.TerminalCreates);
         RolloverClaimObject original = lost.Retained!;
         byte[] immutableBytes = original.Content.ToArray();
@@ -55,11 +55,11 @@ public sealed partial class DisposableDeltaProofVerifierTests
 
         var shortRetention = new TerminalRuntimeGateway(fixture.Gateway, fixture.Clock) { InsufficientRetention = true };
         SourceBackedLocalRepairRuntime unretained = TerminalRuntime(fixture, shortRetention, acceptance);
-        await Assert.ThrowsAsync<DeltaExecutionException>(() => Publish(unretained));
+        _ = await Assert.ThrowsAsync<DeltaExecutionException>(() => Publish(unretained));
         Assert.Equal(1, shortRetention.TerminalCreates);
         Assert.NotNull(shortRetention.Retained);
         Assert.True(shortRetention.Retained.RetentionExpiresAtUtc < fixture.Bundle.VerifiedClaim.ExpiresAtUtc);
-        await Assert.ThrowsAsync<DeltaExecutionException>(() => Publish(unretained));
+        _ = await Assert.ThrowsAsync<DeltaExecutionException>(() => Publish(unretained));
         Assert.Equal(1, shortRetention.TerminalCreates);
         Assert.Equal(before, await TerminalDatabaseState(fixture));
 
@@ -87,9 +87,11 @@ public sealed partial class DisposableDeltaProofVerifierTests
         }
         Assert.Equal(before, await TerminalDatabaseState(fixture));
 
-        Task<SourceBackedLocalRepairRuntime.Terminal> Publish(SourceBackedLocalRepairRuntime runtime) =>
-            runtime.ReconcileAndPublishAsync(fixture.Bundle, fixture.Plans, fixture.Proof, fixture.Schema,
+        Task<SourceBackedLocalRepairRuntime.Terminal> Publish(SourceBackedLocalRepairRuntime runtime)
+        {
+            return runtime.ReconcileAndPublishAsync(fixture.Bundle, fixture.Plans, fixture.Proof, fixture.Schema,
                 fixture.Authorization, evidenceSigner, terminalSigner, CancellationToken.None);
+        }
     }
 
     private static SourceBackedLocalRepairRuntime TerminalRuntime(MixedNativeFixture fixture,
@@ -142,7 +144,11 @@ public sealed partial class DisposableDeltaProofVerifierTests
         internal bool InsufficientRetention { get; init; }
         internal Func<Task>? BeforeFirstRetainedRead { get; init; }
         internal RolloverClaimObject? Retained { get; private set; }
-        public Task<RolloverClaimBucketPolicy> ReadPolicyAsync(CancellationToken cancellationToken) => original.ReadPolicyAsync(cancellationToken);
+        public Task<RolloverClaimBucketPolicy> ReadPolicyAsync(CancellationToken cancellationToken)
+        {
+            return original.ReadPolicyAsync(cancellationToken);
+        }
+
         public async Task<RolloverClaimObject?> ReadAsync(string name, CancellationToken cancellationToken)
         {
             if (!name.StartsWith(TerminalPrefix, StringComparison.Ordinal)) { return await original.ReadAsync(name, cancellationToken); }
@@ -158,8 +164,9 @@ public sealed partial class DisposableDeltaProofVerifierTests
             if (Retained is not null) { throw new DeltaExecutionException("delta_rollover_claim_conflict", "A terminal is already retained."); }
             DateTimeOffset now = clock.GetUtcNow();
             Retained = new(1001, now, InsufficientRetention ? now.AddMinutes(1) : now.AddDays(366), content.ToArray());
-            if (LoseCreateAcknowledgement) { throw new IOException("The TEST acknowledgement was lost after immutable publication."); }
-            return Task.FromResult(Retained with { Content = Retained.Content.ToArray() });
+            return LoseCreateAcknowledgement
+                ? throw new IOException("The TEST acknowledgement was lost after immutable publication.")
+                : Task.FromResult(Retained with { Content = Retained.Content.ToArray() });
         }
     }
 }

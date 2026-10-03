@@ -184,7 +184,7 @@ public sealed partial class DisposableDeltaProofVerifierTests
         }
         Assert.True(observed.IsTerminal);
         JsonElement progress = JsonSerializer.SerializeToElement(
-            Legacy.Maliev.DataMigration.Console.MigrationConsole.ObservationEvidence(observed, 0),
+            Console.MigrationConsole.ObservationEvidence(observed, 0),
             TerminalProgressJsonOptions);
         Assert.Equal(24, progress.GetProperty("continuation").GetProperty("ordinal").GetInt64());
         Assert.Equal(observed.AdmissionSha256, progress.GetProperty("admissionSha256").GetString());

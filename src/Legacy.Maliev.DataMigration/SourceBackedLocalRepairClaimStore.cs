@@ -18,8 +18,8 @@ public sealed record SourceBackedLocalRepairClaim(
 internal sealed class SourceBackedLocalRepairClaimStore(IRolloverClaimObjectGateway gateway)
 {
     private const string Prefix = "source-backed-local-repair/v1/";
-    private readonly IRolloverClaimObjectGateway _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
-    internal IRolloverClaimObjectGateway Gateway => _gateway;
+
+    internal IRolloverClaimObjectGateway Gateway { get; } = gateway ?? throw new ArgumentNullException(nameof(gateway));
 
     internal async Task<SourceBackedLocalRepairClaim> ReserveAsync(
         SourceBackedLocalRepairClaim claim, DateTimeOffset nowUtc, CancellationToken cancellationToken)
@@ -73,7 +73,7 @@ internal sealed class SourceBackedLocalRepairClaimStore(IRolloverClaimObjectGate
     private async Task CreateAsync(string name, byte[] bytes, DateTimeOffset expiresAtUtc,
         CancellationToken cancellationToken)
     {
-        RolloverClaimObject created = await _gateway.CreateOnlyAsync(name, bytes, cancellationToken).ConfigureAwait(false);
+        RolloverClaimObject created = await Gateway.CreateOnlyAsync(name, bytes, cancellationToken).ConfigureAwait(false);
         RolloverClaimObject read = await RequiredAsync(name, cancellationToken).ConfigureAwait(false);
         RequireRetained(created, expiresAtUtc);
         RequireRetained(read, expiresAtUtc);
@@ -85,13 +85,13 @@ internal sealed class SourceBackedLocalRepairClaimStore(IRolloverClaimObjectGate
 
     private async Task<RolloverClaimObject> RequiredAsync(string name, CancellationToken cancellationToken)
     {
-        return await _gateway.ReadAsync(name, cancellationToken).ConfigureAwait(false)
+        return await Gateway.ReadAsync(name, cancellationToken).ConfigureAwait(false)
         ?? throw Invalid("delta_source_repair_claim_object_missing");
     }
 
     private async Task RequirePolicyAsync(CancellationToken cancellationToken)
     {
-        RolloverClaimBucketPolicy policy = await _gateway.ReadPolicyAsync(cancellationToken).ConfigureAwait(false);
+        RolloverClaimBucketPolicy policy = await Gateway.ReadPolicyAsync(cancellationToken).ConfigureAwait(false);
         if (!policy.RetentionLocked || policy.RetentionSeconds < ImmutableRolloverClaimStore.MinimumRetentionSeconds ||
             !policy.UniformBucketAccess || policy.VersioningEnabled)
         {

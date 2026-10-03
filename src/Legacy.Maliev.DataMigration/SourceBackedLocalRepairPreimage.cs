@@ -260,8 +260,8 @@ internal static class SourceBackedLocalRepairPreimage
         // nonexecuting evidence; only a conforming declared physical schema can bind the
         // approved owner state. The mixed reader rejects any nonconforming physical hash.
         if (ApprovedConsumerColumnOverlayManifest.HasState(schema) &&
-            (physical == schema.TargetSchemaSha256 || schema.SourceDispositionProfile is not null &&
-                physical == PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(schema, true)))
+            (physical == schema.TargetSchemaSha256 || (schema.SourceDispositionProfile is not null &&
+                physical == PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(schema, true))))
         {
             ApprovedTargetExtensionState extensions = await ApprovedTargetExtensionStateInspector
                 .InspectAsync(connection, transaction, schema, cancellationToken).ConfigureAwait(false);
