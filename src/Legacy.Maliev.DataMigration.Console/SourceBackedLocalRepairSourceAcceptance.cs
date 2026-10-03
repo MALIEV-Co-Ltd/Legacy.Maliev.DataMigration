@@ -59,11 +59,21 @@ internal static class SourceBackedLocalRepairSourceAcceptance
         { throw Invalid(); }
     }
 
-    private static async Task RequireBundleAsync(CancellationToken cancellationToken)
+    private static Task RequireBundleAsync(CancellationToken cancellationToken)
     {
         string accepted = Path.Combine(Checkout, "src", "Legacy.Maliev.DataMigration.Console", "bin", "Release", "net10.0");
         string running = Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar);
-        if (string.Equals(accepted, running, StringComparison.OrdinalIgnoreCase) || !Directory.Exists(accepted)) { throw Invalid(); }
+        return RequireBundleForPathsAsync(accepted, running, cancellationToken);
+    }
+
+    // Internal filesystem comparison seam, not source acceptance or execution authority.
+    // The runtime derives both paths above only after the fixed protected-main/CI checks.
+    internal static async Task RequireBundleForPathsAsync(string accepted, string running, CancellationToken cancellationToken)
+    {
+        accepted = Path.TrimEndingDirectorySeparator(Path.GetFullPath(accepted));
+        running = Path.TrimEndingDirectorySeparator(Path.GetFullPath(running));
+        if (string.Equals(accepted, running, StringComparison.OrdinalIgnoreCase) ||
+            !Directory.Exists(accepted) || !Directory.Exists(running)) { throw Invalid(); }
         string[] expected = Directory.GetFiles(accepted, "*", SearchOption.AllDirectories)
             .Select(path => Path.GetRelativePath(accepted, path)).Order(StringComparer.Ordinal).ToArray();
         string[] actual = Directory.GetFiles(running, "*", SearchOption.AllDirectories)
@@ -72,10 +82,25 @@ internal static class SourceBackedLocalRepairSourceAcceptance
         foreach (string relative in expected)
         {
             await using FileStream left = File.OpenRead(Path.Combine(accepted, relative));
-            await using FileStream right = OwnerProtectedFilePolicy.OpenRead(Path.Combine(running, relative), "delta_source_repair_build_unprotected");
+            await using FileStream right = OpenRunningBundleRead(Path.Combine(running, relative));
             byte[] acceptedHash = await SHA256.HashDataAsync(left, cancellationToken).ConfigureAwait(false);
             byte[] runningHash = await SHA256.HashDataAsync(right, cancellationToken).ConfigureAwait(false);
             if (!CryptographicOperations.FixedTimeEquals(acceptedHash, runningHash)) { throw Invalid(); }
+        }
+    }
+
+    private static FileStream OpenRunningBundleRead(string path)
+    {
+        try
+        {
+            // The Windows loader retains read handles for some dependencies. Share only
+            // reads; keep owner/link/resolved-handle checks and deny writes/deletion.
+            return SecureLocalFile.OpenReadShared(path);
+        }
+        catch (Exception failure) when (failure is Exact25FullBackupException or IOException or UnauthorizedAccessException)
+        {
+            throw new MigrationConsoleException("delta_source_repair_build_unprotected",
+                "The protected running bundle file could not be opened safely.");
         }
     }
 
