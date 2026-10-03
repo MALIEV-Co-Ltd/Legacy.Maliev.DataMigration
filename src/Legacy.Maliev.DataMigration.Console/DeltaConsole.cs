@@ -914,6 +914,28 @@ internal static class PairedDeltaTargetIdentityFence
 
 internal static class PairedDeltaTargetPhysicalSchemaFence
 {
+    internal static Task<ReviewedQuotationPhysicalVariant> ObserveQuotationVariantAsync(DatabaseSchemaPlan schema,
+        PostgreSqlDeltaReconciliationInspector disposable, PostgreSqlDeltaReconciliationInspector persistent,
+        ReviewedQuotationPhysicalVariant? expected, CancellationToken cancellationToken)
+    {
+        return ObserveQuotationVariantAsync(schema, disposable.ObserveQuotationPhysicalVariantAsync,
+            persistent.ObserveQuotationPhysicalVariantAsync, expected, cancellationToken);
+    }
+
+    internal static async Task<ReviewedQuotationPhysicalVariant> ObserveQuotationVariantAsync(DatabaseSchemaPlan schema,
+        Func<DatabaseSchemaPlan, CancellationToken, Task<ReviewedQuotationPhysicalVariant>> disposable,
+        Func<DatabaseSchemaPlan, CancellationToken, Task<ReviewedQuotationPhysicalVariant>> persistent,
+        ReviewedQuotationPhysicalVariant? expected, CancellationToken cancellationToken)
+    {
+        ReviewedQuotationPhysicalVariant left = await disposable(schema, cancellationToken).ConfigureAwait(false);
+        ReviewedQuotationPhysicalVariant right = await persistent(schema, cancellationToken).ConfigureAwait(false);
+        return left is not (ReviewedQuotationPhysicalVariant.RetainedOutboxes or ReviewedQuotationPhysicalVariant.MappedFinal) ||
+            left != right || (expected.HasValue && left != expected.Value)
+            ? throw new DeltaExecutionException("delta_paired_quotation_physical_mismatch",
+            "Both actual Quotation physical schemas must match the same unchanged reviewed variant.")
+            : left;
+    }
+
     internal static Task VerifyDatabaseAsync(DatabaseSchemaPlan schema, bool transition,
         PostgreSqlDeltaReconciliationInspector disposable,
         PostgreSqlDeltaReconciliationInspector persistent, CancellationToken cancellationToken)
@@ -963,11 +985,20 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSource
             new(request.DisposableTargetConnectionString));
         var persistentSchema = new PostgreSqlDeltaReconciliationInspector(
             new(request.PersistentTargetConnectionString));
+        ReviewedQuotationPhysicalVariant quotationVariant = ReviewedQuotationPhysicalVariant.RetainedOutboxes;
         foreach (DatabaseSchemaPlan database in request.Schema.Databases)
         {
-            await PairedDeltaTargetPhysicalSchemaFence.VerifyDatabaseAsync(database,
-                request.Configuration.UseQuotationPhysicalTransition, disposableSchema, persistentSchema,
-                cancellationToken).ConfigureAwait(false);
+            if (request.Configuration.UseQuotationPhysicalTransition && database.Database == "Quotation")
+            {
+                quotationVariant = await PairedDeltaTargetPhysicalSchemaFence.ObserveQuotationVariantAsync(database,
+                    disposableSchema, persistentSchema, null, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await PairedDeltaTargetPhysicalSchemaFence.VerifyDatabaseAsync(database,
+                    request.Configuration.UseQuotationPhysicalTransition, disposableSchema, persistentSchema,
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
         DateTimeOffset cutoff = TimeProvider.System.GetUtcNow();
         await using IMigrationSourceSession source = _sourceFactory.Create(request.SourceConnectionString);
@@ -987,6 +1018,7 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSource
             SourceMode = DeltaSourceMode.LiveReadOnly,
             SourceObservationSha256 = sourceObservation,
             UseQuotationPhysicalTransition = request.Configuration.UseQuotationPhysicalTransition,
+            QuotationPhysicalVariant = quotationVariant,
         };
         Exact23DeltaPlanRequest persistent = disposable with
         {
@@ -1013,9 +1045,17 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSource
             VerifyTargetAuthorityAsync, cancellationToken).ConfigureAwait(false);
         foreach (DatabaseSchemaPlan database in request.Schema.Databases)
         {
-            await PairedDeltaTargetPhysicalSchemaFence.VerifyDatabaseAsync(database,
-                request.Configuration.UseQuotationPhysicalTransition, disposableSchema, persistentSchema,
-                cancellationToken).ConfigureAwait(false);
+            if (request.Configuration.UseQuotationPhysicalTransition && database.Database == "Quotation")
+            {
+                _ = await PairedDeltaTargetPhysicalSchemaFence.ObserveQuotationVariantAsync(database,
+                    disposableSchema, persistentSchema, quotationVariant, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await PairedDeltaTargetPhysicalSchemaFence.VerifyDatabaseAsync(database,
+                    request.Configuration.UseQuotationPhysicalTransition, disposableSchema, persistentSchema,
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
         var planTrust = new ReceiptAttestationTrustStore(
             [new(request.DisposableSigner.KeyId, request.DisposableSigner.ExportSubjectPublicKeyInfo()),
@@ -1035,11 +1075,12 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSource
         await VerifyTargetAuthorityAsync(request.TargetConnectionString, request.Configuration.TargetAuthority,
             cancellationToken).ConfigureAwait(false);
         var targetSchema = new PostgreSqlDeltaReconciliationInspector(new(request.TargetConnectionString));
+        ReviewedQuotationPhysicalVariant quotationVariant = ReviewedQuotationPhysicalVariant.RetainedOutboxes;
         foreach (DatabaseSchemaPlan database in request.Schema.Databases)
         {
             if (request.Configuration.UseQuotationPhysicalTransition && database.Database == "Quotation")
             {
-                await targetSchema.ValidateQuotationTransitionSchemaAsync(database, cancellationToken)
+                quotationVariant = await targetSchema.ObserveQuotationPhysicalVariantAsync(database, cancellationToken)
                     .ConfigureAwait(false);
             }
             else
@@ -1078,7 +1119,17 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSource
                 SourceMode = capturedConfiguration.SourceMode,
                 SourceObservationSha256 = sourceObservation,
                 UseQuotationPhysicalTransition = capturedConfiguration.UseQuotationPhysicalTransition,
+                QuotationPhysicalVariant = quotationVariant,
             }, request.CaptureKey, cancellationToken).ConfigureAwait(false);
+            if (capturedConfiguration.UseQuotationPhysicalTransition)
+            {
+                DatabaseSchemaPlan quotation = request.Schema.Databases.Single(database => database.Database == "Quotation");
+                if (await targetSchema.ObserveQuotationPhysicalVariantAsync(quotation, cancellationToken).ConfigureAwait(false) != quotationVariant)
+                {
+                    throw new DeltaExecutionException("delta_paired_quotation_physical_mismatch",
+                    "The actual reviewed Quotation variant changed during captured planning.");
+                }
+            }
             return !string.Equals(sourceObservation,
                 await SqlServerLiveSourceObservation.ObserveSha256Async(request.SourceConnectionString,
                     cancellationToken).ConfigureAwait(false), StringComparison.Ordinal)
@@ -1175,7 +1226,8 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSource
                 Pooling = false,
             }.ConnectionString;
             return new(
-                new PostgreSqlDeltaCanonicalTarget(new(connection, database, request.Plan.TargetGeneration)),
+                new PostgreSqlDeltaCanonicalTarget(new(connection, database, request.Plan.TargetGeneration)
+                { SignedSourceSchemaPlan = request.Schema }),
                 capturedSource is null
                     ? new OrderedDeltaExecutionRowSessionProvider(new QuotationMappedDeltaRowSource(
                         new SqlServerSnapshotDeltaExecutionRowSource(source), request.Schema), targetRows)

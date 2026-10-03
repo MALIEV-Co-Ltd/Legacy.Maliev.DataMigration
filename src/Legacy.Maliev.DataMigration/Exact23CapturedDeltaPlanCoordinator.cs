@@ -60,6 +60,14 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
             throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
                 "The Quotation physical transition requires a disposable-local capture.");
         }
+        if (!Enum.IsDefined(request.QuotationPhysicalVariant) ||
+            (!request.UseQuotationPhysicalTransition && request.QuotationPhysicalVariant != ReviewedQuotationPhysicalVariant.RetainedOutboxes))
+        { throw ReviewedQuotationPhysicalSchemaResolver.Invalid(); }
+        if (request.UseQuotationPhysicalTransition)
+        {
+            _ = ReviewedQuotationPhysicalSchemaResolver.GetExpected(request.SchemaPlan.Databases.Single(database => database.Database == "Quotation"),
+                request.QuotationPhysicalVariant);
+        }
         DateTimeOffset preflightUtc = timeProvider.GetUtcNow();
         string keyFingerprint = Convert.ToHexString(SHA256.HashData(captureKey.Span)).ToLowerInvariant();
         if (request.SourceCutoffUtc.Offset != TimeSpan.Zero || request.SourceCutoffUtc > preflightUtc ||
@@ -80,6 +88,7 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
              ReferenceEquals(persistentTarget, canonicalTarget) ||
              persistentRequest.SourceMode != DeltaSourceMode.LiveReadOnly ||
              persistentRequest.UseQuotationPhysicalTransition != request.UseQuotationPhysicalTransition ||
+             persistentRequest.QuotationPhysicalVariant != request.QuotationPhysicalVariant ||
              persistentRequest.SourceCutoffUtc != request.SourceCutoffUtc ||
              persistentRequest.SourceObservationSha256 != request.SourceObservationSha256 ||
              SchemaPlanCanonicalizer.ComputeSha256(persistentRequest.SchemaPlan) !=
@@ -284,8 +293,8 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
             SourceCaptureCompletedAtUtc = nowUtc,
             SourceCaptureManifest = manifest,
             QuotationTransitionSchemaSha256 = request.UseQuotationPhysicalTransition
-                ? PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(
-                    request.SchemaPlan.Databases.Single(database => database.Database == "Quotation"), true)
+                ? ReviewedQuotationPhysicalSchemaResolver.GetExpected(
+                    request.SchemaPlan.Databases.Single(database => database.Database == "Quotation"), request.QuotationPhysicalVariant)
                 : null,
             PairedTransitionPlanOnly = request.UseQuotationPhysicalTransition &&
                 DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(request.TargetAuthority)

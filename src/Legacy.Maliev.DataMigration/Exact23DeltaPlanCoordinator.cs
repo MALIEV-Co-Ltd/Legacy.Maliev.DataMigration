@@ -16,6 +16,7 @@ public sealed record Exact23DeltaPlanRequest(
     public string? SourceMode { get; init; }
     public string? SourceObservationSha256 { get; init; }
     public bool UseQuotationPhysicalTransition { get; init; }
+    internal ReviewedQuotationPhysicalVariant QuotationPhysicalVariant { get; init; }
 }
 
 public sealed class Exact23DeltaPlanCoordinator(

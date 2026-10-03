@@ -43,6 +43,15 @@ public sealed class ReceiptAttestationTrustStore : IReceiptAttestationTrustStore
         return _trustedKeys.ContainsKey(keyId);
     }
 
+    internal IReadOnlyList<TrustedAttestationKey> ExportTrustedPublicKeys(IEnumerable<string> keyIds)
+    {
+        ArgumentNullException.ThrowIfNull(keyIds);
+        return keyIds.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).Select(keyId =>
+            _trustedKeys.TryGetValue(keyId, out byte[]? key)
+                ? new TrustedAttestationKey(keyId, key.ToArray())
+                : throw new ArgumentException("A requested public signing key is not currently trusted.", nameof(keyIds))).ToArray();
+    }
+
     public bool Verify(string keyId, ReadOnlySpan<byte> payload, ReadOnlySpan<byte> signature)
     {
         if (!_trustedKeys.TryGetValue(keyId, out byte[]? publicKey))

@@ -3,3 +3,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("Legacy.Maliev.DataMigration.Tests")]
 [assembly: InternalsVisibleTo("Legacy.Maliev.DataMigration.SqlServer.Tests")]
 [assembly: InternalsVisibleTo("Legacy.Maliev.DataMigration.SqlServer")]
+[assembly: InternalsVisibleTo("Legacy.Maliev.DataMigration.Console")]

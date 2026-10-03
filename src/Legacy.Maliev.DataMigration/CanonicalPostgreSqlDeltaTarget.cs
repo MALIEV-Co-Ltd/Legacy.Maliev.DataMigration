@@ -12,6 +12,8 @@ public sealed record PostgreSqlDeltaCanonicalTargetOptions(
 {
     public PairedLocalTransitionExecutionPermit? LocalTransitionPermit { get; init; }
     internal LocalRolloverAdoptionPermit? RolloverPermit { get; init; }
+    internal SourceBackedLocalRepairExecutionPermit? SourceRepairPermit { get; init; }
+    internal FreshSchemaPlan? SignedSourceSchemaPlan { get; init; }
 }
 
 internal sealed record CanonicalDeltaTargetBinding(Guid PlanId, string PlanSha256, DateTimeOffset SourceCutoffUtc,
@@ -31,6 +33,9 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         IReadOnlySet<string> overlayInsertKeys = ApprovedConsumerColumnOverlayManifest.InsertKeys(schema, plan);
         PairedLocalTransitionExecutionPermit? localPermit = options.LocalTransitionPermit;
         LocalRolloverAdoptionPermit? rolloverPermit = options.RolloverPermit;
+        SourceBackedLocalRepairExecutionPermit? repairPermit = options.SourceRepairPermit;
+        if (repairPermit is not null && (rolloverPermit is not null || localPermit is null))
+        { throw SourceBackedLocalRepairExecutionPermit.Invalid(); }
         if (rolloverPermit is not null && localPermit is null)
         {
             throw Error("canonical_delta_rollover_permit_invalid",
@@ -38,6 +43,9 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
         }
         localPermit?.Require(plan, schema, localPermit.NowUtc);
         _ = rolloverPermit?.Require(plan, schema);
+        _ = repairPermit?.Require(plan, schema);
+        if (repairPermit is not null)
+        { await repairPermit.RequireFreshAsync(cancellationToken).ConfigureAwait(false); }
         if (rolloverPermit is not null)
         {
             await rolloverPermit.RequireFreshTargetIdentityAsync(cancellationToken)
@@ -48,7 +56,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
             plan.Databases.Single(item => string.Equals(item.Database, database, StringComparison.Ordinal)));
         var binding = new CanonicalDeltaTargetBinding(plan.PlanId, planSha256, plan.SourceCutoffUtc, database,
             plan.SchemaPlanSha256,
-            QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema, localPermit),
+            QuotationDeltaPhysicalSchemaGuard.ExpectedPhysicalSchema(plan, schema, localPermit, options.SignedSourceSchemaPlan),
             plan.TargetGeneration, plan.TargetObservationSha256);
         ValidateBinding(binding);
 
@@ -69,16 +77,36 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                 throw Error("canonical_delta_database_invalid", "The opened PostgreSQL database does not match the expected canonical database.");
             }
 
+            if (repairPermit is not null)
+            {
+                await using var timezone = new NpgsqlCommand("SET TIME ZONE 'UTC';", connection);
+                _ = await timezone.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                await using var control = new NpgsqlCommand("SELECT system_identifier::text FROM pg_control_system();", connection);
+                string system = (string)(await control.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+                    ?? throw SourceBackedLocalRepairExecutionPermit.Invalid());
+                string hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(system))).ToLowerInvariant();
+                if (hash != repairPermit.Admission.TargetIdentity.SystemIdentifierSha256)
+                { throw SourceBackedLocalRepairExecutionPermit.Invalid(); }
+            }
+
             NpgsqlTransaction transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
                 .ConfigureAwait(false);
             try
             {
+                PostgreSqlSourceBackedLocalRepair? repair = null;
+                if (repairPermit is not null)
+                {
+                    _ = await SourceBackedLocalRepairLockSet.AcquireAndVerifyAsync(connection, transaction,
+                        schema, repairPermit.Require(plan, schema), cancellationToken).ConfigureAwait(false);
+                    repair = await PostgreSqlSourceBackedLocalRepair.AdoptAsync(connection, transaction,
+                        plan, schema, repairPermit, binding, cancellationToken).ConfigureAwait(false);
+                }
                 if (rolloverPermit is not null)
                 {
                     await rolloverPermit.RequireFreshTargetIdentityAsync(cancellationToken)
                         .ConfigureAwait(false);
                 }
-                if (localPermit is not null)
+                if (localPermit is not null && repairPermit is null)
                 {
                     await VerifyLocalIdentityAsync(connection, transaction, plan, cancellationToken)
                         .ConfigureAwait(false);
@@ -92,7 +120,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                         .ConfigureAwait(false);
                     if (schema.Database == "Quotation")
                     {
-                        QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema, observedSchema, localPermit);
+                        QuotationDeltaPhysicalSchemaGuard.RequirePlanSchema(plan, schema, observedSchema, localPermit, options.SignedSourceSchemaPlan);
                     }
                     else if (!Fixed(observedSchema, schema.TargetSchemaSha256))
                     {
@@ -100,7 +128,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                             "The LOCAL physical schema changed after transition admission.");
                     }
                 }
-                if (localPermit is not null)
+                if (localPermit is not null && repairPermit is null)
                 {
                     PairedLocalTransitionMetadataObservation metadata =
                         await PairedLocalTransitionMetadataInspector.InspectInTransactionAsync(
@@ -143,6 +171,8 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                 await ValidateFenceAsync(connection, transaction, binding, cancellationToken).ConfigureAwait(false);
                 string? replayReconciliationSha256 = await ValidateReplayAsync(connection, transaction, binding,
                     operationsSha256, cancellationToken).ConfigureAwait(false);
+                if (repairPermit is not null && replayReconciliationSha256 is not null)
+                { throw SourceBackedLocalRepairExecutionPermit.Invalid(); }
                 if ((localPermit is not null || ApprovedConsumerColumnOverlayManifest.For(schema) is not null) && replayReconciliationSha256 is not null)
                 {
                     await VerifyReplayedEvidenceAsync(connection, transaction, schema, binding,
@@ -160,7 +190,7 @@ public sealed class PostgreSqlDeltaCanonicalTarget(PostgreSqlDeltaCanonicalTarge
                     : null;
                 IReadOnlyDictionary<string, int> upsertOrder = CanonicalForeignKeyOrder.Build(schema);
                 return new PostgreSqlDeltaCanonicalTransaction(connection, transaction, binding, schema, replayReconciliationSha256,
-                    extensionState, upsertOrder, operationsSha256, rolloverPermit, overlayInsertKeys);
+                    extensionState, upsertOrder, operationsSha256, rolloverPermit, overlayInsertKeys, repair);
             }
             catch
             {
@@ -376,7 +406,8 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
     IReadOnlyDictionary<string, int> upsertOrder,
     string operationsSha256,
     LocalRolloverAdoptionPermit? rolloverPermit,
-    IReadOnlySet<string> overlayInsertKeys) : IDeltaCanonicalTransaction
+    IReadOnlySet<string> overlayInsertKeys,
+    PostgreSqlSourceBackedLocalRepair? sourceRepair = null) : IDeltaCanonicalTransaction
 {
     private bool _completed;
     private bool _checkpointRecorded;
@@ -606,6 +637,11 @@ internal sealed class PostgreSqlDeltaCanonicalTransaction(
                 await PostgreSqlRolloverAdoption.RecordMarkerAsync(connection, transaction,
                     binding.Database, binding.PlanSha256, _reconciliationSha256,
                     rolloverPermit, cancellationToken).ConfigureAwait(false);
+            }
+            if (sourceRepair is not null)
+            {
+                await sourceRepair.RecordAsync(connection, transaction, binding, schema,
+                    _reconciliationSha256, cancellationToken).ConfigureAwait(false);
             }
         }
 
