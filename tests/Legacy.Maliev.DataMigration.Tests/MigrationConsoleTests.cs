@@ -84,14 +84,23 @@ public sealed class MigrationConsoleTests : IDisposable
         Assert.Equal("subcommand_invalid" + Environment.NewLine, error.ToString());
     }
 
-    [Fact]
-    public async Task RunAsync_Plan_MissingSourceReferenceFailsWithoutPrintingConfiguration()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("HistoricalDefaults")]
+    [InlineData("CurrentConsumerColumnsV1")]
+    public async Task RunAsync_Plan_MissingSourceReferenceFailsWithoutPrintingConfiguration(string? selection)
     {
         OwnerProtectedDirectory.CreateNew(_root);
         string configPath = Path.Combine(_root, "config.json");
+        var planConfiguration = new Dictionary<string, object>
+        {
+            ["outputPath"] = Path.Combine(_root, "plan.json"),
+            ["sourceCommitSha"] = new string('a', 40),
+        };
+        if (selection is not null) { planConfiguration.Add("consumerOverlays", selection); }
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
         {
-            plan = new { outputPath = Path.Combine(_root, "plan.json"), sourceCommitSha = new string('a', 40) },
+            plan = planConfiguration,
         }, JsonOptions));
         ProtectFileOnUnix(configPath);
         using var output = new StringWriter();

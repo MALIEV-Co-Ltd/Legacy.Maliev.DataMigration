@@ -4,6 +4,17 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class SqlServerMigrationSourceContractTests
 {
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(2)]
+    public void Constructor_RejectsUnknownConsumerOverlaySelectionBeforeOpeningSource(int selection)
+    {
+        var error = Assert.Throws<MigrationExecutionException>(() => new SqlServerMigrationSource(
+            new SqlServerMigrationSourceOptions("Server=localhost;Database=master;Integrated Security=true")
+            { ConsumerOverlays = (ConsumerOverlaySelection)selection }));
+        Assert.Equal("consumer_overlay_selection_invalid", error.Code);
+    }
+
     [Fact]
     public void Constructor_EmptyConnectionString_FailsClosed()
     {

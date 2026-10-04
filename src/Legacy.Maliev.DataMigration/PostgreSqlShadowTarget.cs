@@ -388,7 +388,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     {
         ArgumentNullException.ThrowIfNull(plan);
         ApprovedSourceDispositionManifest.RequireOrdinarySchemaApplication(plan);
-        IReadOnlyList<TableCopyPlan> schemaTables = [.. plan.Tables, .. ApprovedTargetExtensionManifest.TablesFor(plan)];
+        IReadOnlyList<TableCopyPlan> schemaTables = ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan, mapSourceDispositions: false);
         _expectedTableInspections.Clear();
         foreach (TableCopyPlan table in plan.Tables)
         {
@@ -513,7 +513,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     {
         ArgumentNullException.ThrowIfNull(plan);
         ApprovedSourceDispositionManifest.RequireOrdinarySchemaApplication(plan);
-        IReadOnlyList<TableCopyPlan> schemaTables = [.. plan.Tables, .. ApprovedTargetExtensionManifest.TablesFor(plan)];
+        IReadOnlyList<TableCopyPlan> schemaTables = ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan, mapSourceDispositions: false);
         if (_schemaFinalized || _inspectionStarted)
         {
             throw new MigrationExecutionException("shadow_schema_finalization_invalid", "The shadow schema can be finalized exactly once before inspection.");
@@ -1315,7 +1315,7 @@ internal static class PostgreSqlSchemaFingerprint
                 "The signed Quotation disposition schema plan is required.");
         }
 
-        IReadOnlyList<TableCopyPlan> mapped = ApprovedSourceDispositionManifest.TargetTablesFor(plan);
+        IReadOnlyList<TableCopyPlan> mapped = ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan);
         if (!retainSourceOutboxes)
         {
             return plan.TargetSchemaSha256;
@@ -1329,7 +1329,7 @@ internal static class PostgreSqlSchemaFingerprint
     internal static string ComputeExpectedSourceShape(DatabaseSchemaPlan plan)
     {
         _ = ComputeQuotationBootstrapExpected(plan, true);
-        return ComputeExpectedTables(plan.Tables);
+        return ComputeExpectedTables(ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan, mapSourceDispositions: false));
     }
 
     internal static string ComputeExpectedTables(IReadOnlyList<TableCopyPlan> schemaTables)

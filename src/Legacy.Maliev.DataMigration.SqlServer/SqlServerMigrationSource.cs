@@ -9,7 +9,12 @@ using Microsoft.Data.SqlClient;
 
 namespace Legacy.Maliev.DataMigration;
 
-public sealed record SqlServerMigrationSourceOptions(string ConnectionString);
+public sealed record SqlServerMigrationSourceOptions(string ConnectionString)
+{
+    /// <summary>Explicit reviewed target-only columns; historical defaults remain the default.</summary>
+    public ConsumerOverlaySelection ConsumerOverlays { get; init; } = ConsumerOverlaySelection.HistoricalDefaults;
+    public ContactRequestCollationProfile ContactRequestCollationProfile { get; init; }
+}
 
 public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, IDatabaseSchemaPlanSource
 {
@@ -19,6 +24,8 @@ public sealed partial class SqlServerMigrationSource : IMigrationSourceSession, 
     public SqlServerMigrationSource(SqlServerMigrationSourceOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        _ = ApprovedConsumerOverlaySelection.ProfileForDatabase("CustomerIdentity", options.ConsumerOverlays);
+        ApprovedContactRequestCollationManifest.ValidateProfile(options.ContactRequestCollationProfile);
         if (string.IsNullOrWhiteSpace(options.ConnectionString))
         {
             throw new ArgumentException("A SQL Server source connection string is required.", nameof(options));

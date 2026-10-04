@@ -1055,7 +1055,11 @@ public static partial class MigrationConsole
             throw new MigrationConsoleException("plan_configuration_missing", "Plan configuration is required.");
         string sourceConnection = getEnvironmentVariable(SqlServerConnectionEnvironmentVariable) ??
             throw new MigrationConsoleException("plan_source_reference_missing", "The source connection reference is required.");
-        await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(sourceConnection));
+        await using var source = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(sourceConnection)
+        {
+            ConsumerOverlays = plan.ConsumerOverlays,
+            ContactRequestCollationProfile = plan.ContactRequestCollationProfile,
+        });
         FreshSchemaPlan schemaPlan = await FreshSchemaPlanProducer.ProduceAsync(
             source,
             plan.SourceCommitSha,
@@ -1463,7 +1467,9 @@ public static partial class MigrationConsole
         string KeyId,
         bool AllowSourceBackup);
 
-    private sealed record PlanCommandConfiguration(string OutputPath, string SourceCommitSha);
+    private sealed record PlanCommandConfiguration(string OutputPath, string SourceCommitSha,
+        ConsumerOverlaySelection ConsumerOverlays = ConsumerOverlaySelection.HistoricalDefaults,
+        ContactRequestCollationProfile ContactRequestCollationProfile = ContactRequestCollationProfile.LegacyInherited);
 
     private sealed record AuthorizeShadowCommandConfiguration(
         string ReceiptPath,

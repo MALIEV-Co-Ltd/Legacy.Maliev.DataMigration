@@ -13,9 +13,76 @@ public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFi
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public async Task SelectedConsumerOverlay_RealOutboxBootstrapAndRetainedReplayPreserveDecisionBinding()
+    {
+        (PostgreSqlShadowTarget target, ShadowDatabase shadow, DatabaseSchemaPlan plan, string connection) =
+            await CreateSourceShapedAsync(consumerOverlay: true);
+        try
+        {
+            string identity = await IdentityAsync(connection);
+            string before = (await TextOrNullAsync(connection,
+                "SELECT jsonb_agg(to_jsonb(q) ORDER BY q.\"ID\")::text FROM public.\"Quotation\" q;"))!;
+            Assert.Equal("source-shaped", await QuotationDispositionTargetBootstrap.PreflightAsync(plan,
+                connection, shadow.Name, identity, default));
+            Assert.Equal("created", await QuotationDispositionTargetBootstrap.ExecuteAsync(plan,
+                connection, shadow.Name, identity, default));
+            Assert.Equal("already-current", await QuotationDispositionTargetBootstrap.PreflightAsync(plan,
+                connection, shadow.Name, identity, default));
+            Assert.Equal("already-current", await QuotationDispositionTargetBootstrap.ExecuteAsync(plan,
+                connection, shadow.Name, identity, default));
+            await QuotationDispositionTargetBootstrap.VerifyPostCommitAsync(plan, connection, shadow.Name, identity, default);
+            Assert.Equal(before, await TextOrNullAsync(connection,
+                "SELECT jsonb_agg(to_jsonb(q) ORDER BY q.\"ID\")::text FROM public.\"Quotation\" q;"));
+            Assert.Equal(1L, await ScalarAsync(connection,
+                "SELECT count(*) FROM public.\"QuotationOutcomeOutbox\" WHERE \"ID\"=7;"));
+            await using var database = new NpgsqlConnection(connection);
+            await database.OpenAsync();
+            await using var transaction = await database.BeginTransactionAsync();
+            await using var inspector = new PostgreSqlWholeDatabaseTransaction(database, transaction, ownsResources: false);
+            string actual = await inspector.InspectSchemaAsync(plan, default);
+            Assert.Equal(ReviewedQuotationPhysicalVariant.RetainedOutboxes,
+                ReviewedQuotationPhysicalSchemaResolver.ClassifyObserved(plan, actual));
+            Assert.Equal(PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(plan, true), actual);
+            Assert.NotEqual(PostgreSqlSchemaFingerprint.ComputeExpectedSourceShape(plan), actual);
+            DatabaseSchemaPlan historical = plan with { TargetExtensionProfile = null };
+            historical = historical with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(historical) };
+            Assert.NotEqual(PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(historical, true), actual);
+            Assert.Equal(PostgreSqlSchemaFingerprint.ComputeExpectedTables(historical.Tables),
+                PostgreSqlSchemaFingerprint.ComputeExpectedSourceShape(historical));
+            Assert.Equal(PostgreSqlSchemaFingerprint.ComputeExpectedTables(
+                [.. ApprovedSourceDispositionManifest.TargetTablesFor(historical), .. historical.Tables.Where(table =>
+                    table.SourceTable is "GoogleAnalyticsOutbox" or "QuotationOutcomeOutbox")]),
+                PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(historical, true));
+            Assert.DoesNotContain("DecisionOrderVersion", plan.Tables.Single(table => table.SourceTable == "Quotation").OrderedColumns);
+            await transaction.RollbackAsync();
+            // Preservation-safe retirement only in this owned fixture proves the second genuine physical variant.
+            await ExecuteAsync(connection, "CREATE SCHEMA legacy_migration_internal; ALTER TABLE public.\"GoogleAnalyticsOutbox\" SET SCHEMA legacy_migration_internal; ALTER TABLE public.\"QuotationOutcomeOutbox\" SET SCHEMA legacy_migration_internal;");
+            await using var finalDatabase = new NpgsqlConnection(connection);
+            await finalDatabase.OpenAsync();
+            await using var finalTransaction = await finalDatabase.BeginTransactionAsync();
+            await using var finalInspector = new PostgreSqlWholeDatabaseTransaction(finalDatabase, finalTransaction, ownsResources: false);
+            string final = await finalInspector.InspectSchemaAsync(plan, default);
+            Assert.Equal(plan.TargetSchemaSha256, final);
+            Assert.Equal(ReviewedQuotationPhysicalVariant.MappedFinal,
+                ReviewedQuotationPhysicalSchemaResolver.ClassifyObserved(plan, final));
+            Assert.Equal(1L, await ScalarAsync(connection,
+                "SELECT count(*) FROM legacy_migration_internal.\"QuotationOutcomeOutbox\" WHERE \"ID\"=7;"));
+            Assert.Equal(before, await TextOrNullAsync(connection,
+                "SELECT jsonb_agg(to_jsonb(q) ORDER BY q.\"ID\")::text FROM public.\"Quotation\" q;"));
+        }
+        finally { await target.DeleteRunOwnedShadowAsync(shadow, default); }
+    }
+
+    [Fact]
     public async Task DisposableAuthorization_RejectsPhysicalDriftBeforeSigningOrDdl()
     {
-        await using var container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using var container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string admin = container.GetConnectionString();
         await ExecuteAsync(admin, "CREATE DATABASE \"Quotation\";");
@@ -173,7 +240,13 @@ public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFi
     [Fact]
     public async Task AtomicDeltaBegin_RejectsRetainedTransitionBeforeDmlOrJournal()
     {
-        await using var container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using var container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string admin = container.GetConnectionString();
         await ExecuteAsync(admin, "CREATE DATABASE \"Quotation\";");
@@ -413,9 +486,20 @@ public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFi
         }
     }
 
-    private async Task<(PostgreSqlShadowTarget, ShadowDatabase, DatabaseSchemaPlan, string)> CreateSourceShapedAsync()
+    private async Task<(PostgreSqlShadowTarget, ShadowDatabase, DatabaseSchemaPlan, string)> CreateSourceShapedAsync(bool consumerOverlay = false)
     {
         DatabaseSchemaPlan plan = QuotationPlan();
+        if (consumerOverlay)
+        {
+            var root = new TableCopyPlan("dbo", "Quotation", "public", "Quotation", ["ID", "Comment"], ["ID"])
+            {
+                ColumnTypes = new Dictionary<string, string>(StringComparer.Ordinal) { ["ID"] = "integer", ["Comment"] = "text" },
+                NullableColumns = ["Comment"],
+                PrimaryKey = new("PK_Quotation", ["ID"]),
+            };
+            plan = plan with { Tables = [root, .. plan.Tables] };
+            plan = plan with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(plan) };
+        }
         TableCopyPlan[] tables = [.. plan.Tables];
         PostgreSqlShadowTarget target = fixture.CreateShadowTarget();
         ShadowDatabase shadow = await target.CreateUniqueEmptyShadowAsync("Quotation",
@@ -445,6 +529,13 @@ public sealed class QuotationDispositionTargetBootstrapTests(PostgreSqlAdapterFi
         await ExecuteAsync(connection,
             "INSERT INTO public.\"QuotationOutcomeOutbox\" (\"ID\", \"EventKey\", \"QuotationID\", \"AcceptedUtc\", \"AcceptanceOrigin\") " +
             "VALUES (7, 'synthetic-7', 42, '2026-09-26 12:00:00', 'customer');");
+        if (consumerOverlay)
+        {
+            // Owner column independently staged in this disposable raw baseline before bootstrap admission.
+            await ExecuteAsync(connection, "ALTER TABLE public.\"Quotation\" ADD COLUMN \"DecisionOrderVersion\" timestamp without time zone; INSERT INTO public.\"Quotation\" (\"ID\",\"Comment\",\"DecisionOrderVersion\") VALUES (1,'synthetic','2030-02-03 04:05:06.123456'),(2,'synthetic',NULL);");
+            plan = plan with { TargetExtensionProfile = ApprovedConsumerColumnOverlayManifest.QuotationV1 };
+            plan = plan with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(plan) };
+        }
         return (target, shadow, plan, connection);
     }
 

@@ -163,6 +163,7 @@ public static partial class MigrationConsole
         IGuardedDeltaConsoleRuntime runtime,
         CancellationToken cancellationToken)
     {
+        DefaultGuardedDeltaConsoleRuntime.RequireSourceReadWindowMode(configuration, paired: false);
         if (!configuration.AllowPlanSigning)
         {
             throw DeltaInvalid("delta_plan_owner_review_required");
@@ -205,6 +206,7 @@ public static partial class MigrationConsole
         IGuardedDeltaConsoleRuntime runtime,
         CancellationToken cancellationToken)
     {
+        DefaultGuardedDeltaConsoleRuntime.RequireSourceReadWindowMode(configuration, paired: true);
         if (!configuration.AllowPlanSigning || !configuration.UseCapturedSource ||
             configuration.PairedPersistentTarget is null ||
             !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(configuration.TargetAuthority) ||
@@ -798,7 +800,8 @@ internal sealed record DeltaCommandConfiguration(
     string? CaptureKeyFile = null,
     bool UseQuotationPhysicalTransition = false,
     PairedPersistentDeltaTarget? PairedPersistentTarget = null,
-    string? DisposableProofPairPath = null);
+    string? DisposableProofPairPath = null,
+    bool RecordSourceReadWindows = false);
 
 internal sealed record PairedPersistentDeltaTarget(
     string TargetConnectionFile,
@@ -975,6 +978,7 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSource
     public async Task<PairedCapturedDeltaPlans> PlanPairedAsync(DeltaPairedPlanRuntimeRequest request,
         CancellationToken cancellationToken)
     {
+        RequireSourceReadWindowMode(request.Configuration, paired: true);
         string sourceObservation = await SqlServerLiveSourceObservation.ObserveSha256Async(
             request.SourceConnectionString, cancellationToken).ConfigureAwait(false);
         await VerifyTargetAuthorityAsync(request.DisposableTargetConnectionString,
@@ -1067,6 +1071,7 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSource
 
     public async Task<DeltaSynchronizationPlan> PlanAsync(DeltaPlanRuntimeRequest request, CancellationToken cancellationToken)
     {
+        RequireSourceReadWindowMode(request.Configuration, paired: false);
         bool live = request.Configuration.SourceMode == DeltaSourceMode.LiveReadOnly;
         string? sourceObservation = live
             ? await SqlServerLiveSourceObservation.ObserveSha256Async(request.SourceConnectionString, cancellationToken)
@@ -1166,6 +1171,7 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSource
                 TargetAuthority = configuration.TargetAuthority,
                 SourceMode = configuration.SourceMode,
                 SourceObservationSha256 = sourceObservation,
+                RecordSourceReadWindows = configuration.RecordSourceReadWindows,
             }, cancellationToken).ConfigureAwait(false);
             foreach (string database in opened)
             {
@@ -1185,6 +1191,18 @@ internal sealed partial class DefaultGuardedDeltaConsoleRuntime(IMigrationSource
                 await source.RollbackDatabaseSnapshotAsync(database, CancellationToken.None).ConfigureAwait(false);
             }
             throw;
+        }
+    }
+
+    internal static void RequireSourceReadWindowMode(DeltaCommandConfiguration configuration, bool paired)
+    {
+        if (configuration.RecordSourceReadWindows &&
+            (paired || configuration.SourceMode != DeltaSourceMode.LiveReadOnly ||
+             configuration.UseCapturedSource || configuration.UseQuotationPhysicalTransition ||
+             configuration.PairedPersistentTarget is not null))
+        {
+            throw new DeltaPlanException("delta_plan_source_read_window_mode_invalid",
+                "Database read windows require ordinary live comparison without encrypted capture or paired transition.");
         }
     }
 

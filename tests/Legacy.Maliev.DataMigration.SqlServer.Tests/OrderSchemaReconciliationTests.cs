@@ -10,7 +10,14 @@ public sealed class OrderSchemaReconciliationTests(PostgreSqlAdapterFixture fixt
     [SqlServerIntegrationFact]
     public async Task Copy_OrderDefaultsAndUnicode_FromSqlServer2022_ReconcilesOnPostgreSql18()
     {
-        await using MsSqlContainer sqlServer = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04").Build();
+        await using MsSqlContainer sqlServer = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
+            .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", "2560")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 2000000000;
+            }).Build();
         await sqlServer.StartAsync();
         await using (var setup = new SqlConnection(sqlServer.GetConnectionString()))
         {

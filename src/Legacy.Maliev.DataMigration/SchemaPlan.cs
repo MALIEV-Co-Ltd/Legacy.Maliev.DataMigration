@@ -183,6 +183,11 @@ public static partial class SchemaPlanCanonicalizer
             errors.Add(new("schema_plan_database_coverage_invalid", "The schema plan must cover exactly the approved migrate disposition."));
         }
 
+        if (ApprovedConsumerOverlaySelection.IsCurrent(plan) && !ApprovedConsumerOverlaySelection.IsApproved(plan))
+        {
+            errors.Add(new("consumer_overlay_selection_invalid", "Consumer column activation requires both exact reviewed database profiles."));
+        }
+
         foreach (DatabaseSchemaPlan database in plan.Databases)
         {
             try
