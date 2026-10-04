@@ -8,8 +8,17 @@ function Test-Throws([scriptblock]$Action) {
 
 Describe 'Quotation disposable copy guards' {
     It 'parses the connection fields instead of creating a ConnectionString key' {
-        $connection = ConvertTo-QuotationCopyConnection `
-            'Host=127.0.0.1;Port=5432;Database=postgres;Username=synthetic;Password=synthetic'
+        $password = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)) + ';"='
+        $fixture = [System.Data.Common.DbConnectionStringBuilder]::new()
+        $fixture['Host'] = '127.0.0.1'
+        $fixture['Port'] = 5432
+        $fixture['Database'] = 'postgres'
+        $fixture['Username'] = 'synthetic'
+        $fixture['Password'] = $password
+        $connection = ConvertTo-QuotationCopyConnection $fixture.get_ConnectionString()
+        $connection['Password'] | Should Be $password
+        $connection['Username'] | Should Be 'synthetic'
+        $connection['Port'] | Should Be '5432'
         $connection['Host'] | Should Be '127.0.0.1'
         $connection['Database'] | Should Be 'postgres'
         $connection.ContainsKey('ConnectionString') | Should Be $false

@@ -564,7 +564,7 @@ public sealed class GuardedShadowMigrationRunnerTests
         Harness harness = CreateHarness();
         harness.Target.CorruptDatabase = "Order";
         harness.Target.Corruption = corruption;
-        harness.Source.ValueFactory = _ => "private-row-value;Password=must-not-appear";
+        harness.Source.ValueFactory = _ => "private-row-value;" + new System.Data.Common.DbConnectionStringBuilder { ["Password"] = "must-not-appear" }.ConnectionString;
         FreshSchemaPlan plan = WithOrderRelationshipsAndIdentity();
 
         MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() =>

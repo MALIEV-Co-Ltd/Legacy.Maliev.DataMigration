@@ -97,7 +97,7 @@ if (database is "CustomerIdentity" or "EmployeeIdentity")
 }
 string connectionText = mode == "production"
     ? File.ReadAllText(Path.Combine(run, "target-connection.txt")).Trim()
-    : $"Host=127.0.0.1;Port=15440;Username=postgres;Password={File.ReadLines(Path.Combine(run, "disposable-postgres.env")).Single(line => line.StartsWith("POSTGRES_PASSWORD=", StringComparison.Ordinal))["POSTGRES_PASSWORD=".Length..]};Database=postgres;Pooling=false";
+    : new NpgsqlConnectionStringBuilder { Host = "127.0.0.1", Port = 15440, Username = "postgres", Password = File.ReadAllLines(Path.Combine(run, "disposable-postgres.env")).Single(line => line.StartsWith("POSTGRES_PASSWORD=", StringComparison.Ordinal))["POSTGRES_PASSWORD=".Length..], Database = "postgres", Pooling = false }.ConnectionString;
 var builder = new NpgsqlConnectionStringBuilder(connectionText) { Database = database, Pooling = false };
 if (builder.Host != "127.0.0.1" || builder.Port != (mode == "production" ? 15438 : 15440))
 {

@@ -387,7 +387,15 @@ if ((Get-SystemHash $sourcePassword $sourcePort -Username $sourceUser) -cne $sou
     Fail 'exact23_copy_identity_changed'
 }
 $databaseReceipts = @()
-$copyConnectionString = "Host=127.0.0.1;Port=$copyPort;Username=postgres;Password=$copyPassword;Database=postgres;SSL Mode=Disable;Pooling=False"
+$copyConnection = [System.Data.Common.DbConnectionStringBuilder]::new()
+$copyConnection['Host'] = '127.0.0.1'
+$copyConnection['Port'] = $copyPort
+$copyConnection['Username'] = 'postgres'
+$copyConnection['Password'] = $copyPassword
+$copyConnection['Database'] = 'postgres'
+$copyConnection['SSL Mode'] = 'Disable'
+$copyConnection['Pooling'] = $false
+$copyConnectionString = $copyConnection.get_ConnectionString()
 foreach ($database in Get-Exact23CopyDatabases) {
     $afterPath = Join-Path $dumpRoot "$database-source-after.sql"
     $copyPath = Join-Path $dumpRoot "$database-copy.sql"

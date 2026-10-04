@@ -15,7 +15,7 @@ public sealed class SqlServerMigrationSourceContractTests
     public void CreateDatabaseConnectionString_UsesReadOnlyIntentAndSelectedCatalog()
     {
         var options = new SqlServerMigrationSourceOptions(
-            "Server=sql.example;Database=master;User ID=reader;Password=not-used;Encrypt=True");
+            new System.Data.Common.DbConnectionStringBuilder { ["Server"] = "sql.example", ["Database"] = "master", ["User ID"] = "reader", ["Password"] = "not-used", ["Encrypt"] = "True" }.ConnectionString);
 
         string result = SqlServerMigrationSource.CreateDatabaseConnectionString(options, "Order");
         var builder = new SqlConnectionStringBuilder(result);
