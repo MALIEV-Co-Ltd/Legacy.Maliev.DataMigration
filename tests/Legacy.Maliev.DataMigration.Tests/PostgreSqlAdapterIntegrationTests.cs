@@ -12,7 +12,26 @@ public sealed class PostgreSqlAdapterTestGroup : ICollectionFixture<PostgreSqlAd
 }
 public sealed class PostgreSqlAdapterFixture : IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+    private readonly PostgreSqlContainer _container;
+
+    public PostgreSqlAdapterFixture() : this(384)
+    {
+    }
+
+    internal PostgreSqlAdapterFixture(int memoryLimitMiB)
+    {
+        if (memoryLimitMiB is not (256 or 384))
+        {
+            throw new ArgumentOutOfRangeException(nameof(memoryLimitMiB), "Only the reviewed PostgreSQL fixture budgets are permitted.");
+        }
+        _container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = (long)memoryLimitMiB * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = (long)memoryLimitMiB * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
+    }
 
     private readonly string _controlPassword = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
     private readonly string _shadowAdminPassword = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));

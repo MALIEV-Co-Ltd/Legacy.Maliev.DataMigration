@@ -16,6 +16,7 @@ public sealed record Exact23DeltaPlanRequest(
     public string? SourceMode { get; init; }
     public string? SourceObservationSha256 { get; init; }
     public bool UseQuotationPhysicalTransition { get; init; }
+    public bool RecordSourceReadWindows { get; init; }
     internal ReviewedQuotationPhysicalVariant QuotationPhysicalVariant { get; init; }
 }
 
@@ -30,6 +31,12 @@ public sealed class Exact23DeltaPlanCoordinator(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.RecordSourceReadWindows &&
+            (request.SourceMode != DeltaSourceMode.LiveReadOnly || request.UseQuotationPhysicalTransition))
+        {
+            throw new DeltaPlanException("delta_plan_source_read_window_mode_invalid",
+                "Database read windows are supported only for ordinary live comparison plans.");
+        }
         ValidateInventory(request.SchemaPlan);
         var databases = new List<DeltaDatabasePlan>(DatabaseInventory.ActiveDatabases.Count);
         foreach (DatabaseSchemaPlan database in request.SchemaPlan.Databases)
@@ -38,6 +45,7 @@ public sealed class Exact23DeltaPlanCoordinator(
             var tables = new List<DeltaTablePlan>(database.Tables.Count);
             QuotationDispositionRowMapper? mapper = database.SourceDispositionProfile is null
                 ? null : new QuotationDispositionRowMapper(database);
+            DateTimeOffset? readStartedAtUtc = request.RecordSourceReadWindows ? timeProvider.GetUtcNow() : null;
             foreach (TableCopyPlan table in ApprovedSourceDispositionManifest.TargetTablesFor(database).OrderBy(
                 item => $"{item.TargetSchema}.{item.TargetTable}", StringComparer.Ordinal))
             {
@@ -68,7 +76,16 @@ public sealed class Exact23DeltaPlanCoordinator(
                     DeltaSynchronizationPlanCanonicalizer.ComputeOperationsSha256(delta.Operations),
                     delta.Operations));
             }
-            databases.Add(new(database.Database, tables));
+            if (request.RecordSourceReadWindows)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            DateTimeOffset? readCompletedAtUtc = request.RecordSourceReadWindows ? timeProvider.GetUtcNow() : null;
+            databases.Add(new(database.Database, tables)
+            {
+                SourceReadWindow = readStartedAtUtc is { } started
+                    ? new(started, readCompletedAtUtc!.Value) : null,
+            });
         }
 
         DateTimeOffset nowUtc = timeProvider.GetUtcNow();

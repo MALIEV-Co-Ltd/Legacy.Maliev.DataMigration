@@ -27,7 +27,14 @@ public sealed record DeltaTablePlan(
     string OperationsSha256,
     IReadOnlyList<CanonicalDeltaOperation> Operations);
 
-public sealed record DeltaDatabasePlan(string Database, IReadOnlyList<DeltaTablePlan> Tables);
+/// <summary>UTC wall-clock bounds of a successfully consumed database comparison loop, not a SQL snapshot timestamp.</summary>
+public sealed record DeltaSourceReadWindow(DateTimeOffset StartedAtUtc, DateTimeOffset CompletedAtUtc);
+
+public sealed record DeltaDatabasePlan(string Database, IReadOnlyList<DeltaTablePlan> Tables)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DeltaSourceReadWindow? SourceReadWindow { get; init; }
+}
 
 public sealed record DeltaPlanSigningRequest(
     string SourceCommitSha,
@@ -254,6 +261,9 @@ public static partial class DeltaSynchronizationPlanProducer
             request.SourceCutoffUtc, request.SourceCaptureCompletedAtUtc, nowUtc);
 
         ValidateDatabases(request.Databases);
+        ValidateSourceReadWindows(request.Databases, request.SourceMode, request.SourceCutoffUtc,
+            request.SourceCaptureCompletedAtUtc, nowUtc, request.SourceCaptureManifest is not null ||
+            request.QuotationTransitionSchemaSha256 is not null || request.PairedTransitionPlanOnly is not null);
         if (request.PairedTransitionPlanOnly is not null and not true ||
             (request.PairedTransitionPlanOnly == true &&
                 (request.QuotationTransitionSchemaSha256 is null ||
@@ -293,6 +303,37 @@ public static partial class DeltaSynchronizationPlanProducer
             captureCompletedAtUtc.Value - captureStartedAtUtc > TimeSpan.FromHours(1))
         {
             throw Error("delta_plan_live_source_invalid", "Live comparison requires a bounded, observed read-only source capture window.");
+        }
+    }
+
+    internal static void ValidateSourceReadWindows(IReadOnlyList<DeltaDatabasePlan> databases,
+        string? sourceMode, DateTimeOffset cutoffUtc, DateTimeOffset? completedAtUtc,
+        DateTimeOffset createdAtUtc, bool capturedOrTransition)
+    {
+        if (databases.All(database => database.SourceReadWindow is null))
+        {
+            return;
+        }
+        if (sourceMode != DeltaSourceMode.LiveReadOnly || capturedOrTransition ||
+            completedAtUtc is null || cutoffUtc.Offset != TimeSpan.Zero ||
+            completedAtUtc.Value.Offset != TimeSpan.Zero || createdAtUtc.Offset != TimeSpan.Zero ||
+            completedAtUtc.Value > createdAtUtc)
+        {
+            throw Error("delta_plan_source_read_window_invalid",
+                "Database read windows require an ordinary live comparison and UTC enclosing bounds.");
+        }
+        DateTimeOffset previousEnd = cutoffUtc;
+        foreach (DeltaDatabasePlan database in databases)
+        {
+            if (database.SourceReadWindow is not { } window ||
+                window.StartedAtUtc.Offset != TimeSpan.Zero || window.CompletedAtUtc.Offset != TimeSpan.Zero ||
+                window.StartedAtUtc < previousEnd || window.CompletedAtUtc < window.StartedAtUtc ||
+                window.CompletedAtUtc > completedAtUtc.Value)
+            {
+                throw Error("delta_plan_source_read_window_invalid",
+                    "All ordered databases require complete, ordered UTC read windows within the signed source interval.");
+            }
+            previousEnd = window.CompletedAtUtc;
         }
     }
 
@@ -444,6 +485,10 @@ public static class DeltaSynchronizationPlanVerifier
             }
 
             DeltaSynchronizationPlanProducer.ValidateDatabases(plan.Databases);
+            DeltaSynchronizationPlanProducer.ValidateSourceReadWindows(plan.Databases, plan.SourceMode,
+                plan.SourceCutoffUtc, plan.SourceCaptureCompletedAtUtc, plan.CreatedAtUtc,
+                plan.SchemaVersion != "1.2" || plan.SourceCaptureManifest is not null ||
+                plan.QuotationTransitionSchemaSha256 is not null || plan.PairedTransitionPlanOnly is not null);
             if (!trust.TryGetPublicKeyFingerprintSha256(plan.AttestationKeyId, out string planKeyFingerprint) ||
                 DeltaSynchronizationPlanProducer.FixedHashEquals(planKeyFingerprint, plan.BackupKeyFingerprintSha256) ||
                 DeltaSynchronizationPlanProducer.FixedHashEquals(planKeyFingerprint, plan.ExecutionAuthorizationKeyFingerprintSha256))

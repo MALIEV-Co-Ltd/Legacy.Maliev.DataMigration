@@ -66,6 +66,30 @@ public static partial class LocalSnapshotExporter
             allowCanonicalDatabases: true, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Exports canonical databases after verifying the terminal against its exact reviewed consumer schema.</summary>
+    public static async Task<LocalSnapshotManifest> ExportCanonicalDeltaAsync(
+        Exact23DeltaReconciliationResult terminalReceipt,
+        DeltaSynchronizationPlan plan,
+        FreshSchemaPlan schema,
+        IReceiptAttestationTrustStore terminalReceiptTrust,
+        string outputDirectory,
+        string snapshotId,
+        ReadOnlyMemory<byte> encryptionKey,
+        IPostgreSqlDumpSource dumpSource,
+        CancellationToken cancellationToken)
+    {
+        if (!Exact23DeltaReconciliationCoordinator.Verify(terminalReceipt, plan, schema, terminalReceiptTrust))
+        {
+            throw new MigrationExecutionException("snapshot_terminal_receipt_invalid",
+                "Canonical local snapshot export requires the exact reviewed schema-bound terminal receipt.");
+        }
+        IReadOnlyList<MigratedShadowDatabase> databases = [.. terminalReceipt.Databases.Select(database =>
+            new MigratedShadowDatabase(database.Database, database.Database,
+                database.Tables.Sum(table => table.RowCount), DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(database)))];
+        return await ExportCoreAsync(databases, outputDirectory, snapshotId, encryptionKey, dumpSource,
+            allowCanonicalDatabases: true, cancellationToken).ConfigureAwait(false);
+    }
+
     private static async Task<LocalSnapshotManifest> ExportCoreAsync(
         IReadOnlyList<MigratedShadowDatabase> databases,
         string outputDirectory,
