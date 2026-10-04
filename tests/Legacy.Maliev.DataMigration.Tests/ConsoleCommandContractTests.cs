@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Legacy.Maliev.DataMigration.Console;
 
 namespace Legacy.Maliev.DataMigration.Tests;
@@ -61,8 +62,10 @@ public sealed class ConsoleCommandContractTests
     [InlineData("bootstrap-canonical-database")]
     public void Parse_SigningCommandsRejectInlinePrivateKeys(string command)
     {
+        using var signingKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        string privateKey = signingKey.ExportPkcs8PrivateKeyPem();
         CommandLineException exception = Assert.Throws<CommandLineException>(() =>
-            ConsoleInvocation.Parse([command, "--private-key", "-----BEGIN PRIVATE KEY-----"]));
+            ConsoleInvocation.Parse([command, "--private-key", privateKey]));
 
         Assert.Equal("secret_cli_argument_forbidden", exception.Code);
         Assert.DoesNotContain("PRIVATE KEY", exception.Message, StringComparison.Ordinal);

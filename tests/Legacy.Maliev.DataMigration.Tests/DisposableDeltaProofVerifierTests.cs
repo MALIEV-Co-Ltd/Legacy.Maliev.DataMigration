@@ -182,7 +182,7 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
             await MigrationConsole.WriteNewJsonForTestsAsync(receiptPath, receipt, CancellationToken.None);
             await MigrationConsole.WriteNewJsonForTestsAsync(schemaPath, fixture.Schema, CancellationToken.None);
             await WriteOwnerOnlyTextAsync(connectionPath,
-                "Host=127.0.0.1;Port=5432;Database=postgres;Username=unused;Password=unused");
+                new System.Data.Common.DbConnectionStringBuilder { ["Host"] = "127.0.0.1", ["Port"] = "5432", ["Database"] = "postgres", ["Username"] = "unused", ["Password"] = "unused" }.ConnectionString);
             await WriteOwnerOnlyTextAsync(planKeyPath,
                 Convert.ToBase64String(_localPlanKey.ExportSubjectPublicKeyInfo()));
             await WriteOwnerOnlyTextAsync(evidenceKeyPath,

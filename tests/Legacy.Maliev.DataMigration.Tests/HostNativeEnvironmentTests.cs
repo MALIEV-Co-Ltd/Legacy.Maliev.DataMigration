@@ -14,7 +14,7 @@ public sealed class HostNativeEnvironmentTests
         try
         {
             foreach (string name in names) { Environment.SetEnvironmentVariable(name, "untrusted"); }
-            var start = PgDumpSource.BuildStartInfo("C:/tools/pg_dump.exe", "Host=localhost;Database=postgres;Username=fixture;Password=secret;SSL Mode=Disable",
+            var start = PgDumpSource.BuildStartInfo("C:/tools/pg_dump.exe", new System.Data.Common.DbConnectionStringBuilder { ["Host"] = "localhost", ["Database"] = "postgres", ["Username"] = "fixture", ["Password"] = "secret", ["SSL Mode"] = "Disable" }.ConnectionString,
                 "legacy_shadow_order_0123456789abcdef0123456789abcdef");
             foreach (string name in names)
             {

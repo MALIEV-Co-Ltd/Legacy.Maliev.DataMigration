@@ -23,7 +23,7 @@ if ($IsWindows) {
             $environmentPath = Join-Path $root 'synthetic-source.env'
             $connectionPath = Join-Path $root 'synthetic-source.connection'
             $sourceUser = 'legacy_local'
-            $password = 'synthetic-only-' + $runId
+            $password = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
             [IO.File]::WriteAllText($environmentPath, "POSTGRES_USER=$sourceUser`nPOSTGRES_PASSWORD=$password`n")
             $imageDigest = @(docker image inspect postgres:18 --format '{{json .RepoDigests}}' |
                 ConvertFrom-Json)[0]
@@ -68,8 +68,14 @@ if ($IsWindows) {
                     'CREATE TABLE public."Probe" ("ID" integer PRIMARY KEY, "Value" text); INSERT INTO public."Probe" VALUES (1, ''synthetic-only'');' `
                     1>$null 2>$null
                 if ($LASTEXITCODE -ne 0) { throw 'synthetic_row_create_failed' }
-                [IO.File]::WriteAllText($connectionPath,
-                    "Host=127.0.0.1;Port=$port;Username=$sourceUser;Password=$password;Database=postgres;Pooling=False")
+                $sourceConnection = [System.Data.Common.DbConnectionStringBuilder]::new()
+                $sourceConnection['Host'] = '127.0.0.1'
+                $sourceConnection['Port'] = $port
+                $sourceConnection['Username'] = $sourceUser
+                $sourceConnection['Password'] = $password
+                $sourceConnection['Database'] = 'postgres'
+                $sourceConnection['Pooling'] = $false
+                [IO.File]::WriteAllText($connectionPath, $sourceConnection.get_ConnectionString())
                 $systemId = (& 'C:\Program Files\PostgreSQL\18\bin\psql.exe' -X -w `
                     -h 127.0.0.1 -p $port -U $sourceUser -d postgres -Atc `
                     'SELECT system_identifier::text FROM pg_control_system();').Trim()
