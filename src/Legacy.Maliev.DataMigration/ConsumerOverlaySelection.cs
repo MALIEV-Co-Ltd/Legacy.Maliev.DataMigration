@@ -8,6 +8,8 @@ public enum ConsumerOverlaySelection
     HistoricalDefaults = 0,
     /// <summary>Adds the reviewed Customer password lifecycle and Quotation decision version columns.</summary>
     CurrentConsumerColumnsV1 = 1,
+    /// <summary>Adds current application-owned tables and explicit C text collations.</summary>
+    CurrentConsumerSchemaV2 = 2,
 }
 
 internal static class ApprovedConsumerOverlaySelection
@@ -23,6 +25,7 @@ internal static class ApprovedConsumerOverlaySelection
                 "Quotation" => ApprovedConsumerColumnOverlayManifest.QuotationV1,
                 _ => ApprovedTargetExtensionManifest.ProfileForDatabase(database),
             },
+            ConsumerOverlaySelection.CurrentConsumerSchemaV2 => ApprovedCurrentConsumerSchemaManifest.ProfileForDatabase(database),
             _ => throw ApprovedConsumerColumnOverlayManifest.Invalid("consumer_overlay_selection_invalid"),
         };
     }
@@ -31,12 +34,15 @@ internal static class ApprovedConsumerOverlaySelection
     {
         return schema.Databases.Any(database =>
         database.TargetExtensionProfile is ApprovedConsumerColumnOverlayManifest.CustomerV2 or
-            ApprovedConsumerColumnOverlayManifest.QuotationV1);
+            ApprovedConsumerColumnOverlayManifest.QuotationV1 ||
+            ApprovedCurrentConsumerSchemaManifest.IsProfile(database.TargetExtensionProfile));
     }
 
     internal static bool IsApproved(FreshSchemaPlan schema)
     {
-        ConsumerOverlaySelection selection = IsCurrent(schema)
+        ConsumerOverlaySelection selection = schema.Databases.Any(database =>
+            ApprovedCurrentConsumerSchemaManifest.IsProfile(database.TargetExtensionProfile))
+            ? ConsumerOverlaySelection.CurrentConsumerSchemaV2 : IsCurrent(schema)
             ? ConsumerOverlaySelection.CurrentConsumerColumnsV1 : ConsumerOverlaySelection.HistoricalDefaults;
         return schema.Databases.Select(database => database.Database)
                 .SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) &&

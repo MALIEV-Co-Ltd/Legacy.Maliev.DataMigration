@@ -6,13 +6,24 @@ public sealed class SqlServerMigrationSourceContractTests
 {
     [Theory]
     [InlineData(-1)]
-    [InlineData(2)]
+    [InlineData(3)]
     public void Constructor_RejectsUnknownConsumerOverlaySelectionBeforeOpeningSource(int selection)
     {
         var error = Assert.Throws<MigrationExecutionException>(() => new SqlServerMigrationSource(
             new SqlServerMigrationSourceOptions("Server=localhost;Database=master;Integrated Security=true")
             { ConsumerOverlays = (ConsumerOverlaySelection)selection }));
         Assert.Equal("consumer_overlay_selection_invalid", error.Code);
+    }
+
+    [Theory]
+    [InlineData(ConsumerOverlaySelection.HistoricalDefaults)]
+    [InlineData(ConsumerOverlaySelection.CurrentConsumerColumnsV1)]
+    [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV2)]
+    public void Constructor_AcceptsApprovedConsumerOverlayWithoutOpeningSource(ConsumerOverlaySelection selection)
+    {
+        _ = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(
+            "Server=127.0.0.1,1;Database=master;Integrated Security=true;Connect Timeout=1")
+        { ConsumerOverlays = selection });
     }
 
     [Fact]
