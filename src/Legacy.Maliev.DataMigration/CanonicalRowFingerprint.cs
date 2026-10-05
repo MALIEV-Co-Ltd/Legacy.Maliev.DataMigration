@@ -100,6 +100,17 @@ public sealed class CanonicalRowFingerprint : IDisposable
 
     private static string CanonicalValue(object value, string postgresqlType)
     {
+        if (string.Equals(postgresqlType, "uuid[]", StringComparison.Ordinal))
+        {
+            if (value is not Guid[] identifiers)
+            {
+                throw new InvalidOperationException("A reviewed UUID array requires a one-dimensional non-null Guid array.");
+            }
+            // UUIDs have fixed-width canonical text. Count and separators bind empty arrays,
+            // multiplicity and element order without changing any historical scalar encoding.
+            return "uuid-array-v1:" + identifiers.Length.ToString(CultureInfo.InvariantCulture) + ":" +
+                string.Join(',', identifiers.Select(identifier => identifier.ToString("D")));
+        }
         if (string.Equals(postgresqlType, "date", StringComparison.Ordinal))
         {
             return value switch

@@ -12,8 +12,8 @@ internal static class ApprovedConsumerColumnOverlayManifest
     {
         var definition = (schema.Database, schema.TargetExtensionProfile) switch
         {
-            ("CustomerIdentity", CustomerV2) => (Table: "AspNetUsers", Key: "Id", KeyType: "character varying(450)", Column: "PasswordSetupRequired", Type: "boolean", Nullable: false, Default: "false"),
-            ("Quotation", QuotationV1) => (Table: "Quotation", Key: "ID", KeyType: "integer", Column: "DecisionOrderVersion", Type: "timestamp without time zone", Nullable: true, Default: null),
+            ("CustomerIdentity", CustomerV2 or ApprovedCurrentConsumerSchemaManifest.CustomerIdentity) => (Table: "AspNetUsers", Key: "Id", KeyType: "character varying(450)", Column: "PasswordSetupRequired", Type: "boolean", Nullable: false, Default: "false"),
+            ("Quotation", QuotationV1 or ApprovedCurrentConsumerSchemaManifest.Quotation) => (Table: "Quotation", Key: "ID", KeyType: "integer", Column: "DecisionOrderVersion", Type: "timestamp without time zone", Nullable: true, Default: null),
             _ => default,
         };
         if (definition.Table is null) { return null; }

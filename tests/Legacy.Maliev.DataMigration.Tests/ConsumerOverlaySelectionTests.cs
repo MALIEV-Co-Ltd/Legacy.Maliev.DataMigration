@@ -37,7 +37,7 @@ public sealed class ConsumerOverlaySelectionTests
 
     [Theory]
     [InlineData(-1)]
-    [InlineData(2)]
+    [InlineData(3)]
     [InlineData(2147483647)]
     public void UnknownSelectionCannotMintAProfile(int selection)
     {
@@ -71,10 +71,12 @@ public sealed class ConsumerOverlaySelectionTests
         _ = Assert.Throws<MigrationExecutionException>(() => PostgreSqlSchemaFingerprint.ComputeExpected(schema));
     }
 
-    [Fact]
-    public async Task ActiveReceiptRequiresExactSchemaBoundVerificationAndPreservesHistoricalVerifier()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task ActiveReceiptRequiresExactSchemaBoundVerificationAndPreservesHistoricalVerifier(int selection)
     {
-        FreshSchemaPlan schema = Schema(ConsumerOverlaySelection.CurrentConsumerColumnsV1);
+        FreshSchemaPlan schema = Schema((ConsumerOverlaySelection)selection);
         DeltaSynchronizationPlan plan = Plan(schema);
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         using var signer = new P256MigrationEvidenceSigner("overlay-receipt", key.ExportECPrivateKeyPem());
@@ -89,6 +91,22 @@ public sealed class ConsumerOverlaySelectionTests
         FreshSchemaPlan old = Schema(ConsumerOverlaySelection.HistoricalDefaults);
         Assert.False(Exact23DeltaReconciliationCoordinator.Verify(receipt, plan, old, trust));
         Assert.False(Exact23DeltaReconciliationCoordinator.Verify(receipt with { AttestationSignature = null }, plan, schema, trust));
+        using ECDsa otherKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var otherSigner = new P256MigrationEvidenceSigner(signer.KeyId, otherKey.ExportECPrivateKeyPem());
+        var wrongTrust = new ReceiptAttestationTrustStore([new(otherSigner.KeyId, otherSigner.ExportSubjectPublicKeyInfo())]);
+        Assert.False(Exact23DeltaReconciliationCoordinator.Verify(receipt, plan, schema, wrongTrust));
+        foreach (DatabaseSchemaPlan stateDatabase in schema.Databases.Where(ApprovedConsumerColumnOverlayManifest.HasState))
+        {
+            var missingState = receipt with
+            {
+                Databases = [.. receipt.Databases.Select(database => database.Database == stateDatabase.Database
+                    ? database with { TargetExtensionStateSha256 = null } : database)],
+                AttestationSignature = null,
+            };
+            missingState = missingState with
+            { AttestationSignature = Convert.ToBase64String(signer.Sign(Exact23DeltaReconciliationCoordinator.CreatePayload(missingState))) };
+            Assert.False(Exact23DeltaReconciliationCoordinator.Verify(missingState, plan, schema, trust));
+        }
 
         foreach (string fault in new[] { "state", "physical", "source", "target", "operations", "tables" })
         {
@@ -122,6 +140,7 @@ public sealed class ConsumerOverlaySelectionTests
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
+    [InlineData(2)]
     public async Task SchemaBoundSnapshotRejectsWrongHistoricalOrCurrentBindingsBeforeDump(int selection)
     {
         FreshSchemaPlan schema = Schema((ConsumerOverlaySelection)selection);
