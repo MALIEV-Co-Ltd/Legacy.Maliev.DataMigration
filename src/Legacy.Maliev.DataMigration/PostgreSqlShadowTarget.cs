@@ -388,7 +388,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     {
         ArgumentNullException.ThrowIfNull(plan);
         ApprovedSourceDispositionManifest.RequireOrdinarySchemaApplication(plan);
-        IReadOnlyList<TableCopyPlan> schemaTables = [.. plan.Tables, .. ApprovedTargetExtensionManifest.TablesFor(plan)];
+        IReadOnlyList<TableCopyPlan> schemaTables = ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan, mapSourceDispositions: false);
         _expectedTableInspections.Clear();
         foreach (TableCopyPlan table in plan.Tables)
         {
@@ -513,7 +513,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     {
         ArgumentNullException.ThrowIfNull(plan);
         ApprovedSourceDispositionManifest.RequireOrdinarySchemaApplication(plan);
-        IReadOnlyList<TableCopyPlan> schemaTables = [.. plan.Tables, .. ApprovedTargetExtensionManifest.TablesFor(plan)];
+        IReadOnlyList<TableCopyPlan> schemaTables = ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan, mapSourceDispositions: false);
         if (_schemaFinalized || _inspectionStarted)
         {
             throw new MigrationExecutionException("shadow_schema_finalization_invalid", "The shadow schema can be finalized exactly once before inspection.");
@@ -661,6 +661,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
     {
         ArgumentNullException.ThrowIfNull(plan);
         _inspectionStarted = true;
+        await RequireSupportedPhysicalBehaviorAsync(cancellationToken).ConfigureAwait(false);
         List<PostgreSqlSchemaFingerprint.TableShape> tables = [];
         const string tableSql = """
             SELECT n.nspname, c.relname
@@ -866,12 +867,86 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             columns);
     }
 
+    private async Task RequireSupportedPhysicalBehaviorAsync(CancellationToken cancellationToken)
+    {
+        // Admission, not a new fingerprint format: supported historical schemas keep
+        // their existing hashes. Unsupported behavior must not masquerade as an
+        // ordinary reviewed table merely because its visible columns match.
+        const string sql = """
+            WITH user_relations AS (
+                SELECT c.oid, c.relkind
+                FROM pg_catalog.pg_class AS c
+                JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                WHERE c.relkind IN ('r', 'p')
+                  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'legacy_migration_internal')
+                  AND n.nspname NOT LIKE 'pg_toast%'
+            ), unsupported AS (
+                SELECT 1 AS priority, 'target_schema_relation_unsupported' AS code
+                WHERE EXISTS (SELECT 1 FROM user_relations WHERE relkind <> 'r')
+                UNION ALL
+                SELECT 2, 'target_schema_unvalidated_check'
+                WHERE EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_constraint AS k
+                    JOIN user_relations AS r ON r.oid = k.conrelid
+                    WHERE k.contype = 'c' AND NOT k.convalidated)
+                UNION ALL
+                SELECT 3, 'target_schema_rewrite_rule_unsupported'
+                WHERE EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_rewrite AS rule
+                    JOIN user_relations AS r ON r.oid = rule.ev_class)
+                UNION ALL
+                SELECT 4, 'target_schema_index_semantics_unsupported'
+                WHERE EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_index AS i
+                    JOIN user_relations AS r ON r.oid = i.indrelid
+                    CROSS JOIN LATERAL unnest(i.indclass) AS selected(opclass)
+                    JOIN pg_catalog.pg_opclass AS operator ON operator.oid = selected.opclass
+                    WHERE NOT operator.opcdefault)
+                UNION ALL
+                SELECT 4, 'target_schema_index_semantics_unsupported'
+                WHERE EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_index AS i
+                    JOIN user_relations AS r ON r.oid = i.indrelid
+                    CROSS JOIN LATERAL unnest(i.indkey, i.indcollation)
+                        WITH ORDINALITY AS key_column(attnum, collation_oid, ordinal)
+                    JOIN pg_catalog.pg_attribute AS a
+                        ON a.attrelid = i.indrelid AND a.attnum = key_column.attnum
+                    WHERE key_column.ordinal <= i.indnkeyatts
+                      AND key_column.collation_oid <> a.attcollation)
+            )
+            SELECT code FROM unsupported ORDER BY priority LIMIT 1;
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string code)
+        {
+            throw new MigrationExecutionException(code,
+                "The observed target contains physical behavior outside the reviewed schema contract.");
+        }
+    }
+
     public async Task<TableReconciliationEvidence> InspectTableAsync(
         TableCopyPlan table,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(table);
         _inspectionStarted = true;
+        foreach (string column in table.OrderedColumns.Where(column =>
+            string.Equals(table.ColumnTypes[column], "uuid[]", StringComparison.Ordinal)))
+        {
+            // Npgsql discards PostgreSQL lower bounds when materializing CLR arrays.
+            // Reject unsupported physical shapes in this same snapshot before hashing values.
+            string identifier = PostgreSqlShadowTarget.QuoteIdentifier(column);
+            string arrayShapeSql = $"SELECT COUNT(*) FROM {Qualified(table.TargetSchema, table.TargetTable)} " +
+                $"WHERE {identifier} IS NOT NULL AND ((cardinality({identifier}) > 0 AND " +
+                $"(array_ndims({identifier}) IS DISTINCT FROM 1 OR array_lower({identifier}, 1) IS DISTINCT FROM 1)) " +
+                $"OR EXISTS (SELECT 1 FROM unnest({identifier}) AS element(value) WHERE element.value IS NULL));";
+            await using var shape = new NpgsqlCommand(arrayShapeSql, connection, transaction);
+            if (Convert.ToInt64(await shape.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) != 0)
+            {
+                throw new MigrationExecutionException("target_uuid_array_shape_invalid",
+                    "A reviewed UUID array has unsupported dimensions, lower bounds or null elements.");
+            }
+        }
         using var collector = new TableEvidenceCollector(table);
         string columns = string.Join(", ", table.OrderedColumns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
         string ordering = string.Join(", ", table.OrderByColumns.Select(PostgreSqlShadowTarget.QuoteIdentifier));
@@ -1243,8 +1318,7 @@ internal static class PostgreSqlSchemaFingerprint
     internal static string ComputeExpected(DatabaseSchemaPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        IReadOnlyList<TableCopyPlan> schemaTables =
-            [.. ApprovedSourceDispositionManifest.TargetTablesFor(plan), .. ApprovedTargetExtensionManifest.TablesFor(plan)];
+        IReadOnlyList<TableCopyPlan> schemaTables = ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan);
         return ComputeExpectedTables(schemaTables);
     }
 
@@ -1258,7 +1332,7 @@ internal static class PostgreSqlSchemaFingerprint
                 "The signed Quotation disposition schema plan is required.");
         }
 
-        IReadOnlyList<TableCopyPlan> mapped = ApprovedSourceDispositionManifest.TargetTablesFor(plan);
+        IReadOnlyList<TableCopyPlan> mapped = ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan);
         if (!retainSourceOutboxes)
         {
             return plan.TargetSchemaSha256;
@@ -1272,7 +1346,7 @@ internal static class PostgreSqlSchemaFingerprint
     internal static string ComputeExpectedSourceShape(DatabaseSchemaPlan plan)
     {
         _ = ComputeQuotationBootstrapExpected(plan, true);
-        return ComputeExpectedTables(plan.Tables);
+        return ComputeExpectedTables(ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan, mapSourceDispositions: false));
     }
 
     internal static string ComputeExpectedTables(IReadOnlyList<TableCopyPlan> schemaTables)
@@ -1453,7 +1527,7 @@ internal static class PostgreSqlSchemaFingerprint
                 Write(writer, constraint.Name);
                 writer.Write(constraint.Kind);
                 Write(writer, constraint.Columns);
-                Write(writer, QuotationCheckPredicateCompatibility.Canonicalize(constraint));
+                Write(writer, ConsumerCheckPredicateCompatibility.Canonicalize(constraint));
                 writer.Write(constraint.NullsNotDistinct);
             }
 
@@ -1528,6 +1602,27 @@ internal static class QuotationCheckPredicateCompatibility
     private static readonly Dictionary<(string Table, string Name), (string Source, string Catalog)> Known =
         new()
         {
+            [("StorageMoveJournal", "CK_StorageMoveJournal_DestinationGeneration")] = (
+                "\"DestinationGeneration\" IS NULL OR \"DestinationGeneration\" > 0",
+                "((\"DestinationGeneration\" IS NULL) OR (\"DestinationGeneration\" > 0))"),
+            [("QuarantineUploadIntent", "CK_QuarantineUploadIntent_Generation")] = (
+                "\"AcknowledgedGeneration\" IS NULL OR \"AcknowledgedGeneration\" > 0",
+                "((\"AcknowledgedGeneration\" IS NULL) OR (\"AcknowledgedGeneration\" > 0))"),
+            [("InstantQuoteFinalization", "CK_InstantQuoteFinalization_Fingerprint")] = (
+                "\"RequestFingerprint\" ~ '^[0-9a-f]{64}$'",
+                "(\"RequestFingerprint\" ~ '^[0-9a-f]{64}$'::text)"),
+            [("InstantQuoteUploadFile", "CK_InstantQuoteUploadFile_ActualSha256")] = (
+                "\"ActualSha256\" IS NULL OR \"ActualSha256\" ~ '^[0-9a-f]{64}$'",
+                "((\"ActualSha256\" IS NULL) OR (\"ActualSha256\" ~ '^[0-9a-f]{64}$'::text))"),
+            [("InstantQuoteUploadFile", "CK_InstantQuoteUploadFile_ExpectedSha256")] = (
+                "\"ExpectedSha256\" ~ '^[0-9a-f]{64}$'",
+                "(\"ExpectedSha256\" ~ '^[0-9a-f]{64}$'::text)"),
+            [("InstantQuoteUploadFile", "CK_InstantQuoteUploadFile_FinalizedQuotationRequestId_Positive")] = (
+                "\"FinalizedQuotationRequestId\" IS NULL OR \"FinalizedQuotationRequestId\" > 0",
+                "((\"FinalizedQuotationRequestId\" IS NULL) OR (\"FinalizedQuotationRequestId\" > 0))"),
+            [("InstantQuoteUploadFile", "CK_InstantQuoteUploadFile_Fingerprint")] = (
+                "\"RequestFingerprint\" ~ '^[0-9a-f]{64}$'",
+                "(\"RequestFingerprint\" ~ '^[0-9a-f]{64}$'::text)"),
             [("Request", "CK_Request_QualificationState")] = (
                 "(\"QualificationState\"='incomplete' OR \"QualificationState\"='stale' OR \"QualificationState\"='duplicate' OR \"QualificationState\"='not_qualified' OR \"QualificationState\"='qualified' OR \"QualificationState\"='unreviewed')",
                 "(((\"QualificationState\")::text = 'incomplete'::text) OR ((\"QualificationState\")::text = 'stale'::text) OR ((\"QualificationState\")::text = 'duplicate'::text) OR ((\"QualificationState\")::text = 'not_qualified'::text) OR ((\"QualificationState\")::text = 'qualified'::text) OR ((\"QualificationState\")::text = 'unreviewed'::text))"),
@@ -1659,6 +1754,6 @@ internal static partial class PostgreSqlTypePolicy
             : normalized;
     }
 
-    [GeneratedRegex("^(smallint|integer|bigint|boolean|text|bytea|uuid|date|real|double precision|jsonb|timestamp (with|without) time zone|numeric\\([1-9][0-9]?,[0-9]{1,2}\\)|character varying\\([1-9][0-9]{0,6}\\)|character\\([1-9][0-9]{0,6}\\))$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^(smallint|integer|bigint|boolean|text|bytea|uuid|uuid\\[\\]|date|real|double precision|jsonb|timestamp (with|without) time zone|numeric\\([1-9][0-9]?,[0-9]{1,2}\\)|character varying\\([1-9][0-9]{0,6}\\)|character\\([1-9][0-9]{0,6}\\))$", RegexOptions.CultureInvariant)]
     private static partial Regex ApprovedType();
 }

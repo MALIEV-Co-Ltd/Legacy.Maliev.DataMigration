@@ -9,6 +9,25 @@ internal static class PostgreSqlShadowRecoveryObjects
     internal static async Task<bool> InspectAsync(
         NpgsqlConnection connection, NpgsqlTransaction transaction, DatabaseSchemaPlan plan, CancellationToken cancellationToken)
     {
+        IReadOnlyList<TableCopyPlan> extensions = ApprovedTargetExtensionManifest.TablesFor(plan);
+        uint reviewedCollationOid = 0;
+        bool requiresReviewedCollation = plan.Tables.Concat(extensions).Any(table => table.Collations.Values.Contains(
+            ApprovedProductionCollationManifest.Collation, StringComparer.Ordinal));
+        if (requiresReviewedCollation)
+        {
+            const string collationSql = """
+                SELECT c.oid FROM pg_collation c JOIN pg_namespace n ON n.oid=c.collnamespace
+                WHERE n.nspname='public' AND c.collname='legacy_ci_as'
+                    AND c.collprovider='i' AND c.colllocale='und-u-ks-level2'
+                    AND NOT c.collisdeterministic AND c.collencoding=-1 AND c.collicurules IS NULL
+                    AND c.collversion IS NOT NULL AND c.collversion=pg_collation_actual_version(c.oid)
+                    AND (SELECT count(*) FROM pg_collation other JOIN pg_namespace other_ns ON other_ns.oid=other.collnamespace
+                        WHERE other_ns.nspname='public' AND other.collname='legacy_ci_as')=1;
+                """;
+            await using var collation = new NpgsqlCommand(collationSql, connection, transaction);
+            reviewedCollationOid = await collation.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is uint oid
+                ? oid : 0;
+        }
         const string sql = """
             WITH user_namespaces AS (
                 SELECT oid FROM pg_namespace
@@ -24,7 +43,8 @@ internal static class PostgreSqlShadowRecoveryObjects
                             (t.typelem=c.reltype AND t.typlen=-1 AND t.typcategory='A'))))
                 OR EXISTS (SELECT 1 FROM pg_depend d JOIN user_namespaces n ON n.oid=d.refobjid
                     WHERE d.refclassid='pg_namespace'::regclass
-                      AND d.classid NOT IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_constraint'::regclass))
+                      AND d.classid NOT IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_constraint'::regclass)
+                      AND NOT (d.classid='pg_collation'::regclass AND d.objid=$1 AND d.objsubid=0))
                 OR EXISTS (SELECT 1 FROM pg_constraint c JOIN user_namespaces n ON n.oid=c.connamespace
                     WHERE c.contype NOT IN ('p','u','c','f','n'))
                 OR EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
@@ -44,6 +64,7 @@ internal static class PostgreSqlShadowRecoveryObjects
             """;
         await using (var command = new NpgsqlCommand(sql, connection, transaction))
         {
+            _ = command.Parameters.AddWithValue(NpgsqlTypes.NpgsqlDbType.Oid, reviewedCollationOid);
             if (true.Equals(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))) { throw InvalidObjects(); }
         }
 
@@ -65,7 +86,7 @@ internal static class PostgreSqlShadowRecoveryObjects
             }
         }
 
-        var identities = plan.Tables.SelectMany(table => table.Identities.Select(identity =>
+        var identities = plan.Tables.Concat(extensions).SelectMany(table => table.Identities.Select(identity =>
             new { Table = table, Identity = identity })).ToDictionary(
                 item => (item.Table.TargetSchema, item.Table.TargetTable, item.Identity.Column));
         HashSet<(string, string, string)> observedIdentities = [];
@@ -100,7 +121,10 @@ internal static class PostgreSqlShadowRecoveryObjects
                 }
             }
         }
-        return !hasRelations && observedSchemas.Any(schema => !string.Equals(schema, "public", StringComparison.Ordinal))
+        return (hasRelations && requiresReviewedCollation && reviewedCollationOid == 0) ||
+            (!hasRelations && reviewedCollationOid != 0)
+            ? throw InvalidObjects()
+            : !hasRelations && observedSchemas.Any(schema => !string.Equals(schema, "public", StringComparison.Ordinal))
             ? throw InvalidObjects()
             : !hasRelations;
     }

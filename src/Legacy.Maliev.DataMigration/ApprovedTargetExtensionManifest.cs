@@ -8,6 +8,9 @@ internal static class ApprovedTargetExtensionManifest
 {
     internal const string MaterialCatalogV1 = "material-catalog-v1";
     internal const string QuotationRequestIdempotencyV1 = "quotation-request-idempotency-v1";
+    internal const string AccountingInvoiceAuthorityV1 = "accounting-invoice-authority-v1";
+    internal const string AuthCustomerCreateAuthorityV1 = "auth-customer-create-authority-v1";
+    internal const string AuthEmployeeRecoveryAuthorityV1 = "auth-employee-recovery-authority-v1";
 
     internal static string? ProfileForDatabase(string database)
     {
@@ -15,6 +18,9 @@ internal static class ApprovedTargetExtensionManifest
         {
             "Material" => MaterialCatalogV1,
             "QuotationRequest" => QuotationRequestIdempotencyV1,
+            "Invoice" => AccountingInvoiceAuthorityV1,
+            "CustomerIdentity" => AuthCustomerCreateAuthorityV1,
+            "EmployeeIdentity" => AuthEmployeeRecoveryAuthorityV1,
             _ => null,
         };
     }
@@ -22,14 +28,23 @@ internal static class ApprovedTargetExtensionManifest
     internal static IReadOnlyList<TableCopyPlan> TablesFor(DatabaseSchemaPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        IReadOnlyList<TableCopyPlan> extensions = (plan.Database, plan.TargetExtensionProfile) switch
-        {
-            (_, null) => [],
-            ("Material", MaterialCatalogV1) => [Country(), Currency()],
-            ("QuotationRequest", QuotationRequestIdempotencyV1) => [RequestCreateIdempotency()],
-            _ => throw new MigrationExecutionException("target_extension_profile_invalid",
-                "The target extension profile is not approved for this database."),
-        };
+        IReadOnlyList<TableCopyPlan> extensions = ApprovedCurrentConsumerSchemaManifest.IsProfile(plan.TargetExtensionProfile)
+            ? ApprovedCurrentConsumerSchemaManifest.TablesFor(plan)
+            : (plan.Database, plan.TargetExtensionProfile) switch
+            {
+                (_, null) => [],
+                ("Material", MaterialCatalogV1) => [Country(), Currency()],
+                ("QuotationRequest", QuotationRequestIdempotencyV1) => [RequestCreateIdempotency()],
+                ("Invoice", AccountingInvoiceAuthorityV1) => ApprovedConsumerTargetExtensionShapes.Invoice(),
+                ("CustomerIdentity", AuthCustomerCreateAuthorityV1) => ApprovedConsumerTargetExtensionShapes.CustomerIdentity(),
+                ("CustomerIdentity", ApprovedConsumerColumnOverlayManifest.CustomerV2) => ApprovedConsumerTargetExtensionShapes.CustomerIdentity(),
+                ("Quotation", ApprovedConsumerColumnOverlayManifest.QuotationV1) => [],
+                ("EmployeeIdentity", AuthEmployeeRecoveryAuthorityV1) => ApprovedConsumerTargetExtensionShapes.EmployeeIdentity(),
+                _ => throw new MigrationExecutionException("target_extension_profile_invalid",
+                    "The target extension profile is not approved for this database."),
+            };
+
+        _ = ApprovedConsumerColumnOverlayManifest.For(plan);
 
         HashSet<string> sourceTables = [.. plan.Tables.Select(table => $"{table.TargetSchema}.{table.TargetTable}")];
         return extensions.Any(table => sourceTables.Contains($"{table.TargetSchema}.{table.TargetTable}"))

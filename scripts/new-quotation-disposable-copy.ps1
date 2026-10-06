@@ -230,8 +230,15 @@ finally {
 if ((Get-SystemHash '127.0.0.1' $copyPort 'postgres' $copyPassword 'Quotation') -cne $copyHash) {
     throw 'quotation_copy_identity_changed'
 }
-Write-NewOwnerText $connectionPath `
-    "Host=127.0.0.1;Port=$copyPort;Username=postgres;Password=$copyPassword;Database=postgres;SSL Mode=Disable;Pooling=False"
+$copyConnection = [System.Data.Common.DbConnectionStringBuilder]::new()
+$copyConnection['Host'] = '127.0.0.1'
+$copyConnection['Port'] = $copyPort
+$copyConnection['Username'] = 'postgres'
+$copyConnection['Password'] = $copyPassword
+$copyConnection['Database'] = 'postgres'
+$copyConnection['SSL Mode'] = 'Disable'
+$copyConnection['Pooling'] = $false
+Write-NewOwnerText $connectionPath $copyConnection.get_ConnectionString()
 Write-NewOwnerText $receiptPath (([ordered]@{
     schemaVersion = '1.0'; state = 'copy-complete'; name = $Name; runId = $runId; nonce = $nonce
     sourceContainerId = $SourceContainerId; sourceSystemIdentifierSha256 = $sourceHash

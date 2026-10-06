@@ -15,7 +15,13 @@ public sealed class TargetExtensionRepairConsoleIntegrationTests
     [Fact]
     public async Task SignedDdlCommandCreatesOnlyApprovedTablesOnDisposableExact23()
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string adminConnection = container.GetConnectionString();
         await using (var admin = new NpgsqlConnection(adminConnection))

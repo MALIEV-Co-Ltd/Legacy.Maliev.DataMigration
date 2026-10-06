@@ -4,7 +4,10 @@ namespace Legacy.Maliev.DataMigration;
 
 internal sealed record ApprovedTargetExtensionState(
     IReadOnlyList<TableReconciliationEvidence> Tables,
-    IReadOnlyDictionary<string, long> SequenceNextValues);
+    IReadOnlyDictionary<string, long> SequenceNextValues)
+{
+    internal ConsumerColumnOverlayState? Overlay { get; init; }
+}
 
 internal static class ApprovedTargetExtensionStateInspector
 {
@@ -12,9 +15,13 @@ internal static class ApprovedTargetExtensionStateInspector
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         DatabaseSchemaPlan schema,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlySet<string>? insertKeys = null,
+        bool afterApply = false)
     {
         IReadOnlyList<TableCopyPlan> extensions = ApprovedTargetExtensionManifest.TablesFor(schema);
+        await ConsumerTargetExtensionSequenceValidator.ValidateAsync(connection, transaction, schema, cancellationToken)
+            .ConfigureAwait(false);
         await using var inspection = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
         var tables = new List<TableReconciliationEvidence>(extensions.Count);
         foreach (TableCopyPlan table in extensions)
@@ -25,7 +32,13 @@ internal static class ApprovedTargetExtensionStateInspector
         DatabaseSchemaPlan extensionPlan = schema with { Tables = extensions };
         IReadOnlyDictionary<string, long> sequences = await inspection
             .InspectSequenceNextValuesAsync(extensionPlan, cancellationToken).ConfigureAwait(false);
-        return new(tables, sequences);
+        var state = new ApprovedTargetExtensionState(tables, sequences)
+        {
+            Overlay = await ConsumerColumnOverlayStateInspector.InspectAsync(connection, transaction, schema,
+                insertKeys, afterApply, cancellationToken).ConfigureAwait(false),
+        };
+        RequireCurrentState(schema, state);
+        return state;
     }
 
     internal static void Compare(
@@ -33,6 +46,8 @@ internal static class ApprovedTargetExtensionStateInspector
         ApprovedTargetExtensionState expected,
         ApprovedTargetExtensionState observed)
     {
+        RequireCurrentState(schema, expected);
+        RequireCurrentState(schema, observed);
         IReadOnlyList<TableCopyPlan> extensions = ApprovedTargetExtensionManifest.TablesFor(schema);
         if (expected.Tables.Count != extensions.Count || observed.Tables.Count != extensions.Count)
         {
@@ -55,16 +70,18 @@ internal static class ApprovedTargetExtensionStateInspector
 
         ReconciliationDiagnostics.CompareSequences(schema with { Tables = extensions },
             expected.SequenceNextValues, observed.SequenceNextValues);
+        ConsumerColumnOverlayStateInspector.Compare(schema, expected.Overlay, observed.Overlay);
     }
 
     internal static string ComputeSha256(DatabaseSchemaPlan schema, ApprovedTargetExtensionState state)
     {
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(state);
+        RequireCurrentState(schema, state);
         IReadOnlyList<TableCopyPlan> extensions = ApprovedTargetExtensionManifest.TablesFor(schema);
         string[] expectedSequences = [.. extensions.SelectMany(table => table.Identities.Select(identity =>
             $"{table.TargetSchema}.{table.TargetTable}.{identity.Column}")).Order(StringComparer.Ordinal)];
-        if (extensions.Count == 0 || state.Tables.Count != extensions.Count ||
+        if (!ApprovedConsumerColumnOverlayManifest.HasState(schema) || state.Tables.Count != extensions.Count ||
             !state.Tables.Select(table => table.Table).SequenceEqual(
                 extensions.Select(table => $"{table.TargetSchema}.{table.TargetTable}"), StringComparer.Ordinal) ||
             !state.SequenceNextValues.Keys.Order(StringComparer.Ordinal).SequenceEqual(expectedSequences, StringComparer.Ordinal))
@@ -78,6 +95,55 @@ internal static class ApprovedTargetExtensionStateInspector
         {
             SequenceNextValues = state.SequenceNextValues,
         };
-        return DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(evidence);
+        return ApprovedConsumerColumnOverlayManifest.For(schema) is not null
+            ? ConsumerColumnOverlayStateInspector.ComputeSha256(schema,
+                state.Overlay ?? throw ApprovedConsumerColumnOverlayManifest.Invalid("target_extension_overlay_state_invalid"),
+                extensions.Count == 0 ? null : DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(evidence))
+            : DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(evidence);
+    }
+
+    private static void RequireCurrentState(DatabaseSchemaPlan schema, ApprovedTargetExtensionState state)
+    {
+        if (!ApprovedCurrentConsumerSchemaManifest.IsProfile(schema.TargetExtensionProfile)) { return; }
+        IReadOnlyList<TableCopyPlan> tables = ApprovedTargetExtensionManifest.TablesFor(schema);
+        if (state.Tables.Count != tables.Count) { throw InvalidCurrentState(); }
+        for (int index = 0; index < tables.Count; index++)
+        {
+            TableCopyPlan table = tables[index];
+            TableReconciliationEvidence evidence = state.Tables[index];
+            string[] foreignKeys = [.. table.ForeignKeys.Select(key => key.Name)];
+            if (evidence.Table != $"{table.TargetSchema}.{table.TargetTable}" || evidence.RowCount < 0 ||
+                !PostgreSqlDeltaCanonicalTarget.Hash(evidence.ContentSha256) ||
+                !PostgreSqlDeltaCanonicalTarget.Hash(evidence.AggregateSha256) ||
+                !ExactKeys(evidence.NullCounts, table.OrderedColumns) ||
+                !ExactKeys(evidence.ForeignKeyOrphanCounts, foreignKeys) ||
+                !ExactKeys(evidence.ForeignKeyRelationshipCounts, foreignKeys) ||
+                evidence.NullCounts.Any(count => count.Value < 0 || count.Value > evidence.RowCount ||
+                    (!table.NullableColumns.Contains(count.Key, StringComparer.Ordinal) && count.Value != 0)) ||
+                evidence.ForeignKeyOrphanCounts.Values.Any(count => count != 0) ||
+                evidence.ForeignKeyRelationshipCounts.Values.Any(count => count < 0 || count > evidence.RowCount))
+            { throw InvalidCurrentState(); }
+            foreach (ForeignKeyCopyPlan foreignKey in table.ForeignKeys)
+            {
+                if (foreignKey.Columns.All(column => !table.NullableColumns.Contains(column, StringComparer.Ordinal)) &&
+                    evidence.ForeignKeyRelationshipCounts[foreignKey.Name] != evidence.RowCount)
+                { throw InvalidCurrentState(); }
+            }
+        }
+        string[] sequences = [.. tables.SelectMany(table => table.Identities.Select(identity =>
+            $"{table.TargetSchema}.{table.TargetTable}.{identity.Column}"))];
+        if (!ExactKeys(state.SequenceNextValues, sequences) || state.SequenceNextValues.Values.Any(value => value < 1))
+        { throw InvalidCurrentState(); }
+    }
+
+    private static bool ExactKeys(IReadOnlyDictionary<string, long> counts, IEnumerable<string> expected)
+    {
+        return counts.Keys.Order(StringComparer.Ordinal).SequenceEqual(expected.Order(StringComparer.Ordinal), StringComparer.Ordinal);
+    }
+
+    private static MigrationExecutionException InvalidCurrentState()
+    {
+        return new("target_extension_state_invalid",
+        "The current consumer state does not cover its exact reviewed columns, relationships and identities.");
     }
 }

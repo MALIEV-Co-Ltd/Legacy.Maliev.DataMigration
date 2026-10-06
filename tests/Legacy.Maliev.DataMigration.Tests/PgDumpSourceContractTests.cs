@@ -10,7 +10,7 @@ public sealed class PgDumpSourceContractTests
     public void BuildStartInfo_UnsupportedSettingsFailRatherThanBeingDropped(string extra)
     {
         _ = Assert.Throws<MigrationExecutionException>(() => PgDumpSource.BuildStartInfo("C:/tools/pg_dump.exe",
-            "Host=localhost;Database=postgres;Username=fixture;Password=secret;" + extra,
+            new System.Data.Common.DbConnectionStringBuilder { ["Host"] = "localhost", ["Database"] = "postgres", ["Username"] = "fixture", ["Password"] = "secret" }.ConnectionString + ";" + extra,
             "legacy_shadow_order_0123456789abcdef0123456789abcdef"));
     }
     [Theory]
@@ -20,7 +20,7 @@ public sealed class PgDumpSourceContractTests
     {
         System.Diagnostics.ProcessStartInfo start = PgDumpSource.BuildStartInfo(
             "C:/tools/pg_dump.exe",
-            $"Host=postgres.example;Database=postgres;Username=legacy;Password=secret;SSL Mode={mode};Root Certificate=C:/protected/ca.pem",
+            new System.Data.Common.DbConnectionStringBuilder { ["Host"] = "postgres.example", ["Database"] = "postgres", ["Username"] = "legacy", ["Password"] = "secret", ["SSL Mode"] = mode, ["Root Certificate"] = "C:/protected/ca.pem" }.ConnectionString,
             "legacy_shadow_order_0123456789abcdef0123456789abcdef");
         Assert.Equal(expected, start.Environment["PGSSLMODE"]);
         Assert.Equal("C:/protected/ca.pem", start.Environment["PGSSLROOTCERT"]);
@@ -31,7 +31,7 @@ public sealed class PgDumpSourceContractTests
     {
         System.Diagnostics.ProcessStartInfo start = PgDumpSource.BuildStartInfo(
             "C:/tools/pg_dump.exe",
-            "Host=localhost;Port=5432;Database=postgres;Username=legacy;Password=super-secret;SSL Mode=Disable",
+            new System.Data.Common.DbConnectionStringBuilder { ["Host"] = "localhost", ["Port"] = "5432", ["Database"] = "postgres", ["Username"] = "legacy", ["Password"] = "super-secret", ["SSL Mode"] = "Disable" }.ConnectionString,
             "legacy_shadow_order_0123456789abcdef0123456789abcdef");
 
         Assert.Contains("--format=custom", start.ArgumentList);
@@ -47,7 +47,7 @@ public sealed class PgDumpSourceContractTests
     [Fact]
     public void BuildStartInfo_CanonicalDatabaseRequiresExplicitDeltaBoundary()
     {
-        const string connection = "Host=localhost;Database=postgres;Username=legacy;Password=secret;SSL Mode=Disable";
+        string connection = new System.Data.Common.DbConnectionStringBuilder { ["Host"] = "localhost", ["Database"] = "postgres", ["Username"] = "legacy", ["Password"] = "secret", ["SSL Mode"] = "Disable" }.ConnectionString;
 
         MigrationExecutionException rejected = Assert.Throws<MigrationExecutionException>(() =>
             PgDumpSource.BuildStartInfo("C:/tools/pg_dump.exe", connection, "Order"));

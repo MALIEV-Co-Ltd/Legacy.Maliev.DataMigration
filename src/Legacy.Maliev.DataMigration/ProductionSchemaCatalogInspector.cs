@@ -85,11 +85,7 @@ public static class ProductionSchemaCatalogInspector
                 [.. names.Select(item => new ObservedTargetTable(item.Key.Schema, item.Key.Table, item.Value))],
                 fingerprint)
             { TableComponents = components };
-            TableCopyPlan[] expected =
-            [
-                .. ApprovedSourceDispositionManifest.TargetTablesFor(database),
-                .. ApprovedTargetExtensionManifest.TablesFor(database),
-            ];
+            TableCopyPlan[] expected = [.. ApprovedConsumerColumnOverlayManifest.ComposePhysical(database)];
             return observation with
             {
                 TableDiagnostics = ProductionSchemaComponentDiagnostics.Compare(expected, observation),

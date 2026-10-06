@@ -5,6 +5,36 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class CanonicalRowFingerprintTests
 {
     [Fact]
+    public void Compute_UuidArrayBindsEveryElementOrderLengthAndNullSeparately()
+    {
+        TableCopyPlan table = CreatePlan("uuid[]");
+        Guid first = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        Guid second = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        Guid third = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        Guid[][] values = [[], [first], [second], [first, second], [second, first], [first, third], [first, second, second]];
+        string[] hashes = [.. values.Select(value => CanonicalRowFingerprint.Compute(table, [Row(value)]))];
+        Assert.Equal(values.Length, hashes.Distinct(StringComparer.Ordinal).Count());
+        Assert.All(values, value => Assert.Equal(
+            CanonicalRowFingerprint.Compute(table, [Row(value)]),
+            CanonicalRowFingerprint.Compute(table, [Row(value.ToArray())])));
+        Assert.DoesNotContain(CanonicalRowFingerprint.Compute(table, [Row(null)]), hashes);
+        Assert.DoesNotContain(CanonicalRowFingerprint.Compute(table, [Row(DBNull.Value)]), hashes);
+        Assert.Equal(CanonicalRowFingerprint.Compute(table, [Row(null)]), CanonicalRowFingerprint.Compute(table, [Row(DBNull.Value)]));
+    }
+
+    [Fact]
+    public void Compute_UuidArrayRejectsValuesThatCannotRepresentItsExactProviderShape()
+    {
+        TableCopyPlan table = CreatePlan("uuid[]");
+        Guid value = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        object[] incompatible = ["{11111111-1111-1111-1111-111111111111}", value, new object[] { value }, new string[] { value.ToString("D") }, new int[] { 1 }, new Guid[1, 1], new Guid?[] { value, null }];
+        foreach (object input in incompatible)
+        {
+            _ = Assert.Throws<InvalidOperationException>(() => CanonicalRowFingerprint.Compute(table, [Row(input)]));
+        }
+    }
+
+    [Fact]
     public void Compute_ThaiUnicodeNormalizationDifference_RemainsDetectableForExactParity()
     {
         TableCopyPlan table = CreatePlan("text");

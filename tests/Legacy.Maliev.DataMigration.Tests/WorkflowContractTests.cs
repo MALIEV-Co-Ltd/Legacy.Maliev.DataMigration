@@ -44,7 +44,7 @@ public sealed class WorkflowContractTests
             StringComparison.Ordinal);
         Assert.Contains("persist-credentials: false", source, StringComparison.Ordinal);
         Assert.Contains(
-            "MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@6017816fa67f369d785ed30794f002cfd6299af7",
+            "MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@e3a6093324a24968876782153286f52db8b29fd8",
             source,
             StringComparison.Ordinal);
         Assert.Contains("solution: Legacy.Maliev.DataMigration.slnx", source, StringComparison.Ordinal);

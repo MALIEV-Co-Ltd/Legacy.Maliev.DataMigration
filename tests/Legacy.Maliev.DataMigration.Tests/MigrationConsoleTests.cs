@@ -84,14 +84,23 @@ public sealed class MigrationConsoleTests : IDisposable
         Assert.Equal("subcommand_invalid" + Environment.NewLine, error.ToString());
     }
 
-    [Fact]
-    public async Task RunAsync_Plan_MissingSourceReferenceFailsWithoutPrintingConfiguration()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("HistoricalDefaults")]
+    [InlineData("CurrentConsumerColumnsV1")]
+    public async Task RunAsync_Plan_MissingSourceReferenceFailsWithoutPrintingConfiguration(string? selection)
     {
         OwnerProtectedDirectory.CreateNew(_root);
         string configPath = Path.Combine(_root, "config.json");
+        var planConfiguration = new Dictionary<string, object>
+        {
+            ["outputPath"] = Path.Combine(_root, "plan.json"),
+            ["sourceCommitSha"] = new string('a', 40),
+        };
+        if (selection is not null) { planConfiguration.Add("consumerOverlays", selection); }
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new
         {
-            plan = new { outputPath = Path.Combine(_root, "plan.json"), sourceCommitSha = new string('a', 40) },
+            plan = planConfiguration,
         }, JsonOptions));
         ProtectFileOnUnix(configPath);
         using var output = new StringWriter();
@@ -211,13 +220,13 @@ public sealed class MigrationConsoleTests : IDisposable
         ProtectFileOnUnix(configPath);
         using var output = new StringWriter();
         using var error = new StringWriter();
-        const string placeholder = "Host=127.0.0.1;Port=1;Database=postgres;Username=unused;Password=unused;Timeout=1";
+        string placeholder = new System.Data.Common.DbConnectionStringBuilder { ["Host"] = "127.0.0.1", ["Port"] = "1", ["Database"] = "postgres", ["Username"] = "unused", ["Password"] = "unused", ["Timeout"] = "1" }.ConnectionString;
 
         int exitCode = await MigrationConsole.RunAsync(
             ["execute-shadow", "--config", configPath], output, error,
             name => name switch
             {
-                "LEGACY_MIGRATION_SQLSERVER_CONNECTION" => "Server=127.0.0.1,1;User Id=unused;Password=unused;TrustServerCertificate=True",
+                "LEGACY_MIGRATION_SQLSERVER_CONNECTION" => new System.Data.Common.DbConnectionStringBuilder { ["Server"] = "127.0.0.1,1", ["User Id"] = "unused", ["Password"] = "unused", ["TrustServerCertificate"] = "True" }.ConnectionString,
                 "LEGACY_MIGRATION_POSTGRES_ADMIN_CONNECTION" => placeholder,
                 "LEGACY_MIGRATION_POSTGRES_CONTROL_CONNECTION" => placeholder,
                 "LEGACY_MIGRATION_CNPG_API_SERVER" => "https://kubernetes.example",

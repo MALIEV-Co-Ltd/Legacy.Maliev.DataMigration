@@ -49,6 +49,11 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.RecordSourceReadWindows || persistentRequest?.RecordSourceReadWindows == true)
+        {
+            throw new DeltaPlanException("delta_plan_source_read_window_mode_invalid",
+                "Ordinary database read windows cannot be requested for captured or paired planning.");
+        }
         if (request.SourceMode != DeltaSourceMode.LiveReadOnly || captureKey.Length != 32)
         {
             throw new DeltaPlanException("delta_capture_request_invalid",
@@ -59,6 +64,14 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
         {
             throw new DeltaPlanException("delta_quotation_transition_plan_invalid",
                 "The Quotation physical transition requires a disposable-local capture.");
+        }
+        if (!Enum.IsDefined(request.QuotationPhysicalVariant) ||
+            (!request.UseQuotationPhysicalTransition && request.QuotationPhysicalVariant != ReviewedQuotationPhysicalVariant.RetainedOutboxes))
+        { throw ReviewedQuotationPhysicalSchemaResolver.Invalid(); }
+        if (request.UseQuotationPhysicalTransition)
+        {
+            _ = ReviewedQuotationPhysicalSchemaResolver.GetExpected(request.SchemaPlan.Databases.Single(database => database.Database == "Quotation"),
+                request.QuotationPhysicalVariant);
         }
         DateTimeOffset preflightUtc = timeProvider.GetUtcNow();
         string keyFingerprint = Convert.ToHexString(SHA256.HashData(captureKey.Span)).ToLowerInvariant();
@@ -80,6 +93,7 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
              ReferenceEquals(persistentTarget, canonicalTarget) ||
              persistentRequest.SourceMode != DeltaSourceMode.LiveReadOnly ||
              persistentRequest.UseQuotationPhysicalTransition != request.UseQuotationPhysicalTransition ||
+             persistentRequest.QuotationPhysicalVariant != request.QuotationPhysicalVariant ||
              persistentRequest.SourceCutoffUtc != request.SourceCutoffUtc ||
              persistentRequest.SourceObservationSha256 != request.SourceObservationSha256 ||
              SchemaPlanCanonicalizer.ComputeSha256(persistentRequest.SchemaPlan) !=
@@ -284,8 +298,8 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
             SourceCaptureCompletedAtUtc = nowUtc,
             SourceCaptureManifest = manifest,
             QuotationTransitionSchemaSha256 = request.UseQuotationPhysicalTransition
-                ? PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(
-                    request.SchemaPlan.Databases.Single(database => database.Database == "Quotation"), true)
+                ? ReviewedQuotationPhysicalSchemaResolver.GetExpected(
+                    request.SchemaPlan.Databases.Single(database => database.Database == "Quotation"), request.QuotationPhysicalVariant)
                 : null,
             PairedTransitionPlanOnly = request.UseQuotationPhysicalTransition &&
                 DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(request.TargetAuthority)

@@ -121,7 +121,13 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
     [Fact]
     public async Task Historical_postgresql_inspector_uses_disposable_read_only_snapshot_without_old_permit()
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string admin = container.GetConnectionString();
         Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
@@ -182,7 +188,7 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
             await MigrationConsole.WriteNewJsonForTestsAsync(receiptPath, receipt, CancellationToken.None);
             await MigrationConsole.WriteNewJsonForTestsAsync(schemaPath, fixture.Schema, CancellationToken.None);
             await WriteOwnerOnlyTextAsync(connectionPath,
-                "Host=127.0.0.1;Port=5432;Database=postgres;Username=unused;Password=unused");
+                new System.Data.Common.DbConnectionStringBuilder { ["Host"] = "127.0.0.1", ["Port"] = "5432", ["Database"] = "postgres", ["Username"] = "unused", ["Password"] = "unused" }.ConnectionString);
             await WriteOwnerOnlyTextAsync(planKeyPath,
                 Convert.ToBase64String(_localPlanKey.ExportSubjectPublicKeyInfo()));
             await WriteOwnerOnlyTextAsync(evidenceKeyPath,
@@ -745,7 +751,7 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
         Reject(fixture.LocalPlan, receipt with { ReconciledAtUtc = later.AddDays(1) });
     }
 
-    private async Task<Exact23DeltaReconciliationResult> HistoricalReceiptAsync(Fixture fixture)
+    private async Task<Exact23DeltaReconciliationResult> HistoricalReceiptAsync(Fixture fixture, bool postgresTimestamps = false)
     {
         using var authorizationSigner = new P256MigrationEvidenceSigner("local-transition-authorization",
             _authorizationKey.ExportECPrivateKeyPem());
@@ -763,9 +769,38 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
             new FixedTime(fixture.Now));
         var inspector = new Inspector(pairedTransition: true, fixture.Schema);
         return await new Exact23DeltaReconciliationCoordinator(inspector, inspector,
-            new Checkpoints(fixture.LocalPlan, fixture.Schema, pairedTransition: true),
+            new Checkpoints(fixture.LocalPlan, fixture.Schema, pairedTransition: true,
+                postgresTimestamps: postgresTimestamps),
             new FixedTime(fixture.Now), evidenceSigner, localPermit: permit)
             .ReconcileAsync(fixture.LocalPlan, fixture.Schema, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Historical_local_metadata_accepts_only_PostgreSQL_precision_of_signed_source_cutoff()
+    {
+        DateTimeOffset cutoff = new DateTimeOffset(2026, 10, 1, 17, 5, 39, TimeSpan.Zero).AddTicks(1654853);
+        Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
+            captured: true, historicalLocal: true, at: cutoff.AddMinutes(5));
+        Exact23DeltaReconciliationResult receipt = await HistoricalReceiptAsync(fixture, postgresTimestamps: true);
+        Assert.Equal(cutoff, fixture.LocalPlan.SourceCutoffUtc);
+        Assert.Equal(cutoff, receipt.SourceCutoffUtc);
+        Assert.All(receipt.Checkpoints, checkpoint =>
+            Assert.Equal(cutoff.AddTicks(-3), checkpoint.SourceCutoffUtc));
+        HistoricalLocalMetadataSnapshot[] snapshots = [.. DatabaseInventory.ActiveDatabases.Select(database =>
+            new HistoricalLocalMetadataSnapshot(database,
+                new HistoricalLocalFence(database, fixture.LocalPlan.SchemaPlanSha256,
+                    receipt.Databases.Single(item => item.Database == database).TargetSchemaSha256,
+                    fixture.LocalPlan.TargetGeneration, fixture.LocalPlan.TargetObservationSha256),
+                [receipt.Checkpoints.Single(item => item.Database == database)]))];
+        Assert.Equal(23, HistoricalLocalMetadataReceiptBinder.Bind(fixture.LocalPlan, receipt,
+            fixture.Schema, fixture.Trust, snapshots, fixture.Now.AddDays(1)).Count);
+        HistoricalLocalMetadataSnapshot[] changed =
+            [snapshots[0] with { Journal = [snapshots[0].Journal[0] with
+                { SourceCutoffUtc = snapshots[0].Journal[0].SourceCutoffUtc.AddTicks(10) }] }, .. snapshots.Skip(1)];
+        Assert.Equal("delta_historical_local_metadata_invalid",
+            Assert.Throws<DeltaExecutionException>(() => HistoricalLocalMetadataReceiptBinder.Bind(
+                fixture.LocalPlan, receipt, fixture.Schema, fixture.Trust, changed,
+                fixture.Now.AddDays(1))).Code);
     }
 
     [Fact]
@@ -820,7 +855,13 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
     [Fact]
     public async Task Historical_local_metadata_reader_uses_disposable_read_only_exact23_snapshots()
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         var settings = new NpgsqlConnectionStringBuilder(container.GetConnectionString())
         {
@@ -1336,7 +1377,13 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
     [Fact]
     public async Task Local_transition_target_rolls_back_new_metadata_and_replays_only_matching_atomic_checkpoint()
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string admin = container.GetConnectionString();
         string identity;
@@ -1719,7 +1766,7 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
     }
 
     private sealed class Checkpoints(DeltaSynchronizationPlan plan, FreshSchemaPlan schema,
-        bool pairedTransition = false)
+        bool pairedTransition = false, bool postgresTimestamps = false)
         : IExact23DeltaCheckpointReader
     {
         public Task<IReadOnlyList<DeltaDatabaseCheckpointEvidence>> ReadAsync(
@@ -1734,13 +1781,18 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
                     DatabaseReconciliationEvidence evidence = new Inspector(pairedTransition, schema).InspectAsync(databaseSchema,
                         cancellationToken).GetAwaiter().GetResult();
                     return new DeltaDatabaseCheckpointEvidence(name, plan.PlanId,
-                        DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan), plan.SourceCutoffUtc,
+                        DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan), Timestamp(plan.SourceCutoffUtc),
                         plan.TargetObservationSha256,
                         DeltaSynchronizationPlanCanonicalizer.ComputeDatabaseOperationsSha256(database),
                         DeltaReconciliationEvidenceCanonicalizer.ComputeSha256(evidence),
-                        plan.SourceCutoffUtc.AddMinutes(1));
+                        Timestamp(plan.SourceCutoffUtc.AddMinutes(1)));
                 })];
             return Task.FromResult(values);
+        }
+
+        private DateTimeOffset Timestamp(DateTimeOffset value)
+        {
+            return postgresTimestamps ? value.AddTicks(-(value.Ticks % 10)) : value;
         }
     }
 

@@ -96,13 +96,14 @@ public static class PairedCapturedDeltaPlanPublicationGate
         }
         try
         {
-            string expected = PostgreSqlSchemaFingerprint.ComputeQuotationBootstrapExpected(quotation, true);
+            string expected = ReviewedQuotationPhysicalSchemaResolver.RequireReviewedHash(quotation,
+                disposable.QuotationTransitionSchemaSha256 ?? string.Empty);
             return DeltaSynchronizationPlanProducer.FixedHashEquals(
                     disposable.QuotationTransitionSchemaSha256 ?? string.Empty, expected) &&
                 DeltaSynchronizationPlanProducer.FixedHashEquals(
                     persistent.QuotationTransitionSchemaSha256 ?? string.Empty, expected);
         }
-        catch (MigrationExecutionException)
+        catch (Exception exception) when (exception is MigrationExecutionException or DeltaPlanException)
         {
             return false;
         }

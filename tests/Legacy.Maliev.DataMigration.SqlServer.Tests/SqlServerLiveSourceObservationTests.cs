@@ -12,6 +12,13 @@ public sealed class SqlServerLiveSourceObservationTests
     {
         const string image = "mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04";
         await using var container = new MsSqlBuilder(image)
+            .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", "2560")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 2000000000;
+            })
             .WithPassword("MALIEV_test_Only!123456")
             .Build();
         await container.StartAsync();
