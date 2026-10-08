@@ -6,7 +6,7 @@ public sealed class Exact23DeltaCheckpointReaderTests
     public async Task Incomplete_schema_inventory_fails_before_any_database_connection()
     {
         var reader = new PostgreSqlExact23DeltaCheckpointReader(new(
-            "Host=127.0.0.1;Port=1;Username=unused;Password=unused;Timeout=1"));
+            new System.Data.Common.DbConnectionStringBuilder { ["Host"] = "127.0.0.1", ["Port"] = "1", ["Username"] = "unused", ["Password"] = "unused", ["Timeout"] = "1" }.ConnectionString));
         DateTimeOffset now = new(2026, 9, 8, 8, 0, 0, TimeSpan.Zero);
         var schema = new FreshSchemaPlan("2.0", now, new string('1', 40), []);
         var plan = new DeltaSynchronizationPlan("1.1", Guid.NewGuid(), schema.SourceCommitSha,

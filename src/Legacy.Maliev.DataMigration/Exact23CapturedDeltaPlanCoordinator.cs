@@ -49,6 +49,11 @@ public sealed class Exact23CapturedDeltaPlanCoordinator(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.RecordSourceReadWindows || persistentRequest?.RecordSourceReadWindows == true)
+        {
+            throw new DeltaPlanException("delta_plan_source_read_window_mode_invalid",
+                "Ordinary database read windows cannot be requested for captured or paired planning.");
+        }
         if (request.SourceMode != DeltaSourceMode.LiveReadOnly || captureKey.Length != 32)
         {
             throw new DeltaPlanException("delta_capture_request_invalid",

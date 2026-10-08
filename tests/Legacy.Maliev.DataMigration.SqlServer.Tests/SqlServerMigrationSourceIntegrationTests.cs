@@ -30,6 +30,151 @@ public sealed class SqlServerIntegrationFactAttribute : FactAttribute
 [Collection(SqlServerAdapterTestGroup.Name)]
 public sealed class SqlServerMigrationSourceIntegrationTests
 {
+    private static readonly int[] InvalidSqlServerProcessLimits = [0, -1, 3072, 3073, int.MaxValue];
+    private static readonly Type[] OriginalProvisionSignature = [typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(CancellationToken)];
+    private static readonly Type[] CappedProvisionSignature = [typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(DockerRestoreResourceLimits), typeof(CancellationToken)];
+    private static readonly string[] ExpectedUncappedRestoreArguments = [ "run", "-d", "--name", "owned-container", "--label", "com.maliev.legacy.restore-run=owned-run",
+            "--mount", "type=volume,source=owned-volume,target=/var/opt/mssql/backup,readonly", "--publish", "127.0.0.1:15433:1433",
+            "--env", "ACCEPT_EULA=Y", "--env", "MSSQL_SA_PASSWORD", "approved-image"];
+    private static readonly string[] ExpectedRestoreLimitArguments = ["--memory", "3221225472", "--memory-swap", "3221225472", "--cpus", "2"];
+
+    [Theory]
+    [InlineData(0L, 2147483648L, 1, "memoryBytes")]
+    [InlineData(6291455L, 2147483648L, 1, "memoryBytes")]
+    [InlineData(2147483648L, -1L, 1, "memorySwapBytes")]
+    [InlineData(2147483648L, 2147483647L, 1, "memorySwapBytes")]
+    [InlineData(2147483648L, 2147483648L, 0, "cpus")]
+    [InlineData(2147483648L, 2147483648L, -1, "cpus")]
+    public void DisposableRestoreLimitsRejectInvalidBoundsBeforeProvisioning(
+        long memory, long swap, int cpus, string parameter)
+    {
+        var error = Assert.Throws<ArgumentOutOfRangeException>(() => new DockerRestoreResourceLimits(memory, swap, cpus));
+        Assert.Equal(parameter, error.ParamName);
+    }
+
+    [Fact]
+    public void DisposableRestoreLimitsRejectSubNanoCpuAndOverflowWithoutNativeCalls()
+    {
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new DockerRestoreResourceLimits(2147483648L, 2147483648L, 0.0000000001m));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new DockerRestoreResourceLimits(2147483648L, 2147483648L, decimal.MaxValue));
+        foreach (int invalidLimit in InvalidSqlServerProcessLimits)
+        {
+            var error = Assert.Throws<ArgumentOutOfRangeException>(() => new DockerRestoreResourceLimits(3221225472L, 3221225472L, 2m, invalidLimit));
+            Assert.Equal("sqlServerMemoryLimitMb", error.ParamName);
+        }
+    }
+
+    [Fact]
+    public void DisposableRestoreRunArgumentsPreserveUncappedDefaultAndOldSignature()
+    {
+        string[] arguments = DockerDisposableSqlServerProvisioner.CreateRunArguments(
+            "owned-container", "owned-run", "owned-volume", "/var/opt/mssql/backup", "15433", "approved-image", null);
+        Assert.Equal(ExpectedUncappedRestoreArguments, arguments);
+        Assert.DoesNotContain(arguments, argument => argument.StartsWith("MSSQL_MEMORY_LIMIT_MB", StringComparison.Ordinal));
+        Assert.NotNull(typeof(DockerDisposableSqlServerProvisioner).GetMethod(nameof(DockerDisposableSqlServerProvisioner.ProvisionAsync),
+            OriginalProvisionSignature));
+        Assert.NotNull(typeof(DockerDisposableSqlServerProvisioner).GetMethod(nameof(DockerDisposableSqlServerProvisioner.ProvisionAsync),
+            CappedProvisionSignature));
+    }
+
+    [Fact]
+    public void DisposableRestoreRunArgumentsApplyExplicitCapsBeforeStartPreservingOtherArguments()
+    {
+        var limits = new DockerRestoreResourceLimits(3L * 1024 * 1024 * 1024, 3L * 1024 * 1024 * 1024, 2m);
+        string[] arguments = DockerDisposableSqlServerProvisioner.CreateRunArguments(
+            "owned-container", "owned-run", "owned-volume", "/var/opt/mssql/backup", "15433", "approved-image", limits);
+        Assert.Equal(ExpectedRestoreLimitArguments, arguments.Skip(4).Take(6));
+        string[] uncapped = DockerDisposableSqlServerProvisioner.CreateRunArguments(
+            "owned-container", "owned-run", "owned-volume", "/var/opt/mssql/backup", "15433", "approved-image", null);
+        Assert.Equal(uncapped, arguments.Take(4).Concat(arguments.Skip(10)));
+        Assert.Equal(3221225472L, limits.MemoryBytes);
+        Assert.Equal(3221225472L, limits.MemorySwapBytes);
+        Assert.Equal(2m, limits.Cpus);
+        Assert.Null(limits.SqlServerMemoryLimitMb);
+        Assert.DoesNotContain(arguments, argument => argument.StartsWith("MSSQL_MEMORY_LIMIT_MB", StringComparison.Ordinal));
+        var processLimits = new DockerRestoreResourceLimits(3221225472L, 3221225472L, 2m, 2560);
+        string[] processArguments = DockerDisposableSqlServerProvisioner.CreateRunArguments(
+            "owned-container", "owned-run", "owned-volume", "/var/opt/mssql/backup", "15433", "approved-image", processLimits);
+        Assert.Equal(2560, processLimits.SqlServerMemoryLimitMb);
+        Assert.Equal(arguments.Length + 2, processArguments.Length);
+        Assert.Equal("--env", processArguments[^3]);
+        Assert.Equal("MSSQL_MEMORY_LIMIT_MB=2560", processArguments[^2]);
+        Assert.Equal(arguments, processArguments.Take(processArguments.Length - 3).Append(processArguments[^1]));
+    }
+
+    [Fact]
+    public void DisposableRestoreRunLimitsUseInvariantCulture()
+    {
+        var previous = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("fr-FR");
+            string[] arguments = DockerDisposableSqlServerProvisioner.CreateRunArguments(
+                "owned-container", "owned-run", "owned-volume", "/var/opt/mssql/backup", "15433", "approved-image",
+                new DockerRestoreResourceLimits(2147483648L, 2147483648L, 0.5m));
+            Assert.Equal("2147483648", arguments[5]);
+            Assert.Equal("2147483648", arguments[7]);
+            Assert.Equal("0.5", arguments[9]);
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = previous; }
+    }
+
+    [SqlServerIntegrationFact]
+    public async Task GenuineSnapshotSchemaProducerSelectsBothOverlaysWithoutChangingSourceProjection()
+    {
+        await using MsSqlContainer container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
+            .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", "2560")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 2000000000;
+            })
+            .WithPassword("MALIEV_test_Only!123456").Build();
+        await container.StartAsync();
+        await using (var setup = new SqlConnection(container.GetConnectionString()))
+        {
+            await setup.OpenAsync();
+            foreach (string sql in new[]
+            {
+                "CREATE DATABASE [CustomerIdentity];",
+                "ALTER DATABASE [CustomerIdentity] SET ALLOW_SNAPSHOT_ISOLATION ON;",
+                "CREATE DATABASE [Quotation];",
+                "ALTER DATABASE [Quotation] SET ALLOW_SNAPSHOT_ISOLATION ON;",
+                """
+                CREATE TABLE [CustomerIdentity].dbo.AspNetUsers (
+                    Id nvarchar(450) NOT NULL CONSTRAINT PK_AspNetUsers PRIMARY KEY,
+                    ConcurrencyStamp nvarchar(256), Email nvarchar(256), FaxNumber nvarchar(256),
+                    MobileNumber nvarchar(256), NormalizedEmail nvarchar(256), NormalizedUserName nvarchar(256),
+                    PasswordHash nvarchar(256), PhoneNumber nvarchar(256), SecurityStamp nvarchar(256), UserName nvarchar(256));
+                """,
+                "CREATE TABLE [Quotation].dbo.Quotation (ID int NOT NULL CONSTRAINT PK_Quotation PRIMARY KEY, Comment nvarchar(max), FOB nvarchar(256), ShippedVia nvarchar(256), Terms nvarchar(256));",
+            })
+            {
+                await using var command = new SqlCommand(sql, setup);
+                _ = await command.ExecuteNonQueryAsync();
+            }
+        }
+        foreach (string database in new[] { "CustomerIdentity", "Quotation" })
+        {
+            await using var historical = new SqlServerMigrationSource(new(container.GetConnectionString()));
+            await using var selected = new SqlServerMigrationSource(new(container.GetConnectionString())
+            { ConsumerOverlays = ConsumerOverlaySelection.CurrentConsumerColumnsV1 });
+            await historical.BeginDatabaseSnapshotAsync(database, default);
+            await selected.BeginDatabaseSnapshotAsync(database, default);
+            DatabaseSchemaPlan old = await historical.GenerateDatabasePlanAsync(database, default);
+            DatabaseSchemaPlan current = await selected.GenerateDatabasePlanAsync(database, default);
+            Assert.Equal(old.SourceSchemaSha256, current.SourceSchemaSha256);
+            Assert.Equal(System.Text.Json.JsonSerializer.Serialize(old.Tables), System.Text.Json.JsonSerializer.Serialize(current.Tables));
+            Assert.Equal(ApprovedConsumerOverlaySelection.ProfileForDatabase(database, ConsumerOverlaySelection.CurrentConsumerColumnsV1), current.TargetExtensionProfile);
+            Assert.NotEqual(old.TargetSchemaSha256, current.TargetSchemaSha256);
+            Assert.Equal(PostgreSqlSchemaFingerprint.ComputeExpected(current), current.TargetSchemaSha256);
+            Assert.DoesNotContain(database == "CustomerIdentity" ? "PasswordSetupRequired" : "DecisionOrderVersion", current.Tables[0].OrderedColumns);
+            await historical.CompleteDatabaseSnapshotAsync(database, default);
+            await selected.CompleteDatabaseSnapshotAsync(database, default);
+        }
+    }
+
     [SqlServerIntegrationFact]
     public async Task BackupRestoreTarget_RestoresFromPrivateReadOnlyContainerMountWithoutReplacement()
     {
@@ -45,6 +190,13 @@ public sealed class SqlServerMigrationSourceIntegrationTests
         try
         {
             await using (MsSqlContainer producer = new MsSqlBuilder(image)
+                .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", "2560")
+                .WithCreateParameterModifier(parameters =>
+                {
+                    parameters.HostConfig!.Memory = 3L * 1024 * 1024 * 1024;
+                    parameters.HostConfig.MemorySwap = 3L * 1024 * 1024 * 1024;
+                    parameters.HostConfig.NanoCPUs = 2000000000;
+                })
                 .WithPassword(password)
                 .Build())
             {
@@ -88,7 +240,8 @@ public sealed class SqlServerMigrationSourceIntegrationTests
             }.ConnectionString;
             restoreResources = await DockerDisposableSqlServerProvisioner.ProvisionAsync(
                 targetConnection, volume, targetContainerName, "/var/opt/mssql/backup",
-                pinnedImage, targetImageId, pinnedStagingImage, "run-1", CancellationToken.None);
+                pinnedImage, targetImageId, pinnedStagingImage, "run-1",
+                new DockerRestoreResourceLimits(3L * 1024 * 1024 * 1024, 3L * 1024 * 1024 * 1024, 2m, 2560), CancellationToken.None);
             var sourceArtifact = new VerifiedBackupRestoreArtifact(
                 "Country",
                 localBackup,
@@ -212,6 +365,13 @@ public sealed class SqlServerMigrationSourceIntegrationTests
     {
         const string password = "MALIEV_test_Only!123456";
         await using MsSqlContainer container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
+            .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", "2560")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 2000000000;
+            })
             .WithPassword(password)
             .Build();
         await container.StartAsync();
@@ -294,6 +454,13 @@ public sealed class SqlServerMigrationSourceIntegrationTests
     public async Task IdentityProgress_DoesNotChangeSchemaFingerprint_ButDdlStillDoes()
     {
         await using MsSqlContainer container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
+            .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", "2560")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 2000000000;
+            })
             .WithPassword("MALIEV_test_Only!123456")
             .Build();
         await container.StartAsync();
@@ -391,6 +558,13 @@ public sealed class SqlServerMigrationSourceIntegrationTests
     {
         const string password = "MALIEV_test_Only!123456";
         await using MsSqlContainer container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
+            .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", "2560")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 2000000000;
+            })
             .WithPassword(password)
             .Build();
         await container.StartAsync();

@@ -43,7 +43,7 @@ jobs:
         shell: pwsh
         run: ./scripts/prepare-consumer-owner-migration-proof.ps1
       - name: Validate .NET solution
-        uses: MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@6017816fa67f369d785ed30794f002cfd6299af7
+        uses: MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@e3a6093324a24968876782153286f52db8b29fd8
         with:
           solution: Legacy.Maliev.DataMigration.slnx
       - name: Prepare PostgreSQL 18 client wrappers

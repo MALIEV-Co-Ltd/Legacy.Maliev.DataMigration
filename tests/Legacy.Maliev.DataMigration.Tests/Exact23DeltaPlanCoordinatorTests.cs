@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
-public sealed class Exact23DeltaPlanCoordinatorTests : IDisposable
+public sealed partial class Exact23DeltaPlanCoordinatorTests : IDisposable
 {
     private readonly ECDsa _key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 

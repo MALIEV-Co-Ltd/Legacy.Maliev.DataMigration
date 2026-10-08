@@ -23,7 +23,13 @@ public sealed partial class DisposableDeltaProofVerifierTests
     [InlineData("nonempty")]
     public async Task Source_repair_staged_marker_rejects_changed_catalog_and_nonempty_preimage(string mutation)
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string admin = new NpgsqlConnectionStringBuilder(container.GetConnectionString()) { Host = "127.0.0.1", Pooling = false }.ConnectionString;
         await LockedIssuerExecute(admin, "CREATE DATABASE \"ContactRequest\";");
@@ -63,7 +69,13 @@ public sealed partial class DisposableDeltaProofVerifierTests
     [InlineData("maintenance")]
     public async Task Source_repair_native_atomic_adoption_preserves_prior_state_or_rolls_back(string scenario)
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string admin = new NpgsqlConnectionStringBuilder(container.GetConnectionString())
         { Host = "127.0.0.1", Database = "postgres", Pooling = false, Enlist = false }.ConnectionString;

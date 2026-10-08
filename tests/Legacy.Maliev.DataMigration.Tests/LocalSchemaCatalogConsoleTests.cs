@@ -59,6 +59,12 @@ public sealed class LocalSchemaCatalogConsoleTests : IDisposable
     public async Task Disposable_exact23_catalog_reports_shape_without_rows_or_target_mutation()
     {
         await using var container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            })
             .WithDatabase("postgres").WithPassword(Convert.ToHexString(RandomNumberGenerator.GetBytes(24))).Build();
         await container.StartAsync();
         string connectionString = new NpgsqlConnectionStringBuilder(container.GetConnectionString())

@@ -659,7 +659,13 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
     {
         string directory = Path.Combine(Path.GetTempPath(), "legacy-exact23-transition-tests", Guid.NewGuid().ToString("N"));
         _ = Directory.CreateDirectory(directory);
-        await using var container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using var container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         try
         {
             await container.StartAsync();
@@ -871,8 +877,20 @@ public sealed class Exact23CapturedDeltaPlanCoordinatorTests(PostgreSqlAdapterFi
     {
         string directory = Path.Combine(Path.GetTempPath(), "legacy-paired-atomic-tests", Guid.NewGuid().ToString("N"));
         _ = Directory.CreateDirectory(directory);
-        await using var disposableContainer = new PostgreSqlBuilder("postgres:18-alpine").Build();
-        await using var localContainer = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using var disposableContainer = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
+        await using var localContainer = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         try
         {
             await disposableContainer.StartAsync();

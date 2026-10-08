@@ -48,7 +48,7 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         Assert.DoesNotContain("secrets.", source, StringComparison.Ordinal);
         Assert.False(Regex.IsMatch(source, "^ {4}(?:if|continue-on-error):", RegexOptions.Multiline, TimeSpan.FromSeconds(1)));
         Assert.Contains("LEGACY_DEPLOY_ENABLED: 'false'", source, StringComparison.Ordinal);
-        Assert.Equal("MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@6017816fa67f369d785ed30794f002cfd6299af7", Scalar(Body(4), "uses"));
+        Assert.Equal("MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@e3a6093324a24968876782153286f52db8b29fd8", Scalar(Body(4), "uses"));
     }
 
     private static string Scalar(string body, string name)

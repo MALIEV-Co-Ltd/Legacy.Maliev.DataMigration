@@ -27,7 +27,13 @@ public sealed partial class DisposableDeltaProofVerifierTests
     [InlineData("inventory")]
     public async Task Source_repair_locked_issuer_holds_exact23_and_releases_every_lease_without_data_changes(string scenario)
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string admin = new NpgsqlConnectionStringBuilder(container.GetConnectionString())
         {

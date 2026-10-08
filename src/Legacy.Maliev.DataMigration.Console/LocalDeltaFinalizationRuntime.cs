@@ -43,8 +43,13 @@ internal sealed class GuardedLocalDeltaFinalizationRuntime(
         Exact23RepresentativeServiceQueryEvidence queryEvidence,
         CancellationToken cancellationToken)
     {
-        return LocalSnapshotExporter.ExportCanonicalDeltaAsync(terminalReceipt, terminalReceiptTrust,
-            snapshotOutputDirectory, snapshotId, snapshotEncryptionKey, dumpSource, cancellationToken);
+        return !ApprovedConsumerOverlaySelection.IsApproved(applyRequest.Schema)
+            ? throw new MigrationExecutionException("consumer_overlay_selection_invalid", "Snapshot export requires a reviewed consumer profile selection.")
+            : ApprovedConsumerOverlaySelection.IsCurrent(applyRequest.Schema)
+            ? LocalSnapshotExporter.ExportCanonicalDeltaAsync(terminalReceipt, plan, applyRequest.Schema, terminalReceiptTrust,
+                snapshotOutputDirectory, snapshotId, snapshotEncryptionKey, dumpSource, cancellationToken)
+            : LocalSnapshotExporter.ExportCanonicalDeltaAsync(terminalReceipt, terminalReceiptTrust,
+                snapshotOutputDirectory, snapshotId, snapshotEncryptionKey, dumpSource, cancellationToken);
     }
 
     public Task<AppHostMigrationEvidenceV2Document> ProduceAppHostEvidenceAsync(
