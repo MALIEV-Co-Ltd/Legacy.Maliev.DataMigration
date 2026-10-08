@@ -20,11 +20,29 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
     [Fact]
     public void RequiredValidation_PreparesOwnerProofAfterAdmissionWithoutAnOptionalOrPrivilegedPath()
     {
+        ValidateWorkflow(ReadWorkflow());
+        RequiredValidation_RejectsPreviousSetupDotnetPin();
+    }
+
+    private static void RequiredValidation_RejectsPreviousSetupDotnetPin()
+    {
+        string source = ReadWorkflow();
+        string previousPin = source.Replace("actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68", "actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1", StringComparison.Ordinal);
+        Assert.NotEqual(source, previousPin);
+        Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ValidateWorkflow(previousPin));
+    }
+
+    private static string ReadWorkflow()
+    {
         DirectoryInfo? root = new(AppContext.BaseDirectory);
         while (root is not null && !File.Exists(Path.Combine(root.FullName, ".github", "workflows", "_build-and-test.yml")))
         { root = root.Parent; }
         Assert.NotNull(root);
-        string source = File.ReadAllText(Path.Combine(root.FullName, ".github", "workflows", "_build-and-test.yml"));
+        return File.ReadAllText(Path.Combine(root.FullName, ".github", "workflows", "_build-and-test.yml"));
+    }
+
+    private static void ValidateWorkflow(string source)
+    {
         Assert.InRange(source.Length, 1, 65536);
         Match[] headers = [.. Regex.Matches(source, "^      - name: (?<name>[^\\r\\n]+)\\r?$", RegexOptions.Multiline, TimeSpan.FromSeconds(1)).Cast<Match>()];
         Assert.Equal(ExpectedSteps, headers.Select(header => header.Groups["name"].Value));
@@ -33,7 +51,7 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
             return source[(headers[index].Index + headers[index].Length)..(index + 1 < headers.Length ? headers[index + 1].Index : source.Length)];
         }
 
-        Assert.Equal("actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1", Scalar(Body(2), "uses"));
+        Assert.Equal("actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68", Scalar(Body(2), "uses"));
         Assert.Equal("10.0.x", Scalar(Body(2), "dotnet-version"));
         Assert.Equal("pwsh", Scalar(Body(3), "shell"));
         Assert.Equal("./scripts/prepare-consumer-owner-migration-proof.ps1", Scalar(Body(3), "run"));
