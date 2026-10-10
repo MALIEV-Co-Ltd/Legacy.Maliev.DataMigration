@@ -29,7 +29,7 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         string source = ReadWorkflow();
         string previousPin = source.Replace("actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68", "actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1", StringComparison.Ordinal);
         Assert.NotEqual(source, previousPin);
-        Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ValidateWorkflow(previousPin));
+        _ = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ValidateWorkflow(previousPin));
     }
 
     private static string ReadWorkflow()
