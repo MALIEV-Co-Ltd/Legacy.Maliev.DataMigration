@@ -43,3 +43,14 @@ Exact-head Release build, focused history regressions, full affected suites and
 format checks remain required before protected merge. Component tests are not
 native publication-interruption, closed Console, storage-completeness, live-state
 or successor execution proof. Persistent database execution remains unaccepted.
+
+## Subsequent local validation
+
+After capacity recovered, the revised solution built in Release with zero
+warnings and zero errors. All 70 focused history, repair, native policy, catalog
+and TLS tests passed without skips. Complete Core and test-project formatting
+finished, Core verify-no-changes passed, and the formatted solution rebuilt with
+zero warnings and errors. Every recorded task-owned child exited. Exact-head
+hosted full-suite and PostgreSQL compatibility checks remain required. These
+results do not establish storage completeness, live-state reconciliation or a
+fresh successor permit.

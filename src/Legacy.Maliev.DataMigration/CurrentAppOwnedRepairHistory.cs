@@ -101,9 +101,9 @@ internal static class CurrentAppOwnedRepairHistory
                 last = prepared[0].Receipt.ObservedAtUtc;
             }
             DateTimeOffset terminalTime = last;
-            foreach (var entry in terminal)
+            foreach (var (Receipt, Sha256) in terminal)
             {
-                CurrentAppOwnedRepairReceipt result = entry.Receipt;
+                CurrentAppOwnedRepairReceipt result = Receipt;
                 bool sibling = prepared.Length == 1 && terminal.Length == 1 &&
                     result.Classification is CurrentAppOwnedCommitClassification.RolledBackBeforeCommit or
                         CurrentAppOwnedCommitClassification.FailedBeforeCommit && result.PreviousReceiptSha256 == beforePrepared;
@@ -141,9 +141,9 @@ internal static class CurrentAppOwnedRepairHistory
         {
             T value = JsonSerializer.Deserialize<T>(bytes, RecoveryContractEncoding.Options)
                 ?? throw CurrentAppOwnedRepairPermit.Invalid();
-            if (!bytes.AsSpan().SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(value)))
-            { throw CurrentAppOwnedRepairPermit.Invalid(); }
-            return value;
+            return !bytes.AsSpan().SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(value))
+                ? throw CurrentAppOwnedRepairPermit.Invalid()
+                : value;
         }
         catch (JsonException) { throw CurrentAppOwnedRepairPermit.Invalid(); }
     }

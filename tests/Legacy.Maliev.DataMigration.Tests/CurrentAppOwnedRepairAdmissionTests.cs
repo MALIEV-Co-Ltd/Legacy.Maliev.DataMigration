@@ -304,8 +304,11 @@ public sealed class CurrentAppOwnedRepairAdmissionTests
         {
             byte[] payload = [.. "Legacy.Maliev.CurrentAppOwnedEight.Receipt.v1\0"u8,
                 .. JsonSerializer.SerializeToUtf8Bytes(value with { Signature = null })];
-            return value with { Signature = Convert.ToBase64String(_receipt.SignData(payload,
-                HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)) };
+            return value with
+            {
+                Signature = Convert.ToBase64String(_receipt.SignData(payload,
+                HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
+            };
         }
 
         private static CurrentAppOwnedRepairSignedClaim Sign(CurrentAppOwnedRepairSignedClaim value, ECDsa key)
