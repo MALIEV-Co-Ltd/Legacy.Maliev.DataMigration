@@ -1,0 +1,25 @@
+{
+  "observedAtUtc": "2026-10-12T10:56:10.0431212+00:00",
+  "sourceContracts": [
+    {
+      "repository": "Legacy.Maliev.ProcurementService",
+      "sourceCommit": "f84d493ea3cbfd9667d1a2e2a31fabebfc0bba93",
+      "migration": "Legacy.Maliev.ProcurementService.Data/Migrations/PurchaseOrder/20261011073000_AddDurablePurchaseOrderChildReceipts.cs",
+      "sha256": "03088284cdabe2c0e4954275d42879276eb7551d2dfbf30076fac6f8ef998d21"
+    },
+    {
+      "repository": "Legacy.Maliev.QuotationService",
+      "sourceCommit": "38ba1565f42813b806c73864a846f84efc4e65de",
+      "migration": "Legacy.Maliev.QuotationService.Data/Migrations/Quotation/20261006080000_QuotationInvoiceCompletionOperations.cs",
+      "sha256": "10f9fe0fa85921a6c79c0df22ae54764edb528a1515a1ff298c1119181d18159"
+    },
+    {
+      "repository": "Legacy.Maliev.AccountingService",
+      "sourceCommit": "9cc22da4e64f47ec79a03833af53dfe5c8ae7530",
+      "migration": "Legacy.Maliev.AccountingService.Data/Migrations/Invoice/20261006140000_RetainInvoiceFinancialOwnership.cs",
+      "sha256": "840d7d6e5420d5f9866870998d45c2b46c6c37a970b68b23c7cee76956dd72bd"
+    }
+  ],
+  "nativeOwnerEfProof": "not yet supplied for V3; draft profile is not repair acceptance",
+  "physicalTextCollation": "C explicitly selected consistently with current V2 policy"
+}
