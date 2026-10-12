@@ -84,9 +84,9 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
             bool persistent = CurrentAppOwnedRepairLocalTarget.RequireClaim(scope.Target, scope.OperationId,
                 scope.RunBindingSha256, _target);
             string volumeName = _target.DockerVolume ?? throw CurrentAppOwnedRepairPermit.Invalid();
-            string container = await DefaultPairedLocalTemplateObserver.RunDockerAsync(
+            string container = await ObserveDockerAsync(
                 ["--host", "npipe:////./pipe/docker_engine", "inspect", "--type", "container", _target.DockerContainerId], ct).ConfigureAwait(false);
-            string volume = await DefaultPairedLocalTemplateObserver.RunDockerAsync(
+            string volume = await ObserveDockerAsync(
                 ["--host", "npipe:////./pipe/docker_engine", "inspect", "--type", "volume", volumeName], ct).ConfigureAwait(false);
             DockerLocalTargetObservation actual = DockerLocalTargetObservation.Parse(container, volume,
                 _target.DockerContainerId, volumeName, endpoint.Port, persistent);
@@ -105,9 +105,9 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
             string[] inventoryArguments = persistent
                 ? ["--host", "npipe:////./pipe/docker_engine", "ps", "--no-trunc", "--filter", "volume=" + _target.DockerVolume, "--format", "{{.ID}}"]
                 : ["--host", "npipe:////./pipe/docker_engine", "ps", "--all", "--no-trunc", "--filter", "volume=" + _target.DockerVolume, "--format", "{{.ID}}"];
-            string writers = await DefaultPairedLocalTemplateObserver.RunDockerAsync(inventoryArguments, ct).ConfigureAwait(false);
+            string writers = await ObserveDockerAsync(inventoryArguments, ct).ConfigureAwait(false);
             if (!persistent) { CurrentAppOwnedRepairLocalTarget.RequireVolumeConsumers(writers, _target.DockerContainerId); }
-            string stat = await DefaultPairedLocalTemplateObserver.RunDockerAsync(
+            string stat = await ObserveDockerAsync(
                 ["--host", "npipe:////./pipe/docker_engine", "exec", _target.DockerContainerId, "env", "TZ=UTC", "LC_ALL=C",
                     "stat", "--printf=%d|%i|%f|%u|%g|%h|%s|%y|%z", "--", _target.HbaPath], ct).ConfigureAwait(false);
             if (writers.Trim() != _target.DockerContainerId ||
@@ -121,7 +121,7 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
                 _target.DockerContainerId is not null || _target.DockerVolume is not null)
             { throw CurrentAppOwnedRepairPermit.Invalid(); }
             CloudNativePgTargetObservation actual = await _cloud.ObserveAsync("maliev-legacy", "legacy-postgres-main", ct).ConfigureAwait(false);
-            if (actual != _target.CloudObservation || "cnpg:" + actual.Uid + ":" + actual.Generation.ToString(CultureInfo.InvariantCulture) != scope.TargetGeneration ||
+            if (!actual.SameRuntimeTarget(_target.CloudObservation) || "cnpg:" + actual.Uid + ":" + actual.Generation.ToString(CultureInfo.InvariantCulture) != scope.TargetGeneration ||
                 !actual.Ready || actual.ReadyInstances != 2 || actual.Instances != 2 ||
                 !actual.ConsistentSystemId || !actual.ContinuousArchiving || !actual.LastBackupSucceeded)
             { throw CurrentAppOwnedRepairPermit.Invalid(); }
@@ -196,6 +196,20 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
         return name != Path.GetFileName(name) || !name.EndsWith(".json", StringComparison.Ordinal)
             ? throw CurrentAppOwnedRepairPermit.Invalid()
             : _files.WriteNewAsync(Path.Combine(_authority.Binding.ArtifactRootCanonicalPath, name), payload, ct);
+    }
+    private Task<string> ObserveDockerAsync(IReadOnlyList<string> arguments, CancellationToken ct)
+    {
+        return CurrentAppOwnedRepairDockerProcess.RunDockerAsync(arguments, ct, RetainResourceFrameAsync);
+    }
+
+    private async Task RetainResourceFrameAsync(CurrentAppOwnedDockerResource resource)
+    {
+        string name = $"resource-{resource.RunId:N}-{Guid.NewGuid():N}.json";
+        string path = Path.Combine(_authority.Binding.ArtifactRootCanonicalPath, name);
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new { _scope.OperationId, Resource = resource });
+        await _files.WriteNewAsync(path, bytes, CancellationToken.None).ConfigureAwait(false);
+        byte[] held = _files.Read(path, maximumBytes: 65536);
+        if (!held.AsSpan().SequenceEqual(bytes)) { throw CurrentAppOwnedRepairPermit.Invalid(); }
     }
     public void Dispose() { _cloud?.Dispose(); }
 }

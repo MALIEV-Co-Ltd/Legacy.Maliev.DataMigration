@@ -167,5 +167,8 @@ internal static class PostgreSqlCurrentAppOwnedEightRepair
             reader.GetString(21) != m.HbaPath || !reader.GetBoolean(22) || DateTimeOffset.UtcNow >= m.ExpiresAtUtc)
         { throw CurrentAppOwnedRepairPermit.Invalid(); }
         if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) { throw CurrentAppOwnedRepairPermit.Invalid(); }
+        await reader.DisposeAsync().ConfigureAwait(false);
+        await CurrentAppOwnedMaintenanceHba.RequireInstalledAsync(connection, transaction, m.Role,
+            scope.Target.Kind, cancellationToken).ConfigureAwait(false);
     }
 }
