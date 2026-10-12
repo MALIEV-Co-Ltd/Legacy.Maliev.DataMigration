@@ -41,7 +41,7 @@ public static class DisposableDeltaProofVerifier
         if (nowUtc.Offset != TimeSpan.Zero ||
             !DeltaSynchronizationPlanVerifier.Verify(proofPlan, trust, nowUtc) ||
             !DeltaSynchronizationPlanVerifier.Verify(localPlan, trust, nowUtc) ||
-            !Exact23DeltaReconciliationCoordinator.Verify(proofResult, trust) ||
+            !Exact23DeltaReconciliationCoordinator.VerifyForSchema(proofResult, proofPlan, schema, trust) ||
             proofResult.PlanId != proofPlan.PlanId ||
             proofResult.SourceCutoffUtc != proofPlan.SourceCutoffUtc ||
             !string.Equals(proofResult.PlanSha256,

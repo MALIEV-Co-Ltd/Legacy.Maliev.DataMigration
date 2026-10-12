@@ -416,7 +416,7 @@ internal sealed class SourceBackedLocalRepairRuntime
             !trust.TryGetPublicKeyFingerprintSha256(terminal.AttestationKeyId, out string terminalFingerprint) ||
             terminalFingerprint != terminalPin.PublicKeyFingerprintSha256 || terminal.AttestationKeyId != terminalPin.KeyId ||
             terminal.Receipt.AttestationKeyId != terminal.AttestationKeyId ||
-            !Exact23DeltaReconciliationCoordinator.Verify(terminal.Receipt, trust) ||
+            !Exact23DeltaReconciliationCoordinator.VerifyForSchema(terminal.Receipt, plan, schema, trust) ||
             terminal.Receipt.PlanId != plan.PlanId || terminal.Receipt.PlanSha256 !=
                 DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan) ||
             plan.SchemaPlanSha256 != SchemaPlanCanonicalizer.ComputeSha256(schema) ||

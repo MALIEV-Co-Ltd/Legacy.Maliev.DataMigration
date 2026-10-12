@@ -70,7 +70,7 @@ public sealed class Exact23LocalDeltaFinalizationCoordinator(
 
         Exact23DeltaReconciliationResult terminal = await runtime.ReconcileAsync(plan, schema, cancellationToken)
             .ConfigureAwait(false);
-        if (!Exact23DeltaReconciliationCoordinator.Verify(terminal, terminalReceiptTrust) ||
+        if (!Exact23DeltaReconciliationCoordinator.VerifyForSchema(terminal, plan, schema, terminalReceiptTrust) ||
             terminal.PlanId != plan.PlanId || !Fixed(terminal.PlanSha256, execution.PlanSha256) ||
             !SameTimestamp(terminal.SourceCutoffUtc, plan.SourceCutoffUtc))
         {

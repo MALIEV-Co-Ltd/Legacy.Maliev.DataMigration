@@ -195,8 +195,20 @@ public sealed partial class DisposableDeltaProofVerifierTests
     private async Task<MixedNativeFixture> CreateMixedNativeFixture(TimeSpan? initialAuthorizationLifetime = null,
         ReviewedQuotationPhysicalVariant physicalVariant = ReviewedQuotationPhysicalVariant.RetainedOutboxes)
     {
-        var persistent = new PostgreSqlBuilder("postgres:18-alpine").Build();
-        var disposable = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        var persistent = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
+        var disposable = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         try
         {
             await persistent.StartAsync();

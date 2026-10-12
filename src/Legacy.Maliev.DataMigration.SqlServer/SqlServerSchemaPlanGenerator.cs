@@ -105,11 +105,12 @@ public sealed partial class SqlServerMigrationSource
 
         var draft = new DatabaseSchemaPlan(database, "1.0", schema.SchemaSha256, new string('0', 64), tables)
         {
-            TargetExtensionProfile = ApprovedTargetExtensionManifest.ProfileForDatabase(database),
+            TargetExtensionProfile = ApprovedConsumerOverlaySelection.ProfileForDatabase(database, _options.ConsumerOverlays),
             SourceDispositionProfile = ApprovedSourceDispositionManifest.ProfileForDatabase(database, tables),
             SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase(database, tables),
         };
-        return draft with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(draft) };
+        DatabaseSchemaPlan selected = ApprovedContactRequestCollationManifest.Apply(draft, _options.ContactRequestCollationProfile);
+        return selected with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(selected) };
     }
 
     internal static IReadOnlyList<string> ReferencedCheckColumns(

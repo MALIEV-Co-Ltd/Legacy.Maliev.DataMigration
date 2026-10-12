@@ -24,6 +24,13 @@ public sealed class RestoredSourceObserverIntegrationTests
         await backup.CreateAsync(token);
         await data.CreateAsync(token);
         await using MsSqlContainer container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
+            .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", "2560")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 2000000000;
+            })
             .WithName(name).WithLabel("com.maliev.legacy.restore-run", "run-1")
             .WithVolumeMount(backup, "/backup", AccessMode.ReadOnly)
             .WithVolumeMount(data, "/var/opt/mssql", AccessMode.ReadWrite)

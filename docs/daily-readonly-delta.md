@@ -1,5 +1,40 @@
 # Daily read-only SQL Server comparison
 
+## Current application schema profile
+
+The schema planner accepts the explicit `consumerOverlays` selection
+`CurrentConsumerSchemaV2`. It retains the previous selections and their
+fingerprints, and changes no SQL Server table projection. The new selection
+includes both existing consumer column overlays and eight target-only tables:
+Customer's `CustomerCreateOperation` and `QuotationProfileCompletionOperation`,
+Order's `OrderDeletionIntent`, and Upload's `StorageMoveJournal`,
+`QuarantineUploadIntent`, `InstantQuoteUploadSession`, `InstantQuoteFinalization`
+and `InstantQuoteUploadFile`. Their contracts follow the reviewed committed
+Customer, File and Order service migrations. Feature flags remain service-owned;
+including a table does not enable its feature.
+
+This selection uses explicit PostgreSQL `C` collations for text in the new
+tables and the existing reviewed application extensions, including the two
+text fields of `QuotationAcceptedOutcome`. Source text keeps its reviewed
+source collation mapping; the ContactRequest collation selection remains
+separate. Every database must use the coherent selected profile. Partial or
+cross-database profile activation is rejected.
+
+Refresh evidence must cover every extension column, its null counts,
+relationships, row contents and identity state. Upload's `SelectedFileIds`
+UUID array is hashed with its element order, length and values.
+Empty arrays are supported; nonempty arrays with multiple dimensions,
+nonstandard lower bounds or null elements are rejected before hashing.
+Refresh leaves application-owned rows intact, and rejects changed extension
+state on replay.
+Schema-bound verification is required for receipts using this selection.
+
+A new profile is a schema contract, not permission to create tables or alter
+collations. Repair existing targets through separately reviewed preservation
+proofs and authorizations before planning rows against the new fingerprints.
+It neither fills service migration-history records nor authorizes removal of
+unknown tables, journals or local-only data.
+
 ## LOCAL full-catalog diagnostics
 
 `inspect-local-schema-catalog --config <owner-only-config.json>` reads the same

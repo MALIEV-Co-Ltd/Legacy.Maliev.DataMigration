@@ -62,6 +62,12 @@ public sealed class RemotePostgreSqlHostFixture : IAsyncLifetime
     {
         using RSA key = Tls.Server.GetRSAPrivateKey()!;
         _postgres = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            })
             .WithResourceMapping(Encoding.UTF8.GetBytes(Tls.Server.ExportCertificatePem()), "/tmp/host-test.crt")
             .WithResourceMapping(Encoding.UTF8.GetBytes(key.ExportPkcs8PrivateKeyPem()), "/tmp/host-test.key")
             .WithEntrypoint("/bin/sh", "-c")

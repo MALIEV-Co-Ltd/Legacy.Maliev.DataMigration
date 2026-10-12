@@ -28,19 +28,21 @@ internal static class ApprovedTargetExtensionManifest
     internal static IReadOnlyList<TableCopyPlan> TablesFor(DatabaseSchemaPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        IReadOnlyList<TableCopyPlan> extensions = (plan.Database, plan.TargetExtensionProfile) switch
-        {
-            (_, null) => [],
-            ("Material", MaterialCatalogV1) => [Country(), Currency()],
-            ("QuotationRequest", QuotationRequestIdempotencyV1) => [RequestCreateIdempotency()],
-            ("Invoice", AccountingInvoiceAuthorityV1) => ApprovedConsumerTargetExtensionShapes.Invoice(),
-            ("CustomerIdentity", AuthCustomerCreateAuthorityV1) => ApprovedConsumerTargetExtensionShapes.CustomerIdentity(),
-            ("CustomerIdentity", ApprovedConsumerColumnOverlayManifest.CustomerV2) => ApprovedConsumerTargetExtensionShapes.CustomerIdentity(),
-            ("Quotation", ApprovedConsumerColumnOverlayManifest.QuotationV1) => [],
-            ("EmployeeIdentity", AuthEmployeeRecoveryAuthorityV1) => ApprovedConsumerTargetExtensionShapes.EmployeeIdentity(),
-            _ => throw new MigrationExecutionException("target_extension_profile_invalid",
-                "The target extension profile is not approved for this database."),
-        };
+        IReadOnlyList<TableCopyPlan> extensions = ApprovedCurrentConsumerSchemaManifest.IsProfile(plan.TargetExtensionProfile)
+            ? ApprovedCurrentConsumerSchemaManifest.TablesFor(plan)
+            : (plan.Database, plan.TargetExtensionProfile) switch
+            {
+                (_, null) => [],
+                ("Material", MaterialCatalogV1) => [Country(), Currency()],
+                ("QuotationRequest", QuotationRequestIdempotencyV1) => [RequestCreateIdempotency()],
+                ("Invoice", AccountingInvoiceAuthorityV1) => ApprovedConsumerTargetExtensionShapes.Invoice(),
+                ("CustomerIdentity", AuthCustomerCreateAuthorityV1) => ApprovedConsumerTargetExtensionShapes.CustomerIdentity(),
+                ("CustomerIdentity", ApprovedConsumerColumnOverlayManifest.CustomerV2) => ApprovedConsumerTargetExtensionShapes.CustomerIdentity(),
+                ("Quotation", ApprovedConsumerColumnOverlayManifest.QuotationV1) => [],
+                ("EmployeeIdentity", AuthEmployeeRecoveryAuthorityV1) => ApprovedConsumerTargetExtensionShapes.EmployeeIdentity(),
+                _ => throw new MigrationExecutionException("target_extension_profile_invalid",
+                    "The target extension profile is not approved for this database."),
+            };
 
         _ = ApprovedConsumerColumnOverlayManifest.For(plan);
 

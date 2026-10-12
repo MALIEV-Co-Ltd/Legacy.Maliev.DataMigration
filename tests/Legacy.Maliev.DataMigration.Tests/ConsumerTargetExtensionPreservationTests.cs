@@ -10,6 +10,9 @@ public sealed class ConsumerTargetExtensionPreservationTests(PostgreSqlAdapterFi
     [InlineData("Invoice", "accounting-invoice-authority-v1")]
     [InlineData("CustomerIdentity", "auth-customer-create-authority-v1")]
     [InlineData("EmployeeIdentity", "auth-employee-recovery-authority-v1")]
+    [InlineData("Customer", "customer-current-consumer-schema-v2")]
+    [InlineData("Order", "order-current-consumer-schema-v2")]
+    [InlineData("Upload", "upload-current-consumer-schema-v2")]
     public async Task SourceOnlyDelta_RollbackCommitAndReplayPreserveNonemptyAuthority(string database, string profile)
     {
         var probe = new TableCopyPlan("dbo", "Probe", "public", "Probe", ["ID", "Value"], ["ID"])
@@ -43,6 +46,29 @@ public sealed class ConsumerTargetExtensionPreservationTests(PostgreSqlAdapterFi
                 Assert.Equal(3000000001L, before.SequenceNextValues["public.CustomerIdentityCreateOperations.Id"]);
             }
             string beforeHash = ApprovedTargetExtensionStateInspector.ComputeSha256(schema, before);
+            if (database == "Upload")
+            {
+                await using var mutationConnection = new NpgsqlConnection(cs);
+                await mutationConnection.OpenAsync();
+                await using var mutationTransaction = await mutationConnection.BeginTransactionAsync();
+                await SqlAsync(mutationConnection, mutationTransaction, """
+                    UPDATE public."InstantQuoteFinalization"
+                    SET "SelectedFileIds" = ARRAY['33333333-3333-3333-3333-333333333333'::uuid];
+                    """);
+                ApprovedTargetExtensionState mutated = await ApprovedTargetExtensionStateInspector.InspectAsync(
+                    mutationConnection, mutationTransaction, schema, default);
+                TableReconciliationEvidence originalArray = before.Tables.Single(table => table.Table == "public.InstantQuoteFinalization");
+                TableReconciliationEvidence changedArray = mutated.Tables.Single(table => table.Table == "public.InstantQuoteFinalization");
+                Assert.Equal(originalArray.RowCount, changedArray.RowCount);
+                Assert.Equal(originalArray.NullCounts.OrderBy(pair => pair.Key, StringComparer.Ordinal), changedArray.NullCounts.OrderBy(pair => pair.Key, StringComparer.Ordinal));
+                Assert.Equal(originalArray.ForeignKeyOrphanCounts.OrderBy(pair => pair.Key, StringComparer.Ordinal), changedArray.ForeignKeyOrphanCounts.OrderBy(pair => pair.Key, StringComparer.Ordinal));
+                Assert.Equal(originalArray.ForeignKeyRelationshipCounts.OrderBy(pair => pair.Key, StringComparer.Ordinal), changedArray.ForeignKeyRelationshipCounts.OrderBy(pair => pair.Key, StringComparer.Ordinal));
+                Assert.NotEqual(originalArray.ContentSha256, changedArray.ContentSha256);
+                Assert.NotEqual(beforeHash, ApprovedTargetExtensionStateInspector.ComputeSha256(schema, mutated));
+                _ = Assert.Throws<MigrationExecutionException>(() => ApprovedTargetExtensionStateInspector.Compare(schema, before, mutated));
+                await mutationTransaction.RollbackAsync();
+                Assert.Equal(beforeHash, ApprovedTargetExtensionStateInspector.ComputeSha256(schema, await StateAsync(cs, schema)));
+            }
             var row = new MigrationRow(new Dictionary<string, object?>(StringComparer.Ordinal) { ["ID"] = 1, ["Value"] = "Source-only change" });
             var operation = Assert.Single(CanonicalDeltaPlanner.Plan(probe, [row], []).Operations);
             var tablePlan = new DeltaTablePlan("public.Probe", 1, 0, 0, 0,
@@ -122,6 +148,28 @@ public sealed class ConsumerTargetExtensionPreservationTests(PostgreSqlAdapterFi
     {
         return database switch
         {
+            "Customer" => """
+            INSERT INTO public."CustomerCreateOperation" ("Key","ActorHash","RequestHash","CustomerId","ResponseJson","CreatedAt")
+            VALUES ('11111111-1111-1111-1111-111111111111',repeat('a',64),repeat('b',64),1,'{"ID":1,"Label":"ทดสอบ"}','2031-01-01Z');
+            INSERT INTO public."QuotationProfileCompletionOperation" ("CustomerId","Key","ActorHash","RequestHash","CompletionId","Changed","CreatedAt")
+            VALUES (1,'11111111-1111-1111-1111-111111111111',repeat('a',64),repeat('b',64),'22222222-2222-2222-2222-222222222222',true,'2031-01-01Z');
+            """,
+            "Order" => """
+            INSERT INTO public."OrderDeletionIntent" ("OrderId","DeletionId","RequestedAtUtc","StatusCleanupCompletedAtUtc","CompletedAtUtc","AttemptCount","NextAttemptAtUtc")
+            VALUES (1,'11111111-1111-1111-1111-111111111111','2031-01-01Z',NULL,NULL,0,'2031-01-01Z');
+            """,
+            "Upload" => """
+            INSERT INTO public."StorageMoveJournal" ("OperationId","ScanClean","SourceBucket","SourceObjectName","SourceGeneration","DestinationBucket","DestinationObjectName","DestinationGeneration","State","CreatedAt","ModifiedAt")
+            VALUES ('11111111-1111-1111-1111-111111111111',true,'synthetic-source','synthetic-object',3000000000,'synthetic-destination','synthetic-object',NULL,'Prepared','2031-01-01Z','2031-01-01Z');
+            INSERT INTO public."QuarantineUploadIntent" ("OperationId","ParentOperationId","Bucket","ObjectName","ContentType","DeclaredSize","AcknowledgedGeneration","State","CreatedAt","ModifiedAt")
+            VALUES ('11111111-1111-1111-1111-111111111111','22222222-2222-2222-2222-222222222222','synthetic','synthetic','application/octet-stream',3000000000,NULL,'Prepared','2031-01-01Z','2031-01-01Z');
+            INSERT INTO public."InstantQuoteUploadSession" ("Id","OwnerSubject","IsAuthenticated","TokenHash","ExpiresAt","CreatedAt")
+            VALUES ('11111111-1111-1111-1111-111111111111',NULL,false,decode(repeat('ab',32),'hex'),'2031-01-02Z','2031-01-01Z');
+            INSERT INTO public."InstantQuoteFinalization" ("Id","SessionId","IdempotencyKeyHash","RequestFingerprint","QuotationRequestId","SelectedFileIds","State","CreatedAt","ModifiedAt")
+            VALUES ('11111111-1111-1111-1111-111111111111','11111111-1111-1111-1111-111111111111',decode(repeat('ab',32),'hex'),repeat('a',64),1,ARRAY['22222222-2222-2222-2222-222222222222'::uuid],'Prepared','2031-01-01Z','2031-01-01Z');
+            INSERT INTO public."InstantQuoteUploadFile" ("Id","SessionId","IdempotencyKeyHash","RequestFingerprint","OriginalFileName","ValidatedExtension","ValidatedContentType","ExpectedSha256","ActualSha256","ActualSizeBytes","GcsGeneration","TemporaryBucket","TemporaryObjectName","FinalBucket","FinalObjectName","FinalizedQuotationRequestId","State","CreatedAt","ModifiedAt")
+            VALUES ('11111111-1111-1111-1111-111111111111','11111111-1111-1111-1111-111111111111',decode(repeat('ab',32),'hex'),repeat('a',64),'ทดสอบ.step','.step','application/octet-stream',repeat('b',64),NULL,NULL,NULL,'synthetic','synthetic',NULL,NULL,NULL,'Prepared','2031-01-01Z','2031-01-01Z');
+            """,
             "CustomerIdentity" => """
             ALTER SEQUENCE public."CustomerIdentityCreateOperations_Id_seq" RESTART WITH 3000000000;
             INSERT INTO public."CustomerIdentityCreateOperations"

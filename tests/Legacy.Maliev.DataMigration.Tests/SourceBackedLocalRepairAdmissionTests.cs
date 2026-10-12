@@ -144,7 +144,13 @@ public sealed partial class DisposableDeltaProofVerifierTests
     [Fact]
     public async Task Source_repair_trusted_admission_creation_invokes_locked_exact23_issuer_and_retains_matching_claim()
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string admin = new NpgsqlConnectionStringBuilder(container.GetConnectionString()) { Host = "127.0.0.1", Database = "postgres", Pooling = false, Enlist = false }.ConnectionString;
         string system = (string)(await LockedIssuerScalar(admin, "SELECT system_identifier::text FROM pg_control_system();"))!;

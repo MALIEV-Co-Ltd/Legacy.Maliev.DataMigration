@@ -2,7 +2,7 @@ namespace Legacy.Maliev.DataMigration;
 
 internal sealed record ConsumerColumnOverlay(TableCopyPlan Root, string Column, string Type, bool Nullable, string? Default);
 
-/// <summary>Explicit inactive profiles; source projections and default profile selection are unchanged.</summary>
+/// <summary>Exact opt-in profiles; source projections and historical default selection are unchanged.</summary>
 internal static class ApprovedConsumerColumnOverlayManifest
 {
     internal const string CustomerV2 = "auth-customer-create-authority-v2";
@@ -12,8 +12,8 @@ internal static class ApprovedConsumerColumnOverlayManifest
     {
         var definition = (schema.Database, schema.TargetExtensionProfile) switch
         {
-            ("CustomerIdentity", CustomerV2) => (Table: "AspNetUsers", Key: "Id", KeyType: "character varying(450)", Column: "PasswordSetupRequired", Type: "boolean", Nullable: false, Default: "false"),
-            ("Quotation", QuotationV1) => (Table: "Quotation", Key: "ID", KeyType: "integer", Column: "DecisionOrderVersion", Type: "timestamp without time zone", Nullable: true, Default: null),
+            ("CustomerIdentity", CustomerV2 or ApprovedCurrentConsumerSchemaManifest.CustomerIdentity) => (Table: "AspNetUsers", Key: "Id", KeyType: "character varying(450)", Column: "PasswordSetupRequired", Type: "boolean", Nullable: false, Default: "false"),
+            ("Quotation", QuotationV1 or ApprovedCurrentConsumerSchemaManifest.Quotation) => (Table: "Quotation", Key: "ID", KeyType: "integer", Column: "DecisionOrderVersion", Type: "timestamp without time zone", Nullable: true, Default: null),
             _ => default,
         };
         if (definition.Table is null) { return null; }
@@ -31,11 +31,11 @@ internal static class ApprovedConsumerColumnOverlayManifest
             : new(root, definition.Column, definition.Type, definition.Nullable, definition.Default);
     }
 
-    internal static IReadOnlyList<TableCopyPlan> ComposePhysical(DatabaseSchemaPlan schema)
+    internal static IReadOnlyList<TableCopyPlan> ComposePhysical(DatabaseSchemaPlan schema, bool mapSourceDispositions = true)
     {
         var extras = ApprovedTargetExtensionManifest.TablesFor(schema);
         var overlay = For(schema);
-        var mapped = ApprovedSourceDispositionManifest.TargetTablesFor(schema);
+        var mapped = mapSourceDispositions ? ApprovedSourceDispositionManifest.TargetTablesFor(schema) : schema.Tables;
         return overlay is null
             ? [.. mapped, .. extras]
             : [.. mapped.Select(t => t.TargetSchema == overlay.Root.TargetSchema && t.TargetTable == overlay.Root.TargetTable

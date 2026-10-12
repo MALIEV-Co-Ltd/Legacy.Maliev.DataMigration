@@ -13,6 +13,13 @@ public sealed class CurrentQuotationSourceIntegrationTests
     {
         string password = $"M!{Convert.ToHexString(RandomNumberGenerator.GetBytes(20))}a1";
         await using MsSqlContainer sqlServer = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
+            .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", "2560")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 2000000000;
+            })
             .WithPassword(password)
             .Build();
         var postgres = new PostgreSqlAdapterFixture();

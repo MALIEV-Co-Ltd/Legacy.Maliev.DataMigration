@@ -89,7 +89,13 @@ public sealed class FullSchemaTargetExtensionRepairProofTests
         Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(privateKeyPath));
         Assert.True(OwnerProtectedFilePolicy.IsOwnerOnly(publicKeyPath));
 
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string connectionString = container.GetConnectionString();
         await using (var control = new NpgsqlConnection(connectionString))

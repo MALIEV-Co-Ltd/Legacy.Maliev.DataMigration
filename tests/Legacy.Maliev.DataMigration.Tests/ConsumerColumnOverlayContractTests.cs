@@ -9,6 +9,28 @@ public sealed class ConsumerColumnOverlayContractTests(PostgreSqlAdapterFixture 
     [Theory]
     [InlineData("CustomerIdentity", "auth-customer-create-authority-v2")]
     [InlineData("Quotation", "quotation-decision-order-version-v1")]
+    public async Task SelectedProfile_FreshSchemaWriterCreatesPhysicalOverlayWithoutChangingSourceColumns(string database, string profile)
+    {
+        await WithDatabaseAsync(database, async cs =>
+        {
+            DatabaseSchemaPlan schema = Plan(database, profile);
+            string sourceBefore = System.Text.Json.JsonSerializer.Serialize(schema.Tables);
+            await using var connection = new NpgsqlConnection(cs);
+            await connection.OpenAsync();
+            await using var transaction = await connection.BeginTransactionAsync();
+            await using var writer = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
+            await writer.ApplySchemaAsync(schema, default);
+            await writer.FinalizeSchemaAsync(schema, default);
+            Assert.Equal(schema.TargetSchemaSha256, await writer.InspectSchemaAsync(schema, default));
+            await transaction.CommitAsync();
+            Assert.Equal(sourceBefore, System.Text.Json.JsonSerializer.Serialize(schema.Tables));
+            Assert.DoesNotContain(OverlayColumn(database), Assert.Single(schema.Tables).OrderedColumns);
+        });
+    }
+
+    [Theory]
+    [InlineData("CustomerIdentity", "auth-customer-create-authority-v2")]
+    [InlineData("Quotation", "quotation-decision-order-version-v1")]
     public void NewProfile_FingerprintAdmitsOnlyTheOwnerColumnWithoutChangingSourceProjection(string database, string profile)
     {
         var plan = Plan(database, profile);

@@ -7,14 +7,34 @@ namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class LocalArchiveVerificationFixture : IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:18")
-        .WithCreateParameterModifier(parameters =>
+    private readonly PostgreSqlContainer _container;
+
+    public LocalArchiveVerificationFixture() : this(384)
+    {
+    }
+
+    internal LocalArchiveVerificationFixture(int memoryLimitMiB)
+    {
+        if (memoryLimitMiB is not (256 or 384))
         {
-            foreach (IList<Docker.DotNet.Models.PortBinding> bindings in parameters.HostConfig!.PortBindings!.Values)
+            throw new ArgumentOutOfRangeException(nameof(memoryLimitMiB), "Only the reviewed PostgreSQL fixture budgets are permitted.");
+        }
+        _container = new PostgreSqlBuilder("postgres:18")
+            .WithCreateParameterModifier(parameters =>
             {
-                foreach (Docker.DotNet.Models.PortBinding binding in bindings) { binding.HostIP = "127.0.0.1"; }
-            }
-        }).Build();
+                parameters.HostConfig!.Memory = (long)memoryLimitMiB * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = (long)memoryLimitMiB * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            })
+            .WithCreateParameterModifier(parameters =>
+            {
+                foreach (IList<Docker.DotNet.Models.PortBinding> bindings in parameters.HostConfig!.PortBindings!.Values)
+                {
+                    foreach (Docker.DotNet.Models.PortBinding binding in bindings) { binding.HostIP = "127.0.0.1"; }
+                }
+            }).Build();
+    }
+
     private readonly string _password = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
     private readonly ECDsa _signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
     public const string RestoreRole = "local_archive_restore";

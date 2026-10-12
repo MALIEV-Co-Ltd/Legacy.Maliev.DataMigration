@@ -125,7 +125,7 @@ internal static class CnpgExecTunnel
                 using NetworkStream network = client.GetStream();
                 Task upstream = network.CopyToAsync(process.StandardInput.BaseStream, stop.Token);
                 Task downstream = process.StandardOutput.BaseStream.CopyToAsync(network, stop.Token);
-                _ = await Task.WhenAny(upstream, downstream).ConfigureAwait(false);
+                await CloseRelayOnCompletionAsync(network, upstream, downstream).ConfigureAwait(false);
                 bool kubectlFailed = process.HasExited && process.ExitCode != 0;
                 if (!process.HasExited)
                 {
@@ -168,6 +168,15 @@ internal static class CnpgExecTunnel
             System.ComponentModel.Win32Exception => "kubectl_start_failed",
             _ => "relay_state_invalid",
         };
+    }
+
+    internal static async Task CloseRelayOnCompletionAsync(Stream network, Task upstream, Task downstream)
+    {
+        _ = await Task.WhenAny(upstream, downstream).ConfigureAwait(false);
+        // Either EOF terminates this one PostgreSQL relay. Close the client stream
+        // before joining the losing copy: after remote EOF it can still be waiting
+        // for input from a client that is itself waiting for a query response.
+        network.Close();
     }
 
     private static async Task ObserveRelayTasksAsync(params Task[] tasks)

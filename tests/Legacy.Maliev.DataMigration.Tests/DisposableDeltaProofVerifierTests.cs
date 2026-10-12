@@ -121,7 +121,13 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
     [Fact]
     public async Task Historical_postgresql_inspector_uses_disposable_read_only_snapshot_without_old_permit()
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string admin = container.GetConnectionString();
         Fixture fixture = await CreateAsync(pairedTransition: true, quotationDisposition: true,
@@ -849,7 +855,13 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
     [Fact]
     public async Task Historical_local_metadata_reader_uses_disposable_read_only_exact23_snapshots()
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         var settings = new NpgsqlConnectionStringBuilder(container.GetConnectionString())
         {
@@ -1365,7 +1377,13 @@ public sealed partial class DisposableDeltaProofVerifierTests : IDisposable
     [Fact]
     public async Task Local_transition_target_rolls_back_new_metadata_and_replays_only_matching_atomic_checkpoint()
     {
-        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine").Build();
+        await using PostgreSqlContainer container = new PostgreSqlBuilder("postgres:18-alpine")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 384L * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 384L * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 500000000;
+            }).Build();
         await container.StartAsync();
         string admin = container.GetConnectionString();
         string identity;

@@ -42,8 +42,7 @@ public sealed class Exact23DeltaReconciliationCoordinator(
         if (!plan.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
             !schemaPlan.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
             !string.Equals(plan.SchemaPlanSha256, SchemaPlanCanonicalizer.ComputeSha256(schemaPlan), StringComparison.Ordinal) ||
-            schemaPlan.Databases.Any(database => !string.Equals(database.TargetExtensionProfile,
-                ApprovedTargetExtensionManifest.ProfileForDatabase(database.Database), StringComparison.Ordinal)))
+            !ApprovedConsumerOverlaySelection.IsApproved(schemaPlan))
         {
             throw new DeltaExecutionException("delta_reconciliation_inventory_invalid",
                 "Post-delta reconciliation requires the exact ordered active database inventory.");
@@ -149,6 +148,58 @@ public sealed class Exact23DeltaReconciliationCoordinator(
         Exact23DeltaReconciliationResult result,
         IReceiptAttestationTrustStore trust)
     {
+        return VerifyCore(result, trust, database => ApprovedTargetExtensionManifest.ProfileForDatabase(database) is not null);
+    }
+
+    /// <summary>Authenticates a receipt against its exact plan and reviewed target-only consumer schema.</summary>
+    /// <remarks>The caller must independently authenticate the supplied plan before treating this evidence as authority.</remarks>
+    public static bool Verify(Exact23DeltaReconciliationResult result, DeltaSynchronizationPlan plan,
+        FreshSchemaPlan schema, IReceiptAttestationTrustStore trust)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(trust);
+        try
+        {
+            if (!ApprovedConsumerOverlaySelection.IsApproved(schema) ||
+                plan.SourceCommitSha != schema.SourceCommitSha ||
+                !Fixed(plan.SchemaPlanSha256, SchemaPlanCanonicalizer.ComputeSha256(schema)) ||
+                result.PlanId != plan.PlanId || !Fixed(result.PlanSha256, DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan)) ||
+                !SameTimestamp(result.SourceCutoffUtc, plan.SourceCutoffUtc) ||
+                !VerifyCore(result, trust, database => ApprovedConsumerColumnOverlayManifest.HasState(
+                    schema.Databases.Single(item => item.Database == database)))) { return false; }
+            foreach (DatabaseSchemaPlan database in schema.Databases)
+            {
+                if (!Fixed(database.TargetSchemaSha256, PostgreSqlSchemaFingerprint.ComputeExpected(database))) { return false; }
+                DatabaseReconciliationEvidence observed = result.Databases.Single(item => item.Database == database.Database);
+                DatabaseSchemaPlan mapped = new QuotationDeltaExecutionMapping(database).TargetSchema;
+                string physical = database.Database == "Quotation" && plan.SchemaVersion == "1.4"
+                    ? ReviewedQuotationPhysicalSchemaResolver.RequireReviewedHash(database, plan.QuotationTransitionSchemaSha256 ?? string.Empty)
+                    : database.TargetSchemaSha256;
+                if (!Fixed(observed.SourceSchemaSha256, database.SourceSchemaSha256) ||
+                    !Fixed(observed.TargetSchemaSha256, physical) ||
+                    !observed.Tables.Select(item => item.Table).Order(StringComparer.Ordinal).SequenceEqual(
+                        mapped.Tables.Select(item => $"{item.TargetSchema}.{item.TargetTable}").Order(StringComparer.Ordinal), StringComparer.Ordinal))
+                { return false; }
+            }
+            ValidateCheckpoints(plan, result.Databases, result.Checkpoints, result.ReconciledAtUtc);
+            return true;
+        }
+        catch (Exception error) when (error is MigrationExecutionException or DeltaPlanException or DeltaExecutionException or InvalidOperationException)
+        { return false; }
+    }
+
+    internal static bool VerifyForSchema(Exact23DeltaReconciliationResult result, DeltaSynchronizationPlan plan,
+        FreshSchemaPlan schema, IReceiptAttestationTrustStore trust)
+    {
+        return ApprovedConsumerOverlaySelection.IsCurrent(schema)
+        ? Verify(result, plan, schema, trust) : Verify(result, trust);
+    }
+
+    private static bool VerifyCore(Exact23DeltaReconciliationResult result, IReceiptAttestationTrustStore trust,
+        Func<string, bool> hasExtensionState)
+    {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(trust);
         try
@@ -156,7 +207,7 @@ public sealed class Exact23DeltaReconciliationCoordinator(
             bool valid = result.SchemaVersion == "1.2" && result.PlanId != Guid.Empty &&
                 result.SourceCutoffUtc.Offset == TimeSpan.Zero && result.ReconciledAtUtc.Offset == TimeSpan.Zero &&
                 result.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) &&
-                result.Databases.All(database => ApprovedTargetExtensionManifest.ProfileForDatabase(database.Database) is null
+                result.Databases.All(database => !hasExtensionState(database.Database)
                     ? database.TargetExtensionStateSha256 is null
                     : database.TargetExtensionStateSha256 is { } digest && Fixed(digest, digest)) &&
                 result.Checkpoints.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) &&

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
@@ -20,8 +21,63 @@ public sealed record DockerRestoreResources(
     bool MountReadOnly,
     string SqlServerProductMajorVersion);
 
+/// <summary>Explicit limits applied before a disposable SQL Server container starts.</summary>
+public sealed class DockerRestoreResourceLimits
+{
+    public DockerRestoreResourceLimits(long memoryBytes, long memorySwapBytes, decimal cpus)
+    {
+        if (memoryBytes < 6L * 1024 * 1024)
+        {
+            throw new ArgumentOutOfRangeException(nameof(memoryBytes), "Docker memory limits must be at least six MiB.");
+        }
+        if (memorySwapBytes < memoryBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(memorySwapBytes), "The memory-plus-swap limit must cover the memory limit.");
+        }
+        if (cpus <= 0 || cpus > long.MaxValue / 1_000_000_000m ||
+            decimal.Truncate(cpus * 1_000_000_000m) != cpus * 1_000_000_000m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(cpus), "The CPU limit must be positive and representable in whole nano CPUs.");
+        }
+        MemoryBytes = memoryBytes;
+        MemorySwapBytes = memorySwapBytes;
+        Cpus = cpus;
+    }
+
+    public DockerRestoreResourceLimits(long memoryBytes, long memorySwapBytes, decimal cpus, int sqlServerMemoryLimitMb)
+        : this(memoryBytes, memorySwapBytes, cpus)
+    {
+        if (sqlServerMemoryLimitMb <= 0 || sqlServerMemoryLimitMb >= memoryBytes / (1024 * 1024))
+        {
+            throw new ArgumentOutOfRangeException(nameof(sqlServerMemoryLimitMb), "The SQL Server process limit must be positive and below the container memory limit in MiB.");
+        }
+        SqlServerMemoryLimitMb = sqlServerMemoryLimitMb;
+    }
+
+    public int? SqlServerMemoryLimitMb { get; }
+    public long MemoryBytes { get; }
+    public long MemorySwapBytes { get; }
+    public decimal Cpus { get; }
+}
+
 public sealed partial class DockerDisposableSqlServerProvisioner
 {
+    public static Task<DockerRestoreResources> ProvisionAsync(
+        string adminConnectionString,
+        string volumeName,
+        string containerName,
+        string sqlServerMountPath,
+        string sqlServerImage,
+        string expectedSqlServerImageId,
+        string stagingImage,
+        string runBinding,
+        CancellationToken cancellationToken)
+    {
+        return ProvisionAsync(
+            adminConnectionString, volumeName, containerName, sqlServerMountPath, sqlServerImage,
+            expectedSqlServerImageId, stagingImage, runBinding, resourceLimits: null, cancellationToken);
+    }
+
     public static async Task<DockerRestoreResources> ProvisionAsync(
         string adminConnectionString,
         string volumeName,
@@ -31,6 +87,7 @@ public sealed partial class DockerDisposableSqlServerProvisioner
         string expectedSqlServerImageId,
         string stagingImage,
         string runBinding,
+        DockerRestoreResourceLimits? resourceLimits,
         CancellationToken cancellationToken)
     {
         ValidateName(volumeName, nameof(volumeName));
@@ -87,11 +144,8 @@ public sealed partial class DockerDisposableSqlServerProvisioner
                 ["MSSQL_SA_PASSWORD"] = connection.Password!,
             };
             DockerResult containerCreate = await RunDockerAsync(
-                ["run", "-d", "--name", containerName,
-                    "--label", $"com.maliev.legacy.restore-run={runBinding}",
-                    "--mount", $"type=volume,source={volume.Name},target={sqlServerMountPath},readonly",
-                    "--publish", $"127.0.0.1:{endpoint.Groups["port"].Value}:1433",
-                    "--env", "ACCEPT_EULA=Y", "--env", "MSSQL_SA_PASSWORD", sqlServerImage!],
+                CreateRunArguments(containerName, runBinding, volume.Name, sqlServerMountPath,
+                    endpoint.Groups["port"].Value, sqlServerImage, resourceLimits),
                 environment, cancellationToken).ConfigureAwait(false);
             container = OwnedOrNull(await InspectAsync("container", containerName, cancellationToken).ConfigureAwait(false), runBinding);
             EnsureSuccess(containerCreate, "restore_container_create_failed");
@@ -146,6 +200,22 @@ public sealed partial class DockerDisposableSqlServerProvisioner
 
             throw;
         }
+    }
+
+    internal static string[] CreateRunArguments(string containerName, string runBinding, string volumeName,
+        string mountPath, string port, string image, DockerRestoreResourceLimits? limits)
+    {
+        string[] limitArguments = limits is null ? [] :
+            ["--memory", limits.MemoryBytes.ToString(CultureInfo.InvariantCulture),
+             "--memory-swap", limits.MemorySwapBytes.ToString(CultureInfo.InvariantCulture),
+             "--cpus", limits.Cpus.ToString("0.#########", CultureInfo.InvariantCulture)];
+        string[] processLimitArguments = limits?.SqlServerMemoryLimitMb is { } memoryLimitMb
+            ? ["--env", "MSSQL_MEMORY_LIMIT_MB=" + memoryLimitMb.ToString(CultureInfo.InvariantCulture)] : [];
+        return ["run", "-d", "--name", containerName, .. limitArguments,
+            "--label", $"com.maliev.legacy.restore-run={runBinding}",
+            "--mount", $"type=volume,source={volumeName},target={mountPath},readonly",
+            "--publish", $"127.0.0.1:{port}:1433",
+            "--env", "ACCEPT_EULA=Y", "--env", "MSSQL_SA_PASSWORD", .. processLimitArguments, image];
     }
 
     public static async Task CleanupAsync(DockerRestoreResources resources, CancellationToken cancellationToken)
@@ -465,7 +535,7 @@ public sealed partial class DockerDisposableSqlServerProvisioner
                 { CommandTimeout = 0 };
                 string productMajorVersion = Convert.ToString(
                     await version.ExecuteScalarAsync(timeout.Token).ConfigureAwait(false),
-                    System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                    CultureInfo.InvariantCulture) ?? string.Empty;
                 return !IsSqlServer2022(productMajorVersion)
                     ? throw new Exact25FullBackupException(
                         "restore_sqlserver_version_invalid",

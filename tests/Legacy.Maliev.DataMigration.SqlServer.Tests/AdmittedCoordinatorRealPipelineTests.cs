@@ -23,9 +23,16 @@ public sealed class AdmittedCoordinatorRealPipelineTests
     {
         Assert.True(OperatingSystem.IsWindows());
         Assert.True(LocalArchiveVerificationFixture.Enabled);
-        await using var sql = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04").Build();
-        var postgres = new PostgreSqlAdapterFixture();
-        var local = new LocalArchiveVerificationFixture();
+        await using var sql = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU20-ubuntu-22.04")
+            .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", "2560")
+            .WithCreateParameterModifier(parameters =>
+            {
+                parameters.HostConfig!.Memory = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.MemorySwap = 3L * 1024 * 1024 * 1024;
+                parameters.HostConfig.NanoCPUs = 2000000000;
+            }).Build();
+        var postgres = new PostgreSqlAdapterFixture(256);
+        var local = new LocalArchiveVerificationFixture(256);
         await sql.StartAsync();
         await postgres.InitializeAsync();
         await local.InitializeAsync();

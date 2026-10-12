@@ -66,7 +66,7 @@ public sealed class Exact23RepresentativeServiceQueryValidator(
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(terminalReceipt);
         string planSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
-        if (!Exact23DeltaReconciliationCoordinator.Verify(terminalReceipt, terminalReceiptTrust) ||
+        if (!Exact23DeltaReconciliationCoordinator.VerifyForSchema(terminalReceipt, plan, schema, terminalReceiptTrust) ||
             terminalReceipt.PlanId != plan.PlanId || !Fixed(terminalReceipt.PlanSha256, planSha256) ||
             !Fixed(plan.SchemaPlanSha256, SchemaPlanCanonicalizer.ComputeSha256(schema)) ||
             !schema.Databases.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal))
@@ -124,7 +124,7 @@ public static class Exact23LocalDeltaAppHostEvidenceV2Producer
         ArgumentNullException.ThrowIfNull(timeProvider);
         string planSha256 = DeltaSynchronizationPlanCanonicalizer.ComputeSha256(plan);
         if (plan.TargetAuthority?.Kind != DeltaTargetAuthorityKind.LocalAspire ||
-            !Exact23DeltaReconciliationCoordinator.Verify(terminalReceipt, terminalReceiptTrust) ||
+            !Exact23DeltaReconciliationCoordinator.VerifyForSchema(terminalReceipt, plan, schema, terminalReceiptTrust) ||
             terminalReceipt.PlanId != plan.PlanId || !Fixed(terminalReceipt.PlanSha256, planSha256) ||
             queries.PlanId != plan.PlanId || !Fixed(queries.PlanSha256, planSha256) ||
             !queries.Queries.Select(item => item.Database).SequenceEqual(DatabaseInventory.ActiveDatabases, StringComparer.Ordinal) ||
