@@ -26,10 +26,10 @@ public sealed class CurrentAppOwnedV3RepairLocalTargetTests
     public void Closed_decoder_rejects_unknown_configuration_members()
     {
         _ = Assert.Throws<JsonException>(() => MigrationConsole.DecodeV3<CurrentAppOwnedRepairArtifact>(
-            /*lang=json,strict*/
+                                 /*lang=json,strict*/
                                  "{\"path\":\"a\",\"sha256\":\"b\",\"environmentCallback\":\"unsafe\"}"u8.ToArray()));
         CurrentAppOwnedRepairArtifact actual = MigrationConsole.DecodeV3<CurrentAppOwnedRepairArtifact>(
-            /*lang=json,strict*/
+                                 /*lang=json,strict*/
                                  "{\"path\":\"a\",\"sha256\":\"b\"}"u8.ToArray());
         Assert.Equal(new CurrentAppOwnedRepairArtifact("a", "b"), actual);
     }

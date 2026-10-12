@@ -294,9 +294,11 @@ public sealed class CurrentAppOwnedRetained31NativeTests(ITestOutputHelper outpu
         if (column == "PayloadFrameVersion") { return "'notification-payload-v1'"; }
         if (column == "BindingVersion") { return "'accounting-invoice-notification-hmac-v1'"; }
         string type = table.ColumnTypes[column];
-        if (type is "smallint" or "integer" or "bigint") { return row.ToString(System.Globalization.CultureInfo.InvariantCulture); }
-        if (type == "uuid") { return "'" + Guid.NewGuid().ToString("D") + "'"; }
-        return type == "bytea"
+        return type is "smallint" or "integer" or "bigint"
+            ? row.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : type == "uuid"
+            ? "'" + Guid.NewGuid().ToString("D") + "'"
+            : type == "bytea"
             ? "decode('" + new string('a', 64) + "','hex')"
             : type.StartsWith("timestamp", StringComparison.Ordinal)
             ? "'2026-01-01T00:00:00Z'"
