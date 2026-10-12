@@ -49,7 +49,11 @@ public sealed class CurrentAppOwnedRepairProductionObservationTests
             CurrentAppOwnedRepairScope bound = scope with
             { TargetObservationSha256 = CurrentAppOwnedRepairPermit.Hash(JsonSerializer.SerializeToUtf8Bytes(target)) };
             using var environment = new CurrentAppOwnedRepairConsoleEnvironment(authority, files, target,
-                "Host=127.0.0.1;Port=5432;Username=fixture;Password=synthetic-fixture;Pooling=false",
+                new Npgsql.NpgsqlConnectionStringBuilder
+                {
+                    Host = "127.0.0.1", Port = 5432, Username = "fixture",
+                    Password = Guid.NewGuid().ToString("N"), Pooling = false,
+                }.ConnectionString,
                 "unsupported-observation-test-key=value", baseline,
                 CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerColumnsV1),
                 CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerSchemaV2), bound);
