@@ -10,7 +10,7 @@ internal sealed record CurrentAppOwnedSequenceFact(string Schema, string Name, s
 internal sealed record CurrentAppOwnedDatabaseSnapshot(string Database, IReadOnlyList<CurrentAppOwnedCatalogFact> Catalog,
     IReadOnlyList<CurrentAppOwnedRelationFact> Relations, IReadOnlyList<CurrentAppOwnedSequenceFact> Sequences)
 {
-    internal string Sha256 => CurrentAppOwnedRepairPermit.Hash(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(this));
+    internal string Sha256 => CurrentAppOwnedSnapshotSerialization.Sha256(this);
 }
 
 /// <summary>Complete raw catalog tuples + user/private rows + physical sequence tuples; no source projection filtering.</summary>
