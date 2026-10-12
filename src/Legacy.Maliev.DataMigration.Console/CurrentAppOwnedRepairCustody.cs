@@ -43,6 +43,57 @@ internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority auth
         }
         catch { stream.Dispose(); throw; }
     }
+    internal async Task<CurrentAppOwnedDatabaseSnapshot[]> ReadBaselineAsync(string path, CancellationToken ct)
+    {
+        Require();
+        string full = RequireInside(path);
+        FileStream stream = SecureLocalFile.OpenRead(full);
+        var pool = new CurrentAppOwnedSnapshotInternPool();
+        bool held = false;
+        try
+        {
+            ValidateHandle(stream, full);
+            long length = stream.Length;
+            if (length > pool.Limits.MaximumJsonBytes) { throw CurrentAppOwnedRepairPermit.Invalid(); }
+            string identity = SecureLocalFile.GetHandleIdentity(stream);
+            CurrentAppOwnedDatabaseSnapshot[] baseline = await CurrentAppOwnedSnapshotSerialization.ReadBaselineAsync(
+                stream, pool, ct).ConfigureAwait(false);
+            ValidateHandle(stream, full);
+            if (stream.Length != length || stream.Position != length || SecureLocalFile.GetHandleIdentity(stream) != identity)
+            { throw CurrentAppOwnedRepairPermit.Invalid(); }
+            _held.Add((stream, full, identity));
+            held = true;
+            Require();
+            return baseline;
+        }
+        catch
+        {
+            if (held) { _held.RemoveAt(_held.Count - 1); }
+            stream.Dispose();
+            throw;
+        }
+    }
+    internal async Task WriteBaselineNewAsync(string path, CurrentAppOwnedDatabaseSnapshot[] baseline, CancellationToken ct)
+    {
+        string full = RequireInside(path);
+        Require();
+        string expected = CurrentAppOwnedSnapshotSerialization.Sha256(baseline);
+        await using var stream = new FileStream(full, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 4096,
+            FileOptions.Asynchronous | FileOptions.WriteThrough);
+        ValidateHandle(stream, full);
+        string identity = SecureLocalFile.GetHandleIdentity(stream);
+        await CurrentAppOwnedSnapshotSerialization.WriteAsync(stream, baseline, ct).ConfigureAwait(false);
+        await stream.FlushAsync(ct).ConfigureAwait(false);
+        stream.Flush(flushToDisk: true);
+        long length = stream.Length;
+        if (length > new CurrentAppOwnedSnapshotLimits().MaximumJsonBytes) { throw CurrentAppOwnedRepairPermit.Invalid(); }
+        stream.Position = 0;
+        string observed = Convert.ToHexStringLower(await System.Security.Cryptography.SHA256.HashDataAsync(stream, ct).ConfigureAwait(false));
+        if (stream.Length != length || stream.Position != length || observed != expected || SecureLocalFile.GetHandleIdentity(stream) != identity)
+        { throw CurrentAppOwnedRepairPermit.Invalid(); }
+        ValidateHandle(stream, full);
+        Require();
+    }
     internal void Require()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
