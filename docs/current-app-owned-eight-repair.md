@@ -16,6 +16,9 @@ Catalog tuple identities are hashed before retention: statistics and description
 may contain application data. A native disposable regression fixture deliberately
 puts a synthetic private value into PostgreSQL statistics and verifies it is absent
 from serialized preservation evidence while repeat captures remain identical.
+Identical non-OID catalog tuples retain distinct digest/occurrence keys. The same
+fixture verifies that removing or adding an existing dependency occurrence fails
+preservation; duplicate tuples are not discarded.
 
 ## Execution gates still required
 
@@ -47,3 +50,13 @@ Required follow-up is exact-head hosted Release build with zero warnings/errors,
 focused tests, full relevant suites, formatting, secret/static checks and PostgreSQL
 18 compatibility checks under unchanged policies. A green draft alone does not
 replace the genuine execution proofs above or accept migration completion.
+
+## Catalog multiplicity correction validation
+
+The extracted correction builds in Release with zero warnings and errors. All 13
+focused repair and native catalog privacy tests pass with no skips. The local full
+suite remains not run to completion because of the recorded memory admission
+failures. The local formatting check reported three whitespace diagnostics (fixed)
+then exhausted its process memory budget; formatting is not a local pass.
+Exact-head hosted full-suite, formatting and PostgreSQL compatibility validation
+are required before review acceptance. No persistent database writes occurred.

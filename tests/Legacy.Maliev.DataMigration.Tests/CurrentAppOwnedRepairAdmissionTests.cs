@@ -94,9 +94,11 @@ public sealed class CurrentAppOwnedRepairAdmissionTests
         internal CurrentAppOwnedRepairSignedClaim Authorization { get; }
         internal Claims()
         {
-            Trust = new([new("eight-review", _review.ExportSubjectPublicKeyInfo()),
+            Trust = new([
+                new("eight-review", _review.ExportSubjectPublicKeyInfo()),
                 new("eight-authorization", _authorization.ExportSubjectPublicKeyInfo()),
-                new("eight-receipt", _receipt.ExportSubjectPublicKeyInfo())]);
+                new("eight-receipt", _receipt.ExportSubjectPublicKeyInfo())
+            ]);
             _ = Trust.TryGetPublicKeyFingerprintSha256("eight-review", out string review);
             _ = Trust.TryGetPublicKeyFingerprintSha256("eight-authorization", out string authorization);
             _ = Trust.TryGetPublicKeyFingerprintSha256("eight-receipt", out string receipt);

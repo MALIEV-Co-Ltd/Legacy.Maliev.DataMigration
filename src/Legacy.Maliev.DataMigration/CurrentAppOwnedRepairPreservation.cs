@@ -38,10 +38,14 @@ internal static class CurrentAppOwnedRepairPreservation
         var catalog = new List<CurrentAppOwnedCatalogFact>();
         foreach (string name in OidCatalogs.Concat(TupleCatalogs))
         {
-            // Statistics and descriptions may contain application values. Retain only
-            // their deterministic digest as the tuple identity in preservation evidence.
-            string key = OidCatalogs.Contains(name, StringComparer.Ordinal) ? "x.oid::text" :
-                "encode(sha256(convert_to(to_jsonb(x)::text,'UTF8')),'hex')";
+            bool hasOid = OidCatalogs.Contains(name, StringComparer.Ordinal);
+            // Statistics/descriptions may contain private values. Some non-OID
+            // catalogs also legally contain identical tuples. A digest plus an
+            // occurrence ordinal retains their full multiplicity without values
+            // or unstable physical tuple addresses in evidence.
+            string oidKey = hasOid ? "x.oid::text" : "NULL::text";
+            string key = hasOid ? "oid_key" :
+                "digest || '/' || row_number() OVER (PARTITION BY digest COLLATE \"C\" ORDER BY digest COLLATE \"C\")::text";
             string objectClass = name switch
             {
                 "pg_attribute" => "'pg_class'::regclass::oid::text",
@@ -60,7 +64,10 @@ internal static class CurrentAppOwnedRepairPreservation
             };
             string filter = name == "pg_shdepend" ? "WHERE x.dbid=0 OR x.dbid=(SELECT oid FROM pg_database WHERE datname=current_database())" : string.Empty;
             await using var command = new NpgsqlCommand(
-                $"SELECT {key},encode(sha256(convert_to(to_jsonb(x)::text,'UTF8')),'hex'),{objectClass},{objectId} FROM pg_catalog.{name} x {filter} ORDER BY ({key}) COLLATE \"C\";",
+                $"WITH tuples AS (SELECT {oidKey} oid_key,encode(sha256(convert_to(to_jsonb(x)::text,'UTF8')),'hex') digest," +
+                $"{objectClass} object_class,{objectId} object_id FROM pg_catalog.{name} x {filter})," +
+                $"identified AS (SELECT {key} row_key,digest,object_class,object_id FROM tuples) " +
+                "SELECT row_key,digest,object_class,object_id FROM identified ORDER BY row_key COLLATE \"C\";",
                 connection, transaction);
             await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

@@ -51,6 +51,18 @@ public sealed class CurrentAppOwnedCatalogPrivacyTests
         CurrentAppOwnedDatabaseSnapshot snapshot = await CurrentAppOwnedRepairPreservation.CaptureAsync(
             connection, transaction, CancellationToken.None);
         Assert.DoesNotContain(privateValue, JsonSerializer.Serialize(snapshot));
+        Assert.Equal(snapshot.Catalog.Count, snapshot.Catalog.Select(fact => fact.Catalog + "/" + fact.Key).Distinct().Count());
+        var repeatedDependency = snapshot.Catalog.Where(fact => fact.Catalog == "pg_depend")
+            .GroupBy(fact => fact.Sha256).First(group => group.Count() > 1);
+        CurrentAppOwnedCatalogFact removed = repeatedDependency.Last();
+        var missingOccurrence = snapshot with
+        { Catalog = [.. snapshot.Catalog.Where(fact => fact != removed)] };
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedRepairPreservation.RequirePreserved(
+            snapshot, missingOccurrence, new HashSet<string>(), []));
+        var extraOccurrence = snapshot with
+        { Catalog = [.. snapshot.Catalog, removed with { Key = removed.Sha256 + "/" + (repeatedDependency.Count() + 1) }] };
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedRepairPreservation.RequirePreserved(
+            snapshot, extraOccurrence, new HashSet<string>(), []));
         CurrentAppOwnedDatabaseSnapshot repeated = await CurrentAppOwnedRepairPreservation.CaptureAsync(
             connection, transaction, CancellationToken.None);
         Assert.Equal(snapshot.Sha256, repeated.Sha256);
