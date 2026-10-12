@@ -37,7 +37,7 @@ public sealed class ConsumerOverlaySelectionTests
 
     [Theory]
     [InlineData(-1)]
-    [InlineData(3)]
+    [InlineData(4)]
     [InlineData(2147483647)]
     public void UnknownSelectionCannotMintAProfile(int selection)
     {

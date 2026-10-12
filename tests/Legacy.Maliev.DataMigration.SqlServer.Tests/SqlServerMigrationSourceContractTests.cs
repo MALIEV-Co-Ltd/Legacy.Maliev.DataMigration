@@ -6,7 +6,7 @@ public sealed class SqlServerMigrationSourceContractTests
 {
     [Theory]
     [InlineData(-1)]
-    [InlineData(3)]
+    [InlineData(4)]
     public void Constructor_RejectsUnknownConsumerOverlaySelectionBeforeOpeningSource(int selection)
     {
         var error = Assert.Throws<MigrationExecutionException>(() => new SqlServerMigrationSource(
@@ -19,6 +19,7 @@ public sealed class SqlServerMigrationSourceContractTests
     [InlineData(ConsumerOverlaySelection.HistoricalDefaults)]
     [InlineData(ConsumerOverlaySelection.CurrentConsumerColumnsV1)]
     [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV2)]
+    [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV3)]
     public void Constructor_AcceptsApprovedConsumerOverlayWithoutOpeningSource(ConsumerOverlaySelection selection)
     {
         _ = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(

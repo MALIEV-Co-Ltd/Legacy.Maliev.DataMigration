@@ -73,3 +73,17 @@ project formatting corrected the new manifest's style rules without modifying
 unrelated files. New focused tests still did not run: two admission checks refused
 startup below the unchanged 3 GiB host-free threshold. Hosted validation of this
 exact formatted head remains required; the earlier ten tests remain prior evidence.
+
+
+## October 12 selection regression correction
+
+Hosted validation on b892104 found two old negative cases treating enum value 3
+as unknown; value 3 is now the explicit V3 opt-in. Negative coverage uses 4, while
+SQL constructor coverage explicitly accepts V3 without opening the source.
+Historical wire tests and defaults are unchanged. The corrected solution builds
+in Release with zero warnings/errors, and all 26 local V3/profile-selection tests
+pass without skips. Separate SQL constructor tests were not run: unchanged 3 GiB
+host-free admission rejected launch with no owned processes. Required follow-up is
+that exact-head hosted SQL test lane, all Core tests and formatting, before merge.
+This publication uses the owner-approved migration draft validation-order exception;
+it is not schema execution or source/target reconciliation acceptance.
