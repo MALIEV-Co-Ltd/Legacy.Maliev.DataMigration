@@ -9,13 +9,33 @@ namespace Legacy.Maliev.DataMigration.Console;
 internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority authority) : IDisposable
 {
     private readonly List<(FileStream Stream, string Path, string Identity)> _held = [];
-    internal byte[] Read(string path, bool sharedReader = false)
+    private readonly Dictionary<Guid, string[]> _retainedReceiptNames = [];
+    private static readonly string[] ReceiptSuffixes = ["prepared", "committed-readback", "failed-or-uncertain"];
+    private bool _disposed;
+
+    // Observe the original operation's complete current receipt slots directly
+    // under held custody; a caller-supplied list is not storage completeness.
+    internal IReadOnlyList<CurrentAppOwnedRetainedReceipt> ReadRetainedReceipts(Guid operationId)
     {
+        Require();
+        if (operationId == Guid.Empty || _retainedReceiptNames.ContainsKey(operationId))
+        { throw CurrentAppOwnedRepairPermit.Invalid(); }
+        string[] names = EnumerateReceiptNames(operationId);
+        var receipts = names.Select(name => new CurrentAppOwnedRetainedReceipt(name,
+            Read(Path.Combine(authority.Binding.ArtifactRootCanonicalPath, name), maximumBytes: 65536))).ToArray();
+        _retainedReceiptNames.Add(operationId, names);
+        Require();
+        return Array.AsReadOnly(receipts);
+    }
+    internal byte[] Read(string path, bool sharedReader = false, int maximumBytes = int.MaxValue)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         string full = RequireInside(path);
         FileStream stream = sharedReader ? SecureLocalFile.OpenReadShared(full) : SecureLocalFile.OpenRead(full);
         try
         {
             ValidateHandle(stream, full);
+            if (stream.Length > maximumBytes) { throw CurrentAppOwnedRepairPermit.Invalid(); }
             using var bytes = new MemoryStream();
             stream.CopyTo(bytes);
             _held.Add((stream, full, SecureLocalFile.GetHandleIdentity(stream)));
@@ -25,12 +45,35 @@ internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority auth
     }
     internal void Require()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         _ = authority.Binding;
         foreach ((FileStream stream, string path, string identity) in _held)
         {
             ValidateHandle(stream, path);
             if (SecureLocalFile.GetHandleIdentity(stream) != identity) { throw CurrentAppOwnedRepairPermit.Invalid(); }
         }
+        foreach ((Guid operationId, string[] names) in _retainedReceiptNames)
+        {
+            if (!names.SequenceEqual(EnumerateReceiptNames(operationId), StringComparer.Ordinal))
+            { throw CurrentAppOwnedRepairPermit.Invalid(); }
+        }
+    }
+
+    private string[] EnumerateReceiptNames(Guid operationId)
+    {
+        string prefix = $"{operationId:D}-";
+        string[] allowed = [.. CurrentAppOwnedRepairManifest.Databases(CurrentAppOwnedRepairOperation.CreateEightTables)
+            .SelectMany(database => ReceiptSuffixes
+                .Select(suffix => $"{prefix}{database}-{suffix}.json"))];
+        string root = authority.Binding.ArtifactRootCanonicalPath;
+        string[] names = [.. Directory.EnumerateFileSystemEntries(root)
+            .Select(path => Path.GetFileName(path))
+            .Where(name => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .Order(StringComparer.Ordinal)];
+        return names.Any(name => !allowed.Contains(name, StringComparer.Ordinal) ||
+            Directory.Exists(Path.Combine(root, name)))
+            ? throw CurrentAppOwnedRepairPermit.Invalid()
+            : names;
     }
     internal async Task WriteNewAsync(string path, byte[] bytes, CancellationToken ct)
     {
@@ -76,7 +119,13 @@ internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority auth
             { throw CurrentAppOwnedRepairPermit.Invalid(); }
         }
     }
-    public void Dispose() { foreach (var item in _held) { item.Stream.Dispose(); } _held.Clear(); }
+    public void Dispose()
+    {
+        if (_disposed) { return; }
+        _disposed = true;
+        foreach (var item in _held) { item.Stream.Dispose(); }
+        _held.Clear();
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FileInformation

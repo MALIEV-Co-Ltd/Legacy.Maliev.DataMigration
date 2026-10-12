@@ -54,3 +54,24 @@ zero warnings and errors. Every recorded task-owned child exited. Exact-head
 hosted full-suite and PostgreSQL compatibility checks remain required. These
 results do not establish storage completeness, live-state reconciliation or a
 fresh successor permit.
+
+## Direct retained-store custody observation
+
+The internal Windows custody layer now derives the nine possible original
+receipt slots, enumerates the actual held root, rejects operation-prefixed
+unknown names, case aliases and directories, and holds every existing receipt
+through its existing owner, hardlink, reparse and resolved-handle checks. Reads
+are bounded to 64 KiB before allocation. Every subsequent custody check
+reenumerates the exact operation-name set, including initially absent slots.
+Disposed custody rejects further use and releases all held files.
+
+This observes current storage only. It does not prove lifetime nondeletion,
+construct a native reconciliation, issue a closed execution token or grant a
+successor permission. The observation is not yet wired into Console execution.
+Native Windows regressions cover immutable exact-byte reads, unknown slots,
+case aliases, directories, late publication, oversized input, hardlinks,
+active writers and handle release. The expanded Release build has zero
+warnings/errors and all 77 focused tests pass without skips. The first expanded
+run was stopped by the unchanged 1 GiB memory floor; all owned children exited.
+The admitted retry passed. Complete Console and test-project formatting finished.
+Exact-head hosted full-suite and compatibility validation remain required.
