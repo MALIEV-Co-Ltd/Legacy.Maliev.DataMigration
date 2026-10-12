@@ -154,3 +154,22 @@ recovery, source refresh or target parity. A formatter attempt hit the unchanged
 host memory floor and all owned processes exited; subsequent Core and test-project formatting completed, Core verify-no-changes
 passed, and the formatted Release build again passed with zero warnings/errors.
 Hosted exact-head full-suite/format compatibility checks remain required.
+
+## Production observation continuity
+
+Later production custody checks compare the complete CloudNativePG runtime target
+using `SameRuntimeTarget`, which excludes only Kubernetes `metadata.resourceVersion`.
+The exact original target-pin artifact hash remains signed and checked; UID,
+generation, system identity, reconciliation evidence, primary, instances, PVCs and
+every health field remain bound. Stable double-read observations still require
+exact equality, including resourceVersion, between the two reads.
+
+The regression source covers the actual protected-custody Console cloud comparison
+with loopback TLS and mutations of every other settable observation property. A
+deliberately malformed ordinary connection stops the successful comparison case
+before any PostgreSQL connection. This is not complete Console admission or
+production execution proof. These new checks are not yet run; source preparation
+does not grant persistent authority. Release build, focused tests and formatting
+remain required before acceptance.
+
+The first local validation attempt on protected-main43ec was not started: unchanged resource admission refused below3GiB free memory. No worker was launched and cleanup recorded all owned processes exited. Under the owner-approved Oct10 validation-order exception, this source may be published as a draft before local checks. Release0warnings/0errors, focused real TLS tests and required full/format/static/security checks remain mandatory before protected merge; the Windows custody boundary test must run locally before acceptance.
