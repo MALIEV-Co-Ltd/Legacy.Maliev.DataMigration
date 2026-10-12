@@ -121,7 +121,7 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
                 _target.DockerContainerId is not null || _target.DockerVolume is not null)
             { throw CurrentAppOwnedRepairPermit.Invalid(); }
             CloudNativePgTargetObservation actual = await _cloud.ObserveAsync("maliev-legacy", "legacy-postgres-main", ct).ConfigureAwait(false);
-            if (actual != _target.CloudObservation || "cnpg:" + actual.Uid + ":" + actual.Generation.ToString(CultureInfo.InvariantCulture) != scope.TargetGeneration ||
+            if (!actual.SameRuntimeTarget(_target.CloudObservation) || "cnpg:" + actual.Uid + ":" + actual.Generation.ToString(CultureInfo.InvariantCulture) != scope.TargetGeneration ||
                 !actual.Ready || actual.ReadyInstances != 2 || actual.Instances != 2 ||
                 !actual.ConsistentSystemId || !actual.ContinuousArchiving || !actual.LastBackupSucceeded)
             { throw CurrentAppOwnedRepairPermit.Invalid(); }
