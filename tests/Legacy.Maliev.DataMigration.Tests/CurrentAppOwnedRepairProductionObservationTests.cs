@@ -8,8 +8,10 @@ namespace Legacy.Maliev.DataMigration.Tests;
 [Collection(LocalSnapshotIoTestGroup.Name)]
 public sealed class CurrentAppOwnedRepairProductionObservationTests
 {
-    [WindowsLocalRunFact]
-    public async Task Console_cloud_boundary_tolerates_only_later_resource_version_changes()
+    [WindowsLocalRunTheory]
+    [InlineData(null)]
+    [MemberData(nameof(RuntimeFieldNames))]
+    public async Task Console_cloud_boundary_tolerates_only_later_resource_version_changes(string? changed)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         await using var tls = new HostTlsTestServer { ResponseBody = ClusterJson, ResponseStatusCode = 200 };
@@ -40,8 +42,6 @@ public sealed class CurrentAppOwnedRepairProductionObservationTests
 
         // The malformed ordinary connection is reached only after successful cloud comparison.
         // It is a boundary sentinel, not successful admission; no PostgreSQL connection is opened.
-        foreach (string? changed in new string?[] { null }.Concat(RuntimeFields().Select(x => (string?)x.Name)))
-        {
             CloudNativePgTargetObservation pin = observed with { ResourceVersion = "previous-api-revision" };
             if (changed is not null) { pin = Mutate(pin, changed); }
             var target = new CurrentAppOwnedRepairTargetPins(null, null, null, null, "/fixture/pg_hba.conf", null,
@@ -68,7 +68,6 @@ public sealed class CurrentAppOwnedRepairProductionObservationTests
             }
             Assert.Equal(requests + 1, tls.Requests);
             files.Require();
-        }
     }
 
     [Fact]
@@ -83,6 +82,8 @@ public sealed class CurrentAppOwnedRepairProductionObservationTests
                 "maliev-legacy", "legacy-postgres-main"));
         Assert.Equal("runtime_target_drift", failure.Code);
     }
+
+    public static IEnumerable<object[]> RuntimeFieldNames => RuntimeFields().Select(field => new object[] { field.Name });
 
     private static IEnumerable<PropertyInfo> RuntimeFields()
     {
