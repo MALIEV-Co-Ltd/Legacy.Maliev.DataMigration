@@ -300,4 +300,3 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
         }
     }
 }
-
