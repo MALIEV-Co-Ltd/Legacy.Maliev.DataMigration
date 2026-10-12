@@ -31,7 +31,8 @@ public static partial class MigrationConsole
             CurrentAppOwnedRepairSignedClaim review = Read<CurrentAppOwnedRepairSignedClaim>(configuration.ReviewPath);
             CurrentAppOwnedRepairSigningPins pins = Read<CurrentAppOwnedRepairSigningPins>(configuration.SigningPinsPath);
             CurrentAppOwnedRepairTargetPins target = Read<CurrentAppOwnedRepairTargetPins>(configuration.TargetPinsPath);
-            CurrentAppOwnedDatabaseSnapshot[] baseline = Read<CurrentAppOwnedDatabaseSnapshot[]>(configuration.GlobalBeforePath);
+            CurrentAppOwnedDatabaseSnapshot[] baseline = await files.ReadBaselineAsync(configuration.GlobalBeforePath,
+                cancellationToken).ConfigureAwait(false);
             string connection = Encoding.UTF8.GetString(files.Read(configuration.OperatorConnectionPath)).Trim();
             string ordinary = Encoding.UTF8.GetString(files.Read(configuration.RejectedOrdinaryConnectionPath)).Trim();
             if (before.SourceCommitSha != accepted || after.SourceCommitSha != accepted || review.Scope.SourceCommitSha != accepted)

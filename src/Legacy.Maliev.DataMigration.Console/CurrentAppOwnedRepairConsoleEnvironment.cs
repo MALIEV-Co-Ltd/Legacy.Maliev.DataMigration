@@ -47,7 +47,7 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
         }
         if (baseline.Select(x => x.Database).Distinct(StringComparer.Ordinal).Count() != baseline.Length ||
             !DatabaseInventory.ActiveDatabases.All(name => baseline.Any(x => x.Database == name)) ||
-            CurrentAppOwnedRepairPermit.Hash(JsonSerializer.SerializeToUtf8Bytes(baseline)) != scope.GlobalPreservationSha256)
+            CurrentAppOwnedSnapshotSerialization.Sha256(baseline) != scope.GlobalPreservationSha256)
         { throw CurrentAppOwnedRepairPermit.Invalid(); }
     }
 
