@@ -68,3 +68,8 @@ guard refused the child before startup. The prior ten-test result does not valid
 this new test source. Exact-head hosted build, focused/full suites, formatting and
 PostgreSQL compatibility follow-up remain mandatory under the owner's October 10
 draft publication exception. No persistent writes or additional helpers occurred.
+The follow-up source subsequently rebuilt with zero warnings/errors. Full Core
+project formatting corrected the new manifest's style rules without modifying
+unrelated files. New focused tests still did not run: two admission checks refused
+startup below the unchanged 3 GiB host-free threshold. Hosted validation of this
+exact formatted head remains required; the earlier ten tests remain prior evidence.

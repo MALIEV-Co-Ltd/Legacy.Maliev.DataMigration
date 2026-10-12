@@ -6,20 +6,27 @@ internal static class CurrentConsumerSchemaV3Manifest
     internal const string PurchaseOrder = "purchase-order-current-consumer-schema-v3";
     internal const string Quotation = "quotation-current-consumer-schema-v3";
     internal const string Invoice = "invoice-current-consumer-schema-v3";
-    internal static bool IsProfile(string? profile) => profile is PurchaseOrder or Quotation or Invoice;
-    internal static string? ProfileForDatabase(string database) => database switch
+    internal static bool IsProfile(string? profile)
     {
-        "PurchaseOrder" => PurchaseOrder,
-        "Quotation" => Quotation,
-        "Invoice" => Invoice,
-        _ => ApprovedCurrentConsumerSchemaManifest.ProfileForDatabase(database),
-    };
+        return profile is PurchaseOrder or Quotation or Invoice;
+    }
+
+    internal static string? ProfileForDatabase(string database)
+    {
+        return database switch
+        {
+            "PurchaseOrder" => PurchaseOrder,
+            "Quotation" => Quotation,
+            "Invoice" => Invoice,
+            _ => ApprovedCurrentConsumerSchemaManifest.ProfileForDatabase(database),
+        };
+    }
 
     internal static IReadOnlyList<TableCopyPlan> TablesFor(DatabaseSchemaPlan plan)
     {
-        if (!IsProfile(plan.TargetExtensionProfile) || plan.TargetExtensionProfile != ProfileForDatabase(plan.Database))
-        { throw ApprovedConsumerColumnOverlayManifest.Invalid("target_extension_profile_invalid"); }
-        return plan.Database switch
+        return !IsProfile(plan.TargetExtensionProfile) || plan.TargetExtensionProfile != ProfileForDatabase(plan.Database)
+            ? throw ApprovedConsumerColumnOverlayManifest.Invalid("target_extension_profile_invalid")
+            : plan.Database switch
         {
             "PurchaseOrder" => [Receipt("OrderItemCreateReceipt", 3), Receipt("PurchaseOrderFileCreateReceipt", 4)],
             "Quotation" => [Completion()],
@@ -31,8 +38,9 @@ internal static class CurrentConsumerSchemaV3Manifest
 
     private static TableCopyPlan AddInvoiceOwnership(TableCopyPlan table)
     {
-        if (table.TargetTable != "InvoiceCreationAdmission") { return table; }
-        return ApprovedCurrentConsumerSchemaManifest.WithExplicitTextCollations(table with
+        return table.TargetTable != "InvoiceCreationAdmission"
+            ? table
+            : ApprovedCurrentConsumerSchemaManifest.WithExplicitTextCollations(table with
         {
             OrderedColumns = [.. table.OrderedColumns, "FinancialOwnershipJson", "EmployeeCompletionJson"],
             ColumnTypes = table.ColumnTypes.Concat(new Dictionary<string, string>(StringComparer.Ordinal)
