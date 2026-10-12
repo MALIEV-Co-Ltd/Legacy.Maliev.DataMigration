@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -6,6 +7,37 @@ namespace Legacy.Maliev.DataMigration.Tests;
 [Collection(LocalSnapshotIoTestGroup.Name)]
 public sealed class CurrentConsumerSchemaV3Tests
 {
+    [Fact]
+    public void V3_retains_both_outbox_dispositions_overlay_and_completion_extension()
+    {
+        DatabaseSchemaPlan quotation = CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerSchemaV3)
+            .Databases.Single(plan => plan.Database == "Quotation");
+        TableCopyPlan[] source =
+        [
+            quotation.Tables[0],
+            ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.GoogleAnalyticsOutbox,
+                "PK_GoogleAnalyticsOutbox", "UX_GoogleAnalyticsOutbox_EventKey", uniqueIndex: true),
+            ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.QuotationOutcomeOutbox,
+                "PK_QuotationOutcomeOutbox", "UQ_QuotationOutcomeOutbox_EventKey", uniqueIndex: false),
+        ];
+        quotation = quotation with
+        {
+            Tables = source,
+            SourceDispositionProfile = ApprovedSourceDispositionManifest.QuotationOutboxesV1,
+            SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase("Quotation", source),
+        };
+        DatabaseSchemaPlan previous = quotation with { TargetExtensionProfile = ApprovedCurrentConsumerSchemaManifest.Quotation };
+        Assert.Equal(JsonSerializer.Serialize(ApprovedSourceDispositionManifest.TargetTablesFor(previous)),
+            JsonSerializer.Serialize(ApprovedSourceDispositionManifest.TargetTablesFor(quotation)));
+        IReadOnlyList<TableCopyPlan> physical = ApprovedConsumerColumnOverlayManifest.ComposePhysical(quotation);
+        _ = Assert.Single(physical, table => table.TargetSchema == "legacy_compatibility" && table.TargetTable == "GoogleAnalyticsOutbox");
+        TableCopyPlan adopted = Assert.Single(physical, table => table.TargetTable == "QuotationAcceptedOutcome");
+        Assert.Equal(2, adopted.Collations.Count);
+        Assert.All(adopted.Collations.Values, collation => Assert.Equal("C", collation));
+        _ = Assert.Single(physical, table => table.TargetTable == "QuotationInvoiceCompletionOperation");
+        Assert.Equal("timestamp without time zone", physical.Single(table => table.TargetTable == "Quotation").ColumnTypes["DecisionOrderVersion"]);
+    }
+
     [Fact]
     public void Coherent_opt_in_profile_keeps_all_source_projections_and_historical_profiles()
     {
@@ -104,7 +136,7 @@ public sealed class CurrentConsumerSchemaV3Tests
             .Databases.Single(plan => plan.Database == database);
         var state = new ApprovedTargetExtensionState(
             [.. ApprovedTargetExtensionManifest.TablesFor(schema).Select(table => new TableReconciliationEvidence(
-                $"{table.TargetSchema}.{table.TargetTable}", 0, new string('a', 64), new string('b', 64),
+                $"{table.TargetSchema}.{table.TargetTable}", 1, new string('a', 64), new string('b', 64),
                 table.OrderedColumns.ToDictionary(column => column, _ => 0L, StringComparer.Ordinal),
                 new Dictionary<string, long>(StringComparer.Ordinal)))], new Dictionary<string, long>(StringComparer.Ordinal));
         if (ApprovedConsumerColumnOverlayManifest.For(schema) is { } overlay)
@@ -116,6 +148,7 @@ public sealed class CurrentConsumerSchemaV3Tests
             state = state with { Overlay = new(evidence, evidence, 0) };
         }
         Assert.Equal(64, ApprovedTargetExtensionStateInspector.ComputeSha256(schema, state).Length);
+        ApprovedTargetExtensionStateInspector.Compare(schema, state, state);
         TableReconciliationEvidence first = state.Tables[0];
         var incomplete = first.NullCounts.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
         _ = incomplete.Remove(incomplete.Keys.Last());
@@ -123,6 +156,8 @@ public sealed class CurrentConsumerSchemaV3Tests
             state with { Tables = [first with { NullCounts = incomplete }, .. state.Tables.Skip(1)] }));
         _ = Assert.Throws<MigrationExecutionException>(() => ApprovedTargetExtensionStateInspector.ComputeSha256(schema,
             state with { Tables = [.. state.Tables.Skip(1)] }));
+        _ = Assert.Throws<MigrationExecutionException>(() => ApprovedTargetExtensionStateInspector.Compare(schema, state,
+            state with { Tables = [first with { ContentSha256 = new string('9', 64) }, .. state.Tables.Skip(1)] }));
     }
 
     [Theory]

@@ -55,3 +55,16 @@ Whitespace validation found one indentation diagnostic, now corrected. Its rerun
 was blocked by the unchanged 3 GiB memory admission floor, so formatting is not
 yet a passing local check. Full suite remains not run locally under the recorded
 memory constraint; this publication uses the owner's October 10 draft exception.
+
+## Independent review regression follow-up
+
+The review found two coverage gaps: coexistence of both approved outbox
+archive/adoption mappings with the quotation overlay/completion extension, and
+nonempty retained application-owned state. The follow-up tests pin the physical
+archive/adoption/overlay contracts, compare nonempty extension evidence and reject
+changed retained content. The test project formatter completed on the resulting
+source. Its new Release build was not run: the unchanged 3 GiB host-free admission
+guard refused the child before startup. The prior ten-test result does not validate
+this new test source. Exact-head hosted build, focused/full suites, formatting and
+PostgreSQL compatibility follow-up remain mandatory under the owner's October 10
+draft publication exception. No persistent writes or additional helpers occurred.
