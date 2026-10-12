@@ -165,6 +165,12 @@ public static partial class MigrationConsole
                 case "apply-current-app-owned-retained31-repair":
                     return await RunCurrentAppOwnedRetained31RepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
                         output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-auth-repair":
+                case "authorize-current-auth-repair":
+                case "verify-current-auth-repair":
+                case "apply-current-auth-repair":
+                    return await RunCurrentAuthRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
                 case "review-current-app-owned-v3-repair":
                 case "authorize-current-app-owned-v3-repair":
                 case "verify-current-app-owned-v3-repair":
