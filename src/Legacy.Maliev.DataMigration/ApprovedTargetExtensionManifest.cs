@@ -28,7 +28,9 @@ internal static class ApprovedTargetExtensionManifest
     internal static IReadOnlyList<TableCopyPlan> TablesFor(DatabaseSchemaPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        IReadOnlyList<TableCopyPlan> extensions = ApprovedCurrentConsumerSchemaManifest.IsProfile(plan.TargetExtensionProfile)
+        IReadOnlyList<TableCopyPlan> extensions = CurrentConsumerSchemaV3Manifest.IsProfile(plan.TargetExtensionProfile)
+            ? CurrentConsumerSchemaV3Manifest.TablesFor(plan)
+            : ApprovedCurrentConsumerSchemaManifest.IsProfile(plan.TargetExtensionProfile)
             ? ApprovedCurrentConsumerSchemaManifest.TablesFor(plan)
             : (plan.Database, plan.TargetExtensionProfile) switch
             {

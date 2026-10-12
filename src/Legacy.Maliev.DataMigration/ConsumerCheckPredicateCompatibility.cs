@@ -65,6 +65,23 @@ internal static class ConsumerCheckPredicateCompatibility
                 ["Purpose", "PasswordPayloadHash"]),
     };
 
+    static ConsumerCheckPredicateCompatibility()
+    {
+        foreach (string table in new[] { "OrderItemCreateReceipt", "PurchaseOrderFileCreateReceipt" })
+        {
+            Known.Add((table, "CK_" + table + "_Digests"), new(
+                "octet_length(\"IssuerDigest\") = 32 AND octet_length(\"SubjectDigest\") = 32 AND octet_length(\"KeyDigest\") = 32 AND octet_length(\"PayloadDigest\") = 32 AND octet_length(\"ResponseDigest\") = 32",
+                "((octet_length(\"IssuerDigest\") = 32) AND (octet_length(\"SubjectDigest\") = 32) AND (octet_length(\"KeyDigest\") = 32) AND (octet_length(\"PayloadDigest\") = 32) AND (octet_length(\"ResponseDigest\") = 32))",
+                ["IssuerDigest", "SubjectDigest", "KeyDigest", "PayloadDigest", "ResponseDigest"]));
+            Known.Add((table, "CK_" + table + "_Versions"), new(
+                "\"CanonicalVersion\" = 1 AND \"ResponseVersion\" = 1",
+                "((\"CanonicalVersion\" = 1) AND (\"ResponseVersion\" = 1))", ["CanonicalVersion", "ResponseVersion"]));
+            Known.Add((table, "CK_" + table + "_Complete"), new(
+                "\"EntityId\" > 0 AND octet_length(\"ResponseBody\") > 0",
+                "((\"EntityId\" > 0) AND (octet_length(\"ResponseBody\") > 0))", ["EntityId", "ResponseBody"]));
+        }
+    }
+
     internal static string Canonicalize(PostgreSqlSchemaFingerprint.ConstraintShape constraint)
     {
         if (constraint.Kind != 'c' || constraint.Schema != "public" ||
