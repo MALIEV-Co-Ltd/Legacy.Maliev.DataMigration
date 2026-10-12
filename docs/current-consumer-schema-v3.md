@@ -17,7 +17,7 @@ inspected on October 12. The new target-only objects are:
 - Quotation: `QuotationInvoiceCompletionOperation`, including its unique quotation
   index and nullable claim/lease fields. Its text decision version is separate from
   the source Quotation table's timestamp overlay.
-- Invoice: nullable `FinancialOwnershipJson` and `EmployeeCompletionJson` appended
+- Invoice: nullable `OriginIssuer`, `FinancialResultJson`, `FinancialOwnershipJson` and `EmployeeCompletionJson` appended
   to `InvoiceCreationAdmission`. No defaults, historical authority or backfill.
 
 New text fields use explicit `C` under the existing V2 policy. Source row comparison
@@ -87,3 +87,32 @@ host-free admission rejected launch with no owned processes. Required follow-up 
 that exact-head hosted SQL test lane, all Core tests and formatting, before merge.
 This publication uses the owner-approved migration draft validation-order exception;
 it is not schema execution or source/target reconciliation acceptance.
+
+## October 12 actual owner migration correction and proof
+
+Actual full InvoiceDbContext Up exposed two previously omitted October 5 fields,
+OriginIssuer (nullable character varying(512)) and FinancialResultJson (nullable
+text). V3 now appends those before FinancialOwnershipJson and
+EmployeeCompletionJson, for 13 InvoiceCreationAdmission columns. All four fields
+have explicit C collation and no default or historical backfill. V1/V2 contracts
+remain unchanged.
+
+The corrected solution rebuilt in Release with zero warnings/errors. All 26 Core
+V3/selection tests and all six SQL constructor tests passed without skips; complete
+Core and test-project formatting ran. Hosted validation of the earlier 1b2e5a9 head
+passed Release, 1859 Core tests and 197 SQL tests, but failed manifest formatting;
+that earlier head was not accepted. Required exact-head full validation remains a
+merge gate for this correction.
+
+A fresh off-repository helper referenced the actual clean pinned application Data
+projects, ran every owner Up migration on three isolated PostgreSQL 18.4 databases,
+and compared the selected extension components. PurchaseOrder child receipt tables
+matched without normalization. Invoice's two extensions and Quotation's completion
+extension matched only after explicit C normalization of their inherited text
+collations; exact noncollation shapes were verified first and all normalized tables
+were empty. Invoice normalized 20 columns and Quotation six. The original owner
+schema is therefore not claimed to match unmodified. The completed run was
+`d36fa4c64acd43f08dba5ae57a20bce1`; its container was removed, ephemeral credentials
+deleted and owned processes exited before acceptance. This proves selected extension
+components only, not whole owner schemas, populated preservation, closed Console
+execution, persistent repairs or data parity.

@@ -1,5 +1,5 @@
 {
-  "observedAtUtc": "2026-10-12T10:56:10.0431212+00:00",
+  "observedAtUtc": "2026-10-12T14:17:08.9438515+00:00",
   "sourceContracts": [
     {
       "repository": "Legacy.Maliev.ProcurementService",
@@ -16,10 +16,16 @@
     {
       "repository": "Legacy.Maliev.AccountingService",
       "sourceCommit": "9cc22da4e64f47ec79a03833af53dfe5c8ae7530",
+      "migration": "Legacy.Maliev.AccountingService.Data/Migrations/Invoice/20261005210000_RetainInvoiceCreationOriginAndFinancialResult.cs",
+      "sha256": "8efe21c03737c0e5e3c981b2e7bfad5103a832047e4824c0865701305ce6977e"
+    },
+    {
+      "repository": "Legacy.Maliev.AccountingService",
+      "sourceCommit": "9cc22da4e64f47ec79a03833af53dfe5c8ae7530",
       "migration": "Legacy.Maliev.AccountingService.Data/Migrations/Invoice/20261006140000_RetainInvoiceFinancialOwnership.cs",
       "sha256": "840d7d6e5420d5f9866870998d45c2b46c6c37a970b68b23c7cee76956dd72bd"
     }
   ],
-  "nativeOwnerEfProof": "not yet supplied for V3; draft profile is not repair acceptance",
+  "nativeOwnerEfProof": "Actual pinned full Invoice/PurchaseOrder/Quotation DbContext Up on disposable PostgreSQL 18.4: selected extension components equal V3 after documented explicit C normalization for Invoice and Quotation; PurchaseOrder equal without normalization. This is not whole-schema, retained-state or persistent repair acceptance.",
   "physicalTextCollation": "C explicitly selected consistently with current V2 policy"
 }

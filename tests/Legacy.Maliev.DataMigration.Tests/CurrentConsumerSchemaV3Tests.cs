@@ -90,9 +90,11 @@ public sealed class CurrentConsumerSchemaV3Tests
         }
         TableCopyPlan invoice = ApprovedTargetExtensionManifest.TablesFor(schema.Databases.Single(plan => plan.Database == "Invoice"))
             .Single(table => table.TargetTable == "InvoiceCreationAdmission");
-        foreach (string column in new[] { "FinancialOwnershipJson", "EmployeeCompletionJson" })
+        Assert.Equal(13, invoice.OrderedColumns.Count);
+        Assert.Equal(["OriginIssuer", "FinancialResultJson", "FinancialOwnershipJson", "EmployeeCompletionJson"], invoice.OrderedColumns.Skip(9));
+        foreach (string column in new[] { "OriginIssuer", "FinancialResultJson", "FinancialOwnershipJson", "EmployeeCompletionJson" })
         {
-            Assert.Equal("text", invoice.ColumnTypes[column]);
+            Assert.Equal(column == "OriginIssuer" ? "character varying(512)" : "text", invoice.ColumnTypes[column]);
             Assert.Contains(column, invoice.NullableColumns);
             Assert.Equal("C", invoice.Collations[column]);
             Assert.False(invoice.DefaultExpressions.ContainsKey(column));

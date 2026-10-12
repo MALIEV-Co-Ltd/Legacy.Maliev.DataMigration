@@ -27,13 +27,13 @@ internal static class CurrentConsumerSchemaV3Manifest
         return !IsProfile(plan.TargetExtensionProfile) || plan.TargetExtensionProfile != ProfileForDatabase(plan.Database)
             ? throw ApprovedConsumerColumnOverlayManifest.Invalid("target_extension_profile_invalid")
             : plan.Database switch
-        {
-            "PurchaseOrder" => [Receipt("OrderItemCreateReceipt", 3), Receipt("PurchaseOrderFileCreateReceipt", 4)],
-            "Quotation" => [Completion()],
-            "Invoice" => [.. ApprovedCurrentConsumerSchemaManifest.TablesFor(plan with
+            {
+                "PurchaseOrder" => [Receipt("OrderItemCreateReceipt", 3), Receipt("PurchaseOrderFileCreateReceipt", 4)],
+                "Quotation" => [Completion()],
+                "Invoice" => [.. ApprovedCurrentConsumerSchemaManifest.TablesFor(plan with
                 { TargetExtensionProfile = ApprovedCurrentConsumerSchemaManifest.Invoice }).Select(AddInvoiceOwnership)],
-            _ => throw ApprovedConsumerColumnOverlayManifest.Invalid("target_extension_profile_invalid"),
-        };
+                _ => throw ApprovedConsumerColumnOverlayManifest.Invalid("target_extension_profile_invalid"),
+            };
     }
 
     private static TableCopyPlan AddInvoiceOwnership(TableCopyPlan table)
@@ -41,13 +41,18 @@ internal static class CurrentConsumerSchemaV3Manifest
         return table.TargetTable != "InvoiceCreationAdmission"
             ? table
             : ApprovedCurrentConsumerSchemaManifest.WithExplicitTextCollations(table with
-        {
-            OrderedColumns = [.. table.OrderedColumns, "FinancialOwnershipJson", "EmployeeCompletionJson"],
-            ColumnTypes = table.ColumnTypes.Concat(new Dictionary<string, string>(StringComparer.Ordinal)
-            { ["FinancialOwnershipJson"] = "text", ["EmployeeCompletionJson"] = "text" })
+            {
+                OrderedColumns = [.. table.OrderedColumns, "OriginIssuer", "FinancialResultJson", "FinancialOwnershipJson", "EmployeeCompletionJson"],
+                ColumnTypes = table.ColumnTypes.Concat(new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["OriginIssuer"] = "character varying(512)",
+                    ["FinancialResultJson"] = "text",
+                    ["FinancialOwnershipJson"] = "text",
+                    ["EmployeeCompletionJson"] = "text"
+                })
                 .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
-            NullableColumns = [.. table.NullableColumns, "FinancialOwnershipJson", "EmployeeCompletionJson"],
-        });
+                NullableColumns = [.. table.NullableColumns, "OriginIssuer", "FinancialResultJson", "FinancialOwnershipJson", "EmployeeCompletionJson"],
+            });
     }
 
     private static TableCopyPlan Shape(string table, (string Name, string Type)[] columns, string[] key, string[] nullable)
