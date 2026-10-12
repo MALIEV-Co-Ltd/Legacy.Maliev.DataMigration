@@ -111,3 +111,28 @@ format-verify attempt did not start because the unchanged 3 GiB host-free admiss
 guard failed. Full local suites remain not run to completion; exact-head hosted
 validation remains required. All test helpers exited and disposable containers
 were absent after the run.
+
+## Exclusive HBA component fixture
+
+The native executor/policy regression now runs with both ordinary fixture HBA and
+an actually installed exclusive HBA file in its own bounded disposable PostgreSQL
+container. The exclusive variant verifies ordinary login rejection (SQLSTATE 28000)
+after reload, permits the bound maintenance role, detects a second operator client,
+and completes the real Core create/readback/global-preservation path. Release build
+passes with zero warnings/errors; all 19 focused tests pass with zero skips. The
+whole test project formatter completed and the formatted solution rebuilt with zero
+warnings/errors. This does not supply closed Console/source/custody acceptance or
+retained-receipt recovery. Hosted full-suite/format compatibility checks still apply.
+
+Independent recovery review selected a separate signed read-only reconciliation
+followed by a fresh operation UUID and fresh authorization. Historical claims and
+receipt chains must be authenticated at their recorded times without renewing
+permission. Actual states must match original-before or an authentic prepared-after
+snapshot, preserve the complete original catalog/rows/sequences, retain the exact
+final schema/object closure and empty new tables, and form an applied prefix.
+A create-only predecessor-to-successor reservation must prevent replay or competing
+successors. Fresh admission binds the reconciliation and observed baseline; applied
+databases produce signed read-only skip observations. Changed/expired maintenance
+installation requires an independently reviewed exact role/catalog transition,
+since pg_authid is part of complete preservation. These are implementation and
+native/closed-Console proof prerequisites, not permission granted by this document.

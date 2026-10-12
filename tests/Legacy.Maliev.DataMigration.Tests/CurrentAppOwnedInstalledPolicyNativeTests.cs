@@ -8,8 +8,10 @@ namespace Legacy.Maliev.DataMigration.Tests;
 [Collection(LocalSnapshotIoTestGroup.Name)]
 public sealed class CurrentAppOwnedInstalledPolicyNativeTests
 {
-    [Fact]
-    public async Task Native_policy_rechecks_installed_role_HBA_identity_and_other_clients()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Native_policy_rechecks_installed_role_HBA_identity_and_other_clients(bool installExclusivePolicy)
     {
         const string role = "legacy_eight_native_policy";
         string password = Guid.NewGuid().ToString("N");
@@ -35,6 +37,29 @@ public sealed class CurrentAppOwnedInstalledPolicyNativeTests
                 $"CREATE ROLE {role} LOGIN SUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS " +
                 $"PASSWORD '{password}' VALID UNTIL '{issued.AddMinutes(30):O}'; COMMENT ON ROLE {role} IS '{comment}';", setup);
             _ = await create.ExecuteNonQueryAsync();
+            if (installExclusivePolicy)
+            {
+                // Rewrite only this run-owned disposable container's policy file.
+                await using var path = new NpgsqlCommand("SELECT current_setting('hba_file');", setup);
+                string policyPath = (string)(await path.ExecuteScalarAsync())!;
+                await using var install = new NpgsqlCommand(
+                    $"COPY (VALUES ('local all all trust'), ('host all {role} 0.0.0.0/0 scram-sha-256'), " +
+                    $"('host all {role} ::/0 scram-sha-256'), ('host all all 0.0.0.0/0 reject'), " +
+                    $"('host all all ::/0 reject')) TO '{policyPath.Replace("'", "''", StringComparison.Ordinal)}'; SELECT pg_reload_conf();", setup);
+                _ = await install.ExecuteNonQueryAsync();
+                bool rejected = false;
+                for (int attempt = 0; attempt < 20 && !rejected; attempt++)
+                {
+                    try
+                    {
+                        await using var ordinary = new NpgsqlConnection(administrator.ConnectionString);
+                        await ordinary.OpenAsync();
+                    }
+                    catch (PostgresException failure) when (failure.SqlState == "28000") { rejected = true; }
+                    if (!rejected) { await Task.Delay(TimeSpan.FromMilliseconds(50)); }
+                }
+                Assert.True(rejected);
+            }
         }
         var executor = new NpgsqlConnectionStringBuilder(administrator.ConnectionString) { Username = role, Password = password };
         await using var connection = new NpgsqlConnection(executor.ConnectionString);
@@ -78,7 +103,7 @@ public sealed class CurrentAppOwnedInstalledPolicyNativeTests
             scope with { Maintenance = scope.Maintenance with { ExpiresAtUtc = expires.AddSeconds(-1) } },
         })
         { _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => CheckAsync(stale)); }
-        await using (var other = new NpgsqlConnection(administrator.ConnectionString))
+        await using (var other = new NpgsqlConnection(executor.ConnectionString))
         {
             await other.OpenAsync();
             _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => CheckAsync(scope));
