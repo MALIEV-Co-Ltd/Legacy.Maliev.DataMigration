@@ -42,32 +42,35 @@ public sealed class CurrentAppOwnedRepairProductionObservationTests
 
         // The malformed ordinary connection is reached only after successful cloud comparison.
         // It is a boundary sentinel, not successful admission; no PostgreSQL connection is opened.
-            CloudNativePgTargetObservation pin = observed with { ResourceVersion = "previous-api-revision" };
-            if (changed is not null) { pin = Mutate(pin, changed); }
-            var target = new CurrentAppOwnedRepairTargetPins(null, null, null, null, "/fixture/pg_hba.conf", null,
-                new(tls.Address, token, ca), pin);
-            CurrentAppOwnedRepairScope bound = scope with
-            { TargetObservationSha256 = CurrentAppOwnedRepairPermit.Hash(JsonSerializer.SerializeToUtf8Bytes(target)) };
-            using var environment = new CurrentAppOwnedRepairConsoleEnvironment(authority, files, target,
-                new Npgsql.NpgsqlConnectionStringBuilder
-                {
-                    Host = "127.0.0.1", Port = 5432, Username = "fixture",
-                    Password = Guid.NewGuid().ToString("N"), Pooling = false,
-                }.ConnectionString,
-                "unsupported-observation-test-key=value", baseline,
-                CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerColumnsV1),
-                CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerSchemaV2), bound);
-            int requests = tls.Requests;
-            if (changed is null)
+        CloudNativePgTargetObservation pin = observed with { ResourceVersion = "previous-api-revision" };
+        if (changed is not null) { pin = Mutate(pin, changed); }
+        var target = new CurrentAppOwnedRepairTargetPins(null, null, null, null, "/fixture/pg_hba.conf", null,
+            new(tls.Address, token, ca), pin);
+        CurrentAppOwnedRepairScope bound = scope with
+        { TargetObservationSha256 = CurrentAppOwnedRepairPermit.Hash(JsonSerializer.SerializeToUtf8Bytes(target)) };
+        using var environment = new CurrentAppOwnedRepairConsoleEnvironment(authority, files, target,
+            new Npgsql.NpgsqlConnectionStringBuilder
             {
-                _ = await Assert.ThrowsAsync<ArgumentException>(() => environment.RequireResourceAndCustodyAsync(bound, timeout.Token));
-            }
-            else
-            {
-                _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => environment.RequireResourceAndCustodyAsync(bound, timeout.Token));
-            }
-            Assert.Equal(requests + 1, tls.Requests);
-            files.Require();
+                Host = "127.0.0.1",
+                Port = 5432,
+                Username = "fixture",
+                Password = Guid.NewGuid().ToString("N"),
+                Pooling = false,
+            }.ConnectionString,
+            "unsupported-observation-test-key=value", baseline,
+            CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerColumnsV1),
+            CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerSchemaV2), bound);
+        int requests = tls.Requests;
+        if (changed is null)
+        {
+            _ = await Assert.ThrowsAsync<ArgumentException>(() => environment.RequireResourceAndCustodyAsync(bound, timeout.Token));
+        }
+        else
+        {
+            _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => environment.RequireResourceAndCustodyAsync(bound, timeout.Token));
+        }
+        Assert.Equal(requests + 1, tls.Requests);
+        files.Require();
     }
 
     [Fact]
@@ -83,7 +86,15 @@ public sealed class CurrentAppOwnedRepairProductionObservationTests
         Assert.Equal("runtime_target_drift", failure.Code);
     }
 
-    public static IEnumerable<object[]> RuntimeFieldNames => RuntimeFields().Select(field => new object[] { field.Name });
+    public static TheoryData<string?> RuntimeFieldNames
+    {
+        get
+        {
+            var cases = new TheoryData<string?>();
+            foreach (PropertyInfo property in RuntimeFields()) { cases.Add(property.Name); }
+            return cases;
+        }
+    }
 
     private static IEnumerable<PropertyInfo> RuntimeFields()
     {
@@ -96,11 +107,15 @@ public sealed class CurrentAppOwnedRepairProductionObservationTests
     {
         JsonObject fields = JsonSerializer.SerializeToNode(value)!.AsObject();
         Type type = typeof(CloudNativePgTargetObservation).GetProperty(property)!.PropertyType;
-        if (type == typeof(string)) { fields[property] = fields[property]!.GetValue<string>() + "-changed"; }
-        else if (type == typeof(bool)) { fields[property] = !fields[property]!.GetValue<bool>(); }
-        else if (type == typeof(int)) { fields[property] = fields[property]!.GetValue<int>() + 1; }
-        else if (type == typeof(long)) { fields[property] = fields[property]!.GetValue<long>() + 1; }
-        else { throw new InvalidOperationException("Add an exact mutation for the new observation property type."); }
+        fields[property] = type == typeof(string)
+            ? JsonValue.Create(fields[property]!.GetValue<string>() + "-changed")
+            : type == typeof(bool)
+                ? JsonValue.Create(!fields[property]!.GetValue<bool>())
+                : type == typeof(int)
+                    ? JsonValue.Create(fields[property]!.GetValue<int>() + 1)
+                    : type == typeof(long)
+                        ? JsonValue.Create(fields[property]!.GetValue<long>() + 1)
+                        : throw new InvalidOperationException("Add an exact mutation for the new observation property type.");
         return fields.Deserialize<CloudNativePgTargetObservation>()!;
     }
 
