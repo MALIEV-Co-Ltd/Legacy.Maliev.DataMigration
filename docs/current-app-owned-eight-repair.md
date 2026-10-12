@@ -60,3 +60,14 @@ failures. The local formatting check reported three whitespace diagnostics (fixe
 then exhausted its process memory budget; formatting is not a local pass.
 Exact-head hosted full-suite, formatting and PostgreSQL compatibility validation
 are required before review acceptance. No persistent database writes occurred.
+
+## Native fixed DDL fixtures
+
+The new three-database fixture covers literal eight-table DDL, native schema
+fingerprints, exact object closure, complete catalog/retained rows/sequence evidence,
+commit readback, successful rollback and rejected retained-row mutation rollback.
+It does not exercise the closed Console issuer, installed maintenance-role/HBA
+checks, custody, prepared receipt publication or commit acknowledgment loss; those
+execution gates remain required. Local validation of this addition is not run:
+the unchanged 3 GiB host-free admission guard refused the build before starting
+a child. Exact-head hosted validation is required under the draft exception.
