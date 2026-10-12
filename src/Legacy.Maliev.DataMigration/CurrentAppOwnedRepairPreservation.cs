@@ -268,6 +268,8 @@ internal static class CurrentAppOwnedRepairPreservation
         }
         return result;
     }
-    private static string Qualified(string schema, string name) =>
-        $"{PostgreSqlShadowTarget.QuoteIdentifier(schema)}.{PostgreSqlShadowTarget.QuoteIdentifier(name)}";
+    private static string Qualified(string schema, string name)
+    {
+        return $"{PostgreSqlShadowTarget.QuoteIdentifier(schema)}.{PostgreSqlShadowTarget.QuoteIdentifier(name)}";
+    }
 }

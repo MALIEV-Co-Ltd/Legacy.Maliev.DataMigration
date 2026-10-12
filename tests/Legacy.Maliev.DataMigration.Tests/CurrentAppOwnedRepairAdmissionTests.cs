@@ -123,9 +123,15 @@ public sealed class CurrentAppOwnedRepairAdmissionTests
                 Now, Now.AddMinutes(15), Pins.AuthorizationKeyId, null);
             Authorization = Sign(unsignedAuthorization, _authorization);
         }
-        private static CurrentAppOwnedRepairSignedClaim Sign(CurrentAppOwnedRepairSignedClaim value, ECDsa key) =>
-            value with { Signature = Convert.ToBase64String(key.SignData(CurrentAppOwnedRepairPermit.Payload(value),
-                HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)) };
+        private static CurrentAppOwnedRepairSignedClaim Sign(CurrentAppOwnedRepairSignedClaim value, ECDsa key)
+        {
+            return value with
+            {
+                Signature = Convert.ToBase64String(key.SignData(CurrentAppOwnedRepairPermit.Payload(value),
+                HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
+            };
+        }
+
         public void Dispose() { _review.Dispose(); _authorization.Dispose(); _receipt.Dispose(); }
     }
 }

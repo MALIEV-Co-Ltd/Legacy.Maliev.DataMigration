@@ -92,6 +92,9 @@ internal static class PostgreSqlCurrentAppOwnedEightRepair
                 { throw CurrentAppOwnedRepairPermit.Invalid(); }
                 await readback.RollbackAsync(cancellationToken).ConfigureAwait(false);
             }
+            // Global preservation uses an independent operator connection and its
+            // zero-other-client fence. Retire this backend before that observation.
+            await connection.CloseAsync().ConfigureAwait(false);
             await permit.RequireAsync(cancellationToken).ConfigureAwait(false);
             if (await permit.Environment.InspectGlobalPreservationAsync(cancellationToken).ConfigureAwait(false) != scope.GlobalPreservationSha256)
             { throw CurrentAppOwnedRepairPermit.Invalid(); }
@@ -120,15 +123,18 @@ internal static class PostgreSqlCurrentAppOwnedEightRepair
                 classification, DateTimeOffset.UtcNow, receiptSigner.KeyId, null);
             byte[] payload = [.. "Legacy.Maliev.CurrentAppOwnedEight.Receipt.v1\0"u8, .. JsonSerializer.SerializeToUtf8Bytes(unsigned)];
             byte[] signature = receiptSigner.Sign(payload);
-            if (!trust.TryGetPublicKeyFingerprintSha256(receiptSigner.KeyId, out string actual) || actual != pins.ReceiptFingerprint ||
-                !trust.Verify(receiptSigner.KeyId, payload, signature)) { throw CurrentAppOwnedRepairPermit.Invalid(); }
-            return unsigned with { Signature = Convert.ToBase64String(signature) };
+            return !trust.TryGetPublicKeyFingerprintSha256(receiptSigner.KeyId, out string actual) || actual != pins.ReceiptFingerprint ||
+                !trust.Verify(receiptSigner.KeyId, payload, signature)
+                ? throw CurrentAppOwnedRepairPermit.Invalid()
+                : (unsigned with { Signature = Convert.ToBase64String(signature) });
         }
     }
 
-    internal static CurrentAppOwnedCommitClassification ClassifyFailure(bool commitStarted, bool commitAcknowledged, bool rollbackAcknowledged) =>
-        commitStarted || commitAcknowledged ? CurrentAppOwnedCommitClassification.Uncertain :
+    internal static CurrentAppOwnedCommitClassification ClassifyFailure(bool commitStarted, bool commitAcknowledged, bool rollbackAcknowledged)
+    {
+        return commitStarted || commitAcknowledged ? CurrentAppOwnedCommitClassification.Uncertain :
         rollbackAcknowledged ? CurrentAppOwnedCommitClassification.RolledBackBeforeCommit : CurrentAppOwnedCommitClassification.FailedBeforeCommit;
+    }
 
     internal static async Task RequireInstalledPolicyAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         CurrentAppOwnedRepairScope scope, CancellationToken cancellationToken)

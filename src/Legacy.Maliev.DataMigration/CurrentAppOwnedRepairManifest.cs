@@ -52,11 +52,16 @@ internal static class CurrentAppOwnedRepairManifest
         new("QuotationRequest", "public", "RequestCreateIdempotency", "Fingerprint", "character(64)"),
     ];
 
-    internal static CurrentAppOwnedCollationOperand[] RetainedOperands() => [.. Retained];
-
-    internal static string CreateEightSql(string database) => database switch
+    internal static CurrentAppOwnedCollationOperand[] RetainedOperands()
     {
-        "Customer" => """
+        return [.. Retained];
+    }
+
+    internal static string CreateEightSql(string database)
+    {
+        return database switch
+        {
+            "Customer" => """
             CREATE TABLE public."CustomerCreateOperation" (
               "Key" uuid NOT NULL,
               "ActorHash" character varying(64) COLLATE "C" NOT NULL,
@@ -77,7 +82,7 @@ internal static class CurrentAppOwnedRepairManifest
               CONSTRAINT "PK_QuotationProfileCompletionOperation" PRIMARY KEY ("CustomerId", "Key")
             );
             """,
-        "Upload" => """
+            "Upload" => """
             CREATE TABLE public."StorageMoveJournal" (
               "OperationId" uuid NOT NULL,
               "ScanClean" boolean NOT NULL,
@@ -170,7 +175,7 @@ internal static class CurrentAppOwnedRepairManifest
             );
             CREATE UNIQUE INDEX "IX_InstantQuoteUploadFile_SessionId_IdempotencyKeyHash" ON public."InstantQuoteUploadFile" USING btree ("SessionId", "IdempotencyKeyHash");
             """,
-        "Order" => """
+            "Order" => """
             CREATE TABLE public."OrderDeletionIntent" (
               "OrderId" integer NOT NULL,
               "DeletionId" uuid NOT NULL,
@@ -185,34 +190,42 @@ internal static class CurrentAppOwnedRepairManifest
             CREATE UNIQUE INDEX "IX_OrderDeletionIntent_DeletionId" ON public."OrderDeletionIntent" USING btree ("DeletionId");
             CREATE INDEX "IX_OrderDeletionIntent_PendingDue" ON public."OrderDeletionIntent" USING btree ("NextAttemptAtUtc", "OrderId") WHERE "CompletedAtUtc" IS NULL;
             """,
-        _ => throw Invalid(),
-    };
+            _ => throw Invalid(),
+        };
+    }
 
     internal static string CollationSql(string database)
     {
         CurrentAppOwnedCollationOperand[] operands = [.. Retained.Where(x => x.Database == database)];
-        if (operands.Length == 0) { throw Invalid(); }
-        return string.Join("\n", operands.Select(x =>
+        return operands.Length == 0
+            ? throw Invalid()
+            : string.Join("\n", operands.Select(x =>
             $"ALTER TABLE {Quote(x.Schema)}.{Quote(x.Table)} ALTER COLUMN {Quote(x.Column)} " +
             $"TYPE {x.PostgreSqlType} COLLATE \"C\";"));
     }
 
-    internal static string[] Databases(CurrentAppOwnedRepairOperation operation) => operation switch
+    internal static string[] Databases(CurrentAppOwnedRepairOperation operation)
     {
-        CurrentAppOwnedRepairOperation.CreateEightTables => ["Customer", "Order", "Upload"],
-        CurrentAppOwnedRepairOperation.RetainedThirtyOneTextCollations =>
-            ["CustomerIdentity", "EmployeeIdentity", "Invoice", "Quotation", "QuotationRequest"],
-        _ => throw Invalid(),
-    };
+        return operation switch
+        {
+            CurrentAppOwnedRepairOperation.CreateEightTables => ["Customer", "Order", "Upload"],
+            CurrentAppOwnedRepairOperation.RetainedThirtyOneTextCollations =>
+                ["CustomerIdentity", "EmployeeIdentity", "Invoice", "Quotation", "QuotationRequest"],
+            _ => throw Invalid(),
+        };
+    }
 
-    internal static string[] NewTables(string database) => database switch
+    internal static string[] NewTables(string database)
     {
-        "Customer" => ["CustomerCreateOperation", "QuotationProfileCompletionOperation"],
-        "Order" => ["OrderDeletionIntent"],
-        "Upload" => ["StorageMoveJournal", "QuarantineUploadIntent", "InstantQuoteUploadSession",
+        return database switch
+        {
+            "Customer" => ["CustomerCreateOperation", "QuotationProfileCompletionOperation"],
+            "Order" => ["OrderDeletionIntent"],
+            "Upload" => ["StorageMoveJournal", "QuarantineUploadIntent", "InstantQuoteUploadSession",
             "InstantQuoteFinalization", "InstantQuoteUploadFile"],
-        _ => throw Invalid(),
-    };
+            _ => throw Invalid(),
+        };
+    }
 
     internal static string OperationSha256(CurrentAppOwnedRepairOperation operation)
     {
@@ -252,7 +265,13 @@ internal static class CurrentAppOwnedRepairManifest
         }
     }
 
-    private static string Quote(string value) => PostgreSqlShadowTarget.QuoteIdentifier(value);
-    private static MigrationExecutionException Invalid() =>
-        new("current_app_owned_repair_closed_scope_invalid", "The additive repair scope is not the reviewed fixed operation.");
+    private static string Quote(string value)
+    {
+        return PostgreSqlShadowTarget.QuoteIdentifier(value);
+    }
+
+    private static MigrationExecutionException Invalid()
+    {
+        return new("current_app_owned_repair_closed_scope_invalid", "The additive repair scope is not the reviewed fixed operation.");
+    }
 }

@@ -43,7 +43,7 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
         {
             _ = files.Read(target.CloudOptions.ServiceAccountTokenFile, sharedReader: true);
             _ = files.Read(target.CloudOptions.ServiceAccountCaFile, sharedReader: true);
-            _cloud = new CloudNativePgTargetObserver(target.CloudOptions);
+            _cloud = CloudNativePgTargetObserver.CreateForHost(target.CloudOptions);
         }
         if (baseline.Select(x => x.Database).Distinct(StringComparer.Ordinal).Count() != baseline.Length ||
             !DatabaseInventory.ActiveDatabases.All(name => baseline.Any(x => x.Database == name)) ||
@@ -182,9 +182,9 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
 
     public Task RetainNewEvidenceAsync(string name, byte[] payload, CancellationToken ct)
     {
-        if (name != Path.GetFileName(name) || !name.EndsWith(".json", StringComparison.Ordinal))
-        { throw CurrentAppOwnedRepairPermit.Invalid(); }
-        return _files.WriteNewAsync(Path.Combine(_authority.Binding.ArtifactRootCanonicalPath, name), payload, ct);
+        return name != Path.GetFileName(name) || !name.EndsWith(".json", StringComparison.Ordinal)
+            ? throw CurrentAppOwnedRepairPermit.Invalid()
+            : _files.WriteNewAsync(Path.Combine(_authority.Binding.ArtifactRootCanonicalPath, name), payload, ct);
     }
     public void Dispose() { _cloud?.Dispose(); }
 }

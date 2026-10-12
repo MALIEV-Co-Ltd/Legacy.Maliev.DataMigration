@@ -46,7 +46,7 @@ public sealed class CurrentAppOwnedRepairNativeTests
         CurrentAppOwnedDatabaseSnapshot baseline = await CaptureAsync();
         await using (var rollback = await connection.BeginTransactionAsync(IsolationLevel.Serializable))
         {
-            await RepairAndCheckAsync(rollback, baseline);
+            _ = await RepairAndCheckAsync(rollback, baseline);
             await rollback.RollbackAsync();
         }
         CurrentAppOwnedDatabaseSnapshot rolledBack = await CaptureAsync();

@@ -50,8 +50,9 @@ internal static class CurrentAppOwnedRepairPreflight
             .Databases.Single(x => x.Database == database);
         await using var inspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
         string actual = await inspector.InspectSchemaAsync(expected, cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(actual, expected.TargetSchemaSha256, StringComparison.Ordinal)) { throw Invalid(); }
-        return new(database, state, actual, SchemaPlanCanonicalizer.ComputeSha256(before),
+        return !string.Equals(actual, expected.TargetSchemaSha256, StringComparison.Ordinal)
+            ? throw Invalid()
+            : new(database, state, actual, SchemaPlanCanonicalizer.ComputeSha256(before),
             SchemaPlanCanonicalizer.ComputeSha256(after));
     }
 
@@ -59,11 +60,13 @@ internal static class CurrentAppOwnedRepairPreflight
     {
         string[] expected = CurrentAppOwnedRepairManifest.NewTables(database);
         if (present.Count == 0) { return CurrentAppOwnedCreationState.MissingExactSet; }
-        if (!present.Order(StringComparer.Ordinal).SequenceEqual(expected.Order(StringComparer.Ordinal), StringComparer.Ordinal))
-        { throw Invalid(); }
-        return CurrentAppOwnedCreationState.AlreadyCurrent;
+        return !present.Order(StringComparer.Ordinal).SequenceEqual(expected.Order(StringComparer.Ordinal), StringComparer.Ordinal)
+            ? throw Invalid()
+            : CurrentAppOwnedCreationState.AlreadyCurrent;
     }
 
-    private static MigrationExecutionException Invalid() =>
-        new("current_app_owned_repair_preimage_invalid", "The exact additive repair preimage is not established.");
+    private static MigrationExecutionException Invalid()
+    {
+        return new("current_app_owned_repair_preimage_invalid", "The exact additive repair preimage is not established.");
+    }
 }

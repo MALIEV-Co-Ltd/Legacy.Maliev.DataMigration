@@ -54,10 +54,10 @@ internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority auth
         if (!OperatingSystem.IsWindows() || !Path.IsPathFullyQualified(path)) { throw CurrentAppOwnedRepairPermit.Invalid(); }
         string full = Path.GetFullPath(path);
         string root = Path.TrimEndingDirectorySeparator(authority.Binding.ArtifactRootCanonicalPath);
-        if (!full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(Path.GetDirectoryName(full), root, StringComparison.OrdinalIgnoreCase))
-        { throw CurrentAppOwnedRepairPermit.Invalid(); }
-        return full;
+        return !full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Path.GetDirectoryName(full), root, StringComparison.OrdinalIgnoreCase)
+            ? throw CurrentAppOwnedRepairPermit.Invalid()
+            : full;
     }
     private static void ValidateHandle(FileStream stream, string path)
     {

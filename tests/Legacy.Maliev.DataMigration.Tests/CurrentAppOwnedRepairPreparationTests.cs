@@ -76,7 +76,7 @@ public sealed class CurrentAppOwnedRepairPreparationTests
             _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedRepairPreflight.ClassifyInventory(database, [.. names, names[0]]));
             _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedRepairPreflight.ClassifyInventory(database, [.. names.Select(x => x.ToLowerInvariant())]));
             if (names.Length > 1)
-            { Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedRepairPreflight.ClassifyInventory(database, [.. names.Skip(1)])); }
+            { _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedRepairPreflight.ClassifyInventory(database, [.. names.Skip(1)])); }
         }
     }
 

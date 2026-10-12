@@ -38,16 +38,15 @@ internal sealed class CurrentAppOwnedRepairPermit
     private readonly CurrentAppOwnedRepairSignedClaim _authorization;
     private readonly IReceiptAttestationTrustStore _trust;
     private readonly CurrentAppOwnedRepairSigningPins _pins;
-    private readonly ICurrentAppOwnedRepairEnvironment _environment;
     private readonly TimeProvider _clock;
 
     private CurrentAppOwnedRepairPermit(CurrentAppOwnedRepairSignedClaim review,
         CurrentAppOwnedRepairSignedClaim authorization, IReceiptAttestationTrustStore trust,
         CurrentAppOwnedRepairSigningPins pins, ICurrentAppOwnedRepairEnvironment environment, TimeProvider clock)
-    { _review = review; _authorization = authorization; _trust = trust; _pins = pins; _environment = environment; _clock = clock; }
+    { _review = review; _authorization = authorization; _trust = trust; _pins = pins; Environment = environment; _clock = clock; }
 
     internal CurrentAppOwnedRepairScope Scope => Clone(_authorization.Scope);
-    internal ICurrentAppOwnedRepairEnvironment Environment => _environment;
+    internal ICurrentAppOwnedRepairEnvironment Environment { get; }
     internal string AuthorizationSha256 => Hash(JsonSerializer.SerializeToUtf8Bytes(_authorization));
 
     internal static async Task<CurrentAppOwnedRepairPermit> AdmitAsync(CurrentAppOwnedRepairSignedClaim review,
@@ -88,8 +87,8 @@ internal sealed class CurrentAppOwnedRepairPermit
     internal async Task RequireAsync(CancellationToken cancellationToken)
     {
         ValidateClaims(_review, _authorization, _trust, _pins, _clock.GetUtcNow());
-        await _environment.RequireSourceAsync(_authorization.Scope.SourceCommitSha, cancellationToken).ConfigureAwait(false);
-        await _environment.RequireResourceAndCustodyAsync(_authorization.Scope, cancellationToken).ConfigureAwait(false);
+        await Environment.RequireSourceAsync(_authorization.Scope.SourceCommitSha, cancellationToken).ConfigureAwait(false);
+        await Environment.RequireResourceAndCustodyAsync(_authorization.Scope, cancellationToken).ConfigureAwait(false);
     }
 
     internal static void ValidateClaims(CurrentAppOwnedRepairSignedClaim review,
@@ -108,10 +107,10 @@ internal sealed class CurrentAppOwnedRepairPermit
             !scope.BeforeDatabaseSha256.Keys.Order(StringComparer.Ordinal)
                 .SequenceEqual(CurrentAppOwnedRepairManifest.Databases(scope.Operation), StringComparer.Ordinal) ||
             scope.BeforeDatabaseSha256.Values.Any(x => !HashShape(x)) ||
-            !(DeltaSynchronizationPlanProducer.ValidAuthority(scope.Target, "local-aspire", "legacy-postgres-main-local") &&
-                  scope.TargetNamespace == "local-aspire" && scope.TargetCluster == "legacy-postgres-main-local" ||
-              DeltaSynchronizationPlanProducer.ValidAuthority(scope.Target, "maliev-legacy", "legacy-postgres-main") &&
-                  scope.TargetNamespace == "maliev-legacy" && scope.TargetCluster == "legacy-postgres-main") ||
+            !((DeltaSynchronizationPlanProducer.ValidAuthority(scope.Target, "local-aspire", "legacy-postgres-main-local") &&
+                  scope.TargetNamespace == "local-aspire" && scope.TargetCluster == "legacy-postgres-main-local") ||
+              (DeltaSynchronizationPlanProducer.ValidAuthority(scope.Target, "maliev-legacy", "legacy-postgres-main") &&
+                  scope.TargetNamespace == "maliev-legacy" && scope.TargetCluster == "legacy-postgres-main")) ||
             pins.ReviewKeyId == pins.AuthorizationKeyId || pins.ReviewKeyId == pins.ReceiptKeyId ||
             pins.AuthorizationKeyId == pins.ReceiptKeyId || pins.ReviewFingerprint == pins.AuthorizationFingerprint ||
             pins.ReviewFingerprint == pins.ReceiptFingerprint || pins.AuthorizationFingerprint == pins.ReceiptFingerprint ||
@@ -137,9 +136,11 @@ internal sealed class CurrentAppOwnedRepairPermit
         { throw Invalid(); }
     }
 
-    internal static byte[] Payload(CurrentAppOwnedRepairSignedClaim claim) =>
-        [.. Encoding.UTF8.GetBytes("Legacy.Maliev.CurrentAppOwnedEight." + claim.Kind + "\0"),
+    internal static byte[] Payload(CurrentAppOwnedRepairSignedClaim claim)
+    {
+        return [.. Encoding.UTF8.GetBytes("Legacy.Maliev.CurrentAppOwnedEight." + claim.Kind + "\0"),
             .. JsonSerializer.SerializeToUtf8Bytes(claim with { Signature = null })];
+    }
 
     private static bool Verify(CurrentAppOwnedRepairSignedClaim claim, IReceiptAttestationTrustStore trust,
         string fingerprint, DateTimeOffset now, TimeSpan maximum)
@@ -152,9 +153,23 @@ internal sealed class CurrentAppOwnedRepairPermit
         catch (FormatException) { return false; }
     }
 
-    internal static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-    internal static bool HashShape(string value) => value.Length == 64 && value.All(x => x is >= '0' and <= '9' or >= 'a' and <= 'f');
-    private static T Clone<T>(T value) => JsonSerializer.Deserialize<T>(JsonSerializer.SerializeToUtf8Bytes(value)) ?? throw Invalid();
-    internal static MigrationExecutionException Invalid() =>
-        new("current_app_owned_eight_admission_invalid", "The distinct guarded eight-table repair admission failed.");
+    internal static string Hash(byte[] bytes)
+    {
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
+    internal static bool HashShape(string value)
+    {
+        return value.Length == 64 && value.All(x => x is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
+    }
+
+    private static T Clone<T>(T value)
+    {
+        return JsonSerializer.Deserialize<T>(JsonSerializer.SerializeToUtf8Bytes(value)) ?? throw Invalid();
+    }
+
+    internal static MigrationExecutionException Invalid()
+    {
+        return new("current_app_owned_eight_admission_invalid", "The distinct guarded eight-table repair admission failed.");
+    }
 }

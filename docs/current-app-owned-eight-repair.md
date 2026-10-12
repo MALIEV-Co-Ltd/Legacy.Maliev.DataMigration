@@ -71,3 +71,43 @@ checks, custody, prepared receipt publication or commit acknowledgment loss; tho
 execution gates remain required. Local validation of this addition is not run:
 the unchanged 3 GiB host-free admission guard refused the build before starting
 a child. Exact-head hosted validation is required under the draft exception.
+
+## Execution connection and host observation corrections
+
+The executor closes its per-database backend after same-session committed
+readback and before global preservation opens an independent backend. The
+zero-other-client policy remains enforced. A native Core-executor regression
+uses actual PostgreSQL policy/catalog observations through a separate connection;
+it also verifies two retained receipt payloads. The sink and source/custody
+callbacks in that component fixture do not establish closed-Console acceptance.
+
+The production observer now uses its existing host factory. A Windows fixture
+constructs the actual Console environment with owner-protected token/CA files
+inside held run custody. It verifies constructor compatibility, not a production
+API request or persistent admission. TLS and endpoint guards remain unchanged.
+
+Both corrections built with zero warnings/errors and passed 18 focused local
+tests, including the Windows constructor fixture, before formatting. The prior
+published head passed hosted Core (1,829 passed, 90 skipped) and SQL Server
+(196 passed, one skipped) suites but failed formatting. Formatting was applied
+in separate bounded Core, Console and test project passes; fresh build/tests and
+exact-head hosted validation are required for the resulting source.
+
+## Retained receipt recovery remains an execution blocker
+
+The current Console apply loop starts its receipt chain from zero. It does not
+validate and resume a retained committed database receipt, and the executor
+checks the original preimage before classifying an already-created table set.
+After partial commit or lost acknowledgment, replay can therefore fail its
+preimage check or collide with immutable create-new receipt filenames. Do not
+remove, replace or ignore those receipts, or treat a fresh manual baseline as a
+recovery attestation. A signed reconciliation path must verify the retained
+chain, actual current preservation and schema, and commit classification before
+any continuation. Uncertain outcomes remain unresolved until that path is
+implemented and genuinely exercised. Persistent execution is not accepted.
+After formatting, the complete Release solution build again passed with zero
+warnings/errors and all 18 focused local tests passed without skips. A subsequent
+format-verify attempt did not start because the unchanged 3 GiB host-free admission
+guard failed. Full local suites remain not run to completion; exact-head hosted
+validation remains required. All test helpers exited and disposable containers
+were absent after the run.

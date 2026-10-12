@@ -83,7 +83,11 @@ public static partial class MigrationConsole
             await output.WriteLineAsync("current_app_owned_eight_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
             return 0;
 
-            T Read<T>(string path) => Decode<T>(files.Read(path));
+            T Read<T>(string path)
+            {
+                return Decode<T>(files.Read(path));
+            }
+
             void RequireArtifact(CurrentAppOwnedRepairArtifact artifact, string expected)
             {
                 if (artifact.Sha256 != expected || CurrentAppOwnedRepairPermit.Hash(files.Read(artifact.Path)) != expected)
@@ -97,7 +101,10 @@ public static partial class MigrationConsole
             await error.WriteLineAsync("current_app_owned_eight_boundary_failed_no_success_claim").ConfigureAwait(false);
             return 1;
         }
-        static T Decode<T>(byte[] bytes) => JsonSerializer.Deserialize<T>(bytes, JsonOptions)
+        static T Decode<T>(byte[] bytes)
+        {
+            return JsonSerializer.Deserialize<T>(bytes, JsonOptions)
             ?? throw CurrentAppOwnedRepairPermit.Invalid();
+        }
     }
 }
