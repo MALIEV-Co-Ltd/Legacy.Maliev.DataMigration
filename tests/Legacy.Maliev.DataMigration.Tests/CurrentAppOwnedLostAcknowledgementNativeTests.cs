@@ -28,6 +28,7 @@ public sealed class CurrentAppOwnedLostAcknowledgementNativeTests
         await using var postgres = new PostgreSqlBuilder(
             "postgres:18.4-bookworm@sha256:882236b897e39051d2368c5ccc6cda944904723506b2dfc97f2a8f5bc9afa382")
             .WithDatabase("Customer").WithUsername("postgres").WithPassword(Guid.NewGuid().ToString("N"))
+            .WithCommand("-c", "autovacuum=off")
             .WithLabel("codex.repair.purpose", "current-app-owned-eight-lost-ack-test")
             .WithLabel("codex.repair.operation", operation.ToString("D"))
             .WithCreateParameterModifier(parameters =>
@@ -48,6 +49,8 @@ public sealed class CurrentAppOwnedLostAcknowledgementNativeTests
         await using (var setup = new NpgsqlConnection(administrator.ConnectionString))
         {
             await setup.OpenAsync(ct);
+            await using (var fixtureSetting = new NpgsqlCommand("SHOW autovacuum;", setup))
+            { Assert.Equal("off", await fixtureSetting.ExecuteScalarAsync(ct)); }
             await using (var transaction = await setup.BeginTransactionAsync(ct))
             {
                 await using var inspector = new PostgreSqlWholeDatabaseTransaction(setup, transaction, ownsResources: false);
@@ -73,8 +76,8 @@ public sealed class CurrentAppOwnedLostAcknowledgementNativeTests
             await using var path = new NpgsqlCommand("SELECT current_setting('hba_file');", setup);
             string hbaPath = (string)(await path.ExecuteScalarAsync(ct))!;
             await using var hba = new NpgsqlCommand(
-                $"COPY (VALUES ('local all all trust'), ('host all {role} 0.0.0.0/0 scram-sha-256'), " +
-                $"('host all {role} ::/0 scram-sha-256'), ('host all all 0.0.0.0/0 reject'), " +
+                $"COPY (VALUES ('local all {role} scram-sha-256'), ('host all {role} 0.0.0.0/0 scram-sha-256'), " +
+                $"('host all {role} ::/0 scram-sha-256'), ('local all all reject'), ('host all all 0.0.0.0/0 reject'), " +
                 $"('host all all ::/0 reject')) TO '{hbaPath.Replace("'", "''", StringComparison.Ordinal)}'; SELECT pg_reload_conf();", setup);
             _ = await hba.ExecuteNonQueryAsync(ct);
         }

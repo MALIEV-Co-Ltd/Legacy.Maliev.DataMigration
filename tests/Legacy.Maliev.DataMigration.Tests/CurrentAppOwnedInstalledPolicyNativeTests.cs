@@ -22,6 +22,7 @@ public sealed class CurrentAppOwnedInstalledPolicyNativeTests
             "postgres:18.4-bookworm@sha256:882236b897e39051d2368c5ccc6cda944904723506b2dfc97f2a8f5bc9afa382")
             .WithDatabase("Customer")
             .WithUsername("postgres").WithPassword(Guid.NewGuid().ToString("N"))
+            .WithCommand("-c", "autovacuum=off")
             .WithCreateParameterModifier(parameters =>
             {
                 parameters.HostConfig!.Memory = 384 * 1024 * 1024;
@@ -33,6 +34,8 @@ public sealed class CurrentAppOwnedInstalledPolicyNativeTests
         await using (var setup = new NpgsqlConnection(administrator.ConnectionString))
         {
             await setup.OpenAsync();
+            await using (var fixtureSetting = new NpgsqlCommand("SHOW autovacuum;", setup))
+            { Assert.Equal("off", await fixtureSetting.ExecuteScalarAsync()); }
             await using var create = new NpgsqlCommand(
                 $"CREATE ROLE {role} LOGIN SUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS " +
                 $"PASSWORD '{password}' VALID UNTIL '{issued.AddMinutes(30):O}'; COMMENT ON ROLE {role} IS '{comment}';", setup);
@@ -43,8 +46,8 @@ public sealed class CurrentAppOwnedInstalledPolicyNativeTests
                 await using var path = new NpgsqlCommand("SELECT current_setting('hba_file');", setup);
                 string policyPath = (string)(await path.ExecuteScalarAsync())!;
                 await using var install = new NpgsqlCommand(
-                    $"COPY (VALUES ('local all all trust'), ('host all {role} 0.0.0.0/0 scram-sha-256'), " +
-                    $"('host all {role} ::/0 scram-sha-256'), ('host all all 0.0.0.0/0 reject'), " +
+                    $"COPY (VALUES ('local all {role} scram-sha-256'), ('host all {role} 0.0.0.0/0 scram-sha-256'), " +
+                    $"('host all {role} ::/0 scram-sha-256'), ('local all all reject'), ('host all all 0.0.0.0/0 reject'), " +
                     $"('host all all ::/0 reject')) TO '{policyPath.Replace("'", "''", StringComparison.Ordinal)}'; SELECT pg_reload_conf();", setup);
                 _ = await install.ExecuteNonQueryAsync();
                 bool rejected = false;
@@ -91,6 +94,13 @@ public sealed class CurrentAppOwnedInstalledPolicyNativeTests
                 .ToDictionary(database => database, _ => new string('e', 64), StringComparer.Ordinal),
             new string('b', 64), new string('c', 64), new string('d', 64), new string('e', 64),
             new(role, comment, issued, expires, postmaster, loaded, hba, hbaRules, hbaPath));
+        if (!installExclusivePolicy)
+        {
+            _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => CheckAsync(scope));
+            await using var unchanged = new NpgsqlCommand("SELECT count(*) FROM pg_class WHERE relname IN ('CustomerCreateOperation','QuotationProfileCompletionOperation');", connection);
+            Assert.Equal(0L, await unchanged.ExecuteScalarAsync());
+            return;
+        }
         await CheckAsync(scope);
         foreach (CurrentAppOwnedRepairScope stale in new[]
         {
