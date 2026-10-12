@@ -79,8 +79,9 @@ public sealed class CurrentAppOwnedV3RepairNativeTests(ITestOutputHelper output)
                     await inspector.ApplySchemaAsync(fixture, ct);
                     await inspector.FinalizeSchemaAsync(fixture, ct);
                     foreach (TableCopyPlan table in fixture.Tables)
-                    { await Sql(setup, tx, $"ALTER TABLE public.{Q(table.TargetTable)} OWNER TO legacy_local;", ct); }
-                    TableCopyPlan root = fixture.Tables[0];
+                    { await Sql(setup, tx, $"ALTER TABLE {Q(table.TargetSchema)}.{Q(table.TargetTable)} OWNER TO legacy_local;", ct); }
+                    string rootName = database == "CustomerIdentity" ? "AspNetUsers" : database == "Quotation" ? "Quotation" : "Probe";
+                    TableCopyPlan root = fixture.Tables.Single(x => x.TargetSchema == "public" && x.TargetTable == rootName);
                     await Sql(setup, tx, $"INSERT INTO public.{Q(root.TargetTable)} ({Q(root.OrderedColumns[0])},\"Value\") VALUES ('1','ต้นฉบับ กขค 🇹🇭');", ct);
                     if (database == "Invoice")
                     {
