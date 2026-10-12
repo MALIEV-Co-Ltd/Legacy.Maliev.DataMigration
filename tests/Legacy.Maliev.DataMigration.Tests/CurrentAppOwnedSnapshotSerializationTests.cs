@@ -39,7 +39,7 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
             Assert.NotSame(first, pool.Intern(changed));
             Assert.NotEqual(baseline.Sha256, (baseline with { Catalog = [changed, .. baseline.Catalog.Skip(1)] }).Sha256);
         }
-        Assert.NotEqual(baseline.Sha256, (baseline with { Catalog = [.. baseline.Catalog.Reverse()] }).Sha256);
+        Assert.NotEqual(baseline.Sha256, (baseline with { Catalog = [baseline.Catalog[1], baseline.Catalog[0], baseline.Catalog[2]] }).Sha256);
         Assert.NotEqual(baseline.Sha256, (baseline with { Catalog = [.. baseline.Catalog, fact] }).Sha256);
         CurrentAppOwnedRelationFact relation = baseline.Relations[0];
         foreach (CurrentAppOwnedRelationFact changed in new[]
@@ -116,15 +116,15 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
     [InlineData("[]{}")]
     [InlineData("[{\"Database\":\"unfinished\\u00")]
     [InlineData("[{\"Database\":\"a\",\"Catalog\":[],\"Relations\":[],\"Sequences\":[]}")]
-    [InlineData("[{\"Database\":\"a\",\"Database\":\"b\",\"Catalog\":[],\"Relations\":[],\"Sequences\":[]}]")]
-    [InlineData("[{\"Database\":\"a\",\"Unknown\":[],\"Catalog\":[],\"Relations\":[],\"Sequences\":[]}]")]
-    [InlineData("[{\"Database\":\"a\",\"Catalog\":null,\"Relations\":[],\"Sequences\":[]}]")]
-    [InlineData("[{\"Database\":\"a\",\"Catalog\":[],\"Relations\":[]}]")]
-    [InlineData("[{\"Database\":\"a\",\"Catalog\":[null],\"Relations\":[],\"Sequences\":[]}]")]
+    [InlineData(/*lang=json,strict*/ "[{\"Database\":\"a\",\"Database\":\"b\",\"Catalog\":[],\"Relations\":[],\"Sequences\":[]}]")]
+    [InlineData(/*lang=json,strict*/ "[{\"Database\":\"a\",\"Unknown\":[],\"Catalog\":[],\"Relations\":[],\"Sequences\":[]}]")]
+    [InlineData(/*lang=json,strict*/ "[{\"Database\":\"a\",\"Catalog\":null,\"Relations\":[],\"Sequences\":[]}]")]
+    [InlineData(/*lang=json,strict*/ "[{\"Database\":\"a\",\"Catalog\":[],\"Relations\":[]}]")]
+    [InlineData(/*lang=json,strict*/ "[{\"Database\":\"a\",\"Catalog\":[null],\"Relations\":[],\"Sequences\":[]}]")]
     public async Task Rejects_null_unknown_duplicate_missing_and_trailing_content(string json)
     {
         using var input = new ChunkStream(Encoding.UTF8.GetBytes(json), 1);
-        _ = await Assert.ThrowsAsync<JsonException>(() => CurrentAppOwnedSnapshotSerialization.ReadBaselineAsync(input,
+        _ = await Assert.ThrowsAnyAsync<JsonException>(() => CurrentAppOwnedSnapshotSerialization.ReadBaselineAsync(input,
             new CurrentAppOwnedSnapshotInternPool(), CancellationToken.None));
         Assert.True(input.CanRead);
     }
@@ -154,7 +154,7 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
         })
         {
             using var input = new ChunkStream(bytes, 29);
-            _ = await Assert.ThrowsAsync<JsonException>(() => CurrentAppOwnedSnapshotSerialization.ReadBaselineAsync(input,
+            _ = await Assert.ThrowsAnyAsync<JsonException>(() => CurrentAppOwnedSnapshotSerialization.ReadBaselineAsync(input,
                 new CurrentAppOwnedSnapshotInternPool(limits), CancellationToken.None));
         }
         string json = Encoding.UTF8.GetString(bytes);
@@ -167,7 +167,7 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
         })
         {
             using var input = new ChunkStream(Encoding.UTF8.GetBytes(changed), 503);
-            _ = await Assert.ThrowsAsync<JsonException>(() => CurrentAppOwnedSnapshotSerialization.ReadBaselineAsync(input,
+            _ = await Assert.ThrowsAnyAsync<JsonException>(() => CurrentAppOwnedSnapshotSerialization.ReadBaselineAsync(input,
                 new CurrentAppOwnedSnapshotInternPool(), CancellationToken.None));
         }
     }
@@ -183,7 +183,7 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
             new CurrentAppOwnedSnapshotLimits(MaximumFacts: 4_000_001),
             new CurrentAppOwnedSnapshotLimits(MaximumUniqueRecords: 200_001),
             new CurrentAppOwnedSnapshotLimits(MaximumStringUtf8Bytes: 4097),
-            new CurrentAppOwnedSnapshotLimits(MaximumUniqueStringCharacters: 32L * 1024 * 1024 + 1),
+            new CurrentAppOwnedSnapshotLimits(MaximumUniqueStringCharacters: (32L * 1024 * 1024) + 1),
         })
         {
             _ = Assert.Throws<ArgumentOutOfRangeException>(() => new CurrentAppOwnedSnapshotInternPool(limits));
@@ -194,7 +194,7 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
     public async Task Streaming_writer_rejects_before_exceeding_cap_and_preserves_caller_output()
     {
         using var output = new MemoryStream();
-        _ = await Assert.ThrowsAsync<JsonException>(() => CurrentAppOwnedSnapshotSerialization.WriteAsync(
+        _ = await Assert.ThrowsAnyAsync<JsonException>(() => CurrentAppOwnedSnapshotSerialization.WriteAsync(
             output, new[] { Snapshot("Customer") }, CancellationToken.None, maximumBytes: 13));
         Assert.InRange(output.Length, 0, 13);
         Assert.True(output.CanWrite);
@@ -226,7 +226,7 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
             new CurrentAppOwnedSnapshotInternPool(), CancellationToken.None);
         Assert.Equal(snapshot.Sha256, Assert.Single(decoded).Sha256);
         using var oversized = new ChunkStream(JsonSerializer.SerializeToUtf8Bytes(new[] { snapshot with { Database = new string('<', 4097) } }), 13);
-        _ = await Assert.ThrowsAsync<JsonException>(() => CurrentAppOwnedSnapshotSerialization.ReadBaselineAsync(oversized,
+        _ = await Assert.ThrowsAnyAsync<JsonException>(() => CurrentAppOwnedSnapshotSerialization.ReadBaselineAsync(oversized,
             new CurrentAppOwnedSnapshotInternPool(), CancellationToken.None));
     }
 
@@ -256,7 +256,7 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
             File.WriteAllText(path, "invalid");
             using (var custody = new CurrentAppOwnedRepairCustody(authority))
             {
-                _ = await Assert.ThrowsAsync<JsonException>(() => custody.ReadBaselineAsync(path, CancellationToken.None));
+                _ = await Assert.ThrowsAnyAsync<JsonException>(() => custody.ReadBaselineAsync(path, CancellationToken.None));
                 File.WriteAllText(path, "released");
                 custody.Require();
             }
@@ -275,14 +275,21 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
             [new("public", "synthetic_sequence", "owner", new string('a', 64))]);
     }
 
-    private static string OldHash<T>(T value) => Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(value)));
+    private static string OldHash<T>(T value)
+    {
+        return Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(value)));
+    }
 
     private sealed class ChunkStream(byte[] bytes, int chunk, CancellationTokenSource? cancelAfterRead = null) : MemoryStream(bytes, writable: false)
     {
         internal int MaximumRequested { get; private set; }
         public override bool CanSeek => false;
         public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
-        public override long Seek(long offset, SeekOrigin loc) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin loc)
+        {
+            throw new NotSupportedException();
+        }
+
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -293,3 +300,4 @@ public sealed class CurrentAppOwnedSnapshotSerializationTests
         }
     }
 }
+

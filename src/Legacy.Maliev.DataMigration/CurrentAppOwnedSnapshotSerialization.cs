@@ -252,12 +252,16 @@ internal static class CurrentAppOwnedSnapshotSerialization
                     else { _fields[_factProperty] = ReadString(ref reader); }
                     _stage = ParseStage.FactProperty;
                     break;
+                case ParseStage.Done:
+                    throw new JsonException("Trailing snapshot content is not permitted.");
                 default: throw new JsonException("Trailing snapshot content is not permitted.");
             }
         }
 
-        internal CurrentAppOwnedDatabaseSnapshot[] Complete() =>
-            _stage == ParseStage.Done ? [.. _snapshots] : throw new JsonException("Incomplete baseline.");
+        internal CurrentAppOwnedDatabaseSnapshot[] Complete()
+        {
+            return _stage == ParseStage.Done ? [.. _snapshots] : throw new JsonException("Incomplete baseline.");
+        }
 
         private string ReadString(ref Utf8JsonReader reader)
         {
@@ -266,9 +270,9 @@ internal static class CurrentAppOwnedSnapshotSerialization
             if ((reader.HasValueSequence ? reader.ValueSequence.Length : reader.ValueSpan.Length) > pool.Limits.MaximumStringUtf8Bytes * 6L)
             { throw new JsonException("Snapshot string token limit exceeded."); }
             string value = reader.GetString() ?? throw new JsonException();
-            if (System.Text.Encoding.UTF8.GetByteCount(value) > pool.Limits.MaximumStringUtf8Bytes)
-            { throw new JsonException("Snapshot string limit exceeded."); }
-            return value;
+            return System.Text.Encoding.UTF8.GetByteCount(value) > pool.Limits.MaximumStringUtf8Bytes
+                ? throw new JsonException("Snapshot string limit exceeded.")
+                : value;
         }
 
         private static void Expect(JsonTokenType actual, JsonTokenType expected)
@@ -284,11 +288,30 @@ internal static class CurrentAppOwnedSnapshotSerialization
         public override long Length => throw new NotSupportedException();
         public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
         public override void Flush() { }
-        public override void Write(byte[] buffer, int offset, int count) => digest.AppendData(buffer, offset, count);
-        public override void Write(ReadOnlySpan<byte> buffer) => digest.AppendData(buffer);
-        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            digest.AppendData(buffer, offset, count);
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            digest.AppendData(buffer);
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private sealed class BoundedWriteStream(Stream output, long maximumBytes) : Stream
@@ -299,9 +322,21 @@ internal static class CurrentAppOwnedSnapshotSerialization
         public override bool CanWrite => output.CanWrite;
         public override long Length => throw new NotSupportedException();
         public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
-        public override void Flush() => output.Flush();
-        public override Task FlushAsync(CancellationToken cancellationToken) => output.FlushAsync(cancellationToken);
-        public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
+        public override void Flush()
+        {
+            output.Flush();
+        }
+
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            return output.FlushAsync(cancellationToken);
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            Write(buffer.AsSpan(offset, count));
+        }
+
         public override void Write(ReadOnlySpan<byte> buffer)
         {
             Reserve(buffer.Length);
@@ -318,9 +353,20 @@ internal static class CurrentAppOwnedSnapshotSerialization
             if (count > maximumBytes - _written) { throw new JsonException("Snapshot byte limit exceeded."); }
             _written += count;
         }
-        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private sealed class BoundedReadStream(Stream input, long maximumBytes) : Stream
@@ -331,8 +377,16 @@ internal static class CurrentAppOwnedSnapshotSerialization
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException();
         public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
-        public override void Flush() => throw new NotSupportedException();
-        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+        public override void Flush()
+        {
+            throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            return Read(buffer.AsSpan(offset, count));
+        }
+
         public override int Read(Span<byte> buffer)
         {
             int count = input.Read(buffer[..Allowed(buffer.Length)]);
@@ -345,15 +399,30 @@ internal static class CurrentAppOwnedSnapshotSerialization
             Add(count);
             return count;
         }
-        private int Allowed(int requested) => (int)Math.Min(requested, Math.Min(int.MaxValue, maximumBytes - _read + 1));
+        private int Allowed(int requested)
+        {
+            return (int)Math.Min(requested, Math.Min(int.MaxValue, maximumBytes - _read + 1));
+        }
+
         private void Add(int count)
         {
             _read += count;
             if (_read > maximumBytes) { throw new JsonException("Snapshot byte limit exceeded."); }
         }
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
     }
 }
 
