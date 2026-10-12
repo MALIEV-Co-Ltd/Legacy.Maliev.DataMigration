@@ -104,7 +104,8 @@ internal static class ApprovedTargetExtensionStateInspector
 
     private static void RequireCurrentState(DatabaseSchemaPlan schema, ApprovedTargetExtensionState state)
     {
-        if (!ApprovedCurrentConsumerSchemaManifest.IsProfile(schema.TargetExtensionProfile)) { return; }
+        if (!ApprovedCurrentConsumerSchemaManifest.IsProfile(schema.TargetExtensionProfile) &&
+            !CurrentConsumerSchemaV3Manifest.IsProfile(schema.TargetExtensionProfile)) { return; }
         IReadOnlyList<TableCopyPlan> tables = ApprovedTargetExtensionManifest.TablesFor(schema);
         if (state.Tables.Count != tables.Count) { throw InvalidCurrentState(); }
         for (int index = 0; index < tables.Count; index++)
