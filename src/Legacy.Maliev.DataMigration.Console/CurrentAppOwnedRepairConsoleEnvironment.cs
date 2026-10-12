@@ -73,7 +73,6 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
         if (scope.Target.Kind == DeltaTargetAuthorityKind.LocalAspire)
         {
             if (!OperatingSystem.IsWindows() || _target.CloudOptions is not null || _target.CloudObservation is not null ||
-                _target.DockerVolume != "legacy-maliev-exact23-postgres-data" ||
                 _target.DockerContainerId is not { Length: 64 } || _target.HbaStatSha256 is null ||
                 !CurrentAppOwnedRepairPermit.HashShape(_target.HbaStatSha256) ||
                 !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOCKER_HOST")) ||
@@ -82,20 +81,32 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
                 !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOCKER_TLS_VERIFY")) ||
                 !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOCKER_CERT_PATH")))
             { throw CurrentAppOwnedRepairPermit.Invalid(); }
+            bool persistent = CurrentAppOwnedRepairLocalTarget.RequireClaim(scope.Target, scope.OperationId,
+                scope.RunBindingSha256, _target);
+            string volumeName = _target.DockerVolume ?? throw CurrentAppOwnedRepairPermit.Invalid();
             string container = await DefaultPairedLocalTemplateObserver.RunDockerAsync(
                 ["--host", "npipe:////./pipe/docker_engine", "inspect", "--type", "container", _target.DockerContainerId], ct).ConfigureAwait(false);
             string volume = await DefaultPairedLocalTemplateObserver.RunDockerAsync(
-                ["--host", "npipe:////./pipe/docker_engine", "inspect", "--type", "volume", _target.DockerVolume], ct).ConfigureAwait(false);
+                ["--host", "npipe:////./pipe/docker_engine", "inspect", "--type", "volume", volumeName], ct).ConfigureAwait(false);
             DockerLocalTargetObservation actual = DockerLocalTargetObservation.Parse(container, volume,
-                _target.DockerContainerId, _target.DockerVolume, endpoint.Port, persistent: true);
+                _target.DockerContainerId, volumeName, endpoint.Port, persistent);
             using JsonDocument metadata = JsonDocument.Parse(container);
             JsonElement item = metadata.RootElement[0];
+            if (!persistent)
+            {
+                using JsonDocument volumeMetadata = JsonDocument.Parse(volume);
+                CurrentAppOwnedRepairLocalTarget.RequireDisposableMetadata(item, volumeMetadata.RootElement[0],
+                    scope.OperationId, scope.RunBindingSha256, DateTimeOffset.UtcNow);
+            }
             if (item.GetProperty("Image").GetString() != _target.DockerImageId ||
                 item.GetProperty("Config").GetProperty("Image").GetString() != _target.DockerImageReference ||
                 LocalDockerGenerationGuard.ComposeGeneration(actual) != scope.TargetGeneration)
             { throw CurrentAppOwnedRepairPermit.Invalid(); }
-            string writers = await DefaultPairedLocalTemplateObserver.RunDockerAsync(
-                ["--host", "npipe:////./pipe/docker_engine", "ps", "--no-trunc", "--filter", "volume=" + _target.DockerVolume, "--format", "{{.ID}}"], ct).ConfigureAwait(false);
+            string[] inventoryArguments = persistent
+                ? ["--host", "npipe:////./pipe/docker_engine", "ps", "--no-trunc", "--filter", "volume=" + _target.DockerVolume, "--format", "{{.ID}}"]
+                : ["--host", "npipe:////./pipe/docker_engine", "ps", "--all", "--no-trunc", "--filter", "volume=" + _target.DockerVolume, "--format", "{{.ID}}"];
+            string writers = await DefaultPairedLocalTemplateObserver.RunDockerAsync(inventoryArguments, ct).ConfigureAwait(false);
+            if (!persistent) { CurrentAppOwnedRepairLocalTarget.RequireVolumeConsumers(writers, _target.DockerContainerId); }
             string stat = await DefaultPairedLocalTemplateObserver.RunDockerAsync(
                 ["--host", "npipe:////./pipe/docker_engine", "exec", _target.DockerContainerId, "env", "TZ=UTC", "LC_ALL=C",
                     "stat", "--printf=%d|%i|%f|%u|%g|%h|%s|%y|%z", "--", _target.HbaPath], ct).ConfigureAwait(false);
