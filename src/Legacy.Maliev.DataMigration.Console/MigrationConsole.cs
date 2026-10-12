@@ -154,6 +154,11 @@ public static partial class MigrationConsole
                     return await RunHistoricalLocalReviewBoundaryAsync(invocation.ConfigPath,
                         getEnvironmentVariable, output, error, new DefaultHistoricalLocalReviewRuntime(),
                         cancellationToken).ConfigureAwait(false);
+                case "authorize-current-app-owned-eight-repair":
+                case "verify-current-app-owned-eight-repair":
+                case "apply-current-app-owned-eight-repair":
+                    return await RunCurrentAppOwnedEightRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
                 case "stage-source-backed-local-repair":
                 case "prepare-source-backed-local-repair-authority":
                 case "authorize-source-backed-local-repair":
