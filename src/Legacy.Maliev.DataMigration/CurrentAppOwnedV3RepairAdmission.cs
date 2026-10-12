@@ -37,17 +37,16 @@ internal sealed class CurrentAppOwnedV3RepairPermit
     private readonly CurrentAppOwnedV3RepairSignedClaim _review;
     private readonly CurrentAppOwnedV3RepairSignedClaim _authorization;
     private readonly IReceiptAttestationTrustStore _trust;
-    private readonly CurrentAppOwnedRepairSigningPins _pins;
     private readonly TimeProvider _clock;
 
     private CurrentAppOwnedV3RepairPermit(CurrentAppOwnedV3RepairSignedClaim review,
         CurrentAppOwnedV3RepairSignedClaim authorization, IReceiptAttestationTrustStore trust,
         CurrentAppOwnedRepairSigningPins pins, ICurrentAppOwnedV3RepairEnvironment environment, TimeProvider clock)
-    { _review = review; _authorization = authorization; _trust = trust; _pins = pins; Environment = environment; _clock = clock; }
+    { _review = review; _authorization = authorization; _trust = trust; SigningPins = pins; Environment = environment; _clock = clock; }
 
     internal CurrentAppOwnedV3RepairScope Scope => Clone(_authorization.Scope);
     internal ICurrentAppOwnedV3RepairEnvironment Environment { get; }
-    internal CurrentAppOwnedRepairSigningPins SigningPins => _pins;
+    internal CurrentAppOwnedRepairSigningPins SigningPins { get; }
     private int _executionState; // 0 fresh, 3 reserving, 1 running, 2 permanently stopped.
     internal string AuthorizationSha256 => CurrentAppOwnedSnapshotSerialization.Sha256(_authorization);
 
@@ -93,12 +92,12 @@ internal sealed class CurrentAppOwnedV3RepairPermit
         await permit.RequireAsync(cancellationToken).ConfigureAwait(false);
         return signed;
     }
-        internal async Task RequireAsync(CancellationToken cancellationToken)
+    internal async Task RequireAsync(CancellationToken cancellationToken)
     {
         try
         {
             if (Volatile.Read(ref _executionState) == 2) { throw Invalid(); }
-            ValidateClaims(_review, _authorization, _trust, _pins, _clock.GetUtcNow());
+            ValidateClaims(_review, _authorization, _trust, SigningPins, _clock.GetUtcNow());
             await Environment.RequireSourceAsync(_authorization.Scope.SourceCommitSha, cancellationToken).ConfigureAwait(false);
             await Environment.RequireResourceAndCustodyAsync(Scope, cancellationToken).ConfigureAwait(false);
             if (Volatile.Read(ref _executionState) == 2) { throw Invalid(); }
@@ -121,7 +120,7 @@ internal sealed class CurrentAppOwnedV3RepairPermit
         catch { Stop(); throw; }
     }
 
-    internal void Stop() { Interlocked.Exchange(ref _executionState, 2); }
+    internal void Stop() { _ = Interlocked.Exchange(ref _executionState, 2); }
     internal async Task RequireFleetAsync(IReadOnlyDictionary<string, string> expected, CancellationToken ct)
     {
         try
@@ -137,7 +136,7 @@ internal sealed class CurrentAppOwnedV3RepairPermit
         }
         catch { Stop(); throw; }
     }
-private static bool ValidFleet(CurrentAppOwnedV3RepairScope scope)
+    private static bool ValidFleet(CurrentAppOwnedV3RepairScope scope)
     {
         int expected = scope.Target.Kind == DeltaTargetAuthorityKind.LocalAspire ? 26 : 53;
         return scope.BeforeDatabaseSha256.Count == expected &&

@@ -61,8 +61,8 @@ internal static class CurrentAppOwnedMaintenanceHba
             if (targetKind == DeltaTargetAuthorityKind.ProductionCloudNativePg && rule.Type == "hostssl" &&
                 rule.Method == "cert" && rule.Address == "all" && rule.Netmask is null &&
                 rule.Databases.Length == 1 && (rule.Databases[0] is "replication" or "postgres") &&
-                rule.Options.SequenceEqual(new[] { "clientcert=verify-full" }, StringComparer.Ordinal) &&
-                rule.Users.SequenceEqual(new[] { "streaming_replica" }, StringComparer.Ordinal))
+                rule.Options.SequenceEqual(["clientcert=verify-full"], StringComparer.Ordinal) &&
+                rule.Users.SequenceEqual(["streaming_replica"], StringComparer.Ordinal))
             {
                 if (rejectionStarted) { throw Invalid(); }
                 continue;
@@ -72,20 +72,20 @@ internal static class CurrentAppOwnedMaintenanceHba
                 (!local && (string.IsNullOrEmpty(rule.Address) || string.IsNullOrEmpty(rule.Netmask))))
             { throw Invalid(); }
             if (targetKind == DeltaTargetAuthorityKind.ProductionCloudNativePg && local && rule.Method == "peer" &&
-                rule.Databases.SequenceEqual(new[] { "postgres" }, StringComparer.Ordinal) &&
-                rule.Users.SequenceEqual(new[] { "postgres" }, StringComparer.Ordinal))
+                rule.Databases.SequenceEqual(["postgres"], StringComparer.Ordinal) &&
+                rule.Users.SequenceEqual(["postgres"], StringComparer.Ordinal))
             {
                 if (rejectionStarted) { throw Invalid(); }
                 continue;
             }
-            if (!rule.Databases.SequenceEqual(new[] { "all" }, StringComparer.Ordinal)) { throw Invalid(); }
-            if (rule.Method == "scram-sha-256" && rule.Users.SequenceEqual(new[] { operatorRole }, StringComparer.Ordinal))
+            if (!rule.Databases.SequenceEqual(["all"], StringComparer.Ordinal)) { throw Invalid(); }
+            if (rule.Method == "scram-sha-256" && rule.Users.SequenceEqual([operatorRole], StringComparer.Ordinal))
             {
                 if (rejectionStarted) { throw Invalid(); }
                 operatorAllowed = true;
                 continue;
             }
-            if (rule.Method != "reject" || !rule.Users.SequenceEqual(new[] { "all" }, StringComparer.Ordinal))
+            if (rule.Method != "reject" || !rule.Users.SequenceEqual(["all"], StringComparer.Ordinal))
             { throw Invalid(); }
             rejectionStarted = true;
             localRejected |= local;

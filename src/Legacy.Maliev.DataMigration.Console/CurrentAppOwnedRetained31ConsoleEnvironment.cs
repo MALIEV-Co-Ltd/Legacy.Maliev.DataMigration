@@ -9,6 +9,19 @@ namespace Legacy.Maliev.DataMigration.Console;
 /// <summary>Closed actual Console composition. Never provisions an operator or rewrites policy.</summary>
 internal sealed class CurrentAppOwnedRetained31ConsoleEnvironment : ICurrentAppOwnedRetained31Environment, IDisposable
 {
+    internal static string ReceiptSuffix(CurrentAppOwnedCommitClassification classification)
+    {
+        return classification switch
+        {
+            CurrentAppOwnedCommitClassification.Prepared => "prepared",
+            CurrentAppOwnedCommitClassification.CommittedAndReadback => "committed-readback",
+            CurrentAppOwnedCommitClassification.RolledBackBeforeCommit => "failed-or-uncertain",
+            CurrentAppOwnedCommitClassification.FailedBeforeCommit => "failed-or-uncertain",
+            CurrentAppOwnedCommitClassification.Uncertain => "failed-or-uncertain",
+            _ => throw CurrentAppOwnedRetained31Permit.Invalid(),
+        };
+    }
+    private static readonly string[] EvidenceSuffixes = ["prepared", "committed-readback", "failed-or-uncertain"];
     private readonly WindowsLocalRunAuthority _authority;
     private readonly CurrentAppOwnedRepairCustody _files;
     private readonly CurrentAppOwnedRepairTargetPins _target;
@@ -181,7 +194,6 @@ internal sealed class CurrentAppOwnedRetained31ConsoleEnvironment : ICurrentAppO
             {
                 CurrentAppOwnedRetained31Observation observed = await CurrentAppOwnedRetained31Preservation.CaptureAsync(connection, tx, ct).ConfigureAwait(false);
                 actual = pool.Intern(observed.Snapshot);
-                observed = observed with { Snapshot = actual };
                 if (_completed.Contains(expected.Database))
                 {
                     if (!_nativeBefore.TryGetValue(expected.Database, out CurrentAppOwnedRetained31Observation? original))
@@ -192,7 +204,7 @@ internal sealed class CurrentAppOwnedRetained31ConsoleEnvironment : ICurrentAppO
                 {
                     CurrentAppOwnedRetained31Preservation.RequireBefore(observed, _before, _after, DateTimeOffset.UtcNow);
                     if (actual.Sha256 != expected.Sha256) { throw CurrentAppOwnedRetained31Permit.Invalid(); }
-                    _nativeBefore.TryAdd(expected.Database, observed);
+                    _ = _nativeBefore.TryAdd(expected.Database, observed);
                 }
             }
             else { actual = pool.Intern(await CurrentAppOwnedRepairPreservation.CaptureAsync(connection, tx, ct).ConfigureAwait(false)); }
@@ -214,9 +226,9 @@ internal sealed class CurrentAppOwnedRetained31ConsoleEnvironment : ICurrentAppO
     public Task RequireFreshOperationAsync(CurrentAppOwnedRetained31Scope scope, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested(); _files.Require();
-        if (_reserved || JsonSerializer.Serialize(scope) != JsonSerializer.Serialize(_scope) || ObserveOperationNames().Length != 0)
-        { throw CurrentAppOwnedRetained31Permit.Invalid(); }
-        return Task.CompletedTask;
+        return _reserved || JsonSerializer.Serialize(scope) != JsonSerializer.Serialize(_scope) || ObserveOperationNames().Length != 0
+            ? throw CurrentAppOwnedRetained31Permit.Invalid()
+            : Task.CompletedTask;
     }
 
     public async Task ReserveFreshOperationAsync(CurrentAppOwnedRetained31Scope scope, string authorizationSha256, CancellationToken ct)
@@ -224,8 +236,13 @@ internal sealed class CurrentAppOwnedRetained31ConsoleEnvironment : ICurrentAppO
         await RequireFreshOperationAsync(scope, ct).ConfigureAwait(false);
         if (authorizationSha256 != _authorizationSha256) { throw CurrentAppOwnedRetained31Permit.Invalid(); }
         string name = $"{scope.OperationId:D}-retained31-operation-start.json";
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new { Kind = "current-app-owned-retained31-operation-start-v1",
-            scope.OperationId, ScopeSha256 = CurrentAppOwnedSnapshotSerialization.Sha256(scope), AuthorizationSha256 = authorizationSha256 });
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            Kind = "current-app-owned-retained31-operation-start-v1",
+            scope.OperationId,
+            ScopeSha256 = CurrentAppOwnedSnapshotSerialization.Sha256(scope),
+            AuthorizationSha256 = authorizationSha256
+        });
         await RetainNewEvidenceAsync(name, bytes, ct).ConfigureAwait(false);
         RequireEvidenceInventory(); _reserved = true;
     }
@@ -281,7 +298,7 @@ internal sealed class CurrentAppOwnedRetained31ConsoleEnvironment : ICurrentAppO
     {
         string reservation = $"{_scope.OperationId:D}-retained31-operation-start.json";
         string[] allowed = CurrentAppOwnedRepairManifest.Databases(CurrentAppOwnedRepairOperation.RetainedThirtyOneTextCollations)
-            .SelectMany(database => new[] { "prepared", "committed-readback", "failed-or-uncertain" }
+            .SelectMany(database => EvidenceSuffixes
                 .Select(suffix => $"{_scope.OperationId:D}-{database}-{suffix}.json")).Append(reservation).ToArray();
         if (name != Path.GetFileName(name) || !allowed.Contains(name, StringComparer.Ordinal) || payload.Length > 65536 ||
             _retainedEvidence.ContainsKey(name)) { throw CurrentAppOwnedRetained31Permit.Invalid(); }
@@ -290,12 +307,7 @@ internal sealed class CurrentAppOwnedRetained31ConsoleEnvironment : ICurrentAppO
             CurrentAppOwnedRetained31Receipt receipt = JsonSerializer.Deserialize<CurrentAppOwnedRetained31Receipt>(payload)
                 ?? throw CurrentAppOwnedRetained31Permit.Invalid();
             PostgreSqlCurrentAppOwnedRetained31Repair.RequireReceipt(receipt, _scope, _authorizationSha256, _trust, _pins);
-            string suffix = receipt.Classification switch
-            {
-                CurrentAppOwnedCommitClassification.Prepared => "prepared",
-                CurrentAppOwnedCommitClassification.CommittedAndReadback => "committed-readback",
-                _ => "failed-or-uncertain",
-            };
+            string suffix = ReceiptSuffix(receipt.Classification);
             if (name != $"{receipt.OperationId:D}-{receipt.Database}-{suffix}.json")
             { throw CurrentAppOwnedRetained31Permit.Invalid(); }
         }

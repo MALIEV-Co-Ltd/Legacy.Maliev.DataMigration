@@ -14,6 +14,7 @@ internal sealed record CurrentAppOwnedV3RepairConfiguration(string BeforeSchemaP
 
 public static partial class MigrationConsole
 {
+    private static readonly string[] V3RepairDatabases = ["Invoice", "PurchaseOrder", "Quotation"];
     // Routing is integrated separately after exact-head review and validation.
     private static async Task<int> RunCurrentAppOwnedV3RepairBoundaryAsync(string command, string configPath,
         TextWriter output, TextWriter error, CancellationToken cancellationToken)
@@ -109,7 +110,7 @@ public static partial class MigrationConsole
                     Encoding.UTF8.GetString(files.Read(configuration.ReceiptPrivateKeyPath)));
                 IReadOnlyList<CurrentAppOwnedV3RepairReceipt> receipts = await PostgreSqlCurrentAppOwnedV3Repair.ExecuteFleetAsync(
                     connection, before, after, preimages, permit, signer, trust, pins, cancellationToken).ConfigureAwait(false);
-                if (receipts.Count != 3 || !receipts.Select(x => x.Database).SequenceEqual(new[] { "Invoice", "PurchaseOrder", "Quotation" }) ||
+                if (receipts.Count != 3 || !receipts.Select(x => x.Database).SequenceEqual(V3RepairDatabases) ||
                     receipts.Any(x => x.Classification != CurrentAppOwnedCommitClassification.CommittedAndReadback))
                 { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
                 await output.WriteLineAsync("current_app_owned_v3_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
@@ -117,7 +118,11 @@ public static partial class MigrationConsole
             }
             finally { permit.Stop(); }
 
-            T ReadV3<T>(string path) => DecodeV3<T>(files.Read(path));
+            T ReadV3<T>(string path)
+            {
+                return DecodeV3<T>(files.Read(path));
+            }
+
             void RequireArtifact(CurrentAppOwnedRepairArtifact artifact, string expected)
             {
                 if (artifact.Sha256 != expected || CurrentAppOwnedRepairPermit.Hash(files.Read(artifact.Path)) != expected)

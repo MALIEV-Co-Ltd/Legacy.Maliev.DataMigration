@@ -42,10 +42,10 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
         using var fixture = new Claims();
         CurrentAppOwnedV3RepairPermit permit = await fixture.Admit();
         await permit.StartAsync(CancellationToken.None);
-        Assert.Single(fixture.Environment.Publications);
+        _ = Assert.Single(fixture.Environment.Publications);
         Assert.EndsWith("-v3-operation-start.json", fixture.Environment.Publications[0], StringComparison.Ordinal);
         _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => permit.StartAsync(CancellationToken.None));
-        Assert.Single(fixture.Environment.Publications);
+        _ = Assert.Single(fixture.Environment.Publications);
     }
 
     [Theory]
@@ -124,7 +124,7 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
             review, authorization, fixture.Before, fixture.After, fixture.Trust, fixture.Pins,
             fixture.Environment, new FixedTime(fixture.Now), CancellationToken.None));
         var fleet = fixture.Scope.BeforeDatabaseSha256.ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
-        string hash = fleet["legacy_local"]; fleet.Remove("legacy_local"); fleet.Add("unreviewed", hash);
+        string hash = fleet["legacy_local"]; _ = fleet.Remove("legacy_local"); fleet.Add("unreviewed", hash);
         changed = fixture.Scope with { BeforeDatabaseSha256 = fleet, GlobalPreservationSha256 = CurrentAppOwnedV3RepairPermit.FleetSha256(fleet) };
         (review, authorization) = fixture.SignPair(changed);
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedV3RepairPermit.ValidateClaims(review, authorization, fixture.Trust, fixture.Pins, fixture.Now));
@@ -181,7 +181,7 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
         _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAppOwnedV3RepairPermit.AuthorizeAsync(
             fixture.Review, fixture.Before, fixture.After, fixture.Trust, fixture.Pins, fixture.Environment,
             authorizationSigner, new FixedTime(fixture.Now), CancellationToken.None));
-        _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => fixture.Admit());
+        _ = await Assert.ThrowsAsync<MigrationExecutionException>(fixture.Admit);
         _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => permit.StartAsync(CancellationToken.None));
         _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => permit.RequireAsync(CancellationToken.None));
         Assert.Equal(0, fixture.Environment.PublicationAttempts);
@@ -221,7 +221,7 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
         Assert.Equal(calls, fixture.Environment.SourceCalls);
         var baseline = fixture.Environment.Fleet;
         fixture.Environment.Fleet = [.. baseline.Skip(1)];
-        _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => fixture.Admit());
+        _ = await Assert.ThrowsAsync<MigrationExecutionException>(fixture.Admit);
         _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAppOwnedV3RepairPermit.IssueReviewAsync(
             fixture.Scope, fixture.Before, fixture.After, baseline, fixture.Trust, fixture.Pins,
             fixture.Environment, signer, fixture.Now.AddHours(1), new FixedTime(fixture.Now), CancellationToken.None));
@@ -289,7 +289,10 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
     }
     private sealed class FixedTime(DateTimeOffset now) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => now;
+        public override DateTimeOffset GetUtcNow()
+        {
+            return now;
+        }
     }
 
     private sealed class Environment : ICurrentAppOwnedV3RepairEnvironment
@@ -301,10 +304,18 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
         internal bool RetainBeforeFailure { get; set; }
         internal string? RaceSlot { get; set; }
         internal int SourceCalls { get; private set; }
-        private readonly object _gate = new();
+        private readonly Lock _gate = new();
         public Task RequireSourceAsync(string sourceCommitSha, CancellationToken cancellationToken) { SourceCalls++; return Task.CompletedTask; }
-        public Task RequireResourceAndCustodyAsync(CurrentAppOwnedV3RepairScope scope, CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task<IReadOnlyList<CurrentAppOwnedDatabaseSnapshot>> InspectFleetAsync(CurrentAppOwnedV3RepairScope scope, CancellationToken cancellationToken) => Task.FromResult(Fleet);
+        public Task RequireResourceAndCustodyAsync(CurrentAppOwnedV3RepairScope scope, CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<CurrentAppOwnedDatabaseSnapshot>> InspectFleetAsync(CurrentAppOwnedV3RepairScope scope, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(Fleet);
+        }
+
         public Task RequireFreshOperationAsync(CurrentAppOwnedV3RepairScope scope, CancellationToken cancellationToken)
         {
             return Publications.Any(x => x.StartsWith(scope.OperationId.ToString("D") + "-", StringComparison.Ordinal))
@@ -315,12 +326,13 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
             lock (_gate)
             {
                 if (RaceSlot is not null) { Publications.Add($"{scope.OperationId:D}-{RaceSlot}.json"); }
-                if (Publications.Any(x => x.StartsWith(scope.OperationId.ToString("D") + "-", StringComparison.Ordinal)))
-                { return Task.FromException(CurrentAppOwnedV3RepairPermit.Invalid()); }
-                return RetainNewEvidenceAsync($"{scope.OperationId:D}-v3-operation-start.json",
+                return Publications.Any(x => x.StartsWith(scope.OperationId.ToString("D") + "-", StringComparison.Ordinal))
+                    ? Task.FromException(CurrentAppOwnedV3RepairPermit.Invalid())
+                    : RetainNewEvidenceAsync($"{scope.OperationId:D}-v3-operation-start.json",
                     JsonSerializer.SerializeToUtf8Bytes(new { scope.OperationId, AuthorizationSha256 = authorizationSha256 }), cancellationToken);
             }
-        }        public Task RetainNewEvidenceAsync(string name, byte[] payload, CancellationToken cancellationToken)
+        }
+        public Task RetainNewEvidenceAsync(string name, byte[] payload, CancellationToken cancellationToken)
         {
             PublicationAttempts++;
             if (!FailPublication || RetainBeforeFailure)
@@ -349,7 +361,7 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
         internal Claims()
         {
             Before = WithOutboxes(CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerSchemaV2));
-            After = Before with { Databases = [.. Before.Databases.Select(x => Reprofile(x))] };
+            After = Before with { Databases = [.. Before.Databases.Select(Reprofile)] };
             Trust = new([new("v3-review", _review.ExportSubjectPublicKeyInfo()),
                 new("v3-authorization", _authorization.ExportSubjectPublicKeyInfo()), new("v3-receipt", _receipt.ExportSubjectPublicKeyInfo())]);
             _ = Trust.TryGetPublicKeyFingerprintSha256("v3-review", out string review);
@@ -375,20 +387,37 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
             byte[] payload = [.. "Legacy.Maliev.CurrentAppOwnedV3.Receipt.v1\0"u8,
                 .. JsonSerializer.SerializeToUtf8Bytes(value with { Signature = null })];
             return value with { Signature = Convert.ToBase64String(_receipt.SignData(payload, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)) };
-        }        internal P256MigrationEvidenceSigner ReviewSigner() => new(Pins.ReviewKeyId, _review.ExportECPrivateKeyPem());
-        internal P256MigrationEvidenceSigner AuthorizationSigner() => new(Pins.AuthorizationKeyId, _authorization.ExportECPrivateKeyPem());
-        internal Task<CurrentAppOwnedV3RepairPermit> Admit() => CurrentAppOwnedV3RepairPermit.AdmitAsync(
-            Review, Authorization, Before, After, Trust, Pins, Environment, new FixedTime(Now), CancellationToken.None);
+        }
+        internal P256MigrationEvidenceSigner ReviewSigner()
+        {
+            return new(Pins.ReviewKeyId, _review.ExportECPrivateKeyPem());
+        }
+
+        internal P256MigrationEvidenceSigner AuthorizationSigner()
+        {
+            return new(Pins.AuthorizationKeyId, _authorization.ExportECPrivateKeyPem());
+        }
+
+        internal Task<CurrentAppOwnedV3RepairPermit> Admit()
+        {
+            return CurrentAppOwnedV3RepairPermit.AdmitAsync(
+                    Review, Authorization, Before, After, Trust, Pins, Environment, new FixedTime(Now), CancellationToken.None);
+        }
+
         internal (CurrentAppOwnedV3RepairSignedClaim Review, CurrentAppOwnedV3RepairSignedClaim Authorization) SignPair(CurrentAppOwnedV3RepairScope scope)
         {
             var review = Sign(new("current-app-owned-v3-review-v1", scope, Guid.NewGuid(), null, Now.AddMinutes(-1), Now.AddHours(1), Pins.ReviewKeyId, null), _review);
             var authorization = Sign(new("current-app-owned-v3-authorization-v1", scope, Guid.NewGuid(), CurrentAppOwnedV3RepairPermit.Hash(JsonSerializer.SerializeToUtf8Bytes(review)), Now, Now.AddMinutes(15), Pins.AuthorizationKeyId, null), _authorization);
             return (review, authorization);
         }
-        private static CurrentAppOwnedV3RepairSignedClaim Sign(CurrentAppOwnedV3RepairSignedClaim value, ECDsa key) => value with
+        private static CurrentAppOwnedV3RepairSignedClaim Sign(CurrentAppOwnedV3RepairSignedClaim value, ECDsa key)
         {
-            Signature = Convert.ToBase64String(key.SignData(CurrentAppOwnedV3RepairPermit.Payload(value), HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)),
-        };
+            return value with
+            {
+                Signature = Convert.ToBase64String(key.SignData(CurrentAppOwnedV3RepairPermit.Payload(value), HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)),
+            };
+        }
+
         public void Dispose() { _review.Dispose(); _authorization.Dispose(); _receipt.Dispose(); }
     }
 
@@ -408,8 +437,12 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
                     "PK_GoogleAnalyticsOutbox", "UX_GoogleAnalyticsOutbox_EventKey", uniqueIndex: true),
                 ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.QuotationOutcomeOutbox,
                     "PK_QuotationOutcomeOutbox", "UQ_QuotationOutcomeOutbox_EventKey", uniqueIndex: false), .. database.Tables.Skip(3)];
-            database = database with { Tables = tables, SourceDispositionProfile = ApprovedSourceDispositionManifest.QuotationOutboxesV1,
-                SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase("Quotation", tables) };
+            database = database with
+            {
+                Tables = tables,
+                SourceDispositionProfile = ApprovedSourceDispositionManifest.QuotationOutboxesV1,
+                SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase("Quotation", tables)
+            };
             return database with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(database) };
         }
     }

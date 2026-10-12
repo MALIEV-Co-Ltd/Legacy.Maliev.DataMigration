@@ -20,7 +20,7 @@ public sealed class CurrentAppOwnedMaintenanceHbaTests
         CurrentAppOwnedMaintenanceHbaRule rule = new(1, type, ["all"], [role],
             type == "local" ? null : "0.0.0.0", type == "local" ? null : "0.0.0.0", method, [], null);
         rules = [rule, .. rules.Select(x => x with { Number = x.Number + 1 })];
-        Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.LocalAspire));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.LocalAspire));
     }
 
     [Theory]
@@ -30,7 +30,7 @@ public sealed class CurrentAppOwnedMaintenanceHbaTests
     public void Every_ordinary_transport_requires_complete_terminal_rejection(int missing)
     {
         CurrentAppOwnedMaintenanceHbaRule[] rules = Rules().Where(x => x.Number != missing + 1).ToArray();
-        Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.LocalAspire));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.LocalAspire));
     }
 
     [Fact]
@@ -39,7 +39,7 @@ public sealed class CurrentAppOwnedMaintenanceHbaTests
         CurrentAppOwnedMaintenanceHbaRule[] initial = Rules();
         CurrentAppOwnedMaintenanceHbaRule[] rules =
         [.. initial.Skip(1).Select(x => x with { Number = x.Number - 1 }), initial[0] with { Number = 4 }];
-        Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.LocalAspire));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.LocalAspire));
     }
 
     [Fact]
@@ -53,7 +53,7 @@ public sealed class CurrentAppOwnedMaintenanceHbaTests
         ];
         CurrentAppOwnedMaintenanceHbaRule[] rules = [.. exceptions, .. Rules().Select(x => x with { Number = x.Number + 3 })];
         CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.ProductionCloudNativePg);
-        Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.LocalAspire));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.LocalAspire));
         foreach (CurrentAppOwnedMaintenanceHbaRule bad in new[]
         {
             exceptions[0] with { Databases = ["all"] }, exceptions[0] with { Users = ["all"] },
@@ -68,7 +68,7 @@ public sealed class CurrentAppOwnedMaintenanceHbaTests
         })
         {
             rules = [bad with { Number = 1 }, .. Rules().Select(x => x with { Number = x.Number + 1 })];
-            Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.ProductionCloudNativePg));
+            _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.ProductionCloudNativePg));
         }
     }
 
@@ -84,7 +84,7 @@ public sealed class CurrentAppOwnedMaintenanceHbaTests
         })
         {
             CurrentAppOwnedMaintenanceHbaRule[] rules = [bad, .. Rules().Skip(1)];
-            Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.LocalAspire));
+            _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedMaintenanceHba.Require(rules, "repair_operator", DeltaTargetAuthorityKind.LocalAspire));
         }
     }
 

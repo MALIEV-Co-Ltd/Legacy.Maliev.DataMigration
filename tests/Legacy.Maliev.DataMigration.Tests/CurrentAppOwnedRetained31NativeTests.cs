@@ -296,8 +296,9 @@ public sealed class CurrentAppOwnedRetained31NativeTests(ITestOutputHelper outpu
         string type = table.ColumnTypes[column];
         if (type is "smallint" or "integer" or "bigint") { return row.ToString(System.Globalization.CultureInfo.InvariantCulture); }
         if (type == "uuid") { return "'" + Guid.NewGuid().ToString("D") + "'"; }
-        if (type == "bytea") { return "decode('" + new string('a', 64) + "','hex')"; }
-        return type.StartsWith("timestamp", StringComparison.Ordinal)
+        return type == "bytea"
+            ? "decode('" + new string('a', 64) + "','hex')"
+            : type.StartsWith("timestamp", StringComparison.Ordinal)
             ? "'2026-01-01T00:00:00Z'"
             : column is "TokenSha256" or "KeyHash" or "Fingerprint" or "IntentFingerprint"
             ? "'" + new string((char)('a' + row), 64) + "'"

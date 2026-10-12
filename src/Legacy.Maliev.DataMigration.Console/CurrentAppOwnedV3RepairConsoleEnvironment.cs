@@ -9,6 +9,19 @@ namespace Legacy.Maliev.DataMigration.Console;
 /// <summary>Closed actual Console composition. Never provisions an operator or rewrites policy.</summary>
 internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwnedV3RepairEnvironment, IDisposable
 {
+    internal static string ReceiptSuffix(CurrentAppOwnedCommitClassification classification)
+    {
+        return classification switch
+        {
+            CurrentAppOwnedCommitClassification.Prepared => "prepared",
+            CurrentAppOwnedCommitClassification.CommittedAndReadback => "committed-readback",
+            CurrentAppOwnedCommitClassification.RolledBackBeforeCommit => "failed-or-uncertain",
+            CurrentAppOwnedCommitClassification.FailedBeforeCommit => "failed-or-uncertain",
+            CurrentAppOwnedCommitClassification.Uncertain => "failed-or-uncertain",
+            _ => throw CurrentAppOwnedV3RepairPermit.Invalid(),
+        };
+    }
+    private static readonly string[] EvidenceSuffixes = ["prepared", "committed-readback", "failed-or-uncertain"];
     private readonly WindowsLocalRunAuthority _authority;
     private readonly CurrentAppOwnedRepairCustody _files;
     private readonly CurrentAppOwnedRepairTargetPins _target;
@@ -166,8 +179,14 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
         if (_failed || JsonSerializer.Serialize(scope) != JsonSerializer.Serialize(_scope))
         { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
         await using (var inventoryConnection = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(_connection)
-        { Database = "postgres", Pooling = false, IncludeErrorDetail = false, Timeout = 5, CommandTimeout = 30,
-            Options = "-c default_transaction_read_only=on" }.ConnectionString))
+        {
+            Database = "postgres",
+            Pooling = false,
+            IncludeErrorDetail = false,
+            Timeout = 5,
+            CommandTimeout = 30,
+            Options = "-c default_transaction_read_only=on"
+        }.ConnectionString))
         {
             await inventoryConnection.OpenAsync(ct).ConfigureAwait(false);
             await using var inventory = new NpgsqlCommand("SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname COLLATE \"C\";", inventoryConnection);
@@ -210,7 +229,7 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
                     CurrentAppOwnedV3AdditivePreservation.RequirePreserved(original, observed);
                     if (pendingAfter) { observedPending = rawHash; }
                 }
-                else { _nativeBefore.TryAdd(expected.Database, observed); }
+                else { _ = _nativeBefore.TryAdd(expected.Database, observed); }
             }
             if (DatabaseInventory.ActiveDatabases.Contains(expected.Database, StringComparer.Ordinal))
             {
@@ -230,22 +249,22 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
     internal async Task<IReadOnlyList<V3AdditiveObservation>> GetRepairPreimagesAsync(CancellationToken ct)
     {
         _ = await InspectFleetAsync(_scope, ct).ConfigureAwait(false);
-        if (_reserved || _completed.Count != 0 || _nativeBefore.Count != RepairDatabases.Length)
-        { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
-        return RepairDatabases.Select(name => _nativeBefore[name] with
-        {
-            Snapshot = CurrentAppOwnedV3RepairPermit.CopySnapshot(_nativeBefore[name].Snapshot),
-            AddedCatalogKeys = new HashSet<string>(_nativeBefore[name].AddedCatalogKeys, StringComparer.Ordinal),
-            NewObjectClosure = new HashSet<string>(_nativeBefore[name].NewObjectClosure, StringComparer.Ordinal),
-        }).ToArray();
+        return _reserved || _completed.Count != 0 || _nativeBefore.Count != RepairDatabases.Length
+            ? throw CurrentAppOwnedV3RepairPermit.Invalid()
+            : (IReadOnlyList<V3AdditiveObservation>)RepairDatabases.Select(name => _nativeBefore[name] with
+            {
+                Snapshot = CurrentAppOwnedV3RepairPermit.CopySnapshot(_nativeBefore[name].Snapshot),
+                AddedCatalogKeys = new HashSet<string>(_nativeBefore[name].AddedCatalogKeys, StringComparer.Ordinal),
+                NewObjectClosure = new HashSet<string>(_nativeBefore[name].NewObjectClosure, StringComparer.Ordinal),
+            }).ToArray();
     }
 
     public Task RequireFreshOperationAsync(CurrentAppOwnedV3RepairScope scope, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested(); _files.Require();
-        if (_failed || _reserved || JsonSerializer.Serialize(scope) != JsonSerializer.Serialize(_scope) || ObserveOperationNames().Length != 0)
-        { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
-        return Task.CompletedTask;
+        return _failed || _reserved || JsonSerializer.Serialize(scope) != JsonSerializer.Serialize(_scope) || ObserveOperationNames().Length != 0
+            ? throw CurrentAppOwnedV3RepairPermit.Invalid()
+            : Task.CompletedTask;
     }
 
     public async Task ReserveFreshOperationAsync(CurrentAppOwnedV3RepairScope scope, string authorizationSha256, CancellationToken ct)
@@ -253,16 +272,21 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
         await _operationGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-        await RequireFreshOperationAsync(scope, ct).ConfigureAwait(false);
-        if (authorizationSha256 != _authorizationSha256) { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
-        string name = $"{scope.OperationId:D}-v3-operation-start.json";
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new { Kind = "current-app-owned-v3-operation-start-v1",
-            scope.OperationId, ScopeSha256 = CurrentAppOwnedSnapshotSerialization.Sha256(scope), AuthorizationSha256 = authorizationSha256 });
-        await RetainEvidenceCoreAsync(name, bytes, ct).ConfigureAwait(false);
-        RequireEvidenceInventory(); _reserved = true;
+            await RequireFreshOperationAsync(scope, ct).ConfigureAwait(false);
+            if (authorizationSha256 != _authorizationSha256) { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
+            string name = $"{scope.OperationId:D}-v3-operation-start.json";
+            byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                Kind = "current-app-owned-v3-operation-start-v1",
+                scope.OperationId,
+                ScopeSha256 = CurrentAppOwnedSnapshotSerialization.Sha256(scope),
+                AuthorizationSha256 = authorizationSha256
+            });
+            await RetainEvidenceCoreAsync(name, bytes, ct).ConfigureAwait(false);
+            RequireEvidenceInventory(); _reserved = true;
         }
         catch { _failed = true; throw; }
-        finally { _operationGate.Release(); }
+        finally { _ = _operationGate.Release(); }
     }
 
     private static async Task SetReadOnlyAsync(NpgsqlConnection connection, NpgsqlTransaction tx, CancellationToken ct)
@@ -289,7 +313,7 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
         await _operationGate.WaitAsync(ct).ConfigureAwait(false);
         try { await RetainEvidenceCoreAsync(name, payload, ct).ConfigureAwait(false); }
         catch { _failed = true; throw; }
-        finally { _operationGate.Release(); }
+        finally { _ = _operationGate.Release(); }
     }
 
     private async Task RetainEvidenceCoreAsync(string name, byte[] payload, CancellationToken ct)
@@ -297,7 +321,7 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
         _files.Require(); RequireEvidenceInventory();
         string reservation = $"{_scope.OperationId:D}-v3-operation-start.json";
         string[] allowed = RepairDatabases
-            .SelectMany(database => new[] { "prepared", "committed-readback", "failed-or-uncertain" }
+            .SelectMany(database => EvidenceSuffixes
                 .Select(suffix => $"{_scope.OperationId:D}-{database}-{suffix}.json")).Append(reservation).ToArray();
         if (name != Path.GetFileName(name) || !allowed.Contains(name, StringComparer.Ordinal) || payload.Length > 65536 ||
             _retainedEvidence.ContainsKey(name)) { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
@@ -325,12 +349,7 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
             }
             else if (receipt.PreviousReceiptSha256 != (_preparedHash ?? _previousTerminal))
             { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
-            string suffix = receipt.Classification switch
-            {
-                CurrentAppOwnedCommitClassification.Prepared => "prepared",
-                CurrentAppOwnedCommitClassification.CommittedAndReadback => "committed-readback",
-                _ => "failed-or-uncertain",
-            };
+            string suffix = ReceiptSuffix(receipt.Classification);
             if (name != $"{receipt.OperationId:D}-{receipt.Database}-{suffix}.json")
             { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
         }
@@ -358,7 +377,7 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
         }
         else if (effect?.Classification == CurrentAppOwnedCommitClassification.CommittedAndReadback)
         {
-            _completed.Add(effect.Database); _expectedHashes[effect.Database] = effect.AfterSha256!;
+            _ = _completed.Add(effect.Database); _expectedHashes[effect.Database] = effect.AfterSha256!;
             _previousTerminal = CurrentAppOwnedRepairPermit.Hash(held); _nextDatabase++;
             _prepared = null; _preparedHash = null; _pendingAfterObserved = null;
         }

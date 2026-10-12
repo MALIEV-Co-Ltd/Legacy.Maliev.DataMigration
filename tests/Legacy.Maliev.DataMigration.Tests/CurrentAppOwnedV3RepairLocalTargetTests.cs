@@ -14,8 +14,9 @@ public sealed class CurrentAppOwnedV3RepairLocalTargetTests
     [Fact]
     public void Closed_decoder_rejects_duplicate_properties_at_every_depth()
     {
-        foreach (string json in new[] { "{\"Path\":\"a\",\"path\":\"b\",\"Sha256\":\"c\"}",
-            "{\"Nested\":{\"Key\":1,\"key\":2}}", "[{\"Key\":1,\"Key\":2}]" })
+        foreach (string json in new[] { /*lang=json,strict*/ "{\"Path\":\"a\",\"path\":\"b\",\"Sha256\":\"c\"}",
+            /*lang=json,strict*/
+                                 "{\"Nested\":{\"Key\":1,\"key\":2}}", /*lang=json,strict*/ "[{\"Key\":1,\"Key\":2}]" })
         {
             _ = Assert.Throws<MigrationExecutionException>(() => MigrationConsole.DecodeV3<JsonElement>(System.Text.Encoding.UTF8.GetBytes(json)));
         }
@@ -25,9 +26,11 @@ public sealed class CurrentAppOwnedV3RepairLocalTargetTests
     public void Closed_decoder_rejects_unknown_configuration_members()
     {
         _ = Assert.Throws<JsonException>(() => MigrationConsole.DecodeV3<CurrentAppOwnedRepairArtifact>(
-            "{\"path\":\"a\",\"sha256\":\"b\",\"environmentCallback\":\"unsafe\"}"u8.ToArray()));
+            /*lang=json,strict*/
+                                 "{\"path\":\"a\",\"sha256\":\"b\",\"environmentCallback\":\"unsafe\"}"u8.ToArray()));
         CurrentAppOwnedRepairArtifact actual = MigrationConsole.DecodeV3<CurrentAppOwnedRepairArtifact>(
-            "{\"path\":\"a\",\"sha256\":\"b\"}"u8.ToArray());
+            /*lang=json,strict*/
+                                 "{\"path\":\"a\",\"sha256\":\"b\"}"u8.ToArray());
         Assert.Equal(new CurrentAppOwnedRepairArtifact("a", "b"), actual);
     }
 

@@ -20,7 +20,7 @@ internal static class CurrentAppOwnedV3AdditivePreservation
         NpgsqlTransaction transaction, FreshSchemaPlan before, FreshSchemaPlan after,
         string expectedSourceSha, bool isAfter, DateTimeOffset now, CancellationToken ct, string? expectedOwner = null)
     {
-        if (expectedOwner is not null && expectedOwner is not ("legacy_local" or "postgres")) { throw Invalid(); }
+        if (expectedOwner is not null and not ("legacy_local" or "postgres")) { throw Invalid(); }
         RequirePair(before, after, expectedSourceSha, now);
         if (!Databases.Contains(connection.Database, StringComparer.Ordinal)) { throw Invalid(); }
         DatabaseSchemaPlan plan = (isAfter ? after : before).Databases.Single(x => x.Database == connection.Database);
@@ -32,7 +32,7 @@ internal static class CurrentAppOwnedV3AdditivePreservation
             string[] newNames = NewTables(connection.Database);
             if (!isAfter && snapshot.Relations.Any(x => x.Schema == "public" && newNames.Contains(x.Name, StringComparer.Ordinal))) { throw Invalid(); }
             IReadOnlySet<string> closure = isAfter
-                ? await ObserveNewClosureAsync(connection, transaction, plan, ct, expectedOwner).ConfigureAwait(false)
+                ? await ObserveNewClosureAsync(connection, transaction, plan, expectedOwner, ct).ConfigureAwait(false)
                 : new HashSet<string>(StringComparer.Ordinal);
             return new(snapshot, null, null, null, new HashSet<string>(StringComparer.Ordinal), closure);
         }
@@ -190,7 +190,7 @@ internal static class CurrentAppOwnedV3AdditivePreservation
 
     private static async Task<IReadOnlySet<string>> ObserveNewClosureAsync(
         NpgsqlConnection connection, NpgsqlTransaction transaction, DatabaseSchemaPlan plan,
-        CancellationToken cancellationToken, string? expectedOwner)
+        string? expectedOwner, CancellationToken cancellationToken)
     {
         string[] names = NewTables(plan.Database);
         string owner = expectedOwner ?? new NpgsqlConnectionStringBuilder(connection.ConnectionString).Username ?? throw Invalid();

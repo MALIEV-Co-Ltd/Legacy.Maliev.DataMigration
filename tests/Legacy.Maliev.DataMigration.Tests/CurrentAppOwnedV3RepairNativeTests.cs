@@ -112,10 +112,10 @@ public sealed class CurrentAppOwnedV3RepairNativeTests(ITestOutputHelper output)
                 if (fault == "host-unprobed-sdk") { await Sql(setup, null, "CREATE ROLE v3_unprobed_sdk LOGIN;", ct); }
                 await using var path = new NpgsqlCommand("SELECT current_setting('hba_file');", setup);
                 string hbaPath = (string)(await path.ExecuteScalarAsync(ct))!;
-                                string local = fault == "local-ordinary-trust" ? "trust" : "reject";
+                string local = fault == "local-ordinary-trust" ? "trust" : "reject";
                 string unprobed = fault == "host-unprobed-sdk" ? "('host all v3_unprobed_sdk 0.0.0.0/0 trust')," : string.Empty;
                 await Sql(setup, null, $"COPY (VALUES ('host all {role} 0.0.0.0/0 scram-sha-256'),('host all {role} ::/0 scram-sha-256'),{unprobed}('local all all {local}'),('host all all 0.0.0.0/0 reject'),('host all all ::/0 reject')) TO '{hbaPath.Replace("'", "''", StringComparison.Ordinal)}'; SELECT pg_reload_conf();", ct);
-bool rejected = false;
+                bool rejected = false;
                 for (int attempt = 0; attempt < 40 && !rejected; attempt++)
                 {
                     try { await using var ordinary = new NpgsqlConnection(admin.ConnectionString); await ordinary.OpenAsync(ct); }
@@ -193,9 +193,9 @@ bool rejected = false;
                 Assert.Equal(0, unsafeEnvironment.Reservations);
                 return;
             }
-await using var proxy = new CommitAcknowledgementProxy("127.0.0.1", op.Port);
+            await using var proxy = new CommitAcknowledgementProxy("127.0.0.1", op.Port);
             using (var process = System.Diagnostics.Process.GetCurrentProcess())
-            { WriteLedger(run, "proxy", new { run, port = proxy.Port, processId = process.Id, processStartTimeUtc = process.StartTime.ToUniversalTime(), executable = System.Environment.ProcessPath, expiresAtUtc = started.AddMinutes(8), persistent = false }); }
+            { WriteLedger(run, "proxy", new { run, port = proxy.Port, processId = process.Id, processStartTimeUtc = process.StartTime.ToUniversalTime(), executable = Environment.ProcessPath, expiresAtUtc = started.AddMinutes(8), persistent = false }); }
             var execution = new NpgsqlConnectionStringBuilder(op.ConnectionString) { Port = proxy.Port };
             var environment = new NativeEnvironment(op.ConnectionString, admin.ConnectionString, scope, contract, before, after, baseline, repairPreimages,
                 fault == "lost-commit-ack" ? proxy : null, fault);
@@ -204,7 +204,7 @@ await using var proxy = new CommitAcknowledgementProxy("127.0.0.1", op.Port);
             var authorization = await CurrentAppOwnedV3RepairPermit.AuthorizeAsync(review, before, after, trust, pins, environment, authSigner, TimeProvider.System, ct);
             environment.AuthorizationSha256 = CurrentAppOwnedSnapshotSerialization.Sha256(authorization);
             var permit = await CurrentAppOwnedV3RepairPermit.AdmitAsync(review, authorization, before, after, trust, pins, environment, TimeProvider.System, ct);
-                        string previous = new('0', 64);
+            string previous = new('0', 64);
             string[] fixedDatabases = ["Invoice", "PurchaseOrder", "Quotation"];
             if (fault == "success")
             {
@@ -284,13 +284,13 @@ await using var proxy = new CommitAcknowledgementProxy("127.0.0.1", op.Port);
         file.Flush(flushToDisk: true);
     }
 
-        private sealed class NativeEnvironment(string op, string ordinary, CurrentAppOwnedV3RepairScope scope,
-        CurrentAppOwnedV3AdditiveContract contract, FreshSchemaPlan before, FreshSchemaPlan after,
-        IReadOnlyList<CurrentAppOwnedDatabaseSnapshot> baseline, IReadOnlyList<V3AdditiveObservation> repairPreimages,
-        CommitAcknowledgementProxy? proxy, string fault) : ICurrentAppOwnedV3RepairEnvironment
+    private sealed class NativeEnvironment(string op, string ordinary, CurrentAppOwnedV3RepairScope scope,
+    CurrentAppOwnedV3AdditiveContract contract, FreshSchemaPlan before, FreshSchemaPlan after,
+    IReadOnlyList<CurrentAppOwnedDatabaseSnapshot> baseline, IReadOnlyList<V3AdditiveObservation> repairPreimages,
+    CommitAcknowledgementProxy? proxy, string fault) : ICurrentAppOwnedV3RepairEnvironment
     {
         private bool _reserved, _arm;
-        private readonly object _operationGate = new();
+        private readonly Lock _operationGate = new();
         internal int Reservations { get; private set; }
         internal string AuthorizationSha256 { get; set; } = string.Empty;
         internal Dictionary<string, byte[]> Evidence { get; } = new(StringComparer.Ordinal);
@@ -394,7 +394,7 @@ await using var proxy = new CommitAcknowledgementProxy("127.0.0.1", op.Port);
             before.SourceCommitSha, isAfter, DateTimeOffset.UtcNow, ct, owner);
         await tx.RollbackAsync(ct); return observation;
     }
-private static async Task<CurrentAppOwnedDatabaseSnapshot> Capture(string connectionString, string database, CancellationToken ct)
+    private static async Task<CurrentAppOwnedDatabaseSnapshot> Capture(string connectionString, string database, CancellationToken ct)
     {
         await using var connection = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(connectionString) { Database = database, Pooling = false }.ConnectionString);
         await connection.OpenAsync(ct);

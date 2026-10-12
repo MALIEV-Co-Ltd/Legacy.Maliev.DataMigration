@@ -13,6 +13,7 @@ internal sealed record CurrentAppOwnedV3RepairReceipt(string Kind, Guid Operatio
 /// <summary>Distinct fixed V2 to V3 additive execution. Never accepts eight or retained31 permission.</summary>
 internal static class PostgreSqlCurrentAppOwnedV3Repair
 {
+    private static readonly string[] OrderedDatabases = ["Invoice", "PurchaseOrder", "Quotation"];
     internal static async Task<IReadOnlyList<CurrentAppOwnedV3RepairReceipt>> ExecuteFleetAsync(
         string connectionString, FreshSchemaPlan beforeSchema, FreshSchemaPlan afterSchema,
         IReadOnlyList<V3AdditiveObservation> repairPreimages, CurrentAppOwnedV3RepairPermit permit,
@@ -21,52 +22,53 @@ internal static class PostgreSqlCurrentAppOwnedV3Repair
     {
         try
         {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(TimeSpan.FromMinutes(15)); ct = deadline.Token;
-        beforeSchema = Clone(beforeSchema); afterSchema = Clone(afterSchema);
-        // Clone each collection explicitly: IReadOnlySet is not a JSON deserialization contract.
-        V3AdditiveObservation[] preimages = repairPreimages.Select(x => x with
-        {
-            Snapshot = CurrentAppOwnedV3RepairPermit.CopySnapshot(x.Snapshot), AddedCatalogKeys = new HashSet<string>(x.AddedCatalogKeys, StringComparer.Ordinal),
-            NewObjectClosure = new HashSet<string>(x.NewObjectClosure, StringComparer.Ordinal),
-        }).ToArray();
-        CurrentAppOwnedV3RepairScope scope = permit.Scope;
-        CurrentAppOwnedV3AdditiveContract contract = CurrentAppOwnedV3AdditiveContract.Create(beforeSchema, afterSchema, scope.SourceCommitSha, DateTimeOffset.UtcNow);
-        byte[] signerProbe = [.. "Legacy.Maliev.CurrentAppOwnedV3.ReceiptKeyProbe.v1\0"u8, .. scope.OperationId.ToByteArray()];
-        if (JsonSerializer.Serialize(pins) != JsonSerializer.Serialize(permit.SigningPins) ||
-            !trust.Verify(receiptSigner.KeyId, signerProbe, receiptSigner.Sign(signerProbe)) ||
-            scope.OperationSha256 != contract.ComputeSha256() ||
-            scope.BeforeSchemaPlanSha256 != SchemaPlanCanonicalizer.ComputeSha256(beforeSchema) ||
-            scope.AfterSchemaPlanSha256 != SchemaPlanCanonicalizer.ComputeSha256(afterSchema) ||
-            !preimages.Select(x => x.Snapshot.Database).Order(StringComparer.Ordinal)
-                .SequenceEqual(new[] { "Invoice", "PurchaseOrder", "Quotation" }, StringComparer.Ordinal) ||
-            preimages.Any(x => CurrentAppOwnedSnapshotSerialization.Sha256(x.Snapshot) != scope.BeforeDatabaseSha256[x.Snapshot.Database] ||
-                x.AddedCatalogKeys.Count != 0 || x.NewObjectClosure.Count != 0) ||
-            receiptSigner.KeyId != pins.ReceiptKeyId || !trust.TryGetPublicKeyFingerprintSha256(receiptSigner.KeyId, out string fingerprint) ||
-            fingerprint != pins.ReceiptFingerprint)
-        { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
-        var endpoint = new NpgsqlConnectionStringBuilder(connectionString);
-        if (endpoint.Host != "127.0.0.1" || endpoint.Port is < 1 or > 65535 ||
-            endpoint.Username != scope.Maintenance.Role || string.IsNullOrWhiteSpace(endpoint.Password) ||
-            !string.IsNullOrEmpty(endpoint.Options)) { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
-        await permit.StartAsync(ct).ConfigureAwait(false);
-        var expectedFleet = scope.BeforeDatabaseSha256.ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
-        var receipts = new List<CurrentAppOwnedV3RepairReceipt>();
-        string previous = new('0', 64);
-        foreach (string database in new[] { "Invoice", "PurchaseOrder", "Quotation" })
-        {
-            // Any exception, including uncertain COMMIT or evidence publication, exits this loop.
-            // No connection is opened for the next database; reservation prevents operation replay.
-            CurrentAppOwnedV3RepairReceipt receipt = await ExecuteDatabaseAsync(connectionString, database, beforeSchema, afterSchema,
-                preimages.Single(x => x.Snapshot.Database == database), expectedFleet, permit,
-                receiptSigner, trust, pins, previous, ct).ConfigureAwait(false);
-            receipts.Add(receipt);
-            expectedFleet[database] = receipt.AfterSha256 ?? throw CurrentAppOwnedV3RepairPermit.Invalid();
-            previous = CurrentAppOwnedV3RepairPermit.Hash(JsonSerializer.SerializeToUtf8Bytes(receipt));
-        }
-        await permit.RequireAsync(ct).ConfigureAwait(false);
-        await permit.RequireFleetAsync(expectedFleet, ct).ConfigureAwait(false);
-        return receipts.AsReadOnly();
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(TimeSpan.FromMinutes(15)); ct = deadline.Token;
+            beforeSchema = Clone(beforeSchema); afterSchema = Clone(afterSchema);
+            // Clone each collection explicitly: IReadOnlySet is not a JSON deserialization contract.
+            V3AdditiveObservation[] preimages = repairPreimages.Select(x => x with
+            {
+                Snapshot = CurrentAppOwnedV3RepairPermit.CopySnapshot(x.Snapshot),
+                AddedCatalogKeys = new HashSet<string>(x.AddedCatalogKeys, StringComparer.Ordinal),
+                NewObjectClosure = new HashSet<string>(x.NewObjectClosure, StringComparer.Ordinal),
+            }).ToArray();
+            CurrentAppOwnedV3RepairScope scope = permit.Scope;
+            CurrentAppOwnedV3AdditiveContract contract = CurrentAppOwnedV3AdditiveContract.Create(beforeSchema, afterSchema, scope.SourceCommitSha, DateTimeOffset.UtcNow);
+            byte[] signerProbe = [.. "Legacy.Maliev.CurrentAppOwnedV3.ReceiptKeyProbe.v1\0"u8, .. scope.OperationId.ToByteArray()];
+            if (JsonSerializer.Serialize(pins) != JsonSerializer.Serialize(permit.SigningPins) ||
+                !trust.Verify(receiptSigner.KeyId, signerProbe, receiptSigner.Sign(signerProbe)) ||
+                scope.OperationSha256 != contract.ComputeSha256() ||
+                scope.BeforeSchemaPlanSha256 != SchemaPlanCanonicalizer.ComputeSha256(beforeSchema) ||
+                scope.AfterSchemaPlanSha256 != SchemaPlanCanonicalizer.ComputeSha256(afterSchema) ||
+                !preimages.Select(x => x.Snapshot.Database).Order(StringComparer.Ordinal)
+                    .SequenceEqual(OrderedDatabases, StringComparer.Ordinal) ||
+                preimages.Any(x => CurrentAppOwnedSnapshotSerialization.Sha256(x.Snapshot) != scope.BeforeDatabaseSha256[x.Snapshot.Database] ||
+                    x.AddedCatalogKeys.Count != 0 || x.NewObjectClosure.Count != 0) ||
+                receiptSigner.KeyId != pins.ReceiptKeyId || !trust.TryGetPublicKeyFingerprintSha256(receiptSigner.KeyId, out string fingerprint) ||
+                fingerprint != pins.ReceiptFingerprint)
+            { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
+            var endpoint = new NpgsqlConnectionStringBuilder(connectionString);
+            if (endpoint.Host != "127.0.0.1" || endpoint.Port is < 1 or > 65535 ||
+                endpoint.Username != scope.Maintenance.Role || string.IsNullOrWhiteSpace(endpoint.Password) ||
+                !string.IsNullOrEmpty(endpoint.Options)) { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
+            await permit.StartAsync(ct).ConfigureAwait(false);
+            var expectedFleet = scope.BeforeDatabaseSha256.ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
+            var receipts = new List<CurrentAppOwnedV3RepairReceipt>();
+            string previous = new('0', 64);
+            foreach (string database in OrderedDatabases)
+            {
+                // Any exception, including uncertain COMMIT or evidence publication, exits this loop.
+                // No connection is opened for the next database; reservation prevents operation replay.
+                CurrentAppOwnedV3RepairReceipt receipt = await ExecuteDatabaseAsync(connectionString, database, beforeSchema, afterSchema,
+                    preimages.Single(x => x.Snapshot.Database == database), expectedFleet, permit,
+                    receiptSigner, trust, pins, previous, ct).ConfigureAwait(false);
+                receipts.Add(receipt);
+                expectedFleet[database] = receipt.AfterSha256 ?? throw CurrentAppOwnedV3RepairPermit.Invalid();
+                previous = CurrentAppOwnedV3RepairPermit.Hash(JsonSerializer.SerializeToUtf8Bytes(receipt));
+            }
+            await permit.RequireAsync(ct).ConfigureAwait(false);
+            await permit.RequireFleetAsync(expectedFleet, ct).ConfigureAwait(false);
+            return receipts.AsReadOnly();
         }
         catch { permit.Stop(); throw; }
         finally { permit.Stop(); }
@@ -126,7 +128,9 @@ internal static class PostgreSqlCurrentAppOwnedV3Repair
                 DatabaseSchemaPlan additions = contract.AfterForDatabase(database) with
                 {
                     Tables = contract.CreateTables().Where(x => x.Database == database).Select(x => x.Table).ToArray(),
-                    TargetExtensionProfile = null, SourceDispositionProfile = null, SourceTableDispositions = [],
+                    TargetExtensionProfile = null,
+                    SourceDispositionProfile = null,
+                    SourceTableDispositions = [],
                 };
                 await using var creator = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false);
                 await creator.ApplySchemaAsync(additions, cancellationToken).ConfigureAwait(false);
@@ -187,7 +191,7 @@ internal static class PostgreSqlCurrentAppOwnedV3Repair
             if (!commitStarted)
             {
                 try { await transaction.RollbackAsync(failureDeadline.Token).ConfigureAwait(false); rollbackAcknowledged = true; }
-                catch (Exception failure) when (failure is NpgsqlException or OperationCanceledException) { rollbackAcknowledged = false; }
+                catch (Exception rollbackFailure) when (rollbackFailure is NpgsqlException or OperationCanceledException) { rollbackAcknowledged = false; }
             }
             CurrentAppOwnedV3RepairReceipt failure = Sign(ClassifyFailure(commitStarted, commitAcknowledged, rollbackAcknowledged));
             await permit.Environment.RetainNewEvidenceAsync($"{scope.OperationId:D}-{database}-failed-or-uncertain.json",

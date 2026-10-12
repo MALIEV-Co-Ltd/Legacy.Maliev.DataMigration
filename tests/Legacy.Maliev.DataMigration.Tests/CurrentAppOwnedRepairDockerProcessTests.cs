@@ -51,7 +51,7 @@ public sealed class CurrentAppOwnedRepairDockerProcessTests
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var evidence = new List<CurrentAppOwnedDockerResource>();
         var stopwatch = Stopwatch.StartNew();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => RunAsync("Start-Sleep -Seconds 30", evidence,
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => RunAsync("Start-Sleep -Seconds 30", evidence,
             ct: cancellation.Token, started: _ => cancellation.Cancel()));
         RequireReleased(evidence);
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(12));
@@ -75,10 +75,10 @@ public sealed class CurrentAppOwnedRepairDockerProcessTests
         var evidence = new List<CurrentAppOwnedDockerResource>();
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => RunAsync("exit 0", evidence, ct: cancellation.Token));
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => RunAsync("exit 0", evidence, ct: cancellation.Token));
         Assert.Empty(evidence);
-        await Assert.ThrowsAsync<MigrationConsoleException>(() => RunAsync("exit 0", evidence, maximum: 2_000_001));
-        await Assert.ThrowsAsync<MigrationConsoleException>(() => RunAsync("exit 0", evidence, lifetime: TimeSpan.FromSeconds(21)));
+        _ = await Assert.ThrowsAsync<MigrationConsoleException>(() => RunAsync("exit 0", evidence, maximum: 2_000_001));
+        _ = await Assert.ThrowsAsync<MigrationConsoleException>(() => RunAsync("exit 0", evidence, lifetime: TimeSpan.FromSeconds(21)));
         Assert.Empty(evidence);
     }
 
@@ -101,30 +101,30 @@ public sealed class CurrentAppOwnedRepairDockerProcessTests
         var evidence = new List<CurrentAppOwnedDockerResource>();
         string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
             "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-        await Assert.ThrowsAsync<IOException>(() => CurrentAppOwnedRepairDockerProcess.RunChildWithAsyncObserverForTestAsync(
+        _ = await Assert.ThrowsAsync<IOException>(() => CurrentAppOwnedRepairDockerProcess.RunChildWithAsyncObserverForTestAsync(
             executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.Write('observed')"],
-            TimeSpan.FromSeconds(15), 4096, CancellationToken.None, async resource =>
+            TimeSpan.FromSeconds(15), 4096, async resource =>
             {
                 await Task.Yield();
                 evidence.Add(resource);
-                if ((evidence.Count == 1) == failStart) { throw new IOException("controlled ledger failure"); }
-            }));
+                if (evidence.Count == 1 == failStart) { throw new IOException("controlled ledger failure"); }
+            }, CancellationToken.None));
         RequireReleased(evidence);
     }
 
     private static Task<string> RunAsync(string script, List<CurrentAppOwnedDockerResource> evidence,
-        int maximum = 4096, TimeSpan? lifetime = null, CancellationToken ct = default,
-        Action<CurrentAppOwnedDockerResource>? started = null)
+        int maximum = 4096, TimeSpan? lifetime = null,
+        Action<CurrentAppOwnedDockerResource>? started = null, CancellationToken ct = default)
     {
         string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
             "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
         return CurrentAppOwnedRepairDockerProcess.RunChildForTestAsync(executable,
             ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-            lifetime ?? TimeSpan.FromSeconds(15), maximum, ct, resource =>
+            lifetime ?? TimeSpan.FromSeconds(15), maximum, resource =>
             {
                 evidence.Add(resource);
                 if (evidence.Count == 1) { started?.Invoke(resource); }
-            });
+            }, ct);
     }
 
     private static void RequireReleased(List<CurrentAppOwnedDockerResource> evidence)
@@ -134,8 +134,8 @@ public sealed class CurrentAppOwnedRepairDockerProcessTests
         Assert.True(final.Exited);
         Assert.True(final.ReadersSettled);
         Assert.False(final.CleanupFailed);
-        Assert.NotNull(final.ProcessId);
-        Assert.NotNull(final.StartUtcTicks);
+        _ = Assert.NotNull(final.ProcessId);
+        _ = Assert.NotNull(final.StartUtcTicks);
         int pid = final.ProcessId ?? throw new InvalidOperationException("Missing owned process identity");
         long ticks = final.StartUtcTicks ?? throw new InvalidOperationException("Missing owned start identity");
         try

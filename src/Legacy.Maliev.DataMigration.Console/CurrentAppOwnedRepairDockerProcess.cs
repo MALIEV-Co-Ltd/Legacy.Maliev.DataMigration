@@ -20,25 +20,29 @@ internal static class CurrentAppOwnedRepairDockerProcess
         if (!OperatingSystem.IsWindows()) { throw Failure("platform"); }
         string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             "Docker", "Docker", "resources", "bin", "docker.exe");
-        return RunOwnedAsync(executable, ["--context", "default", .. arguments], Lifetime, OutputLimit, ct, observe);
+        return RunOwnedAsync(executable, ["--context", "default", .. arguments], Lifetime, OutputLimit, observe, ct);
     }
 
     // Test seam only: production fixes the executable, arguments prefix, lifetime and bounds above.
     // No environment implementation or execution permission is accepted from serialized configuration.
     internal static Task<string> RunChildForTestAsync(string executable, IReadOnlyList<string> arguments,
-        TimeSpan lifetime, int maximumCharacters, CancellationToken ct, Action<CurrentAppOwnedDockerResource> observe) =>
-        RunOwnedAsync(executable, arguments, lifetime, maximumCharacters, ct, resource =>
+        TimeSpan lifetime, int maximumCharacters, Action<CurrentAppOwnedDockerResource> observe, CancellationToken ct)
+    {
+        return RunOwnedAsync(executable, arguments, lifetime, maximumCharacters, resource =>
         {
             observe(resource);
             return Task.CompletedTask;
-        });
+        }, ct);
+    }
 
     internal static Task<string> RunChildWithAsyncObserverForTestAsync(string executable, IReadOnlyList<string> arguments,
-        TimeSpan lifetime, int maximumCharacters, CancellationToken ct, Func<CurrentAppOwnedDockerResource, Task> observe) =>
-        RunOwnedAsync(executable, arguments, lifetime, maximumCharacters, ct, observe);
+        TimeSpan lifetime, int maximumCharacters, Func<CurrentAppOwnedDockerResource, Task> observe, CancellationToken ct)
+    {
+        return RunOwnedAsync(executable, arguments, lifetime, maximumCharacters, observe, ct);
+    }
 
     private static async Task<string> RunOwnedAsync(string executable, IReadOnlyList<string> arguments,
-        TimeSpan lifetime, int maximumCharacters, CancellationToken ct, Func<CurrentAppOwnedDockerResource, Task>? observe)
+        TimeSpan lifetime, int maximumCharacters, Func<CurrentAppOwnedDockerResource, Task>? observe, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (!Path.IsPathFullyQualified(executable) || lifetime <= TimeSpan.Zero || lifetime > Lifetime ||
@@ -50,8 +54,11 @@ internal static class CurrentAppOwnedRepairDockerProcess
         string imageSha = Convert.ToHexStringLower(SHA256.HashData(image));
         var start = new ProcessStartInfo(executable)
         {
-            UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
         // Do not inherit tokens, credential overrides, debug switches or caller script variables.
         // Docker's built-in default context uses the same Windows user profile; no shell is used.
@@ -95,12 +102,16 @@ internal static class CurrentAppOwnedRepairDockerProcess
                 await finished.ConfigureAwait(false);
             }
             string content = await stdout.ConfigureAwait(false);
-            if (process.ExitCode != 0 || content.Length == 0) { throw Failure("child"); }
-            return content;
+            return process.ExitCode != 0 || content.Length == 0 ? throw Failure("child") : content;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         { throw Failure("timeout"); }
         finally
+        {
+            await CompleteCleanupAsync().ConfigureAwait(false);
+        }
+
+        async Task CompleteCleanupAsync()
         {
             Exception? cleanupFailure = null;
             if (started)
@@ -117,7 +128,7 @@ internal static class CurrentAppOwnedRepairDockerProcess
                         try { process.Kill(); }
                         catch (InvalidOperationException) when (process.HasExited) { }
                     }
-                    await process.WaitForExitAsync().WaitAsync(Cleanup).ConfigureAwait(false);
+                    await process.WaitForExitAsync(CancellationToken.None).WaitAsync(Cleanup, CancellationToken.None).ConfigureAwait(false);
                     if (!process.HasExited) { throw Failure("exit"); }
                     resource = resource with { Exited = true };
                 }
@@ -138,7 +149,7 @@ internal static class CurrentAppOwnedRepairDockerProcess
             }
             try
             {
-                await SettleAsync(stdout, stderr).WaitAsync(Cleanup).ConfigureAwait(false);
+                await SettleAsync(stdout, stderr).WaitAsync(Cleanup, CancellationToken.None).ConfigureAwait(false);
                 resource = resource with { ReadersSettled = true };
             }
             catch (TimeoutException failure) { cleanupFailure ??= failure; }
@@ -169,10 +180,13 @@ internal static class CurrentAppOwnedRepairDockerProcess
             if (task is null) { continue; }
             try { _ = await task.ConfigureAwait(false); }
             catch (Exception failure) when (failure is OperationCanceledException or IOException or ObjectDisposedException or
-                InvalidOperationException or MigrationConsoleException) { }
+                InvalidOperationException or MigrationConsoleException)
+            { }
         }
     }
 
-    private static MigrationConsoleException Failure(string category) =>
-        new("current_app_owned_docker_" + category + "_failed", "The bounded repair target observer failed without exposing child output.");
+    private static MigrationConsoleException Failure(string category)
+    {
+        return new("current_app_owned_docker_" + category + "_failed", "The bounded repair target observer failed without exposing child output.");
+    }
 }

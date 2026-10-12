@@ -7,9 +7,29 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class CurrentAppOwnedRetained31ConsoleConfigurationTests
 {
     [Theory]
-    [InlineData("{\"Path\":\"a\",\"path\":\"b\",\"Sha256\":\"c\"}")]
-    [InlineData("{\"Nested\":{\"Key\":1,\"key\":2}}")]
-    [InlineData("[{\"Key\":1,\"Key\":2}]")]
+    [InlineData((int)CurrentAppOwnedCommitClassification.Prepared, "prepared")]
+    [InlineData((int)CurrentAppOwnedCommitClassification.CommittedAndReadback, "committed-readback")]
+    [InlineData((int)CurrentAppOwnedCommitClassification.RolledBackBeforeCommit, "failed-or-uncertain")]
+    [InlineData((int)CurrentAppOwnedCommitClassification.FailedBeforeCommit, "failed-or-uncertain")]
+    [InlineData((int)CurrentAppOwnedCommitClassification.Uncertain, "failed-or-uncertain")]
+    public void Both_closed_evidence_paths_retain_every_defined_classification(int value, string suffix)
+    {
+        var classification = (CurrentAppOwnedCommitClassification)value;
+        Assert.Equal(suffix, CurrentAppOwnedRetained31ConsoleEnvironment.ReceiptSuffix(classification));
+        Assert.Equal(suffix, CurrentAppOwnedV3RepairConsoleEnvironment.ReceiptSuffix(classification));
+    }
+
+    [Fact]
+    public void Both_closed_evidence_paths_reject_unknown_classifications()
+    {
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedRetained31ConsoleEnvironment.ReceiptSuffix((CurrentAppOwnedCommitClassification)999));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedV3RepairConsoleEnvironment.ReceiptSuffix((CurrentAppOwnedCommitClassification)999));
+    }
+
+    [Theory]
+    [InlineData(/*lang=json,strict*/ "{\"Path\":\"a\",\"path\":\"b\",\"Sha256\":\"c\"}")]
+    [InlineData(/*lang=json,strict*/ "{\"Nested\":{\"Key\":1,\"key\":2}}")]
+    [InlineData(/*lang=json,strict*/ "[{\"Key\":1,\"Key\":2}]")]
     public void Duplicate_properties_are_rejected_at_every_depth(string json)
     {
         _ = Assert.Throws<MigrationExecutionException>(() => MigrationConsole.DecodeRetained31<JsonElement>(Encoding.UTF8.GetBytes(json)));
