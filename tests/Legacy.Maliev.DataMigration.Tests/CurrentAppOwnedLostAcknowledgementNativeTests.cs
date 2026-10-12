@@ -306,7 +306,7 @@ public sealed class CurrentAppOwnedLostAcknowledgementNativeTests
         internal int DroppedCommits => Volatile.Read(ref _droppedCommits);
         internal void Arm()
         {
-            Interlocked.Exchange(ref _armed, 1);
+            _ = Interlocked.Exchange(ref _armed, 1);
         }
 
         internal CommitAcknowledgementProxy(string upstreamHost, int upstreamPort)
