@@ -24,8 +24,9 @@ internal sealed class HostTlsTestServer : IAsyncDisposable
     internal string? LastFailure { get; private set; }
     internal string ResponseBody { get; set; } = string.Empty;
     internal int ResponseStatusCode { get; set; } = 503;
+    internal Uri? RedirectLocation { get; set; }
 
-    internal HostTlsTestServer(string name = "localhost")
+    internal HostTlsTestServer(string name = "localhost", bool ipSan = false, bool serverEku = true)
     {
         SecureSnapshotFileCreation.CreateRestrictedDirectory(Root);
         using RSA caKey = RSA.Create(2048);
@@ -35,9 +36,11 @@ internal sealed class HostTlsTestServer : IAsyncDisposable
         Ca = caRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
         using RSA key = RSA.Create(2048);
         var request = new CertificateRequest($"CN={name}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        var san = new SubjectAlternativeNameBuilder(); san.AddDnsName(name);
+        var san = new SubjectAlternativeNameBuilder();
+        if (ipSan) { san.AddIpAddress(IPAddress.Parse(name)); }
+        else { san.AddDnsName(name); }
         request.CertificateExtensions.Add(san.Build());
-        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new("1.3.6.1.5.5.7.3.1")], true));
+        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new(serverEku ? "1.3.6.1.5.5.7.3.1" : "1.3.6.1.5.5.7.3.2")], true));
         using X509Certificate2 issued = request.Create(Ca, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(12), RandomNumberGenerator.GetBytes(16));
         using X509Certificate2 withKey = issued.CopyWithPrivateKey(key);
         Server = X509CertificateLoader.LoadPkcs12(withKey.Export(X509ContentType.Pkcs12), null, X509KeyStorageFlags.Exportable);
@@ -77,7 +80,7 @@ internal sealed class HostTlsTestServer : IAsyncDisposable
 
                 Requests++;
                 byte[] body = Encoding.UTF8.GetBytes(ResponseBody);
-                await tls.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 {ResponseStatusCode} Fixture\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n"), _stop.Token);
+                await tls.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 {ResponseStatusCode} Fixture\r\nContent-Length: {body.Length}\r\n{(RedirectLocation is null ? string.Empty : $"Location: {RedirectLocation}\r\n")}Connection: close\r\n\r\n"), _stop.Token);
                 await tls.WriteAsync(body, _stop.Token);
             }
             catch (Exception exception) when (exception is AuthenticationException or IOException or OperationCanceledException or SocketException)

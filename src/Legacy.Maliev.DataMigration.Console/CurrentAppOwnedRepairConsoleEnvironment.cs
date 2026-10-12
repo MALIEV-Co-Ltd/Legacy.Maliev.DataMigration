@@ -43,7 +43,7 @@ internal sealed class CurrentAppOwnedRepairConsoleEnvironment : ICurrentAppOwned
         {
             _ = files.Read(target.CloudOptions.ServiceAccountTokenFile, sharedReader: true);
             _ = files.Read(target.CloudOptions.ServiceAccountCaFile, sharedReader: true);
-            _cloud = CloudNativePgTargetObserver.CreateForHost(target.CloudOptions);
+            _cloud = CloudNativePgTargetObserver.CreateForCurrentAppOwnedRepair(target.CloudOptions);
         }
         if (baseline.Select(x => x.Database).Distinct(StringComparer.Ordinal).Count() != baseline.Length ||
             !DatabaseInventory.ActiveDatabases.All(name => baseline.Any(x => x.Database == name)) ||

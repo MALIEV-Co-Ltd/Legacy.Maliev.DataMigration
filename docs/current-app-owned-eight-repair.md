@@ -136,3 +136,21 @@ databases produce signed read-only skip observations. Changed/expired maintenanc
 installation requires an independently reviewed exact role/catalog transition,
 since pg_authid is part of complete preservation. These are implementation and
 native/closed-Console proof prerequisites, not permission granted by this document.
+## Repair-specific IPv4 transport
+
+The approved GKE API is an IPv4 endpoint. Only the internal current-app-owned
+repair composition accepts that endpoint form; general host factories remain
+DNS-only. Protected trust files, TLS name validation, custom roots, server-auth
+EKU, disabled proxies and redirects remain required. The repair handler additionally
+requires an exact iPAddress SAN: Windows platform verification alone accepted a
+numeric DNS SAN in the first regression run (43 passed, one failed). Invalid IP
+SAN lengths, illegal GeneralName tags and trailing DER reject. Signed claim
+validation and the signed target-pin hash precede observation/token transmission.
+
+The corrected Release build has zero warnings/errors; all 49 focused native,
+policy, construction and real TLS tests pass without skips. This proves transport
+and component behavior, not closed Console persistent execution, retained-receipt
+recovery, source refresh or target parity. A formatter attempt hit the unchanged
+host memory floor and all owned processes exited; subsequent Core and test-project formatting completed, Core verify-no-changes
+passed, and the formatted Release build again passed with zero warnings/errors.
+Hosted exact-head full-suite/format compatibility checks remain required.

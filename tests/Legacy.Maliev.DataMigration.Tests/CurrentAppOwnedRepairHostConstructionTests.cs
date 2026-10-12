@@ -31,13 +31,17 @@ public sealed class CurrentAppOwnedRepairHostConstructionTests
             new string('b', 64), new string('c', 64),
             new("fixture", "legacy-maliev-current-app-owned-eight-v1:" + binding, now, now.AddMinutes(30),
                 now, now, new string('d', 64), new string('e', 64), "/fixture/pg_hba.conf"));
-        var target = new CurrentAppOwnedRepairTargetPins(null, null, null, null, "/fixture/pg_hba.conf", null,
-            new(tls.Address, token, ca), null);
-        using var environment = new CurrentAppOwnedRepairConsoleEnvironment(authority, files, target, string.Empty, string.Empty,
-            baseline, CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerColumnsV1),
-            CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerSchemaV2), scope);
-        files.Require();
-        Assert.Equal(0, tls.Requests);
+        foreach (Uri address in new[] { tls.Address, new Uri($"https://127.0.0.1:{tls.Address.Port}") })
+        {
+            var target = new CurrentAppOwnedRepairTargetPins(null, null, null, null, "/fixture/pg_hba.conf", null,
+                new(address, token, ca), null);
+            using var environment = new CurrentAppOwnedRepairConsoleEnvironment(authority, files, target, string.Empty, string.Empty,
+                baseline, CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerColumnsV1),
+                CurrentConsumerSchemaV2Tests.Schema(ConsumerOverlaySelection.CurrentConsumerSchemaV2), scope);
+            files.Require();
+            _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => environment.RequireResourceAndCustodyAsync(scope, default));
+            Assert.Equal(0, tls.Requests);
+        }
         // Construction is not target admission: no live cluster, source, HBA or database write is asserted.
     }
 }

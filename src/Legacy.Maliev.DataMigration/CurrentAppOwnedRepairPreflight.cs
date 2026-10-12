@@ -59,10 +59,10 @@ internal static class CurrentAppOwnedRepairPreflight
     internal static CurrentAppOwnedCreationState ClassifyInventory(string database, IReadOnlyList<string> present)
     {
         string[] expected = CurrentAppOwnedRepairManifest.NewTables(database);
-        if (present.Count == 0) { return CurrentAppOwnedCreationState.MissingExactSet; }
-        return !present.Order(StringComparer.Ordinal).SequenceEqual(expected.Order(StringComparer.Ordinal), StringComparer.Ordinal)
-            ? throw Invalid()
-            : CurrentAppOwnedCreationState.AlreadyCurrent;
+        return present.Count == 0 ? CurrentAppOwnedCreationState.MissingExactSet
+            : !present.Order(StringComparer.Ordinal).SequenceEqual(expected.Order(StringComparer.Ordinal), StringComparer.Ordinal)
+                ? throw Invalid()
+                : CurrentAppOwnedCreationState.AlreadyCurrent;
     }
 
     private static MigrationExecutionException Invalid()
