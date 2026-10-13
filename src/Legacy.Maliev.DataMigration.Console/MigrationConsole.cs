@@ -165,6 +165,24 @@ public static partial class MigrationConsole
                 case "apply-current-app-owned-retained31-repair":
                     return await RunCurrentAppOwnedRetained31RepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
                         output, error, cancellationToken).ConfigureAwait(false);
+                case "assemble-current-auth-typed-proof":
+                    return await RunCurrentAuthTypedProofAssemblerAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "prepare-current-auth-named-closed-proof":
+                    return await RunCurrentAuthClosedPreparationAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "observe-current-auth-closed-intent":
+                    return await RunCurrentAuthNamedClosedIntentAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "assemble-current-auth-named-closed-proof":
+                    return await RunCurrentAuthNamedClosedAssemblerAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-typed-host":
+                    return await RunCurrentAuthTypedHostProducerAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-typed-testhost":
+                    return await RunCurrentAuthTypedTestHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-auth-repair":
+                case "authorize-current-auth-repair":
+                case "verify-current-auth-repair":
+                case "apply-current-auth-repair":
+                    return await RunCurrentAuthRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
                 case "review-current-app-owned-v3-repair":
                 case "authorize-current-app-owned-v3-repair":
                 case "verify-current-app-owned-v3-repair":
