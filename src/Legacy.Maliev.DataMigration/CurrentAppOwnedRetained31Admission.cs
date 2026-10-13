@@ -237,7 +237,7 @@ internal sealed class CurrentAppOwnedRetained31Permit
             !HashShape(scope.GlobalPreservationSha256) || !HashShape(scope.NativeProofSha256) || !HashShape(scope.RecoveryReviewSha256) ||
             !HashShape(scope.ExactRoleTransitionReviewSha256) || !HashShape(scope.TargetObservationSha256) || !HashShape(scope.RunBindingSha256) ||
             !HashShape(scope.Target.SystemIdentifierSha256) || string.IsNullOrWhiteSpace(scope.TargetGeneration) ||
-            scope.BeforeDatabaseSha256.Count != (local ? 26 : 53) ||
+            !ReviewedProductionRepairInventory.MatchesKeys(scope.Target.Kind, scope.BeforeDatabaseSha256.Keys) ||
             scope.BeforeDatabaseSha256.Keys.Any(string.IsNullOrWhiteSpace) || scope.BeforeDatabaseSha256.Values.Any(x => !HashShape(x)) ||
             !DatabaseInventory.ActiveDatabases.All(scope.BeforeDatabaseSha256.ContainsKey) ||
             !scope.BeforeDatabaseSha256.ContainsKey("postgres") || !scope.BeforeDatabaseSha256.ContainsKey("Auth") ||

@@ -18,6 +18,34 @@ public sealed class CurrentAppOwnedRetained31AdmissionTests
     }
 
     [Theory]
+    [InlineData("missing-control")]
+    [InlineData("missing-shadow")]
+    [InlineData("substituted-shadow")]
+    [InlineData("extra")]
+    public void Re_signed_production_fleet_change_is_not_authority(string fault)
+    {
+        using var f = new Fixture(production: true);
+        var hashes = f.Scope.BeforeDatabaseSha256.ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
+        string shadow = hashes.Keys.First(x => x.StartsWith("legacy_shadow_", StringComparison.Ordinal));
+        switch (fault)
+        {
+            case "missing-control": _ = hashes.Remove("legacy_migration_control"); break;
+            case "missing-shadow": _ = hashes.Remove(shadow); break;
+            case "substituted-shadow":
+                string hash = hashes[shadow];
+                _ = hashes.Remove(shadow);
+                hashes.Add("replacement_shadow", hash);
+                break;
+            case "extra": hashes.Add("unreviewed_extra", new string('a', 64)); break;
+            default: throw new InvalidOperationException();
+        }
+        var changed = f.Scope with { BeforeDatabaseSha256 = hashes };
+        var (review, authorization) = f.Claims(changed);
+        Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedRetained31Permit.ValidateClaims(review, authorization,
+            f.Before, f.After, f.Trust, f.Pins, f.Now));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Genuine_issuer_authorization_and_single_use_reservation_bind_complete_target_fleet(bool production)
@@ -29,7 +57,7 @@ public sealed class CurrentAppOwnedRetained31AdmissionTests
             f.Pins, f.Environment, f.AuthorizationSigner, f.Clock, default);
         CurrentAppOwnedRetained31Permit permit = await CurrentAppOwnedRetained31Permit.AdmitAsync(review, authorization,
             f.Before, f.After, f.Trust, f.Pins, f.Environment, f.Clock, default);
-        Assert.Equal(production ? 53 : 26, permit.Scope.BeforeDatabaseSha256.Count);
+        Assert.Equal(production ? 49 : 26, permit.Scope.BeforeDatabaseSha256.Count);
         Assert.Equal(CurrentAppOwnedRepairOperation.RetainedThirtyOneTextCollations, permit.Scope.Operation);
         Assert.Equal(f.Scope.ContractSha256, permit.Scope.ContractSha256);
         Assert.Equal(f.Now.AddMinutes(15), authorization.ExpiresAtUtc);
@@ -310,9 +338,8 @@ public sealed class CurrentAppOwnedRetained31AdmissionTests
             _ = Trust.TryGetPublicKeyFingerprintSha256(AuthorizationSigner.KeyId, out string af);
             _ = Trust.TryGetPublicKeyFingerprintSha256("retained31-receipt", out string ef);
             Pins = new(ReviewSigner.KeyId, rf, AuthorizationSigner.KeyId, af, "retained31-receipt", ef);
-            int count = production ? 53 : 26;
-            string[] names = [.. DatabaseInventory.ActiveDatabases, "Auth", "postgres",
-                .. Enumerable.Range(0, count - DatabaseInventory.ActiveDatabases.Count - 2).Select(x => "preserved-extra-" + x)];
+            string[] names = production ? ReviewedProductionRepairInventory.ExportProductionNames().ToArray()
+                : [.. DatabaseInventory.ActiveDatabases, "Auth", "postgres", "legacy_local"];
             Baseline = [.. names.Order(StringComparer.Ordinal).Select(database => new CurrentAppOwnedDatabaseSnapshot(database,
                 [new("pg_class", "1", new string('a', 64), "1259", "1")],
                 [new("legacy_migration_internal", "delta_journal", 2, new string('b', 64))],

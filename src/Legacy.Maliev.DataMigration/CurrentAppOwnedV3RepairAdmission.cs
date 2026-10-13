@@ -138,8 +138,7 @@ internal sealed class CurrentAppOwnedV3RepairPermit
     }
     private static bool ValidFleet(CurrentAppOwnedV3RepairScope scope)
     {
-        int expected = scope.Target.Kind == DeltaTargetAuthorityKind.LocalAspire ? 26 : 53;
-        return scope.BeforeDatabaseSha256.Count == expected &&
+        return ReviewedProductionRepairInventory.MatchesKeys(scope.Target.Kind, scope.BeforeDatabaseSha256.Keys) &&
             DatabaseInventory.ActiveDatabases.All(scope.BeforeDatabaseSha256.ContainsKey) &&
             (scope.Target.Kind != DeltaTargetAuthorityKind.LocalAspire || scope.BeforeDatabaseSha256.ContainsKey("legacy_local")) &&
             scope.BeforeDatabaseSha256.ContainsKey("Auth") && scope.BeforeDatabaseSha256.ContainsKey("postgres") &&
