@@ -31,6 +31,7 @@ internal sealed class CurrentAuthRepairEnvironment : ICurrentAuthRepairEnvironme
     private CurrentAuthRepairReceipt? _prepared, _terminal;
     private string? _pendingAfter;
     private bool _reserved, _failed;
+    private bool _closedAckFaultUsed;
 
     internal CurrentAuthRepairEnvironment(WindowsLocalRunAuthority authority, CurrentAppOwnedRepairCustody files,
         CurrentAppOwnedRepairTargetPins target, string connection, string ordinary, CurrentAppOwnedDatabaseSnapshot[] baseline,
@@ -76,6 +77,7 @@ internal sealed class CurrentAuthRepairEnvironment : ICurrentAuthRepairEnvironme
             source.Databases.Sum(x => x.Tables.Count) != 100) { throw CurrentAuthRepairPermit.Invalid(); }
         foreach (DatabaseSchemaPlan database in source.Databases)
         {
+            CurrentAuthRepairCapacity.Require(admission: false);
             await using var connection = Connection(database.Database);
             await connection.OpenAsync(ct).ConfigureAwait(false);
             await using var tx = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
@@ -159,6 +161,7 @@ internal sealed class CurrentAuthRepairEnvironment : ICurrentAuthRepairEnvironme
         string? pending = null;
         foreach (CurrentAppOwnedDatabaseSnapshot expected in _baseline)
         {
+            CurrentAuthRepairCapacity.Require(admission: false);
             await using var connection = Connection(expected.Database); await connection.OpenAsync(ct).ConfigureAwait(false);
             await using var tx = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
             await ReadOnlyAsync(connection, tx, ct).ConfigureAwait(false);
@@ -242,6 +245,26 @@ internal sealed class CurrentAuthRepairEnvironment : ICurrentAuthRepairEnvironme
         byte[] held = _files.Read(path, maximumBytes: 65536);
         if (!held.AsSpan().SequenceEqual(payload)) { throw CurrentAuthRepairPermit.Invalid(); }
         _retained.Add(name, held); RequireInventory(); _files.Require();
+        if (receipt is not null && _scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap)
+        {
+            var seed = _scope.ClosedBootstrapSubject ?? throw CurrentAuthRepairPermit.Invalid();
+            if (!DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(_scope.Target)) { throw CurrentAuthRepairPermit.Invalid(); }
+            bool drop = !_closedAckFaultUsed &&
+                ((seed.CaseId == "prepared-publication" && receipt.Classification == CurrentAppOwnedCommitClassification.Prepared) ||
+                 (seed.CaseId == "terminal-publication" && receipt.Classification == CurrentAppOwnedCommitClassification.CommittedAndReadback));
+            if (drop)
+            {
+                _closedAckFaultUsed = true;
+                // The bytes are durable, but neither publisher nor provider advances its
+                // acknowledged predecessor. A later failure receipt is a genuine sibling.
+                await _files.WriteNewAsync(Path.Combine(_authority.Binding.ArtifactRootCanonicalPath,
+                    $"auth-closed-unacknowledged-{_scope.OperationId:N}-{Suffix(receipt.Classification)}.json"),
+                    JsonSerializer.SerializeToUtf8Bytes(new { name, sha256 = CurrentAuthRepairPermit.Hash(held),
+                        acknowledged = false, classification = receipt.Classification, observedAtUtc = DateTimeOffset.UtcNow }), ct).ConfigureAwait(false);
+                _files.Require();
+                throw new IOException("owned_disposable_auth_publication_ack_dropped");
+            }
+        }
         if (receipt is not null)
         {
             if (receipt.Classification is CurrentAppOwnedCommitClassification.Prepared or CurrentAppOwnedCommitClassification.CommittedAndReadback)
@@ -292,7 +315,7 @@ internal sealed class CurrentAuthRepairEnvironment : ICurrentAuthRepairEnvironme
     {
         if (!OperationNames().SequenceEqual(_retained.Keys.Order(StringComparer.Ordinal), StringComparer.Ordinal)) { throw CurrentAuthRepairPermit.Invalid(); }
     }
-    private void RequireHealthy() { _files.Require(); RequireInventory(); if (_failed) { throw CurrentAuthRepairPermit.Invalid(); } }
+    private void RequireHealthy() { CurrentAuthRepairCapacity.Require(admission: false); _files.Require(); RequireInventory(); if (_failed) { throw CurrentAuthRepairPermit.Invalid(); } }
     private void MatchScope(CurrentAuthRepairScope scope)
     { if (JsonSerializer.Serialize(scope) != JsonSerializer.Serialize(_scope)) { throw CurrentAuthRepairPermit.Invalid(); } }
     private NpgsqlConnection Connection(string database)

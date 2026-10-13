@@ -77,6 +77,7 @@ internal static class PostgreSqlCurrentAuthRepair
             }
             CurrentAuthNativeObservation after = await CurrentAuthNativePreservation.CaptureAsync(connection, transaction, ct).ConfigureAwait(false);
             CurrentAuthNativePreservation.RequirePreserved(locked, after); afterHash = after.Snapshot.Sha256;
+            await CurrentAuthNativeProofObservation.CaptureCandidateAsync(permit, locked, after, ct).ConfigureAwait(false);
             await permit.RequireAsync(ct).ConfigureAwait(false);
             await RequireInstalledPolicyAsync(connection, transaction, scope, ct).ConfigureAwait(false);
             CurrentAuthRepairReceipt prepared = Sign(CurrentAppOwnedCommitClassification.Prepared);

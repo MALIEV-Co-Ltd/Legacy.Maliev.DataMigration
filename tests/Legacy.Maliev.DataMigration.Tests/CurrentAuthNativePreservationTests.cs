@@ -29,7 +29,7 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
     [InlineData("10.0.10")]
     public Task Fixed_transition_preserves_populated_rows_private_state_and_independent_history_through_rollback_commit_readback(string syntheticHistoryVersion)
     {
-        return RunOwnedAsync(async (admin, token) =>
+        return RunOwnedAsync("history-" + syntheticHistoryVersion, async (admin, token, proof) =>
         {
             string endpoint = await BootstrapAsync(admin, syntheticHistoryVersion, token);
             CurrentAuthNativeObservation before;
@@ -39,6 +39,7 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
                 Assert.Equal("off", await ScalarAsync<string>(connection, "SHOW autovacuum;", token));
                 await using var tx = await connection.BeginTransactionAsync(IsolationLevel.Serializable, token);
                 before = await CurrentAuthNativePreservation.CaptureAsync(connection, tx, token);
+                if (proof is not null) { await proof.NativeAsync("native-before", before, token); }
                 foreach (CheckConstraintCopyPlan check in ApprovedCurrentAuthSchema.Tables(false).SelectMany(table => table.CheckConstraints))
                 {
                     JsonObject constraint = before.Read("pg_constraint").Single(row => row["conname"]!.ToString() == check.Name);
@@ -56,6 +57,7 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
                         after.Expression(constraint["oid"]!.ToString()));
                 }
                 CurrentAuthNativePreservation.RequirePreserved(before, after);
+                if (proof is not null) { await proof.NativeAsync("native-candidate", after, token); }
                 RequireMaliciousNegatives(before, after);
                 await tx.RollbackAsync(token);
             }
@@ -66,6 +68,7 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
                 CurrentAuthNativeObservation rollback = await CurrentAuthNativePreservation.CaptureAsync(connection, tx, token);
                 Assert.Equal(before.Snapshot.Sha256, rollback.Snapshot.Sha256);
                 CurrentAuthNativePreservation.RequireBefore(rollback);
+                if (proof is not null) { await proof.NativeAsync("native-rolled-back", rollback, token); }
                 await CandidateAsync(connection, tx, token);
                 CurrentAuthNativePreservation.RequirePreserved(before, await CurrentAuthNativePreservation.CaptureAsync(connection, tx, token));
                 await tx.CommitAsync(token);
@@ -77,6 +80,7 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
                 await ExecuteAsync(connection, "SET TRANSACTION READ ONLY;", token, tx);
                 CurrentAuthNativeObservation readback = await CurrentAuthNativePreservation.CaptureAsync(connection, tx, token);
                 CurrentAuthNativePreservation.RequirePreserved(before, readback);
+                if (proof is not null) { await proof.NativeAsync("native-after", readback, token); }
                 _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthNativePreservation.RequireBefore(readback));
                 await tx.RollbackAsync(token);
             }
@@ -100,7 +104,7 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
     [InlineData("ALTER TABLE public.refresh_sessions ALTER COLUMN \"TokenHash\" TYPE varchar(64) COLLATE \"C\";")]
     public Task Unsupported_preimage_fails_before_candidate(string unexpected)
     {
-        return RunOwnedAsync(async (admin, token) =>
+        return RunOwnedAsync(CaseId(unexpected), async (admin, token, proof) =>
     {
         string endpoint = await BootstrapAsync(admin, "10.0.12", token);
         await using var connection = new NpgsqlConnection(endpoint);
@@ -108,7 +112,9 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
         await ExecuteAsync(connection, unexpected, token);
         await using var tx = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, token);
         CurrentAuthNativeObservation before = await CurrentAuthNativePreservation.CaptureAsync(connection, tx, token);
-        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthNativePreservation.RequireBefore(before));
+                if (proof is not null) { await proof.NativeAsync("native-before", before, token); }
+        var rejected = Assert.Throws<MigrationExecutionException>(() => CurrentAuthNativePreservation.RequireBefore(before));
+        if (proof is not null) { await proof.NativeAsync("native-after", await CurrentAuthNativePreservation.CaptureAsync(connection, tx, token), token); await proof.RecordAsync("rejection", new { code = rejected.Code }, token); }
         await tx.RollbackAsync(token);
     });
     }
@@ -278,12 +284,25 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
         await tx.RollbackAsync(token);
     }
 
-    private async Task RunOwnedAsync(Func<string, CancellationToken, Task> body)
+    private static string CaseId(string sql) => sql switch
+    {
+        "CREATE INDEX unreviewed_auth_expression ON public.refresh_sessions(lower(\"IdentityId\"));" => "reject-expression",
+        "CREATE STATISTICS unreviewed_auth_statistics ON \"IdentityId\",\"TokenHash\" FROM public.refresh_sessions;" => "reject-extended-statistics",
+        "ANALYZE public.refresh_sessions;" => "reject-statistics",
+        "ALTER TABLE public.refresh_sessions ADD COLUMN unreviewed text;" => "reject-column",
+        "ALTER TABLE public.refresh_sessions ALTER COLUMN \"TokenHash\" TYPE varchar(64) COLLATE \"C\";" => "reject-partial",
+        _ => throw new InvalidOperationException("unsupported_auth_proof_case")
+    };
+
+    private async Task RunOwnedAsync(string caseId, Func<string, CancellationToken, CurrentAuthExecutedProofRecorder?, Task> body)
     {
         if (!OperatingSystem.IsWindows()) { throw new PlatformNotSupportedException("Windows owned native proof required."); }
         Guid run = Guid.NewGuid(); DateTimeOffset began = DateTimeOffset.UtcNow, expires = began.AddMinutes(8);
         string name = "auth-closure-proof-" + run.ToString("N");
+        using var proof = await CurrentAuthExecutedProofRecorder.CreateAsync(run, caseId, CancellationToken.None);
+        if (proof is not null) { await proof.CapacityAsync(admission: true, CancellationToken.None); }
         WriteLedger(run, "attempt", new { run, name, began, expires, persistent = false });
+        if (proof is not null) { await proof.RecordAsync("attempt", new { run, name, began, expires, persistent = false }, CancellationToken.None); }
         using var lifetime = new CancellationTokenSource(TimeSpan.FromMinutes(8));
         using DockerClient docker = new DockerClientBuilder().WithEndpoint(new Uri("npipe://./pipe/docker_engine")).Build();
         PostgreSqlContainer container = new PostgreSqlBuilder(Image).WithDockerEndpoint("npipe://./pipe/docker_engine")
@@ -298,12 +317,12 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
                 foreach (IList<PortBinding> bindings in parameters.HostConfig.PortBindings!.Values)
                 { foreach (PortBinding binding in bindings) { binding.HostIP = "127.0.0.1"; } }
             }).Build();
-        string? ownedId = null; bool removed = false;
+        string? ownedId = null; bool removed = false, sdkDisposed = false; DateTimeOffset? removedAtUtc = null; int observedPort = 0;
         try
         {
             await container.StartAsync(lifetime.Token);
             ContainerInspectResponse metadata = await docker.Containers.InspectContainerAsync(name, lifetime.Token);
-            RequireOwnership(metadata); ownedId = metadata.ID;
+            RequireOwnership(metadata); ownedId = metadata.ID; observedPort = container.GetMappedPublicPort(5432);
             using (var capacityDeadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token))
             {
                 capacityDeadline.CancelAfter(TimeSpan.FromSeconds(5));
@@ -315,6 +334,7 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
                     bytes != 384L * 1024 * 1024)
                 { throw new InvalidOperationException("Actual disposable tmpfs capacity mismatch."); }
                 WriteLedger(run, "filesystem-capacity", new { run, containerId = ownedId, capacityBytes = bytes });
+                if (proof is not null) { await proof.RecordAsync("filesystem-capacity", new { run, containerId = ownedId, capacityBytes = bytes }, lifetime.Token); }
             }
             WriteLedger(run, "observed", new { run, name, containerId = ownedId, began, expires, persistent = false });
             output.WriteLine(JsonSerializer.Serialize(new
@@ -328,7 +348,10 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
                 Removed = false,
                 PersistentData = false
             }));
-            await body(container.GetConnectionString(), lifetime.Token);
+            if (proof is not null) { await proof.ContainerAsync(metadata, lifetime.Token); await proof.ObserveImageAsync(docker, lifetime.Token); await proof.CapacityAsync(admission: false, lifetime.Token); }
+            DateTimeOffset invocationStarted = DateTimeOffset.UtcNow;
+            try { await body(container.GetConnectionString(), lifetime.Token, proof); }
+            finally { if (proof is not null) { await proof.RecordAsync("invocation-window", new { startedAtUtc = invocationStarted, exitedAtUtc = DateTimeOffset.UtcNow }, CancellationToken.None); } }
         }
         finally
         {
@@ -351,6 +374,7 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
                 try { _ = await docker.Containers.InspectContainerAsync(ownedId, cleanup.Token); }
                 catch (DockerApiException failure) when (failure.StatusCode == HttpStatusCode.NotFound) { removed = true; }
                 if (!removed) { throw new InvalidOperationException("Owned disposable removal not verified"); }
+                removedAtUtc = DateTimeOffset.UtcNow;
             }
             catch (DockerApiException failure) when (failure.StatusCode == HttpStatusCode.NotFound && ownedId is null) { removed = true; }
             finally
@@ -366,8 +390,20 @@ public sealed class CurrentAuthNativePreservationTests(ITestOutputHelper output)
                     CleanupFailed = !removed,
                     PersistentData = false
                 }));
-                if (removed) { await container.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)); }
-                WriteLedger(run, "disposed", new { run, containerId = ownedId, removed, completedAtUtc = DateTimeOffset.UtcNow });
+                try
+                {
+                    if (proof is not null && removedAtUtc is not null && ownedId is not null) { await proof.ObserveAbsenceAsync(docker, ownedId, null, observedPort, removedAtUtc.Value, cleanup.Token); }
+                }
+                finally
+                {
+                    try { if (removed) { await container.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None); sdkDisposed = true; } }
+                    finally
+                    {
+                        var final = new { run, containerId = ownedId, removed, disposed = sdkDisposed, cleanupFailed = !removed || !sdkDisposed, removedAtUtc, completedAtUtc = DateTimeOffset.UtcNow };
+                        WriteLedger(run, "disposed", final);
+                        if (proof is not null) { await proof.RecordAsync("disposed", final, CancellationToken.None); }
+                    }
+                }
             }
         }
 

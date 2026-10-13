@@ -5,6 +5,7 @@ using System.Text.Json;
 namespace Legacy.Maliev.DataMigration;
 
 internal enum CurrentAuthRepairOperation { SixteenSameTypeTextCollations = 1 }
+internal enum CurrentAuthProofAdmission { ClosedConsole = 0, DisposableNativeBootstrap = 1, DisposableNativeComponent = 2, DisposableClosedConsoleBootstrap = 3 }
 internal sealed record CurrentAuthRepairScope(Guid OperationId, CurrentAuthRepairOperation Operation,
     string SourceCommitSha, string SourceSchemaPlanSha256, string AuthOwnerCommitSha,
     string AuthOwnerSourcePinsSha256, string AuthClosureSha256, string AuthBeforeSchemaSha256,
@@ -13,7 +14,10 @@ internal sealed record CurrentAuthRepairScope(Guid OperationId, CurrentAuthRepai
     string TargetGeneration, string TargetObservationSha256, string RunBindingSha256,
     IReadOnlyDictionary<string, string> BeforeDatabaseSha256, string GlobalPreservationSha256,
     string NativeProofSha256, string RecoveryReviewSha256, string ExactRoleTransitionReviewSha256,
-    CurrentAppOwnedMaintenancePin Maintenance);
+    CurrentAppOwnedMaintenancePin Maintenance,
+    CurrentAuthProofAdmission ProofAdmission = CurrentAuthProofAdmission.ClosedConsole,
+    CurrentAuthComponentBootstrapSubject? ComponentSubject = null,
+    CurrentAuthClosedBootstrapSeed? ClosedBootstrapSubject = null);
 internal sealed record CurrentAuthRepairSignedClaim(string Kind, CurrentAuthRepairScope Scope,
     Guid Nonce, string? ReviewSha256, DateTimeOffset IssuedAtUtc, DateTimeOffset ExpiresAtUtc, string KeyId, string? Signature);
 internal sealed record CurrentAuthRepairSigningPins(string ReviewKeyId, string ReviewFingerprint,
@@ -80,8 +84,8 @@ internal sealed class CurrentAuthRepairPermit
     internal static void ValidateReview(CurrentAuthRepairSignedClaim review, FreshSchemaPlan source,
         IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, DateTimeOffset now)
     {
-        RequireScope(review.Scope, source, now); RequirePins(trust, pins);
-        if (review.Kind != "current-auth-repair-review-v1" || review.KeyId != pins.ReviewKeyId || review.ReviewSha256 is not null ||
+        RequireScope(review.Scope, source, trust, now); RequirePins(trust, pins);
+        if (review.Kind != ReviewKind(review.Scope) || review.KeyId != pins.ReviewKeyId || review.ReviewSha256 is not null ||
             review.Nonce == Guid.Empty || review.ExpiresAtUtc > review.Scope.Maintenance.ExpiresAtUtc ||
             !Verify(review, trust, pins.ReviewFingerprint, now, TimeSpan.FromHours(12))) { throw Invalid(); }
     }
@@ -89,7 +93,7 @@ internal sealed class CurrentAuthRepairPermit
         FreshSchemaPlan source, IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, DateTimeOffset now)
     {
         ValidateReview(review, source, trust, pins, now);
-        if (authorization.Kind != "current-auth-repair-authorization-v1" || authorization.KeyId != pins.AuthorizationKeyId ||
+        if (authorization.Kind != AuthorizationKind(review.Scope) || authorization.KeyId != pins.AuthorizationKeyId ||
             JsonSerializer.Serialize(review.Scope) != JsonSerializer.Serialize(authorization.Scope) ||
             authorization.ReviewSha256 != Hash(JsonSerializer.SerializeToUtf8Bytes(review)) || authorization.Nonce == Guid.Empty ||
             authorization.Nonce == review.Nonce || authorization.IssuedAtUtc < review.IssuedAtUtc || authorization.ExpiresAtUtc > review.ExpiresAtUtc ||
@@ -102,7 +106,7 @@ internal sealed class CurrentAuthRepairPermit
     {
         scope = Clone(scope); source = Clone(source); baseline = baseline.Select(CopySnapshot).ToArray();
         if (signer.KeyId != pins.ReviewKeyId || !Matches(baseline, scope.BeforeDatabaseSha256)) { throw Invalid(); }
-        var unsigned = new CurrentAuthRepairSignedClaim("current-auth-repair-review-v1", scope, Guid.NewGuid(), null,
+        var unsigned = new CurrentAuthRepairSignedClaim(ReviewKind(scope), scope, Guid.NewGuid(), null,
             clock.GetUtcNow(), expiresAtUtc, signer.KeyId, null);
         var signed = unsigned with { Signature = Convert.ToBase64String(signer.Sign(Payload(unsigned))) };
         ValidateReview(signed, source, trust, pins, clock.GetUtcNow()); // pure signature/shape before any callback
@@ -120,7 +124,7 @@ internal sealed class CurrentAuthRepairPermit
         review = Clone(review); source = Clone(source); DateTimeOffset now = clock.GetUtcNow();
         ValidateReview(review, source, trust, pins, now);
         if (signer.KeyId != pins.AuthorizationKeyId) { throw Invalid(); }
-        var unsigned = new CurrentAuthRepairSignedClaim("current-auth-repair-authorization-v1", Clone(review.Scope), Guid.NewGuid(),
+        var unsigned = new CurrentAuthRepairSignedClaim(AuthorizationKind(review.Scope), Clone(review.Scope), Guid.NewGuid(),
             Hash(JsonSerializer.SerializeToUtf8Bytes(review)), now, new[] { now.AddMinutes(15), review.ExpiresAtUtc, review.Scope.Maintenance.ExpiresAtUtc }.Min(), signer.KeyId, null);
         var signed = unsigned with { Signature = Convert.ToBase64String(signer.Sign(Payload(unsigned))) };
         _ = await AdmitAsync(review, signed, source, trust, pins, environment, clock, ct).ConfigureAwait(false); return Clone(signed);
@@ -194,8 +198,18 @@ internal sealed class CurrentAuthRepairPermit
         snapshots.All(x => expected.TryGetValue(x.Database, out string? hash) && x.Sha256 == hash);
     }
 
-    private static void RequireScope(CurrentAuthRepairScope scope, FreshSchemaPlan source, DateTimeOffset now)
+    private static void RequireScope(CurrentAuthRepairScope scope, FreshSchemaPlan source, IReceiptAttestationTrustStore trust, DateTimeOffset now)
     {
+        RequireProofAdmission(scope);
+        bool component = scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent;
+        if (component) { CurrentAuthComponentBootstrap.RequireSubject(scope, source, trust, now); }
+        bool closedBootstrap = scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap;
+        if (closedBootstrap)
+        {
+            var seed = scope.ClosedBootstrapSubject ?? throw Invalid();
+            if (!trust.TryGetPublicKeyFingerprintSha256(seed.KeyId, out string fingerprint)) { throw Invalid(); }
+            CurrentAuthClosedBootstrap.RequireScope(seed, scope, source, trust, seed.KeyId, fingerprint, now);
+        }
         ProductionSchemaCatalogInspector.ValidatePlan(source, now);
         if (!ApprovedConsumerOverlaySelection.IsApproved(source) || source.Databases.Sum(x => x.Tables.Count) != 100 ||
             !source.Databases.Select(x => x.Database).Order(StringComparer.Ordinal).SequenceEqual(DatabaseInventory.ActiveDatabases.Order(StringComparer.Ordinal)) ||
@@ -208,8 +222,9 @@ internal sealed class CurrentAuthRepairPermit
             scope.AuthBeforeSchemaSha256 != ApprovedCurrentAuthSchema.PhysicalSha256(false) || scope.AuthAfterSchemaSha256 != ApprovedCurrentAuthSchema.PhysicalSha256(true) ||
             !HashShape(scope.AuthHelperProofSha256) || scope.MaintenanceValidatorSha256 != MaintenanceValidator ||
             ApprovedCurrentAuthSchema.SourcePins().Length != 13 || ApprovedCurrentAuthSchema.CollationOperands().Length != 16 ||
-            scope.OperationSha256 != OperationSha256(source, scope.AuthHelperProofSha256) ||
-            !HashShape(scope.TargetObservationSha256) || !HashShape(scope.RunBindingSha256) || !HashShape(scope.NativeProofSha256) || !HashShape(scope.RecoveryReviewSha256) || !HashShape(scope.ExactRoleTransitionReviewSha256) ||
+            (component ? scope.OperationSha256 != CurrentAuthComponentBootstrap.SubjectSha256(scope.ComponentSubject!) : closedBootstrap ?
+                scope.OperationSha256 != CurrentAuthClosedBootstrap.SubjectSha256(scope.ClosedBootstrapSubject!) : scope.OperationSha256 != OperationSha256(source, scope.AuthHelperProofSha256)) ||
+            !HashShape(scope.TargetObservationSha256) || !HashShape(scope.RunBindingSha256) || (!component && (!HashShape(scope.NativeProofSha256) || !HashShape(scope.RecoveryReviewSha256) || !HashShape(scope.ExactRoleTransitionReviewSha256))) ||
             scope.GlobalPreservationSha256 != FleetSha256(scope.BeforeDatabaseSha256) || scope.BeforeDatabaseSha256.Values.Any(x => !HashShape(x)) ||
             !DatabaseInventory.ActiveDatabases.All(scope.BeforeDatabaseSha256.ContainsKey) || !scope.BeforeDatabaseSha256.ContainsKey("Auth") || !scope.BeforeDatabaseSha256.ContainsKey("postgres") ||
             string.IsNullOrWhiteSpace(scope.TargetGeneration) ||
@@ -221,6 +236,16 @@ internal sealed class CurrentAuthRepairPermit
             m.IssuedAtUtc.Offset != TimeSpan.Zero || m.ExpiresAtUtc.Offset != TimeSpan.Zero || m.Postmaster.Offset != TimeSpan.Zero || m.ConfigLoaded.Offset != TimeSpan.Zero ||
             m.IssuedAtUtc > now || m.ExpiresAtUtc <= now || m.ExpiresAtUtc <= m.IssuedAtUtc || m.ExpiresAtUtc - m.IssuedAtUtc > TimeSpan.FromHours(4) ||
             m.Postmaster > now || m.ConfigLoaded > now || !HashShape(m.HbaSha256) || !HashShape(m.HbaRulesSha256) || string.IsNullOrWhiteSpace(m.HbaPath)) { throw Invalid(); }
+    }
+    private static string ReviewKind(CurrentAuthRepairScope scope) => scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent ? "current-auth-component-review-v1" : scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap ? "current-auth-named-bootstrap-review-v1" : "current-auth-repair-review-v1";
+    private static string AuthorizationKind(CurrentAuthRepairScope scope) => scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent ? "current-auth-component-authorization-v1" : scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap ? "current-auth-named-bootstrap-authorization-v1" : "current-auth-repair-authorization-v1";
+    internal static void RequireProofAdmission(CurrentAuthRepairScope scope)
+    {
+        if ((scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent) != (scope.ComponentSubject is not null)) { throw Invalid(); }
+        if ((scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap) != (scope.ClosedBootstrapSubject is not null)) { throw Invalid(); }
+        if (scope.ProofAdmission is not (CurrentAuthProofAdmission.ClosedConsole or CurrentAuthProofAdmission.DisposableNativeBootstrap or CurrentAuthProofAdmission.DisposableNativeComponent or CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap) ||
+            ((scope.ProofAdmission is CurrentAuthProofAdmission.DisposableNativeBootstrap or CurrentAuthProofAdmission.DisposableNativeComponent or CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap) &&
+                !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(scope.Target))) { throw Invalid(); }
     }
     private static void RequirePins(IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins)
     {
