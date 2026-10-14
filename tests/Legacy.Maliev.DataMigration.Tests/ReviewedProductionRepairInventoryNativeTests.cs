@@ -345,14 +345,13 @@ public sealed class ReviewedProductionRepairInventoryNativeTests(ITestOutputHelp
 
         bool StorageMatches(ContainerInspectResponse metadata)
         {
-            if (metadata.HostConfig is not { } host || metadata.Mounts is not { } mounts) { return false; }
-            return !disk
+            return metadata.HostConfig is { } host && metadata.Mounts is { } mounts && (!disk
                 ? mounts.Count == 0 && host.Mounts is not { Count: > 0 } && host.Binds is not { Count: > 0 } &&
                     host.Tmpfs is { Count: 1 } tmpfs && tmpfs.TryGetValue("/var/lib/postgresql", out string? value) && value == "rw,nosuid,size=384m"
                 : host.Tmpfs is not { Count: > 0 } && mounts.Count == 1 && mounts[0].Type == "volume" &&
                     mounts[0].Name == volume && mounts[0].Destination == "/var/lib/postgresql" && mounts[0].RW &&
                     (host.Binds is not { Count: > 0 } || (host.Binds.Count == 1 && host.Binds[0] == volume + ":/var/lib/postgresql:rw")) &&
-                    host.Mounts is not { Count: > 0 };
+                    host.Mounts is not { Count: > 0 });
         }
 
         async Task Ledger(string phase, object record)
