@@ -196,8 +196,12 @@ public sealed class ReviewedProductionRepairInventoryNativeTests(ITestOutputHelp
                 try
                 {
                     _ = await docker.Volumes.CreateAsync(new VolumesCreateParameters
-                    { Name = volume, Driver = "local", Labels = new Dictionary<string, string>
-                        { ["codex.repair.purpose"] = Purpose, ["codex.repair.operation"] = run.ToString("D"), ["codex.repair.run-binding"] = bindingSha } }, lifetime.Token);
+                    {
+                        Name = volume,
+                        Driver = "local",
+                        Labels = new Dictionary<string, string>
+                        { ["codex.repair.purpose"] = Purpose, ["codex.repair.operation"] = run.ToString("D"), ["codex.repair.run-binding"] = bindingSha }
+                    }, lifetime.Token);
                 }
                 finally { volumeEnd = DateTimeOffset.UtcNow; }
                 await RequireVolumeAsync(false, lifetime.Token);
@@ -267,9 +271,16 @@ public sealed class ReviewedProductionRepairInventoryNativeTests(ITestOutputHelp
                 {
                     await Ledger("sdk-disposal-start", new
                     {
-                        run, containerId = ownedId, volume, removed, volumeRemoved,
-                        processId = owningHostPid, processStartTimeUtc = owningHostStartUtc, executable = owningHostImage,
-                        expiresAtUtc = expires, parentExactOwnedWorkerCleanupRequiredIfUnsettled = true,
+                        run,
+                        containerId = ownedId,
+                        volume,
+                        removed,
+                        volumeRemoved,
+                        processId = owningHostPid,
+                        processStartTimeUtc = owningHostStartUtc,
+                        executable = owningHostImage,
+                        expiresAtUtc = expires,
+                        parentExactOwnedWorkerCleanupRequiredIfUnsettled = true,
                         beganAtUtc = DateTimeOffset.UtcNow
                     });
                     disposalTask = container.DisposeAsync().AsTask();
@@ -277,10 +288,28 @@ public sealed class ReviewedProductionRepairInventoryNativeTests(ITestOutputHelp
                     disposed = true;
                 }
             }
-            finally { await Ledger("disposed", new { run, containerId = ownedId, volume, removed, volumeRemoved, disposed, cleanupFailed = !removed || !volumeRemoved || !disposed, sdkDisposalStarted = disposalTask is not null,
-                sdkDisposalSettled = disposalTask?.IsCompleted ?? false, sdkDisposalStatus = disposalTask?.Status.ToString(),
-                processId = owningHostPid, processStartTimeUtc = owningHostStartUtc, executable = owningHostImage,
-                parentExactOwnedWorkerCleanupRequired = disposalTask is { IsCompleted: false }, expires, completedAtUtc = DateTimeOffset.UtcNow }); }
+            finally
+            {
+                await Ledger("disposed", new
+                {
+                    run,
+                    containerId = ownedId,
+                    volume,
+                    removed,
+                    volumeRemoved,
+                    disposed,
+                    cleanupFailed = !removed || !volumeRemoved || !disposed,
+                    sdkDisposalStarted = disposalTask is not null,
+                    sdkDisposalSettled = disposalTask?.IsCompleted ?? false,
+                    sdkDisposalStatus = disposalTask?.Status.ToString(),
+                    processId = owningHostPid,
+                    processStartTimeUtc = owningHostStartUtc,
+                    executable = owningHostImage,
+                    parentExactOwnedWorkerCleanupRequired = disposalTask is { IsCompleted: false },
+                    expires,
+                    completedAtUtc = DateTimeOffset.UtcNow
+                });
+            }
         }
 
         async Task RequireVolumeAsync(bool consumer, CancellationToken ct)
@@ -317,12 +346,13 @@ public sealed class ReviewedProductionRepairInventoryNativeTests(ITestOutputHelp
         bool StorageMatches(ContainerInspectResponse metadata)
         {
             if (metadata.HostConfig is not { } host || metadata.Mounts is not { } mounts) { return false; }
-            if (!disk) { return mounts.Count == 0 && host.Mounts is not { Count: > 0 } && host.Binds is not { Count: > 0 } &&
-                host.Tmpfs is { Count: 1 } tmpfs && tmpfs.TryGetValue("/var/lib/postgresql", out string? value) && value == "rw,nosuid,size=384m"; }
-            return host.Tmpfs is not { Count: > 0 } && mounts.Count == 1 && mounts[0].Type == "volume" &&
-                mounts[0].Name == volume && mounts[0].Destination == "/var/lib/postgresql" && mounts[0].RW &&
-                (host.Binds is not { Count: > 0 } || host.Binds.Count == 1 && host.Binds[0] == volume + ":/var/lib/postgresql:rw") &&
-                host.Mounts is not { Count: > 0 };
+            return !disk
+                ? mounts.Count == 0 && host.Mounts is not { Count: > 0 } && host.Binds is not { Count: > 0 } &&
+                    host.Tmpfs is { Count: 1 } tmpfs && tmpfs.TryGetValue("/var/lib/postgresql", out string? value) && value == "rw,nosuid,size=384m"
+                : host.Tmpfs is not { Count: > 0 } && mounts.Count == 1 && mounts[0].Type == "volume" &&
+                    mounts[0].Name == volume && mounts[0].Destination == "/var/lib/postgresql" && mounts[0].RW &&
+                    (host.Binds is not { Count: > 0 } || (host.Binds.Count == 1 && host.Binds[0] == volume + ":/var/lib/postgresql:rw")) &&
+                    host.Mounts is not { Count: > 0 };
         }
 
         async Task Ledger(string phase, object record)
@@ -339,7 +369,10 @@ public sealed class ReviewedProductionRepairInventoryNativeTests(ITestOutputHelp
     { await using var command = new NpgsqlCommand(sql, connection) { CommandTimeout = 30 }; return (string)(await command.ExecuteScalarAsync(ct))!; }
     private static async Task<long> CountAsync(NpgsqlConnection connection, CancellationToken ct)
     { await using var command = new NpgsqlCommand("SELECT count(*) FROM pg_database;", connection) { CommandTimeout = 30 }; return (long)(await command.ExecuteScalarAsync(ct))!; }
-    private static string Quote(string name) => PostgreSqlShadowTarget.QuoteIdentifier(name);
+    private static string Quote(string name)
+    {
+        return PostgreSqlShadowTarget.QuoteIdentifier(name);
+    }
 }
 
 public sealed class InventoryWindowsTheoryAttribute : TheoryAttribute

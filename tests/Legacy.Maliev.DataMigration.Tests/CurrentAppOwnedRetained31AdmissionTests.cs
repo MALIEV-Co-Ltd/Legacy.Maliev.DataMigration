@@ -41,7 +41,7 @@ public sealed class CurrentAppOwnedRetained31AdmissionTests
         }
         var changed = f.Scope with { BeforeDatabaseSha256 = hashes };
         var (review, authorization) = f.Claims(changed);
-        Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedRetained31Permit.ValidateClaims(review, authorization,
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedRetained31Permit.ValidateClaims(review, authorization,
             f.Before, f.After, f.Trust, f.Pins, f.Now));
     }
 

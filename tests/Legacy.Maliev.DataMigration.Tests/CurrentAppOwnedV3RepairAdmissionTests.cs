@@ -143,7 +143,9 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
         var scope = f.Scope with
         {
             Target = new(DeltaTargetAuthorityKind.ProductionCloudNativePg, "gke://maliev-website/inventory-fixture", new string('d', 64)),
-            TargetNamespace = "maliev-legacy", TargetCluster = "legacy-postgres-main", BeforeDatabaseSha256 = hashes,
+            TargetNamespace = "maliev-legacy",
+            TargetCluster = "legacy-postgres-main",
+            BeforeDatabaseSha256 = hashes,
             GlobalPreservationSha256 = CurrentAppOwnedV3RepairPermit.FleetSha256(hashes),
         };
         var (review, authorization) = f.SignPair(scope);
@@ -163,7 +165,7 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
         }
         scope = scope with { GlobalPreservationSha256 = CurrentAppOwnedV3RepairPermit.FleetSha256(hashes) };
         (review, authorization) = f.SignPair(scope);
-        Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedV3RepairPermit.ValidateClaims(review, authorization,
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedV3RepairPermit.ValidateClaims(review, authorization,
             f.Trust, f.Pins, f.Now));
     }
 

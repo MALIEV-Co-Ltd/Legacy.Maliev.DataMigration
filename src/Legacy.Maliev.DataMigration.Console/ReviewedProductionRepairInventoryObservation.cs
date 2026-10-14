@@ -37,6 +37,9 @@ internal static class ReviewedProductionRepairInventoryObservation
             !CurrentAppOwnedRepairPermit.HashShape(pinned) || observed != pinned) { throw Invalid(); }
     }
 
-    private static MigrationExecutionException Invalid() => new("reviewed_inventory_observation_unbound",
-        "Fresh read-only complete catalog from the pinned actual PostgreSQL system required.");
+    private static MigrationExecutionException Invalid()
+    {
+        return new("reviewed_inventory_observation_unbound",
+            "Fresh read-only complete catalog from the pinned actual PostgreSQL system required.");
+    }
 }

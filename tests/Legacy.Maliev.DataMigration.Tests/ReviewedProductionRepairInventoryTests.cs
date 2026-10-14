@@ -303,8 +303,8 @@ public sealed class ReviewedProductionRepairInventoryTests
         string shadow = keys.First(x => x.StartsWith("legacy_shadow_", StringComparison.Ordinal));
         switch (fault)
         {
-            case "missing-control": keys.Remove("legacy_migration_control"); break;
-            case "missing-shadow": keys.Remove(shadow); break;
+            case "missing-control": _ = keys.Remove("legacy_migration_control"); break;
+            case "missing-shadow": _ = keys.Remove(shadow); break;
             case "substitute-shadow": keys[keys.IndexOf(shadow)] = shadow + "x"; break;
             case "extra": keys.Add("unreviewed"); break;
             case "case-alias": keys[keys.IndexOf("Auth")] = "auth"; break;
@@ -313,7 +313,7 @@ public sealed class ReviewedProductionRepairInventoryTests
             default: throw new InvalidOperationException();
         }
         Assert.False(ReviewedProductionRepairInventory.MatchesKeys(DeltaTargetAuthorityKind.ProductionCloudNativePg, keys));
-        Assert.Throws<MigrationExecutionException>(() => ReviewedProductionRepairInventory.RequireComplete(
+        _ = Assert.Throws<MigrationExecutionException>(() => ReviewedProductionRepairInventory.RequireComplete(
             DeltaTargetAuthorityKind.ProductionCloudNativePg, flags, keys));
     }
 
@@ -334,7 +334,7 @@ public sealed class ReviewedProductionRepairInventoryTests
             case "case-alias": flags[0] = flags[0] with { Name = flags[0].Name.ToLowerInvariant() }; break;
             case "disabled": flags[0] = flags[0] with { AllowsConnections = false }; break;
             case "app-template": flags[0] = flags[0] with { IsTemplate = true }; break;
-            case "missing-template": flags.RemoveAll(x => x.Name == "template0"); break;
+            case "missing-template": _ = flags.RemoveAll(x => x.Name == "template0"); break;
             case "template0-connectable":
                 int i = flags.FindIndex(x => x.Name == "template0");
                 flags[i] = flags[i] with { AllowsConnections = true };
@@ -343,7 +343,7 @@ public sealed class ReviewedProductionRepairInventoryTests
             case "extra-disabled": flags.Add(new("hidden_unreviewed", false, false)); break;
             default: throw new InvalidOperationException();
         }
-        Assert.Throws<MigrationExecutionException>(() => ReviewedProductionRepairInventory.RequireComplete(
+        _ = Assert.Throws<MigrationExecutionException>(() => ReviewedProductionRepairInventory.RequireComplete(
             DeltaTargetAuthorityKind.ProductionCloudNativePg, flags, keys));
     }
 
@@ -356,7 +356,7 @@ public sealed class ReviewedProductionRepairInventoryTests
         ReviewedProductionRepairInventory.RequireComplete(DeltaTargetAuthorityKind.LocalAspire, flags, names);
         Assert.False(ReviewedProductionRepairInventory.MatchesKeys(DeltaTargetAuthorityKind.ProductionCloudNativePg, names));
         var exported = (IList<string>)ReviewedProductionRepairInventory.ExportProductionNames();
-        Assert.Throws<NotSupportedException>(() => exported[0] = "changed");
+        _ = Assert.Throws<NotSupportedException>(() => exported[0] = "changed");
         Assert.Equal("Auth", ReviewedProductionRepairInventory.ExportProductionNames()[0]);
     }
 
@@ -366,7 +366,7 @@ public sealed class ReviewedProductionRepairInventoryTests
     [InlineData(false, true)]
     public void Actual_system_binding_and_read_only_are_required(bool sameSystem, bool readOnly)
     {
-        Assert.Throws<MigrationExecutionException>(() => ReviewedProductionRepairInventoryObservation.RequireSystemBinding(
+        _ = Assert.Throws<MigrationExecutionException>(() => ReviewedProductionRepairInventoryObservation.RequireSystemBinding(
             new('a', 64), new(sameSystem ? 'a' : 'b', 64), readOnly));
         ReviewedProductionRepairInventoryObservation.RequireSystemBinding(new('a', 64), new('a', 64), true);
     }

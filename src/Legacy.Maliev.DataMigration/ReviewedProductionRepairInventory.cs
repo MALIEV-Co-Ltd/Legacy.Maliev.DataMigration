@@ -62,11 +62,17 @@ internal static class ReviewedProductionRepairInventory
     private static readonly string[] LocalNames = DatabaseInventory.ActiveDatabases.Concat(LocalExtraNames).ToArray();
     private static readonly ReviewedRepairDatabaseFlag[] Templates = [new("template0", true, false), new("template1", true, true)];
 
-    internal static IReadOnlyList<string> ExportProductionNames() => Array.AsReadOnly((string[])ProductionNames.Clone());
+    internal static IReadOnlyList<string> ExportProductionNames()
+    {
+        return Array.AsReadOnly((string[])ProductionNames.Clone());
+    }
 
-    internal static IReadOnlyList<ReviewedRepairDatabaseFlag> ExportProductionCatalog() => Array.AsReadOnly(
-        ProductionNames.Select(x => new ReviewedRepairDatabaseFlag(x, false, true)).Concat(Templates)
-            .OrderBy(x => x.Name, StringComparer.Ordinal).ToArray());
+    internal static IReadOnlyList<ReviewedRepairDatabaseFlag> ExportProductionCatalog()
+    {
+        return Array.AsReadOnly(
+            ProductionNames.Select(x => new ReviewedRepairDatabaseFlag(x, false, true)).Concat(Templates)
+                .OrderBy(x => x.Name, StringComparer.Ordinal).ToArray());
+    }
 
     internal static bool MatchesKeys(string kind, IEnumerable<string> names)
     {
@@ -95,6 +101,9 @@ internal static class ReviewedProductionRepairInventory
             !flags.OrderBy(x => x.Name, StringComparer.Ordinal).SequenceEqual(ExportProductionCatalog())) { throw Invalid(); }
     }
 
-    private static MigrationExecutionException Invalid() => new("reviewed_production_inventory_mismatch",
-        "Complete reviewed database names and template/connection flags required; no baseline may be omitted.");
+    private static MigrationExecutionException Invalid()
+    {
+        return new("reviewed_production_inventory_mismatch",
+            "Complete reviewed database names and template/connection flags required; no baseline may be omitted.");
+    }
 }

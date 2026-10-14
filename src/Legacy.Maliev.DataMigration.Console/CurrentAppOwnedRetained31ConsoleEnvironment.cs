@@ -220,8 +220,12 @@ internal sealed class CurrentAppOwnedRetained31ConsoleEnvironment : ICurrentAppO
         await RequireResourceAndCustodyAsync(_scope, ct).ConfigureAwait(false);
         await using var connection = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(_connection)
         {
-            Database = "postgres", Pooling = false, Timeout = 5, CommandTimeout = 30,
-            IncludeErrorDetail = false, Options = "-c default_transaction_read_only=on"
+            Database = "postgres",
+            Pooling = false,
+            Timeout = 5,
+            CommandTimeout = 30,
+            IncludeErrorDetail = false,
+            Options = "-c default_transaction_read_only=on"
         }.ConnectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
