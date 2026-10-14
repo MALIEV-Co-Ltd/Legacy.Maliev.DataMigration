@@ -81,6 +81,17 @@ internal static class CurrentAuthNativePreservation
         "pg_am", "pg_conversion",
     };
 
+    internal static Task<string> RequireOperandOwnerAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        CurrentAuthRepairScope scope, CurrentAuthNativeObservation observation, CancellationToken cancellationToken)
+    {
+        string policy = CurrentRepairOperandOwnerProfile.PolicySha256(CurrentRepairOperandOwnerPurpose.AuthCollation16, scope.Target);
+        return (scope.Target.Kind == DeltaTargetAuthorityKind.ProductionCloudNativePg && scope.OwnerPolicySha256 is null) ||
+            (scope.OwnerPolicySha256 is not null && scope.OwnerPolicySha256 != policy)
+            ? throw Invalid("operand_owner_policy")
+            : CurrentRepairOperandOwnerProfile.RequireNativeAsync(connection, transaction,
+            CurrentRepairOperandOwnerPurpose.AuthCollation16, scope.Target, observation.Snapshot, cancellationToken);
+    }
+
     private static void RequireWholeShape(CurrentAuthNativeObservation observation, bool after)
     {
         RequireCaptureBinding(observation);

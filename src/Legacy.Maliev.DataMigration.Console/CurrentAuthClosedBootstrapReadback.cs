@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text.Json;
 
 namespace Legacy.Maliev.DataMigration.Console;
 
@@ -27,7 +26,11 @@ internal static class CurrentAuthClosedBootstrapReadback
         using var files = new CurrentAppOwnedRepairCustody(authority);
         if (!files.Read(evidence.PrecursorRunBindingPath, sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(bytes))
         { throw CurrentAuthRepairPermit.Invalid(); }
-        T Read<T>(string path) => MigrationConsole.DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024));
+        T Read<T>(string path)
+        {
+            return MigrationConsole.DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024));
+        }
+
         var precursor = Read<CurrentAuthRepairScope>(evidence.PrecursorScopePath);
         var heldSource = Read<FreshSchemaPlan>(evidence.PrecursorSourcePath);
         var pins = Read<CurrentAuthRepairSigningPins>(evidence.PrecursorSigningPinsPath);
@@ -58,12 +61,18 @@ internal static class CurrentAuthClosedBootstrapReadback
         files.Require();
     }
     internal static Task RequireAsync(CurrentAuthClosedBootstrapEvidence evidence,
-        CurrentAuthRepairScope namedScope, FreshSchemaPlan namedSource, CancellationToken ct) =>
-        RequireCoreAsync(evidence, namedScope, namedSource, requireSignature: true, ct);
+        CurrentAuthRepairScope namedScope, FreshSchemaPlan namedSource, CancellationToken ct)
+    {
+        return RequireCoreAsync(evidence, namedScope, namedSource, requireSignature: true, ct);
+    }
+
     // Returns observation validation only. It cannot be called by a Console admission branch.
     internal static Task RequireUnsignedForProducerAsync(CurrentAuthClosedBootstrapEvidence evidence,
-        CurrentAuthRepairScope namedScope, FreshSchemaPlan namedSource, CancellationToken ct) =>
-        RequireCoreAsync(evidence, namedScope, namedSource, requireSignature: false, ct);
+        CurrentAuthRepairScope namedScope, FreshSchemaPlan namedSource, CancellationToken ct)
+    {
+        return RequireCoreAsync(evidence, namedScope, namedSource, requireSignature: false, ct);
+    }
+
     private static async Task RequireCoreAsync(CurrentAuthClosedBootstrapEvidence evidence,
         CurrentAuthRepairScope namedScope, FreshSchemaPlan namedSource, bool requireSignature, CancellationToken ct)
     {
@@ -81,7 +90,11 @@ internal static class CurrentAuthClosedBootstrapReadback
             Path.Combine(binding.ArtifactRootCanonicalPath, Path.GetFileName(evidence.PrecursorRunBindingPath))) ||
             !files.Read(evidence.PrecursorRunBindingPath, sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(bindingBytes) ||
             identity != SecureLocalFile.GetHandleIdentity(bindingInput)) { throw CurrentAuthRepairPermit.Invalid(); }
-        T Read<T>(string path) => MigrationConsole.DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024));
+        T Read<T>(string path)
+        {
+            return MigrationConsole.DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024));
+        }
+
         var precursor = Read<CurrentAuthRepairScope>(evidence.PrecursorScopePath);
         var source = Read<FreshSchemaPlan>(evidence.PrecursorSourcePath);
         var pins = Read<CurrentAuthRepairSigningPins>(evidence.PrecursorSigningPinsPath);
@@ -127,7 +140,8 @@ internal static class CurrentAuthClosedBootstrapReadback
     private static string AssemblyHash(string path)
     {
         using var image = SecureLocalFile.OpenReadShared(path);
-        if (image.Length is < 1 or > 128 * 1024 * 1024) { throw CurrentAuthRepairPermit.Invalid(); }
-        return Convert.ToHexStringLower(SHA256.HashData(image));
+        return image.Length is < 1 or > 128 * 1024 * 1024
+            ? throw CurrentAuthRepairPermit.Invalid()
+            : Convert.ToHexStringLower(SHA256.HashData(image));
     }
 }

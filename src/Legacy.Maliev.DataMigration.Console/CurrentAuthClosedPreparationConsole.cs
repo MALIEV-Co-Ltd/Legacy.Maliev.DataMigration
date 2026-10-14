@@ -36,9 +36,14 @@ public static partial class MigrationConsole
                 config.CaseId is "host-unprobed-sdk" or "local-ordinary-trust", lease.Token).ConfigureAwait(false);
             string path = await CurrentAuthClosedConfiguration.WriteAsync(files, binding, capture, source, config.CaseId,
                 config.CompletedComponents, config.PrecursorReviewPrivateKeyPath, config.TestAssemblyPath, lease.Token).ConfigureAwait(false);
-            await output.WriteLineAsync(JsonSerializer.Serialize(new { kind = "current-auth-named-disposable-preparation-v1", path,
+            await output.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                kind = "current-auth-named-disposable-preparation-v1",
+                path,
                 sha256 = CurrentAuthRepairPermit.Hash(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024)),
-                persistentAuthority = false, closedCasesExecuted = false })).ConfigureAwait(false);
+                persistentAuthority = false,
+                closedCasesExecuted = false
+            })).ConfigureAwait(false);
             return 0;
         }
         catch (Exception failure) when (failure is MigrationExecutionException or MigrationConsoleException or IOException or

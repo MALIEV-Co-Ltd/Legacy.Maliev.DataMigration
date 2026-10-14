@@ -29,7 +29,7 @@ internal sealed class CurrentAuthRepairEnvironment : ICurrentAuthRepairEnvironme
     private readonly CurrentAuthRetainedReceiptChain _chain = new();
     private CurrentAuthNativeObservation? _nativeBefore;
     private CurrentAuthRepairReceipt? _prepared, _terminal;
-    private string? _pendingAfter;
+    private string? _pendingAfter, _operandOwnerClosure;
     private bool _reserved, _failed;
     private bool _closedAckFaultUsed;
 
@@ -173,7 +173,11 @@ internal sealed class CurrentAuthRepairEnvironment : ICurrentAuthRepairEnvironme
             if (hash != (pendingAfter ? _prepared!.AfterSha256 : _expected[expected.Database])) { throw CurrentAuthRepairPermit.Invalid(); }
             if (auth is not null)
             {
+                string closure = await CurrentAuthNativePreservation.RequireOperandOwnerAsync(connection, tx, _scope, auth, ct).ConfigureAwait(false);
                 bool after = _terminal is not null || pendingAfter;
+                if (_operandOwnerClosure is not null && _operandOwnerClosure != closure) { throw CurrentAuthRepairPermit.Invalid(); }
+                if (after && _operandOwnerClosure is null) { throw CurrentAuthRepairPermit.Invalid(); }
+                _operandOwnerClosure ??= closure;
                 if (after)
                 {
                     if (_nativeBefore is null) { throw CurrentAuthRepairPermit.Invalid(); }
@@ -259,8 +263,14 @@ internal sealed class CurrentAuthRepairEnvironment : ICurrentAuthRepairEnvironme
                 // acknowledged predecessor. A later failure receipt is a genuine sibling.
                 await _files.WriteNewAsync(Path.Combine(_authority.Binding.ArtifactRootCanonicalPath,
                     $"auth-closed-unacknowledged-{_scope.OperationId:N}-{Suffix(receipt.Classification)}.json"),
-                    JsonSerializer.SerializeToUtf8Bytes(new { name, sha256 = CurrentAuthRepairPermit.Hash(held),
-                        acknowledged = false, classification = receipt.Classification, observedAtUtc = DateTimeOffset.UtcNow }), ct).ConfigureAwait(false);
+                    JsonSerializer.SerializeToUtf8Bytes(new
+                    {
+                        name,
+                        sha256 = CurrentAuthRepairPermit.Hash(held),
+                        acknowledged = false,
+                        classification = receipt.Classification,
+                        observedAtUtc = DateTimeOffset.UtcNow
+                    }), ct).ConfigureAwait(false);
                 _files.Require();
                 throw new IOException("owned_disposable_auth_publication_ack_dropped");
             }

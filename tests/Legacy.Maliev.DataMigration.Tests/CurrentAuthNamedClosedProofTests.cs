@@ -12,13 +12,13 @@ public sealed class CurrentAuthNamedClosedProofTests
         CurrentAuthNamedClosedCase[] complete = [.. CurrentAuthNamedClosedProofReadback.Cases.Select(id =>
             new CurrentAuthNamedClosedCase(id, Guid.NewGuid(), @"D:\pure-unit\" + id, @"D:\pure-unit\binding.json", new string('a', 64), []))];
         CurrentAuthNamedClosedProofReadback.RequireCaseSet(complete);
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthNamedClosedProofReadback.RequireCaseSet(complete.Take(6).ToArray()));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthNamedClosedProofReadback.RequireCaseSet(complete.Take(6).ToArray()));
         var changed = complete.ToArray(); changed[0] = changed[0] with { CaseId = "component-success" };
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthNamedClosedProofReadback.RequireCaseSet(changed));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthNamedClosedProofReadback.RequireCaseSet(changed));
         changed = complete.ToArray(); changed[0] = changed[0] with { OperationId = changed[1].OperationId };
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthNamedClosedProofReadback.RequireCaseSet(changed));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthNamedClosedProofReadback.RequireCaseSet(changed));
         changed = complete.ToArray(); changed[0] = changed[0] with { Root = changed[1].Root.ToUpperInvariant() };
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthNamedClosedProofReadback.RequireCaseSet(changed));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthNamedClosedProofReadback.RequireCaseSet(changed));
     }
     [Fact]
     public void Report_signature_binds_phase_scope_artifacts_and_original_case_custody()
@@ -28,7 +28,11 @@ public sealed class CurrentAuthNamedClosedProofTests
         var report = new CurrentAuthNamedClosedReport("current-auth-eight-named-console-proof-v1", "native", new string('b', 64), new string('c', 40),
             artifact, artifact, artifact, DateTimeOffset.UtcNow, [new("success", Guid.NewGuid(), @"D:\pure-unit\original", @"D:\pure-unit\binding.json", new string('d', 64), [artifact])], "pure-unit", null);
         byte[] signature = key.SignData(CurrentAuthNamedClosedProofReadback.Payload(report), HashAlgorithmName.SHA256);
-        bool Valid(CurrentAuthNamedClosedReport value) => key.VerifyData(CurrentAuthNamedClosedProofReadback.Payload(value), signature, HashAlgorithmName.SHA256);
+        bool Valid(CurrentAuthNamedClosedReport value)
+        {
+            return key.VerifyData(CurrentAuthNamedClosedProofReadback.Payload(value), signature, HashAlgorithmName.SHA256);
+        }
+
         Assert.True(Valid(report with { Signature = "signature-excluded-from-payload" }));
         Assert.False(Valid(report with { Phase = "maintenance" }));
         Assert.False(Valid(report with { SubjectSha256 = new string('e', 64) }));
@@ -39,6 +43,6 @@ public sealed class CurrentAuthNamedClosedProofTests
     public void Host_closed_filter_is_fixed_and_has_no_caller_commands()
     {
         Assert.Equal("FullyQualifiedName~CurrentAuthClosedConsoleExecutionTests.Genuine_named_closed_auth_console_preserves_or_stops", CurrentAuthTypedHostProducer.Filter("closed"));
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthTypedHostProducer.Filter("closed|FullyQualifiedName~OtherTests"));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthTypedHostProducer.Filter("closed|FullyQualifiedName~OtherTests"));
     }
 }

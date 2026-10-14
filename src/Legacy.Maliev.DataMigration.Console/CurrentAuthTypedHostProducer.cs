@@ -20,13 +20,17 @@ internal static class CurrentAuthTypedHostProducer
     private static readonly byte[] Newline = [10];
     internal static ReadOnlyMemory<byte> NewlineBytes => Newline;
     internal static readonly string Dotnet = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "dotnet.exe");
-    internal static string Filter(string group) => group switch
+    internal static string Filter(string group)
     {
-        "definition" => "FullyQualifiedName~CurrentAuthNativePreservationTests.Fixed_transition_preserves_populated_rows_private_state_and_independent_history_through_rollback_commit_readback|FullyQualifiedName~CurrentAuthNativePreservationTests.Unsupported_preimage_fails_before_candidate",
-        "provider" => "FullyQualifiedName~CurrentAuthGuardedNativeExecutionTests.Genuine_auth_provider_preserves_fleet_and_receipts_or_stops",
-        "closed" => "FullyQualifiedName~CurrentAuthClosedConsoleExecutionTests.Genuine_named_closed_auth_console_preserves_or_stops",
-        _ => throw CurrentAuthRepairPermit.Invalid()
-    };
+        return group switch
+        {
+            "definition" => "FullyQualifiedName~CurrentAuthNativePreservationTests.Fixed_transition_preserves_populated_rows_private_state_and_independent_history_through_rollback_commit_readback|FullyQualifiedName~CurrentAuthNativePreservationTests.Unsupported_preimage_fails_before_candidate",
+            "provider" => "FullyQualifiedName~CurrentAuthGuardedNativeExecutionTests.Genuine_auth_provider_preserves_fleet_and_receipts_or_stops",
+            "closed" => "FullyQualifiedName~CurrentAuthClosedConsoleExecutionTests.Genuine_named_closed_auth_console_preserves_or_stops",
+            _ => throw CurrentAuthRepairPermit.Invalid()
+        };
+    }
+
     internal static ProcessStartInfo FixedStart(string root)
     {
         if (!OperatingSystem.IsWindows() || !Path.IsPathFullyQualified(root)) { throw CurrentAuthRepairPermit.Invalid(); }
@@ -34,7 +38,7 @@ internal static class CurrentAuthTypedHostProducer
         start.Environment.Clear();
         string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         start.Environment["SystemRoot"] = windows; start.Environment["WINDIR"] = windows;
-        start.Environment["PATH"] = Path.GetDirectoryName(Dotnet)! + ";" + Environment.SystemDirectory;
+        start.Environment["PATH"] = Path.GetDirectoryName(Dotnet) + ";" + Environment.SystemDirectory;
         start.Environment["TEMP"] = root; start.Environment["TMP"] = root;
         start.Environment["DOTNET_CLI_HOME"] = root; start.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
         start.Environment["DOTNET_NOLOGO"] = "1"; start.Environment["DOTNET_GCHeapHardLimit"] = "0x20000000";
@@ -52,9 +56,9 @@ internal static class CurrentAuthTypedHostProducer
             entry = entry is FileInfo file ? file.Directory : (entry as DirectoryInfo)?.Parent;
         }
         using var image = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if (!SecureLocalFile.HandleResolvesToApprovedPath(image, path) || image.Length is < 1 or > 128 * 1024 * 1024)
-        { throw CurrentAuthRepairPermit.Invalid(); }
-        return Convert.ToHexStringLower(SHA256.HashData(image));
+        return !SecureLocalFile.HandleResolvesToApprovedPath(image, path) || image.Length is < 1 or > 128 * 1024 * 1024
+            ? throw CurrentAuthRepairPermit.Invalid()
+            : Convert.ToHexStringLower(SHA256.HashData(image));
     }
     internal sealed class HeldTestBundle(List<(FileStream Stream, string Path)> files) : IDisposable
     {
@@ -129,8 +133,9 @@ internal static class CurrentAuthTypedHostProducer
             {
                 CurrentAuthProofArtifact value = events.Single(x => x.Phase == phase).Artifact;
                 byte[] bytes = caseFiles.Read(value.Path, sharedReader: true, maximumBytes: 4 * 1024 * 1024);
-                if (Convert.ToHexStringLower(SHA256.HashData(bytes)) != value.Sha256) { throw CurrentAuthRepairPermit.Invalid(); }
-                return JsonDocument.Parse(bytes);
+                return Convert.ToHexStringLower(SHA256.HashData(bytes)) != value.Sha256
+                    ? throw CurrentAuthRepairPermit.Invalid()
+                    : JsonDocument.Parse(bytes);
             }
             using var container = Artifact("container"); using var disposed = Artifact("disposed");
             string actualId = container.RootElement.GetProperty("Id").GetString()!;
@@ -144,8 +149,15 @@ internal static class CurrentAuthTypedHostProducer
         }
         if (!cases.SetEquals(expected)) { throw CurrentAuthRepairPermit.Invalid(); }
         string path = Path.Combine(root, "auth-host-" + group + "-independent-absence.json");
-        byte[] inventory = JsonSerializer.SerializeToUtf8Bytes(new { observedAtUtc = DateTimeOffset.UtcNow, group,
-            cases = cases.Order(StringComparer.Ordinal).ToArray(), containerInventory = containers, volumeInventory = volumes, listeningPorts = listeners });
+        byte[] inventory = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            observedAtUtc = DateTimeOffset.UtcNow,
+            group,
+            cases = cases.Order(StringComparer.Ordinal).ToArray(),
+            containerInventory = containers,
+            volumeInventory = volumes,
+            listeningPorts = listeners
+        });
         await files.WriteNewAsync(path, inventory, ct).ConfigureAwait(false);
         return new(path, Convert.ToHexStringLower(SHA256.HashData(inventory)));
     }
@@ -164,7 +176,11 @@ public static partial class MigrationConsole
             var binding = await ReadProtectedJsonAsync<LocalExecutionBinding>(config.RunBindingPath, "auth_host_binding_unprotected", ct).ConfigureAwait(false);
             using WindowsLocalRunAuthority authority = WindowsLocalRunAuthority.AcquireResume(binding.ArtifactRootCanonicalPath, binding);
             using var files = new CurrentAppOwnedRepairCustody(authority);
-            T Read<T>(string path) => DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 1024 * 1024));
+            T Read<T>(string path)
+            {
+                return DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 1024 * 1024));
+            }
+
             if (JsonSerializer.Serialize(Read<CurrentAuthTypedHostConfiguration>(configPath)) != JsonSerializer.Serialize(config)) { throw CurrentAuthRepairPermit.Invalid(); }
             var scope = Read<CurrentAuthRepairScope>(config.IntendedScopePath); var pins = Read<CurrentAuthRepairSigningPins>(config.SigningPinsPath);
             if (scope.SourceCommitSha != accepted || scope.ProofAdmission != CurrentAuthProofAdmission.DisposableNativeBootstrap ||
@@ -189,10 +205,18 @@ public static partial class MigrationConsole
             var trust = new ReceiptAttestationTrustStore([new TrustedAttestationKey(pins.ReviewKeyId, publicKey)]);
             using var signer = new P256MigrationEvidenceSigner(pins.ReviewKeyId, Encoding.UTF8.GetString(files.Read(config.ReviewPrivateKeyPath, sharedReader: true, maximumBytes: 65536)));
             int ordinal = 0;
-            async Task ObserveOwner(CurrentAuthGitResource frame) => await files.WriteNewAsync(Path.Combine(root,
+            async Task ObserveOwner(CurrentAuthGitResource frame)
+            {
+                await files.WriteNewAsync(Path.Combine(root,
                 $"auth-host-{config.Group}-owner-{ordinal++:D6}.json"), JsonSerializer.SerializeToUtf8Bytes(frame), CancellationToken.None).ConfigureAwait(false);
-            async Task ObserveDocker(CurrentAppOwnedDockerResource frame) => await files.WriteNewAsync(Path.Combine(root,
-                $"auth-host-{config.Group}-docker-{ordinal++:D6}.json"), JsonSerializer.SerializeToUtf8Bytes(frame), CancellationToken.None).ConfigureAwait(false);
+            }
+
+            async Task ObserveDocker(CurrentAppOwnedDockerResource frame)
+            {
+                await files.WriteNewAsync(Path.Combine(root,
+                            $"auth-host-{config.Group}-docker-{ordinal++:D6}.json"), JsonSerializer.SerializeToUtf8Bytes(frame), CancellationToken.None).ConfigureAwait(false);
+            }
+
             await CurrentAuthOwnerSourceReader.RequireAsync(ObserveOwner, ct).ConfigureAwait(false);
             DateTimeOffset began = DateTimeOffset.UtcNow, expires = began.AddHours(2);
             string? seedPath = null;
@@ -264,7 +288,8 @@ public static partial class MigrationConsole
             CurrentAuthProofArtifact? finalAbsence = null;
             try
             {
-                if (!process.Start()) { throw CurrentAuthRepairPermit.Invalid(); } started = true; _ = process.SafeHandle;
+                if (!process.Start()) { throw CurrentAuthRepairPermit.Invalid(); }
+                started = true; _ = process.SafeHandle;
                 processStart = new(process.StartTime.ToUniversalTime(), TimeSpan.Zero); process.StandardInput.Close();
                 job.AssignWaitingChild(process);
                 stdout = CurrentAuthTypedHostProducer.DrainAsync(process.StandardOutput, readers.Token);
@@ -276,7 +301,8 @@ public static partial class MigrationConsole
                 {
                     deadline.Token.ThrowIfCancellationRequested(); files.Require();
                     if (budget.IsFaulted) { await budget.ConfigureAwait(false); }
-                    if (stdout.IsFaulted) { await stdout.ConfigureAwait(false); } if (stderr.IsFaulted) { await stderr.ConfigureAwait(false); }
+                    if (stdout.IsFaulted) { await stdout.ConfigureAwait(false); }
+                    if (stderr.IsFaulted) { await stderr.ConfigureAwait(false); }
                     await Task.Delay(TimeSpan.FromMilliseconds(500), deadline.Token).ConfigureAwait(false);
                 }
                 await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false); exited = DateTimeOffset.UtcNow;
@@ -294,8 +320,8 @@ public static partial class MigrationConsole
                 {
                     while (true)
                     {
-                        var observation = job.Observe(admission: false); capacities.Add(observation.Capacity);
-                        byte[] frame = JsonSerializer.SerializeToUtf8Bytes(new { observation.Capacity, observation.Processes });
+                        var (Capacity, Processes) = job.Observe(admission: false); capacities.Add(Capacity);
+                        byte[] frame = JsonSerializer.SerializeToUtf8Bytes(new { Capacity, Processes });
                         if (frame.Length > 65536 || budgetJournal.Position + frame.Length + 1 > 32 * 1024 * 1024) { throw CurrentAuthRepairPermit.Invalid(); }
                         await budgetJournal.WriteAsync(frame, budgetStop.Token).ConfigureAwait(false);
                         await budgetJournal.WriteAsync(CurrentAuthTypedHostProducer.NewlineBytes, budgetStop.Token).ConfigureAwait(false);
@@ -341,8 +367,17 @@ public static partial class MigrationConsole
                 catch (OperationCanceledException) when (readers.IsCancellationRequested) { settled = stdout.IsCompleted && stderr.IsCompleted; }
                 catch (Exception problem) { failure ??= problem; cleanupFailed = true; }
                 await files.WriteNewAsync(Path.Combine(root, $"auth-host-{config.Group}-cleanup.json"), JsonSerializer.SerializeToUtf8Bytes(new
-                { observedAtUtc = DateTimeOffset.UtcNow, started, processId = started ? process.Id : 0, processStart, expiresAtUtc = expires,
-                    exited = started && process.HasExited, readersSettled = settled, cleanupFailed, containerCleanupOwnedByExternalDriver = true }), CancellationToken.None).ConfigureAwait(false);
+                {
+                    observedAtUtc = DateTimeOffset.UtcNow,
+                    started,
+                    processId = started ? process.Id : 0,
+                    processStart,
+                    expiresAtUtc = expires,
+                    exited = started && process.HasExited,
+                    readersSettled = settled,
+                    cleanupFailed,
+                    containerCleanupOwnedByExternalDriver = true
+                }), CancellationToken.None).ConfigureAwait(false);
                 if (failure is not null || !settled || (started && !process.HasExited)) { throw CurrentAuthRepairPermit.Invalid(); }
             }
             string trxPath = Path.Combine(root, "auth-host-" + config.Group + ".trx");

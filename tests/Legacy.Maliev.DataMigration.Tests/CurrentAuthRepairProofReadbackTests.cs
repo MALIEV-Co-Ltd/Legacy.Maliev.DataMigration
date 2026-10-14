@@ -6,9 +6,9 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class CurrentAuthRepairProofReadbackTests
 {
     [Theory]
-    [InlineData(3UL * 1024 * 1024 * 1024 - 1, 0UL, true)]
-    [InlineData(1024UL * 1024 * 1024 - 1, 0UL, false)]
-    [InlineData(4UL * 1024 * 1024 * 1024, 5UL * 1024 * 1024 * 1024 + 1, false)]
+    [InlineData((3UL * 1024 * 1024 * 1024) - 1, 0UL, true)]
+    [InlineData((1024UL * 1024 * 1024) - 1, 0UL, false)]
+    [InlineData(4UL * 1024 * 1024 * 1024, (5UL * 1024 * 1024 * 1024) + 1, false)]
     public void Capacity_limits_cannot_be_lowered(ulong available, ulong rss, bool admission)
     { _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthRepairCapacity.RequireValues(available, rss, admission)); }
     [Fact]
@@ -55,9 +55,12 @@ public sealed class CurrentAuthRepairProofReadbackTests
             new string('a', 64), new string('a', 64), now.AddMinutes(-1), now, now.AddMinutes(5), artifact, [], [], signer.KeyId, null);
         proof = fault switch
         {
-            "marker" => proof with { Kind = "verified" }, "subject" => proof with { SubjectSha256 = new string('b', 64) },
-            "source" => proof with { SourceCommitSha = new string('b', 40) }, "assembly" => proof with { CoreAssemblySha256 = new string('b', 64) },
-            "expiry" => proof with { ExpiresAtUtc = now }, _ => proof
+            "marker" => proof with { Kind = "verified" },
+            "subject" => proof with { SubjectSha256 = new string('b', 64) },
+            "source" => proof with { SourceCommitSha = new string('b', 40) },
+            "assembly" => proof with { CoreAssemblySha256 = new string('b', 64) },
+            "expiry" => proof with { ExpiresAtUtc = now },
+            _ => proof
         };
         proof = proof with { Signature = Convert.ToBase64String(signer.Sign(CurrentAuthRepairProofReader.Payload(proof, fault == "domain" ? "maintenance" : "native"))) };
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthRepairProofReader.RequireHeader(proof, "native", scope, trust, pins, now, new string('a', 64), new string('a', 64)));
@@ -86,9 +89,9 @@ public sealed class CurrentAuthRepairProofReadbackTests
     [Fact]
     public void Genuine_claim_scope_cannot_be_borrowed_for_a_different_held_operation()
     {
-        var scope=Scope(DateTimeOffset.UtcNow);
-        CurrentAuthRepairProofReader.RequireCaseScope(scope,scope);
-        Assert.Throws<MigrationExecutionException>(()=>CurrentAuthRepairProofReader.RequireCaseScope(scope,scope with {OperationId=Guid.NewGuid()}));
+        var scope = Scope(DateTimeOffset.UtcNow);
+        CurrentAuthRepairProofReader.RequireCaseScope(scope, scope);
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthRepairProofReader.RequireCaseScope(scope, scope with { OperationId = Guid.NewGuid() }));
     }
     [Theory]
     [InlineData("before-exit")]
@@ -97,21 +100,21 @@ public sealed class CurrentAuthRepairProofReadbackTests
     [InlineData("after-lease")]
     public void Absence_inventory_must_follow_exit_and_actual_removal_within_cleanup_lease(string fault)
     {
-        DateTimeOffset now=DateTimeOffset.UtcNow;
-        DateTimeOffset exited=now,removed=now.AddSeconds(1),observed=now.AddSeconds(2),disposed=now.AddSeconds(3),lease=now.AddMinutes(1);
-        CurrentAuthRepairProofReader.RequireCleanupChronology(exited,removed,observed,disposed,lease,lease);
-        if(fault=="before-exit") {removed=now.AddSeconds(-1);}
-        if(fault=="before-removal") {observed=now;}
-        if(fault=="after-disposal") {observed=now.AddSeconds(4);}
-        if(fault=="after-lease") {disposed=lease.AddMinutes(2);}
-        Assert.Throws<MigrationExecutionException>(()=>CurrentAuthRepairProofReader.RequireCleanupChronology(exited,removed,observed,disposed,lease,lease));
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset exited = now, removed = now.AddSeconds(1), observed = now.AddSeconds(2), disposed = now.AddSeconds(3), lease = now.AddMinutes(1);
+        CurrentAuthRepairProofReader.RequireCleanupChronology(exited, removed, observed, disposed, lease, lease);
+        if (fault == "before-exit") { removed = now.AddSeconds(-1); }
+        if (fault == "before-removal") { observed = now; }
+        if (fault == "after-disposal") { observed = now.AddSeconds(4); }
+        if (fault == "after-lease") { disposed = lease.AddMinutes(2); }
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthRepairProofReader.RequireCleanupChronology(exited, removed, observed, disposed, lease, lease));
     }
     [Fact]
     public void Unacknowledged_slot_cannot_reverse_receipt_observation_time()
     {
-        DateTimeOffset now=DateTimeOffset.UtcNow;
-        CurrentAuthRepairProofReader.RequireReceiptObservation(now,now);
-        Assert.Throws<MigrationExecutionException>(()=>CurrentAuthRepairProofReader.RequireReceiptObservation(now,now.AddTicks(-1)));
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        CurrentAuthRepairProofReader.RequireReceiptObservation(now, now);
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthRepairProofReader.RequireReceiptObservation(now, now.AddTicks(-1)));
     }
     [Theory]
     [InlineData("image")]
@@ -120,24 +123,36 @@ public sealed class CurrentAuthRepairProofReadbackTests
     [InlineData("generation")]
     public void Proof_container_identity_cannot_borrow_unrelated_image_port_mount_or_generation(string fault)
     {
-        DateTimeOffset now=DateTimeOffset.UtcNow.AddMinutes(-1),created=now.AddSeconds(1),started=now.AddSeconds(2);
-        string id=new('a',64),imageId="sha256:"+new string('b',64),volume="legacy-delta-proof-"+Guid.NewGuid().ToString("N");
-        const string image="postgres:18.4-bookworm@sha256:882236b897e39051d2368c5ccc6cda944904723506b2dfc97f2a8f5bc9afa382";
-        string pgData="/var/lib/postgresql/18/docker";
-        var target=new CurrentAppOwnedRepairTargetPins(id,volume,imageId,image,pgData+"/pg_hba.conf",new('c',64),null,null);
-        var scope=Scope(DateTimeOffset.UtcNow) with {TargetGeneration=$"docker:{id}:{created.ToUnixTimeMilliseconds()}:{started.ToUnixTimeMilliseconds()}:{now.ToUnixTimeMilliseconds()}"};
-        System.Text.Json.JsonElement Container(string digest,int port,string destination)=>System.Text.Json.JsonSerializer.SerializeToElement(new
+        DateTimeOffset now = DateTimeOffset.UtcNow.AddMinutes(-1), created = now.AddSeconds(1), started = now.AddSeconds(2);
+        string id = new('a', 64), imageId = "sha256:" + new string('b', 64), volume = "legacy-delta-proof-" + Guid.NewGuid().ToString("N");
+        const string image = "postgres:18.4-bookworm@sha256:882236b897e39051d2368c5ccc6cda944904723506b2dfc97f2a8f5bc9afa382";
+        string pgData = "/var/lib/postgresql/18/docker";
+        var target = new CurrentAppOwnedRepairTargetPins(id, volume, imageId, image, pgData + "/pg_hba.conf", new('c', 64), null, null);
+        var scope = Scope(DateTimeOffset.UtcNow) with { TargetGeneration = $"docker:{id}:{created.ToUnixTimeMilliseconds()}:{started.ToUnixTimeMilliseconds()}:{now.ToUnixTimeMilliseconds()}" };
+        System.Text.Json.JsonElement Container(string digest, int port, string destination)
         {
-            Id=id,Name="/"+volume,Image=digest,Created=created,State=new {Running=true,StartedAt=started},
-            Config=new {Image=image,PgData=pgData},Mounts=new[] {new {Type="volume",Name=volume,RW=true,Destination=destination}},
-            NetworkSettings=new {Ports=new Dictionary<string,object> { ["5432/tcp"]=new[] {new {HostIp="127.0.0.1",HostPort=port.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}}
-        });
-        var metadata=System.Text.Json.JsonSerializer.SerializeToElement(new {Name=volume,Driver="local",CreatedAt=now});
-        CurrentAuthRepairProofReader.RequireDockerIdentity(Container(imageId,54321,"/var/lib/postgresql"),metadata,scope,target,54321);
-        var bad=Container(fault=="image"?"sha256:"+new string('d',64):imageId,fault=="port"?54322:54321,fault=="mount"?"/var/lib":"/var/lib/postgresql");
-        if(fault=="generation") {scope=scope with {TargetGeneration="unrelated"};}
-        Assert.Throws<MigrationExecutionException>(()=>CurrentAuthRepairProofReader.RequireDockerIdentity(bad,metadata,scope,target,54321));
-    }    private static CurrentAuthRepairScope Scope(DateTimeOffset now) => new(Guid.NewGuid(), CurrentAuthRepairOperation.SixteenSameTypeTextCollations,
+            return System.Text.Json.JsonSerializer.SerializeToElement(new
+            {
+                Id = id,
+                Name = "/" + volume,
+                Image = digest,
+                Created = created,
+                State = new { Running = true, StartedAt = started },
+                Config = new { Image = image, PgData = pgData },
+                Mounts = new[] { new { Type = "volume", Name = volume, RW = true, Destination = destination } },
+                NetworkSettings = new { Ports = new Dictionary<string, object> { ["5432/tcp"] = new[] { new { HostIp = "127.0.0.1", HostPort = port.ToString(System.Globalization.CultureInfo.InvariantCulture) } } } }
+            });
+        }
+
+        var metadata = System.Text.Json.JsonSerializer.SerializeToElement(new { Name = volume, Driver = "local", CreatedAt = now });
+        CurrentAuthRepairProofReader.RequireDockerIdentity(Container(imageId, 54321, "/var/lib/postgresql"), metadata, scope, target, 54321);
+        var bad = Container(fault == "image" ? "sha256:" + new string('d', 64) : imageId, fault == "port" ? 54322 : 54321, fault == "mount" ? "/var/lib" : "/var/lib/postgresql");
+        if (fault == "generation") { scope = scope with { TargetGeneration = "unrelated" }; }
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthRepairProofReader.RequireDockerIdentity(bad, metadata, scope, target, 54321));
+    }
+    private static CurrentAuthRepairScope Scope(DateTimeOffset now)
+    {
+        return new(Guid.NewGuid(), CurrentAuthRepairOperation.SixteenSameTypeTextCollations,
         new string('a', 40), new string('a', 64), ApprovedCurrentAuthSchema.AuthServiceCommit, CurrentAuthRepairPermit.OwnerPinsSha256,
         ApprovedCurrentAuthSchema.ClosureSha256, ApprovedCurrentAuthSchema.PhysicalSha256(false), ApprovedCurrentAuthSchema.PhysicalSha256(true),
         new string('a', 64), new string('a', 64), CurrentAuthRepairPermit.MaintenanceValidator,
@@ -145,4 +160,5 @@ public sealed class CurrentAuthRepairProofReadbackTests
         "local-aspire", "legacy-postgres-main-local", "synthetic", new string('a', 64), new string('a', 64),
         new Dictionary<string, string>(), new string('a', 64), new string('a', 64), new string('a', 64), new string('a', 64),
         new("synthetic", "synthetic", now.AddMinutes(-1), now.AddHours(1), now.AddMinutes(-2), now.AddMinutes(-2), new string('a', 64), new string('a', 64), "synthetic"));
+    }
 }

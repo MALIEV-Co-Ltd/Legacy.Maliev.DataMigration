@@ -56,6 +56,7 @@ internal static class PostgreSqlCurrentAuthRepair
                 await RequireInstalledPolicyAsync(connection, preflight, scope, ct).ConfigureAwait(false);
                 CurrentAuthNativeObservation current = await CurrentAuthNativePreservation.CaptureAsync(connection, preflight, ct).ConfigureAwait(false);
                 CurrentAuthNativePreservation.RequireBefore(current);
+                _ = await CurrentAuthNativePreservation.RequireOperandOwnerAsync(connection, preflight, scope, current, ct).ConfigureAwait(false);
                 if (current.Snapshot.Sha256 != beforeHash) { throw CurrentAuthRepairPermit.Invalid(); }
                 await preflight.RollbackAsync(ct).ConfigureAwait(false);
             }
@@ -65,6 +66,7 @@ internal static class PostgreSqlCurrentAuthRepair
             await permit.RequireAsync(ct).ConfigureAwait(false);
             CurrentAuthNativeObservation locked = await CurrentAuthNativePreservation.CaptureAsync(connection, transaction, ct).ConfigureAwait(false);
             CurrentAuthNativePreservation.RequireBefore(locked);
+            string ownerClosure = await CurrentAuthNativePreservation.RequireOperandOwnerAsync(connection, transaction, scope, locked, ct).ConfigureAwait(false);
             if (locked.Snapshot.Sha256 != beforeHash) { throw CurrentAuthRepairPermit.Invalid(); }
             // Only the immutable owner's sixteen exact same-type operands. No user SQL is accepted.
             CurrentAuthCollationOperand[] operands = ApprovedCurrentAuthSchema.CollationOperands();
@@ -76,7 +78,9 @@ internal static class PostgreSqlCurrentAuthRepair
                 _ = await ddl.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
             CurrentAuthNativeObservation after = await CurrentAuthNativePreservation.CaptureAsync(connection, transaction, ct).ConfigureAwait(false);
-            CurrentAuthNativePreservation.RequirePreserved(locked, after); afterHash = after.Snapshot.Sha256;
+            CurrentAuthNativePreservation.RequirePreserved(locked, after);
+            if (await CurrentAuthNativePreservation.RequireOperandOwnerAsync(connection, transaction, scope, after, ct).ConfigureAwait(false) != ownerClosure) { throw CurrentAuthRepairPermit.Invalid(); }
+            afterHash = after.Snapshot.Sha256;
             await CurrentAuthNativeProofObservation.CaptureCandidateAsync(permit, locked, after, ct).ConfigureAwait(false);
             await permit.RequireAsync(ct).ConfigureAwait(false);
             await RequireInstalledPolicyAsync(connection, transaction, scope, ct).ConfigureAwait(false);
@@ -97,6 +101,7 @@ internal static class PostgreSqlCurrentAuthRepair
                 await RequireInstalledPolicyAsync(readbackConnection, readback, scope, ct).ConfigureAwait(false);
                 CurrentAuthNativeObservation observed = await CurrentAuthNativePreservation.CaptureAsync(readbackConnection, readback, ct).ConfigureAwait(false);
                 CurrentAuthNativePreservation.RequirePreserved(locked, observed);
+                if (await CurrentAuthNativePreservation.RequireOperandOwnerAsync(readbackConnection, readback, scope, observed, ct).ConfigureAwait(false) != ownerClosure) { throw CurrentAuthRepairPermit.Invalid(); }
                 if (observed.Snapshot.Sha256 != afterHash) { throw CurrentAuthRepairPermit.Invalid(); }
                 await readback.RollbackAsync(ct).ConfigureAwait(false);
             }
@@ -194,12 +199,7 @@ internal static class PostgreSqlCurrentAuthRepair
         { throw CurrentAuthRepairPermit.Invalid(); }
         if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) { throw CurrentAuthRepairPermit.Invalid(); }
         await reader.DisposeAsync().ConfigureAwait(false);
-        string owner = scope.Target.Kind == DeltaTargetAuthorityKind.LocalAspire ? "legacy_local" : "postgres";
-        await using (var ownership = new NpgsqlCommand("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.oid=c.relowner AND r.rolname=@owner);", connection, transaction))
-        {
-            _ = ownership.Parameters.AddWithValue("owner", owner);
-            if (Convert.ToInt64(await ownership.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) != 0) { throw CurrentAuthRepairPermit.Invalid(); }
-        }
+        // Operand ownership is validated against the exact native Auth capture; other fleet owners are preserved, never coerced.
         await CurrentAppOwnedMaintenanceHba.RequireInstalledAsync(connection, transaction, scope.Maintenance.Role,
             scope.Target.Kind, cancellationToken).ConfigureAwait(false);
     }

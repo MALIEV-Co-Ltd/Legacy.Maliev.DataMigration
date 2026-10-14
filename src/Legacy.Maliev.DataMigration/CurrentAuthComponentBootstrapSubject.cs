@@ -14,10 +14,17 @@ internal sealed record CurrentAuthComponentBootstrapSubject(string Kind, Current
 
 internal static class CurrentAuthComponentBootstrap
 {
-    internal static byte[] SeedPayload(CurrentAuthComponentBootstrapSeed value) =>
-        [.. "Legacy.Maliev.CurrentAuth.ComponentBootstrapSeed.v1\0"u8, .. JsonSerializer.SerializeToUtf8Bytes(value with { Signature = null })];
-    internal static string SubjectSha256(CurrentAuthComponentBootstrapSubject value) => CurrentAppOwnedSnapshotSerialization.Sha256(new
-    { Domain = "Legacy.Maliev.CurrentAuth.ComponentBootstrapSubject.v1", Subject = value });
+    internal static byte[] SeedPayload(CurrentAuthComponentBootstrapSeed value)
+    {
+        return [.. "Legacy.Maliev.CurrentAuth.ComponentBootstrapSeed.v1\0"u8, .. JsonSerializer.SerializeToUtf8Bytes(value with { Signature = null })];
+    }
+
+    internal static string SubjectSha256(CurrentAuthComponentBootstrapSubject value)
+    {
+        return CurrentAppOwnedSnapshotSerialization.Sha256(new
+        { Domain = "Legacy.Maliev.CurrentAuth.ComponentBootstrapSubject.v1", Subject = value });
+    }
+
     internal static void RequireSeed(CurrentAuthComponentBootstrapSeed seed, IReceiptAttestationTrustStore trust,
         string expectedKeyId, string expectedFingerprint, DateTimeOffset now)
     {

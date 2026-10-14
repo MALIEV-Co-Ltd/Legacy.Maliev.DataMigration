@@ -34,12 +34,36 @@ internal sealed class CurrentAuthClosedProofEnvironment : ICurrentAuthRepairEnvi
         { throw CurrentAuthRepairPermit.Invalid(); }
         _commitProxy = proxy;
     }
-    public Task RequireSourceAsync(string sourceCommitSha, CancellationToken ct) => _actual.RequireSourceAsync(sourceCommitSha, ct);
-    public Task RequireAuthOwnerSourceAsync(CurrentAuthRepairScope scope, CancellationToken ct) => _actual.RequireAuthOwnerSourceAsync(scope, ct);
-    public Task RequireSource23PhysicalBaselineAsync(FreshSchemaPlan source, CancellationToken ct) => _actual.RequireSource23PhysicalBaselineAsync(source, ct);
-    public Task RequireResourceAndCustodyAsync(CurrentAuthRepairScope scope, CancellationToken ct) => _actual.RequireResourceAndCustodyAsync(scope, ct);
-    public Task<IReadOnlyList<CurrentAppOwnedDatabaseSnapshot>> InspectFleetAsync(CurrentAuthRepairScope scope, CancellationToken ct) => _actual.InspectFleetAsync(scope, ct);
-    public Task RequireFreshOperationAsync(CurrentAuthRepairScope scope, CancellationToken ct) => _actual.RequireFreshOperationAsync(scope, ct);
+    public Task RequireSourceAsync(string sourceCommitSha, CancellationToken ct)
+    {
+        return _actual.RequireSourceAsync(sourceCommitSha, ct);
+    }
+
+    public Task RequireAuthOwnerSourceAsync(CurrentAuthRepairScope scope, CancellationToken ct)
+    {
+        return _actual.RequireAuthOwnerSourceAsync(scope, ct);
+    }
+
+    public Task RequireSource23PhysicalBaselineAsync(FreshSchemaPlan source, CancellationToken ct)
+    {
+        return _actual.RequireSource23PhysicalBaselineAsync(source, ct);
+    }
+
+    public Task RequireResourceAndCustodyAsync(CurrentAuthRepairScope scope, CancellationToken ct)
+    {
+        return _actual.RequireResourceAndCustodyAsync(scope, ct);
+    }
+
+    public Task<IReadOnlyList<CurrentAppOwnedDatabaseSnapshot>> InspectFleetAsync(CurrentAuthRepairScope scope, CancellationToken ct)
+    {
+        return _actual.InspectFleetAsync(scope, ct);
+    }
+
+    public Task RequireFreshOperationAsync(CurrentAuthRepairScope scope, CancellationToken ct)
+    {
+        return _actual.RequireFreshOperationAsync(scope, ct);
+    }
+
     public async Task ReserveFreshOperationAsync(CurrentAuthRepairScope scope, string authorizationSha256, CancellationToken ct)
     {
         await _actual.ReserveFreshOperationAsync(scope, authorizationSha256, ct).ConfigureAwait(false);
@@ -53,8 +77,11 @@ internal sealed class CurrentAuthClosedProofEnvironment : ICurrentAuthRepairEnvi
         CurrentAuthRepairReceipt? receipt = receiptSlot ? MigrationConsole.DecodeAuthRepair<CurrentAuthRepairReceipt>(payload) : null;
         await RecordAsync("publication-return", new
         {
-            name, sha256 = Convert.ToHexStringLower(SHA256.HashData(payload)),
-            acknowledged = true, classification = receipt?.Classification, observedAtUtc = DateTimeOffset.UtcNow
+            name,
+            sha256 = Convert.ToHexStringLower(SHA256.HashData(payload)),
+            acknowledged = true,
+            classification = receipt?.Classification,
+            observedAtUtc = DateTimeOffset.UtcNow
         }, ct).ConfigureAwait(false);
         if (receipt?.Classification == CurrentAppOwnedCommitClassification.CommittedAndReadback)
         { await MutateFinalFleetAsync(ct).ConfigureAwait(false); }
@@ -92,8 +119,12 @@ internal sealed class CurrentAuthClosedProofEnvironment : ICurrentAuthRepairEnvi
             await RecordAsync("final-fleet-mutated", snapshot, ct).ConfigureAwait(false);
         }
     }
-    private static CurrentAuthProofNative Native(CurrentAuthNativeObservation value) => new(value.Snapshot, value.CopyTuples(),
+    private static CurrentAuthProofNative Native(CurrentAuthNativeObservation value)
+    {
+        return new(value.Snapshot, value.CopyTuples(),
         value.CopyStorage().ToDictionary(x => x.Key, x => new CurrentAuthProofStorage(x.Value.FileNode, x.Value.Blocks), StringComparer.Ordinal), value.CopyExpressions());
+    }
+
     private async Task RecordAsync<T>(string phase, T value, CancellationToken ct)
     {
         _files.Require();

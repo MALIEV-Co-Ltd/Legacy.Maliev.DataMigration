@@ -20,6 +20,8 @@ internal static class CurrentAuthNativeProofObservation
         return observer.ObserveCandidateAsync(Copy(locked), Copy(candidate), ct);
     }
 
-    private static CurrentAuthNativeObservation Copy(CurrentAuthNativeObservation value) =>
-        new(CurrentAuthRepairPermit.CopySnapshot(value.Snapshot), value.CopyTuples(), value.CopyStorage(), value.CopyExpressions());
+    private static CurrentAuthNativeObservation Copy(CurrentAuthNativeObservation value)
+    {
+        return new(CurrentAuthRepairPermit.CopySnapshot(value.Snapshot), value.CopyTuples(), value.CopyStorage(), value.CopyExpressions());
+    }
 }

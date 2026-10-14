@@ -52,7 +52,11 @@ internal sealed class CurrentAuthTypedHostJob : IDisposable
         _library = NativeLibrary.Load(Path.Combine(Environment.SystemDirectory, "kernel32.dll"));
         try
         {
-            T Function<T>(string name) where T : Delegate => Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(_library, name));
+            T Function<T>(string name) where T : Delegate
+            {
+                return Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(_library, name));
+            }
+
             _query = Function<Query>("QueryInformationJobObject"); _member = Function<Member>("IsProcessInJob");
             _close = Function<Close>("CloseHandle"); _memory = Function<Memory>("GlobalMemoryStatusEx");
             _job = Function<CreateJob>("CreateJobObjectW")(0, "Local\\Maliev.Auth.TypedProof." + nonce);
@@ -67,7 +71,11 @@ internal sealed class CurrentAuthTypedHostJob : IDisposable
         nint library = NativeLibrary.Load(Path.Combine(Environment.SystemDirectory, "kernel32.dll")); nint job = 0;
         try
         {
-            T Function<T>(string name) where T : Delegate => Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(library, name));
+            T Function<T>(string name) where T : Delegate
+            {
+                return Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(library, name));
+            }
+
             job = Function<OpenJob>("OpenJobObjectW")(4, false, "Local\\Maliev.Auth.TypedProof." + nonce);
             using Process self = Process.GetCurrentProcess();
             if (job == 0 || !Function<Member>("IsProcessInJob")(self.SafeHandle.DangerousGetHandle(), job, out bool member) || !member)
@@ -91,12 +99,13 @@ internal sealed class CurrentAuthTypedHostJob : IDisposable
     private int[] Members()
     {
         const int capacity = 64;
-        int bytes = 8 + capacity * IntPtr.Size; nint buffer = Marshal.AllocHGlobal(bytes);
+        int bytes = 8 + (capacity * IntPtr.Size); nint buffer = Marshal.AllocHGlobal(bytes);
         try
         {
-            if (!_query(_job, 3, buffer, (uint)bytes, out _) || Marshal.ReadInt32(buffer) != Marshal.ReadInt32(buffer, 4) ||
-                Marshal.ReadInt32(buffer, 4) is < 0 or > capacity) { throw CurrentAuthRepairPermit.Invalid(); }
-            return Enumerable.Range(0, Marshal.ReadInt32(buffer, 4)).Select(i => checked((int)Marshal.ReadIntPtr(buffer, 8 + i * IntPtr.Size))).ToArray();
+            return !_query(_job, 3, buffer, (uint)bytes, out _) || Marshal.ReadInt32(buffer) != Marshal.ReadInt32(buffer, 4) ||
+                Marshal.ReadInt32(buffer, 4) is < 0 or > capacity
+                ? throw CurrentAuthRepairPermit.Invalid()
+                : Enumerable.Range(0, Marshal.ReadInt32(buffer, 4)).Select(i => checked((int)Marshal.ReadIntPtr(buffer, 8 + (i * IntPtr.Size)))).ToArray();
         }
         finally { Marshal.FreeHGlobal(buffer); }
     }
@@ -183,9 +192,11 @@ internal sealed class CurrentAuthTypedHostJob : IDisposable
     }
     public void Dispose()
     {
-        if (_disposed) { return; } _disposed = true;
+        if (_disposed) { return; }
+        _disposed = true;
         foreach (Held held in _held.Values) { held.ImageHandle.Dispose(); held.Process.Dispose(); }
         // No KILL_ON_JOB_CLOSE and no TerminateJobObject: disposal never substitutes for verified cleanup.
-        if (_job != 0) { _ = _close(_job); } NativeLibrary.Free(_library);
+        if (_job != 0) { _ = _close(_job); }
+        NativeLibrary.Free(_library);
     }
 }

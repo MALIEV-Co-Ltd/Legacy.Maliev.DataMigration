@@ -7,10 +7,13 @@ public sealed class CurrentAuthTypedProofAssemblerTests
 {
     private const ulong GiB = 1024UL * 1024 * 1024;
     private static readonly DateTimeOffset Start = new(2026, 10, 13, 0, 0, 0, TimeSpan.Zero);
-    private static CurrentAuthTypedHostExit Host() => new("synthetic-unit-fixture-not-native-evidence", new('a', 40), new('b', 64),
+    private static CurrentAuthTypedHostExit Host()
+    {
+        return new("synthetic-unit-fixture-not-native-evidence", new('a', 40), new('b', 64),
         "definition", @"D:\synthetic\Tests.dll", new('c', 64), new('d', 64), new('e', 64),
         @"C:\Program Files\dotnet\dotnet.exe", new('f', 64), 1, Start, Start, Start.AddSeconds(2), Start.AddMinutes(2),
         0, true, true, false, new(@"D:\synthetic\actual.trx", new('1', 64)), new(@"D:\synthetic\capacity.json", new('2', 64)), "synthetic", null);
+    }
 
     [Fact]
     public void Capacity_requires_real_initial_admission_and_complete_finite_coverage()
@@ -18,7 +21,7 @@ public sealed class CurrentAuthTypedProofAssemblerTests
         var host = Host();
         CurrentAuthTypedProofAssembler.RequireCapacity([new(Start, 3 * GiB, GiB), new(Start.AddSeconds(1), GiB, GiB), new(Start.AddSeconds(2), GiB, GiB)], host);
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthTypedProofAssembler.RequireCapacity(
-            [new(Start, 3 * GiB - 1, GiB), new(Start.AddSeconds(2), GiB, GiB)], host));
+            [new(Start, (3 * GiB) - 1, GiB), new(Start.AddSeconds(2), GiB, GiB)], host));
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthTypedProofAssembler.RequireCapacity(
             [new(Start.AddMilliseconds(1), 3 * GiB, GiB), new(Start.AddSeconds(2), GiB, GiB)], host));
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthTypedProofAssembler.RequireCapacity(
@@ -34,7 +37,7 @@ public sealed class CurrentAuthTypedProofAssemblerTests
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthTypedProofAssembler.RequireCapacity(
             [new(Start, 3 * GiB, GiB), new(Start.AddSeconds(2), GiB, GiB), new(Start.AddSeconds(1), GiB, GiB), new(Start.AddSeconds(4), GiB, GiB)], host));
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthTypedProofAssembler.RequireCapacity(
-            [new(Start, 3 * GiB, GiB), new(Start.AddSeconds(2), GiB, 5 * GiB + 1), new(Start.AddSeconds(4), GiB, GiB)], host));
+            [new(Start, 3 * GiB, GiB), new(Start.AddSeconds(2), GiB, (5 * GiB) + 1), new(Start.AddSeconds(4), GiB, GiB)], host));
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthTypedProofAssembler.RequireCapacity(
             [new(Start, 3 * GiB, GiB), new(Start.AddSeconds(2).ToOffset(TimeSpan.FromHours(7)), GiB, GiB), new(Start.AddSeconds(4), GiB, GiB)], host));
     }

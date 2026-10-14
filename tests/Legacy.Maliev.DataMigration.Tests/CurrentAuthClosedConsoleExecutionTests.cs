@@ -43,10 +43,16 @@ public sealed class CurrentAuthClosedConsoleExecutionTests(ITestOutputHelper out
         await using var fixture = await CurrentAuthNamedClosedFixture.CreateAsync(parent, CancellationToken.None);
         using (var process = System.Diagnostics.Process.GetCurrentProcess())
         {
-            await fixture.RecordAsync("test-image", new { testAssemblyPath = actualTest, input.TestAssemblySha256,
-                input.ConsoleAssemblySha256, input.CoreAssemblySha256, processId = process.Id,
+            await fixture.RecordAsync("test-image", new
+            {
+                testAssemblyPath = actualTest,
+                input.TestAssemblySha256,
+                input.ConsoleAssemblySha256,
+                input.CoreAssemblySha256,
+                processId = process.Id,
                 processStartTimeUtc = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero),
-                executable = process.MainModule?.FileName ?? throw CurrentAuthRepairPermit.Invalid() }, fixture.Token);
+                executable = process.MainModule?.FileName ?? throw CurrentAuthRepairPermit.Invalid()
+            }, fixture.Token);
         }
         string configPath; CurrentAuthClosedTemplateCapture captured;
         using (var authority = WindowsLocalRunAuthority.AcquireResume(fixture.Root, fixture.Binding))
@@ -137,24 +143,49 @@ public sealed class CurrentAuthClosedConsoleExecutionTests(ITestOutputHelper out
             await files.WriteBaselineNewAsync(Path.Combine(fixture.Root, "closed-fleet-after.json"), [.. fleet], fixture.Token);
             await files.WriteNewAsync(Path.Combine(fixture.Root, "closed-invocations.json"), JsonSerializer.SerializeToUtf8Bytes(invocations), fixture.Token);
             await files.WriteNewAsync(Path.Combine(fixture.Root, "closed-case-return.json"), JsonSerializer.SerializeToUtf8Bytes(new
-            { caseId, fixture.Operation, sourceCommitSha = source.SourceCommitSha, runBindingSha256 = fixture.Binding.ComputeSha256(), returnedAtUtc = DateTimeOffset.UtcNow,
+            {
+                caseId,
+                fixture.Operation,
+                sourceCommitSha = source.SourceCommitSha,
+                runBindingSha256 = fixture.Binding.ComputeSha256(),
+                returnedAtUtc = DateTimeOffset.UtcNow,
                 configurationSha256 = CurrentAuthRepairPermit.Hash(files.Read(configPath, sharedReader: true, maximumBytes: 32 * 1024 * 1024)),
-                nativeBeforeSha256 = before.Snapshot.Sha256, nativeAfterSha256 = after.Snapshot.Sha256,
-                receiptFiles = Receipts().OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => new { name = x.Key, sha256 = CurrentAuthRepairPermit.Hash(x.Value) }).ToArray() }), fixture.Token);
+                nativeBeforeSha256 = before.Snapshot.Sha256,
+                nativeAfterSha256 = after.Snapshot.Sha256,
+                receiptFiles = Receipts().OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => new { name = x.Key, sha256 = CurrentAuthRepairPermit.Hash(x.Value) }).ToArray()
+            }), fixture.Token);
         }
-        output.WriteLine(JsonSerializer.Serialize(new { fixture.Operation, caseId, fixture.Root, actualConsoleInvocations = invocations.Count,
-            sourceOnlyCodeStatus = "execution evidence must be assembled from actual TRX and cleanup, never this stdout" }));
+        output.WriteLine(JsonSerializer.Serialize(new
+        {
+            fixture.Operation,
+            caseId,
+            fixture.Root,
+            actualConsoleInvocations = invocations.Count,
+            sourceOnlyCodeStatus = "execution evidence must be assembled from actual TRX and cleanup, never this stdout"
+        }));
 
         async Task<int> Invoke(string command)
         {
             DateTimeOffset started = DateTimeOffset.UtcNow; using var stdout = new StringWriter(); using var stderr = new StringWriter();
             int result = await MigrationConsole.RunAsync([command, "--config", configPath], stdout, stderr, Environment.GetEnvironmentVariable, fixture.Token);
-            invocations.Add(new { command, operation = fixture.Operation, startedAtUtc = started, exitedAtUtc = DateTimeOffset.UtcNow, exitCode = result,
-                stdoutSha256 = CurrentAuthRepairPermit.Hash(Encoding.UTF8.GetBytes(stdout.ToString())), stderrSha256 = CurrentAuthRepairPermit.Hash(Encoding.UTF8.GetBytes(stderr.ToString())) });
+            invocations.Add(new
+            {
+                command,
+                operation = fixture.Operation,
+                startedAtUtc = started,
+                exitedAtUtc = DateTimeOffset.UtcNow,
+                exitCode = result,
+                stdoutSha256 = CurrentAuthRepairPermit.Hash(Encoding.UTF8.GetBytes(stdout.ToString())),
+                stderrSha256 = CurrentAuthRepairPermit.Hash(Encoding.UTF8.GetBytes(stderr.ToString()))
+            });
             return result;
         }
-        Dictionary<string, byte[]> Receipts() => Directory.GetFiles(fixture.Root, fixture.Operation.ToString("D") + "-*.json")
+        Dictionary<string, byte[]> Receipts()
+        {
+            return Directory.GetFiles(fixture.Root, fixture.Operation.ToString("D") + "-*.json")
             .ToDictionary(path => Path.GetFileName(path) ?? throw CurrentAuthRepairPermit.Invalid(), path => ReadProtected(path, 65536), StringComparer.Ordinal);
+        }
+
         async Task WriteNative(string name, CurrentAuthNativeObservation native)
         {
             using var authority = WindowsLocalRunAuthority.AcquireResume(fixture.Root, fixture.Binding); using var files = new CurrentAppOwnedRepairCustody(authority);
@@ -170,9 +201,9 @@ public sealed class CurrentAuthClosedConsoleExecutionTests(ITestOutputHelper out
         using var input = SecureLocalFile.OpenReadShared(path);
         if (input.Length is < 1 || input.Length > maximum) { throw CurrentAuthRepairPermit.Invalid(); }
         string identity = SecureLocalFile.GetHandleIdentity(input); byte[] bytes = new byte[checked((int)input.Length)]; input.ReadExactly(bytes);
-        if (input.Position != input.Length || SecureLocalFile.GetHandleIdentity(input) != identity || !SecureLocalFile.HandleResolvesToApprovedPath(input, path))
-        { throw CurrentAuthRepairPermit.Invalid(); }
-        return bytes;
+        return input.Position != input.Length || SecureLocalFile.GetHandleIdentity(input) != identity || !SecureLocalFile.HandleResolvesToApprovedPath(input, path)
+            ? throw CurrentAuthRepairPermit.Invalid()
+            : bytes;
     }
     private static async Task<CurrentAuthNativeObservation> Auth(string op, CancellationToken ct)
     {

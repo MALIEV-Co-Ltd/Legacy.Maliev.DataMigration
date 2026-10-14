@@ -1,6 +1,5 @@
 using System.Net;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Docker.DotNet;
@@ -22,7 +21,6 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
     private readonly HashSet<string> _previousVolumes;
     private readonly DateTimeOffset _began, _expires;
     private readonly CancellationTokenSource _lease;
-    private readonly string _password;
     private string? _id, _volumeCreated;
     private int _port;
     private bool _volumeAttempted, _containerAttempted, _disposed;
@@ -33,14 +31,14 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
     internal string Name => "legacy-delta-proof-" + Operation.ToString("N");
     internal string ContainerId => _id ?? throw CurrentAuthRepairPermit.Invalid();
     internal string AdminConnection => new NpgsqlConnectionStringBuilder(_container.GetConnectionString())
-    { Host = "127.0.0.1", Database = "postgres", Username = "postgres", Password = _password, Pooling = false, SslMode = SslMode.Disable, Timeout = 5, CommandTimeout = 30, IncludeErrorDetail = false }.ConnectionString;
+    { Host = "127.0.0.1", Database = "postgres", Username = "postgres", Password = field, Pooling = false, SslMode = SslMode.Disable, Timeout = 5, CommandTimeout = 30, IncludeErrorDetail = false }.ConnectionString;
     internal CancellationToken Token => _lease.Token;
 
     private CurrentAuthNamedClosedFixture(string root, Guid operation, LocalExecutionBinding binding,
         DockerClient docker, PostgreSqlContainer container, HashSet<string> previous, string password, DateTimeOffset began)
     {
         Root = root; Operation = operation; Binding = binding; _docker = docker; _container = container;
-        _previousVolumes = previous; _password = password; _began = began; _expires = began.AddMinutes(8);
+        _previousVolumes = previous; AdminConnection = password; _began = began; _expires = began.AddMinutes(8);
         _lease = new CancellationTokenSource(_expires - DateTimeOffset.UtcNow);
     }
 
@@ -84,13 +82,22 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
                     foreach (var port in parameters.HostConfig.PortBindings!.Values) { foreach (var map in port) { map.HostIP = "127.0.0.1"; } }
                 }).Build();
             fixture = new(root, operation, binding, docker, container, previous, password, began);
-            await fixture.RecordAsync("attempt", new { operation, name, began, expires = fixture._expires, persistent = false,
-                previousVolumes = previous.Order(StringComparer.Ordinal).ToArray() }, ct).ConfigureAwait(false);
+            await fixture.RecordAsync("attempt", new
+            {
+                operation,
+                name,
+                began,
+                expires = fixture._expires,
+                persistent = false,
+                previousVolumes = previous.Order(StringComparer.Ordinal).ToArray()
+            }, ct).ConfigureAwait(false);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, fixture.Token);
             fixture._volumeAttempted = true;
             _ = await docker.Volumes.CreateAsync(new VolumesCreateParameters
             {
-                Name = name, Driver = "local", Labels = new Dictionary<string, string>(StringComparer.Ordinal)
+                Name = name,
+                Driver = "local",
+                Labels = new Dictionary<string, string>(StringComparer.Ordinal)
                 { ["codex.repair.purpose"] = "current-auth-repair-proof", ["codex.repair.operation"] = operation.ToString("D"), ["codex.repair.run-binding"] = binding.ComputeSha256() }
             }, linked.Token).ConfigureAwait(false);
             await fixture.RequireVolumeAsync(requireConsumer: false, linked.Token).ConfigureAwait(false);
@@ -152,8 +159,17 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
         { All = true, Filters = new Dictionary<string, IDictionary<string, bool>> { ["volume"] = new Dictionary<string, bool> { [Name] = true } } }, ct).ConfigureAwait(false);
         if (requireConsumer ? consumers.Count != 1 || consumers[0].ID != _id : consumers.Count != 0) { throw CurrentAuthRepairPermit.Invalid(); }
         _volumeCreated ??= actual.CreatedAt;
-        await RecordAsync("volume", new { actual.Name, actual.Driver, actual.Scope, actual.CreatedAt, actual.Labels, actual.Options,
-            existedBefore = false, consumers = consumers.Select(x => x.ID).ToArray() }, ct).ConfigureAwait(false);
+        await RecordAsync("volume", new
+        {
+            actual.Name,
+            actual.Driver,
+            actual.Scope,
+            actual.CreatedAt,
+            actual.Labels,
+            actual.Options,
+            existedBefore = false,
+            consumers = consumers.Select(x => x.ID).ToArray()
+        }, ct).ConfigureAwait(false);
     }
 
     private async Task RecordTargetAsync(CancellationToken ct)
@@ -163,12 +179,13 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
         JsonArray array = JsonNode.Parse(raw)!.AsArray(); JsonObject item = array.Single()!.AsObject(), config = item["Config"]!.AsObject();
         string[] pgData = config["Env"]!.AsArray().Select(x => x!.GetValue<string>()).Where(x => x.StartsWith("PGDATA=", StringComparison.Ordinal)).ToArray();
         if (pgData.Length != 1 || pgData[0] != "PGDATA=/var/lib/postgresql/18/docker") { throw CurrentAuthRepairPermit.Invalid(); }
-        config.Remove("Env"); config["PgData"] = pgData[0][7..]; await RecordAsync("target", item, ct).ConfigureAwait(false);
+        _ = config.Remove("Env"); config["PgData"] = pgData[0][7..]; await RecordAsync("target", item, ct).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) { return; } _disposed = true;
+        if (_disposed) { return; }
+        _disposed = true;
         using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(55)); bool removed = false, sdkDisposed = false, verifiedAbsence = false; DateTimeOffset? removedAtUtc = null;
         try
         {
@@ -211,16 +228,38 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
             int[] ports = [.. System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Select(x => x.Port).Distinct().Order()];
             if ((_id is not null && ids.Contains(_id, StringComparer.Ordinal)) || names.Contains("/" + Name, StringComparer.Ordinal) ||
                 volumeNames.Contains(Name, StringComparer.Ordinal) || (_port > 0 && ports.Contains(_port))) { throw CurrentAuthRepairPermit.Invalid(); }
-            await RecordAsync("absent", new { Operation, _id, volume = Name, removedAtUtc, observedAtUtc = DateTimeOffset.UtcNow,
-                containerIds = ids, containerNames = names, volumeNames, listeningPorts = ports, secretsAbsent = true }, cleanup.Token).ConfigureAwait(false);
+            await RecordAsync("absent", new
+            {
+                Operation,
+                _id,
+                volume = Name,
+                removedAtUtc,
+                observedAtUtc = DateTimeOffset.UtcNow,
+                containerIds = ids,
+                containerNames = names,
+                volumeNames,
+                listeningPorts = ports,
+                secretsAbsent = true
+            }, cleanup.Token).ConfigureAwait(false);
             verifiedAbsence = true;
         }
         finally
         {
             try
             {
-                await RecordAsync("disposed", new { Operation, _id, volume = Name, removed, sdkDisposed, removedAtUtc, verifiedAbsence, cleanupFailed = !removed || !sdkDisposed || !verifiedAbsence,
-                    expiresAtUtc = _expires, completedAtUtc = DateTimeOffset.UtcNow }, CancellationToken.None).ConfigureAwait(false);
+                await RecordAsync("disposed", new
+                {
+                    Operation,
+                    _id,
+                    volume = Name,
+                    removed,
+                    sdkDisposed,
+                    removedAtUtc,
+                    verifiedAbsence,
+                    cleanupFailed = !removed || !sdkDisposed || !verifiedAbsence,
+                    expiresAtUtc = _expires,
+                    completedAtUtc = DateTimeOffset.UtcNow
+                }, CancellationToken.None).ConfigureAwait(false);
             }
             finally { _lease.Dispose(); _docker.Dispose(); }
         }

@@ -52,10 +52,17 @@ internal static class CurrentAuthNamedClosedIntent
             facts.Maintenance.IssuedAtUtc > now || facts.Maintenance.ExpiresAtUtc <= now || facts.Maintenance.ExpiresAtUtc - facts.Maintenance.IssuedAtUtc > TimeSpan.FromHours(4))
         { throw CurrentAuthRepairPermit.Invalid(); }
     }
-    internal static byte[] Payload(CurrentAuthNamedClosedIntendedObservation value) =>
-        [.. "Legacy.Maliev.CurrentAuth.ClosedIntendedObservation.v1\0"u8, .. JsonSerializer.SerializeToUtf8Bytes(value with { Signature = null })];
-    internal static string Subject(CurrentAuthNamedClosedIntendedObservation value) => CurrentAppOwnedSnapshotSerialization.Sha256(new
-    { Domain = "Legacy.Maliev.CurrentAuth.ClosedIntendedSubject.v1", Observation = value with { Signature = null } });
+    internal static byte[] Payload(CurrentAuthNamedClosedIntendedObservation value)
+    {
+        return [.. "Legacy.Maliev.CurrentAuth.ClosedIntendedObservation.v1\0"u8, .. JsonSerializer.SerializeToUtf8Bytes(value with { Signature = null })];
+    }
+
+    internal static string Subject(CurrentAuthNamedClosedIntendedObservation value)
+    {
+        return CurrentAppOwnedSnapshotSerialization.Sha256(new
+        { Domain = "Legacy.Maliev.CurrentAuth.ClosedIntendedSubject.v1", Observation = value with { Signature = null } });
+    }
+
     internal static void Require(CurrentAuthNamedClosedIntendedObservation value, FreshSchemaPlan source,
         IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, DateTimeOffset now)
     {
@@ -78,9 +85,17 @@ internal static class CurrentAuthNamedClosedIntent
         { throw CurrentAuthRepairPermit.Invalid(); }
     }
     internal static Task<CurrentAuthNamedClosedIntendedObservation> ReadHeldAsync(CurrentAuthNamedClosedIntendedEvidence evidence,
-        FreshSchemaPlan source, CancellationToken ct) => ReadCoreAsync(evidence, source, null, ct);
+        FreshSchemaPlan source, CancellationToken ct)
+    {
+        return ReadCoreAsync(evidence, source, null, ct);
+    }
+
     internal static Task<CurrentAuthNamedClosedIntendedObservation> ReadThroughOperationalCustodyAsync(CurrentAuthNamedClosedIntendedEvidence evidence,
-        FreshSchemaPlan source, CurrentAppOwnedRepairCustody heldOperationalFiles, CancellationToken ct) => ReadCoreAsync(evidence, source, heldOperationalFiles, ct);
+            FreshSchemaPlan source, CurrentAppOwnedRepairCustody heldOperationalFiles, CancellationToken ct)
+    {
+        return ReadCoreAsync(evidence, source, heldOperationalFiles, ct);
+    }
+
     private static async Task<CurrentAuthNamedClosedIntendedObservation> ReadCoreAsync(CurrentAuthNamedClosedIntendedEvidence evidence,
         FreshSchemaPlan source, CurrentAppOwnedRepairCustody? existing, CancellationToken ct)
     {
@@ -140,7 +155,11 @@ public static partial class MigrationConsole
             var config = await ReadProtectedJsonAsync<CurrentAuthNamedClosedIntendedConfiguration>(configPath, "auth_closed_intent_config_unprotected", ct).ConfigureAwait(false);
             var binding = await ReadProtectedJsonAsync<LocalExecutionBinding>(config.RunBindingPath, "auth_closed_intent_binding_unprotected", ct).ConfigureAwait(false);
             using var authority = WindowsLocalRunAuthority.AcquireResume(binding.ArtifactRootCanonicalPath, binding); using var files = new CurrentAppOwnedRepairCustody(authority);
-            T Read<T>(string path) => DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024));
+            T Read<T>(string path)
+            {
+                return DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024));
+            }
+
             if (JsonSerializer.Serialize(Read<CurrentAuthNamedClosedIntendedConfiguration>(configPath)) != JsonSerializer.Serialize(config)) { throw CurrentAuthRepairPermit.Invalid(); }
             var facts = Read<CurrentAuthNamedClosedIntendedFacts>(config.FactsPath); var source = Read<FreshSchemaPlan>(config.SourcePath);
             CurrentAuthNamedClosedIntent.RequireCandidate(facts, source, binding, DateTimeOffset.UtcNow);
@@ -165,7 +184,9 @@ public static partial class MigrationConsole
                 facts.SourceSchemaPlanSha256, ApprovedCurrentAuthSchema.AuthServiceCommit, CurrentAuthRepairPermit.OwnerPinsSha256, ApprovedCurrentAuthSchema.ClosureSha256,
                 ApprovedCurrentAuthSchema.PhysicalSha256(false), ApprovedCurrentAuthSchema.PhysicalSha256(true), CurrentAuthRepairPermit.OperationSha256(source, facts.DefinitionPrecursorSha256),
                 facts.DefinitionPrecursorSha256, CurrentAuthRepairPermit.MaintenanceValidator, facts.Target, facts.TargetNamespace, facts.TargetCluster, facts.TargetGeneration,
-                facts.TargetObservationSha256, facts.RunBindingSha256, facts.BeforeDatabaseSha256, facts.GlobalPreservationSha256, string.Empty, string.Empty, string.Empty, facts.Maintenance);
+                facts.TargetObservationSha256, facts.RunBindingSha256, facts.BeforeDatabaseSha256, facts.GlobalPreservationSha256, string.Empty, string.Empty, string.Empty, facts.Maintenance,
+                OwnerPolicySha256: facts.Target.Kind == DeltaTargetAuthorityKind.ProductionCloudNativePg
+                    ? CurrentRepairOperandOwnerProfile.PolicySha256(CurrentRepairOperandOwnerPurpose.AuthCollation16, facts.Target) : null);
             string operatorConnection = Encoding.UTF8.GetString(files.Read(config.OperatorConnectionPath, sharedReader: true, maximumBytes: 65536));
             string ordinary = Encoding.UTF8.GetString(files.Read(config.OrdinaryConnectionPath, sharedReader: true, maximumBytes: 65536));
             using var environment = new CurrentAuthRepairEnvironment(authority, files, target, operatorConnection, ordinary, baseline, source, context, trust, pins,

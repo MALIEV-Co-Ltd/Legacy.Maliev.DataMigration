@@ -64,7 +64,11 @@ public static partial class MigrationConsole
             var config = await ReadProtectedJsonAsync<CurrentAuthNamedClosedAssemblyConfiguration>(configPath, "auth_closed_assembly_config_unprotected", ct).ConfigureAwait(false);
             var binding = await ReadProtectedJsonAsync<LocalExecutionBinding>(config.RunBindingPath, "auth_closed_assembly_binding_unprotected", ct).ConfigureAwait(false);
             using var authority = WindowsLocalRunAuthority.AcquireResume(binding.ArtifactRootCanonicalPath, binding); using var files = new CurrentAppOwnedRepairCustody(authority);
-            T Read<T>(string path) => DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024));
+            T Read<T>(string path)
+            {
+                return DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024));
+            }
+
             if (JsonSerializer.Serialize(Read<CurrentAuthNamedClosedAssemblyConfiguration>(configPath)) != JsonSerializer.Serialize(config) || Read<LocalExecutionBinding>(config.RunBindingPath) != binding)
             { throw CurrentAuthRepairPermit.Invalid(); }
             var intended = Read<CurrentAuthRepairScope>(config.IntendedScopePath); var source = Read<FreshSchemaPlan>(config.SourceSchemaPath); var pins = Read<CurrentAuthRepairSigningPins>(config.SigningPinsPath);

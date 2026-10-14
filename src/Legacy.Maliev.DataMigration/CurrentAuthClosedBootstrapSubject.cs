@@ -16,13 +16,17 @@ internal sealed record CurrentAuthClosedBootstrapSeed(string Kind, Guid Operatio
 
 internal static class CurrentAuthClosedBootstrap
 {
-    internal static byte[] Payload(CurrentAuthClosedBootstrapSeed seed) =>
-        [.. Encoding.UTF8.GetBytes("Legacy.Maliev.CurrentAuth.NamedClosedBootstrapSeed.v1\0"),
+    internal static byte[] Payload(CurrentAuthClosedBootstrapSeed seed)
+    {
+        return [.. Encoding.UTF8.GetBytes("Legacy.Maliev.CurrentAuth.NamedClosedBootstrapSeed.v1\0"),
             .. JsonSerializer.SerializeToUtf8Bytes(seed with { Signature = null })];
+    }
 
-    internal static string SubjectSha256(CurrentAuthClosedBootstrapSeed seed) =>
-        CurrentAppOwnedSnapshotSerialization.Sha256(new
+    internal static string SubjectSha256(CurrentAuthClosedBootstrapSeed seed)
+    {
+        return CurrentAppOwnedSnapshotSerialization.Sha256(new
         { Domain = "Legacy.Maliev.CurrentAuth.NamedClosedBootstrapSubject.v1", Seed = seed with { Signature = null } });
+    }
 
     internal static void RequireSeed(CurrentAuthClosedBootstrapSeed seed, IReceiptAttestationTrustStore trust,
         string expectedKey, string expectedFingerprint, DateTimeOffset now, bool requireSignature = true)

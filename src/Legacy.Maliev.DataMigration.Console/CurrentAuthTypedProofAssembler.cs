@@ -20,8 +20,10 @@ internal sealed record CurrentAuthTypedHostExit(string Kind, string SourceCommit
 internal static class CurrentAuthTypedProofAssembler
 {
     private static readonly JsonSerializerOptions Strict = new() { UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow };
-    internal static byte[] HostPayload(CurrentAuthTypedHostExit value) =>
-        [.. "Legacy.Maliev.CurrentAuth.TypedHostExit.v1\0"u8, .. JsonSerializer.SerializeToUtf8Bytes(value with { Signature = null })];
+    internal static byte[] HostPayload(CurrentAuthTypedHostExit value)
+    {
+        return [.. "Legacy.Maliev.CurrentAuth.TypedHostExit.v1\0"u8, .. JsonSerializer.SerializeToUtf8Bytes(value with { Signature = null })];
+    }
 
     internal static void RequireHost(CurrentAuthTypedHostExit host, LocalExecutionBinding binding, CurrentAuthRepairScope scope,
         CurrentAuthRepairSigningPins pins, IReceiptAttestationTrustStore trust, DateTimeOffset now)
@@ -54,7 +56,7 @@ internal static class CurrentAuthTypedProofAssembler
         if (intended.ProofAdmission != CurrentAuthProofAdmission.DisposableNativeBootstrap || phase is not ("helper" or "native" or "recovery" or "maintenance")) { throw Invalid(); }
         CurrentAuthTypedHostExit host = Decode<CurrentAuthTypedHostExit>(Read(hostArtifact));
         RequireHost(host, binding, intended, pins, trust, DateTimeOffset.UtcNow);
-        if (host.Group == "closed" || (phase == "helper") != (host.Group == "definition") || signer.KeyId != pins.ReceiptKeyId) { throw Invalid(); }
+        if (host.Group == "closed" || phase == "helper" != (host.Group == "definition") || signer.KeyId != pins.ReceiptKeyId) { throw Invalid(); }
         RequireCapacity(Decode<CurrentAuthTypedHostCapacity[]>(Read(host.Capacity)), host);
         string journalText = new UTF8Encoding(false, true).GetString(Read(host.ProcessObservations ?? throw Invalid()));
         if (!journalText.EndsWith('\n') || journalText.Length > 32 * 1024 * 1024) { throw Invalid(); }
@@ -94,16 +96,20 @@ internal static class CurrentAuthTypedProofAssembler
             var imported = new Dictionary<string, CurrentAuthProofArtifact>(StringComparer.OrdinalIgnoreCase);
             foreach (Observed observed in events)
             {
-                if (!imported.ContainsKey(observed.Artifact.Path)) { imported.Add(observed.Artifact.Path,
-                    await CurrentAuthTypedProofArtifactImport.ImportAsync(files, binding, caseFiles, caseBinding, observed.Artifact, runId, ct).ConfigureAwait(false)); }
+                if (!imported.ContainsKey(observed.Artifact.Path))
+                {
+                    imported.Add(observed.Artifact.Path,
+                    await CurrentAuthTypedProofArtifactImport.ImportAsync(files, binding, caseFiles, caseBinding, observed.Artifact, runId, ct).ConfigureAwait(false));
+                }
             }
             CurrentAuthProofArtifact Artifact(string name, bool last = false)
             {
                 Observed[] found = events.Where(x => x.Phase == name).ToArray();
                 if (found.Length == 0 || (!last && found.Length != 1)) { throw Invalid(); }
                 CurrentAuthProofArtifact value = (last ? found[^1] : found[0]).Artifact;
-                if (!StringComparer.OrdinalIgnoreCase.Equals(Path.GetDirectoryName(Path.GetFullPath(value.Path)), directory)) { throw Invalid(); }
-                return imported[value.Path];
+                return !StringComparer.OrdinalIgnoreCase.Equals(Path.GetDirectoryName(Path.GetFullPath(value.Path)), directory)
+                    ? throw Invalid()
+                    : imported[value.Path];
             }
             CurrentAuthProofArtifact heldBinding = Artifact("run-binding");
             var executedImage = Decode<ExecutedTestImage>(Read(Artifact("test-image")));
@@ -173,8 +179,13 @@ internal static class CurrentAuthTypedProofAssembler
                 }
                 rejection = window.RootElement.TryGetProperty("rejectionCode", out JsonElement error) ? error.GetString() : null;
                 replay = window.RootElement.TryGetProperty("replayRejected", out JsonElement replayed) && replayed.GetBoolean();
-                boundary = id switch { "success" => "complete", "prepared-publication" => "prepared-publication-before-ack",
-                    "host-unprobed-sdk" or "local-ordinary-trust" => "maintenance-semantic", _ => id };
+                boundary = id switch
+                {
+                    "success" => "complete",
+                    "prepared-publication" => "prepared-publication-before-ack",
+                    "host-unprobed-sdk" or "local-ordinary-trust" => "maintenance-semantic",
+                    _ => id
+                };
                 CurrentAuthRepairReceipt[] receipts = slots.Select(x => Decode<CurrentAuthRepairReceipt>(Read(x.Artifact))).ToArray();
                 commitAcknowledged = id == "success" ? window.RootElement.GetProperty("returned").GetBoolean() :
                     receipts.Any(x => x.Classification == CurrentAppOwnedCommitClassification.CommittedAndReadback);
@@ -212,7 +223,7 @@ internal static class CurrentAuthTypedProofAssembler
         byte[] Read(CurrentAuthProofArtifact artifact)
         {
             byte[] bytes = files.Read(artifact.Path, sharedReader: true, maximumBytes: 32 * 1024 * 1024);
-            if (Convert.ToHexStringLower(SHA256.HashData(bytes)) != artifact.Sha256) { throw Invalid(); } return bytes;
+            return Convert.ToHexStringLower(SHA256.HashData(bytes)) != artifact.Sha256 ? throw Invalid() : bytes;
         }
         async Task<CurrentAuthProofArtifact> Write<T>(string directory, string name, T value)
         {
@@ -247,16 +258,36 @@ internal static class CurrentAuthTypedProofAssembler
     private sealed record HostProcessObservation(CurrentAuthTypedHostCapacity Capacity, CurrentAuthTypedProcessFrame[] Processes);
     private sealed record ExecutedTestImage(string TestAssemblyPath, string TestAssemblySha256, string ConsoleAssemblyPath,
         string ConsoleAssemblySha256, string CoreAssemblyPath, string CoreAssemblySha256, int ProcessId, DateTimeOffset ProcessStartTimeUtc);
-    private static T Decode<T>(byte[] bytes) => JsonSerializer.Deserialize<T>(bytes, Strict) ?? throw Invalid();
-    private static string HashAssembly(string path) => CurrentAuthTypedHostProducer.ImageHash(path);
-    private static string[] Strings(JsonElement row, string field) => [.. row.GetProperty(field).EnumerateArray().Select(x => x.GetString()!)];
-    private static bool Match(string id, string testName) => id switch
+    private static T Decode<T>(byte[] bytes)
     {
-        "history-10.0.12" => testName.Contains("10.0.12", StringComparison.Ordinal), "history-10.0.10" => testName.Contains("10.0.10", StringComparison.Ordinal),
-        "reject-expression" => testName.Contains("CREATE INDEX", StringComparison.Ordinal), "reject-extended-statistics" => testName.Contains("CREATE STATISTICS", StringComparison.Ordinal),
-        "reject-statistics" => testName.Contains("ANALYZE", StringComparison.Ordinal), "reject-column" => testName.Contains("ADD COLUMN", StringComparison.Ordinal),
-        "reject-partial" => testName.Contains("ALTER COLUMN", StringComparison.Ordinal), _ => testName.Contains(id, StringComparison.Ordinal)
-    };
+        return JsonSerializer.Deserialize<T>(bytes, Strict) ?? throw Invalid();
+    }
+
+    private static string HashAssembly(string path)
+    {
+        return CurrentAuthTypedHostProducer.ImageHash(path);
+    }
+
+    private static string[] Strings(JsonElement row, string field)
+    {
+        return [.. row.GetProperty(field).EnumerateArray().Select(x => x.GetString()!)];
+    }
+
+    private static bool Match(string id, string testName)
+    {
+        return id switch
+        {
+            "history-10.0.12" => testName.Contains("10.0.12", StringComparison.Ordinal),
+            "history-10.0.10" => testName.Contains("10.0.10", StringComparison.Ordinal),
+            "reject-expression" => testName.Contains("CREATE INDEX", StringComparison.Ordinal),
+            "reject-extended-statistics" => testName.Contains("CREATE STATISTICS", StringComparison.Ordinal),
+            "reject-statistics" => testName.Contains("ANALYZE", StringComparison.Ordinal),
+            "reject-column" => testName.Contains("ADD COLUMN", StringComparison.Ordinal),
+            "reject-partial" => testName.Contains("ALTER COLUMN", StringComparison.Ordinal),
+            _ => testName.Contains(id, StringComparison.Ordinal)
+        };
+    }
+
     internal static void RequireCapacity(CurrentAuthTypedHostCapacity[] frames, CurrentAuthTypedHostExit host)
     {
         if (frames.Length is < 2 or > 100000 || frames[0].ObservedAtUtc > host.ProcessStartTimeUtc || frames[^1].ObservedAtUtc < host.ExitedAtUtc) { throw Invalid(); }
@@ -268,5 +299,8 @@ internal static class CurrentAuthTypedProofAssembler
         }
         CurrentAuthRepairCapacity.RequireValues(frames[0].AvailablePhysicalBytes, frames[0].OwnedRssBytes, admission: true);
     }
-    private static MigrationExecutionException Invalid() => new("current_auth_typed_producer_invalid", "Genuine executed Auth proof observations are required.");
+    private static MigrationExecutionException Invalid()
+    {
+        return new("current_auth_typed_producer_invalid", "Genuine executed Auth proof observations are required.");
+    }
 }

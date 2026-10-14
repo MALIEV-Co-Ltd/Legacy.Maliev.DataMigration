@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Legacy.Maliev.DataMigration;
 
@@ -17,7 +18,8 @@ internal sealed record CurrentAuthRepairScope(Guid OperationId, CurrentAuthRepai
     CurrentAppOwnedMaintenancePin Maintenance,
     CurrentAuthProofAdmission ProofAdmission = CurrentAuthProofAdmission.ClosedConsole,
     CurrentAuthComponentBootstrapSubject? ComponentSubject = null,
-    CurrentAuthClosedBootstrapSeed? ClosedBootstrapSubject = null);
+    CurrentAuthClosedBootstrapSeed? ClosedBootstrapSubject = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? OwnerPolicySha256 = null);
 internal sealed record CurrentAuthRepairSignedClaim(string Kind, CurrentAuthRepairScope Scope,
     Guid Nonce, string? ReviewSha256, DateTimeOffset IssuedAtUtc, DateTimeOffset ExpiresAtUtc, string KeyId, string? Signature);
 internal sealed record CurrentAuthRepairSigningPins(string ReviewKeyId, string ReviewFingerprint,
@@ -201,6 +203,8 @@ internal sealed class CurrentAuthRepairPermit
     private static void RequireScope(CurrentAuthRepairScope scope, FreshSchemaPlan source, IReceiptAttestationTrustStore trust, DateTimeOffset now)
     {
         RequireProofAdmission(scope);
+        if ((scope.Target.Kind == DeltaTargetAuthorityKind.ProductionCloudNativePg && scope.OwnerPolicySha256 is null) ||
+            (scope.OwnerPolicySha256 is not null && scope.OwnerPolicySha256 != CurrentRepairOperandOwnerProfile.PolicySha256(CurrentRepairOperandOwnerPurpose.AuthCollation16, scope.Target))) { throw Invalid(); }
         bool component = scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent;
         if (component) { CurrentAuthComponentBootstrap.RequireSubject(scope, source, trust, now); }
         bool closedBootstrap = scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap;
@@ -237,12 +241,25 @@ internal sealed class CurrentAuthRepairPermit
             m.IssuedAtUtc > now || m.ExpiresAtUtc <= now || m.ExpiresAtUtc <= m.IssuedAtUtc || m.ExpiresAtUtc - m.IssuedAtUtc > TimeSpan.FromHours(4) ||
             m.Postmaster > now || m.ConfigLoaded > now || !HashShape(m.HbaSha256) || !HashShape(m.HbaRulesSha256) || string.IsNullOrWhiteSpace(m.HbaPath)) { throw Invalid(); }
     }
-    private static string ReviewKind(CurrentAuthRepairScope scope) => scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent ? "current-auth-component-review-v1" : scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap ? "current-auth-named-bootstrap-review-v1" : "current-auth-repair-review-v1";
-    private static string AuthorizationKind(CurrentAuthRepairScope scope) => scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent ? "current-auth-component-authorization-v1" : scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap ? "current-auth-named-bootstrap-authorization-v1" : "current-auth-repair-authorization-v1";
+    private static string ReviewKind(CurrentAuthRepairScope scope)
+    {
+        return OwnerClaimKind(scope, scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent ? "current-auth-component-review-v1" : scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap ? "current-auth-named-bootstrap-review-v1" : "current-auth-repair-review-v1");
+    }
+
+    private static string AuthorizationKind(CurrentAuthRepairScope scope)
+    {
+        return OwnerClaimKind(scope, scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent ? "current-auth-component-authorization-v1" : scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap ? "current-auth-named-bootstrap-authorization-v1" : "current-auth-repair-authorization-v1");
+    }
+
+    private static string OwnerClaimKind(CurrentAuthRepairScope scope, string kind)
+    {
+        return scope.OwnerPolicySha256 is null ? kind : kind[..^1] + "2";
+    }
+
     internal static void RequireProofAdmission(CurrentAuthRepairScope scope)
     {
-        if ((scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent) != (scope.ComponentSubject is not null)) { throw Invalid(); }
-        if ((scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap) != (scope.ClosedBootstrapSubject is not null)) { throw Invalid(); }
+        if (scope.ProofAdmission == CurrentAuthProofAdmission.DisposableNativeComponent != (scope.ComponentSubject is not null)) { throw Invalid(); }
+        if (scope.ProofAdmission == CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap != (scope.ClosedBootstrapSubject is not null)) { throw Invalid(); }
         if (scope.ProofAdmission is not (CurrentAuthProofAdmission.ClosedConsole or CurrentAuthProofAdmission.DisposableNativeBootstrap or CurrentAuthProofAdmission.DisposableNativeComponent or CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap) ||
             ((scope.ProofAdmission is CurrentAuthProofAdmission.DisposableNativeBootstrap or CurrentAuthProofAdmission.DisposableNativeComponent or CurrentAuthProofAdmission.DisposableClosedConsoleBootstrap) &&
                 !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(scope.Target))) { throw Invalid(); }

@@ -79,6 +79,13 @@ internal static class CurrentAuthClosedPolicyObservation
         await files.WriteNewAsync(Path.Combine(root, "closed-ordinary-attempts.json"), JsonSerializer.SerializeToUtf8Bytes(attempts), ct).ConfigureAwait(false);
         files.Require();
     }
-    private static string? Text(JsonElement row, string name) => row.GetProperty(name).ValueKind == JsonValueKind.Null ? null : row.GetProperty(name).GetString();
-    private static string[] Strings(JsonElement row, string name) => row.GetProperty(name).ValueKind == JsonValueKind.Null ? [] : [.. row.GetProperty(name).EnumerateArray().Select(x => x.GetString()!)];
+    private static string? Text(JsonElement row, string name)
+    {
+        return row.GetProperty(name).ValueKind == JsonValueKind.Null ? null : row.GetProperty(name).GetString();
+    }
+
+    private static string[] Strings(JsonElement row, string name)
+    {
+        return row.GetProperty(name).ValueKind == JsonValueKind.Null ? [] : [.. row.GetProperty(name).EnumerateArray().Select(x => x.GetString()!)];
+    }
 }

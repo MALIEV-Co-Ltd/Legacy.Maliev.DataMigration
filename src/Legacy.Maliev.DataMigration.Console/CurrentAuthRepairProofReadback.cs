@@ -12,8 +12,11 @@ internal sealed record CurrentAuthProofStorage(uint FileNode, long Blocks);
 internal sealed record CurrentAuthProofNative(CurrentAppOwnedDatabaseSnapshot Snapshot,
     Dictionary<string, string[]> Tuples, Dictionary<string, CurrentAuthProofStorage> Storage, Dictionary<string, string> Expressions)
 {
-    internal CurrentAuthNativeObservation Observation() => new(Snapshot, Tuples,
+    internal CurrentAuthNativeObservation Observation()
+    {
+        return new(Snapshot, Tuples,
         Storage.ToDictionary(x => x.Key, x => (x.Value.FileNode, x.Value.Blocks), StringComparer.Ordinal), Expressions);
+    }
 }
 internal sealed record CurrentAuthProofInvocation(string Command, Guid OperationId, Guid RunId,
     string TestName, string TestId, string ExecutionId, string ExecutedTestAssemblyPath,
@@ -66,18 +69,41 @@ internal static class CurrentAuthRepairProofReader
     private static readonly string[] ComponentCases = ["success", "prepared-publication", "lost-commit-ack", "terminal-publication", "host-unprobed-sdk", "local-ordinary-trust"];
     private static readonly string[] ClosedCases = [.. ComponentCases, "final-fleet", "replay"];
     // No proof digest, operation digest or signed claim enters this precursor subject.
-    internal static string Subject(CurrentAuthRepairScope scope) => CurrentAppOwnedSnapshotSerialization.Sha256(new
+    internal static string Subject(CurrentAuthRepairScope scope)
     {
-        scope.SourceCommitSha, scope.SourceSchemaPlanSha256, scope.AuthOwnerCommitSha, scope.AuthOwnerSourcePinsSha256,
-        scope.AuthClosureSha256, scope.AuthBeforeSchemaSha256, scope.AuthAfterSchemaSha256, scope.MaintenanceValidatorSha256,
-        scope.Target, scope.TargetNamespace, scope.TargetCluster, scope.TargetGeneration, scope.TargetObservationSha256,
-        scope.RunBindingSha256, scope.GlobalPreservationSha256, scope.ProofAdmission
-    });
-    internal static byte[] Payload(CurrentAuthClosedProof proof, string phase) =>
-        [.. Encoding.UTF8.GetBytes("Legacy.Maliev.CurrentAuth.ExecutedProof." + phase + ".v1\0"),
+        return CurrentAppOwnedSnapshotSerialization.Sha256(new
+        {
+            scope.SourceCommitSha,
+            scope.SourceSchemaPlanSha256,
+            scope.AuthOwnerCommitSha,
+            scope.AuthOwnerSourcePinsSha256,
+            scope.AuthClosureSha256,
+            scope.AuthBeforeSchemaSha256,
+            scope.AuthAfterSchemaSha256,
+            scope.MaintenanceValidatorSha256,
+            scope.Target,
+            scope.TargetNamespace,
+            scope.TargetCluster,
+            scope.TargetGeneration,
+            scope.TargetObservationSha256,
+            scope.RunBindingSha256,
+            scope.GlobalPreservationSha256,
+            scope.ProofAdmission
+        });
+    }
+
+    internal static byte[] Payload(CurrentAuthClosedProof proof, string phase)
+    {
+        return [.. Encoding.UTF8.GetBytes("Legacy.Maliev.CurrentAuth.ExecutedProof." + phase + ".v1\0"),
          .. JsonSerializer.SerializeToUtf8Bytes(proof with { Signature = null })];
-    internal static string[] Cases(string phase, CurrentAuthProofAdmission mode, bool component = false) => phase == "helper" ? [.. HelperCases] :
-        phase is "native" or "recovery" or "maintenance" ? (component && mode == CurrentAuthProofAdmission.DisposableNativeBootstrap ? [.. ComponentCases] : [.. ClosedCases]) : throw Invalid();
+    }
+
+    internal static string[] Cases(string phase, CurrentAuthProofAdmission mode, bool component = false)
+    {
+        return phase == "helper" ? [.. HelperCases] :
+            phase is "native" or "recovery" or "maintenance" ? (component && mode == CurrentAuthProofAdmission.DisposableNativeBootstrap ? [.. ComponentCases] : [.. ClosedCases]) : throw Invalid();
+    }
+
     internal static void RequireHeader(CurrentAuthClosedProof proof, string phase, CurrentAuthRepairScope scope,
         IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, DateTimeOffset now,
         string consoleHash, string coreHash, bool requireSignature = true, bool component = false)
@@ -97,16 +123,25 @@ internal static class CurrentAuthRepairProofReader
         catch (FormatException) { throw Invalid(); }
     }
     internal static Task RequireAsync(CurrentAppOwnedRepairCustody files, CurrentAppOwnedRepairArtifact artifact, string expected,
-        string phase, CurrentAuthRepairScope intended, IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, FreshSchemaPlan source, CancellationToken ct) =>
-        RequireExecutedEvidenceCoreAsync(files, artifact, expected, phase, intended, trust, pins, source, requireSignature: true, component: false, ct: ct);
+        string phase, CurrentAuthRepairScope intended, IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, FreshSchemaPlan source, CancellationToken ct)
+    {
+        return RequireExecutedEvidenceCoreAsync(files, artifact, expected, phase, intended, trust, pins, source, requireSignature: true, component: false, ct: ct);
+    }
+
     // Genuine precursor readback only. The ordinary closed Console never invokes this entry.
     internal static Task RequireComponentAsync(CurrentAppOwnedRepairCustody files, CurrentAppOwnedRepairArtifact artifact, string expected,
-        string phase, CurrentAuthRepairScope intended, IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, FreshSchemaPlan source, CancellationToken ct) =>
-        RequireExecutedEvidenceCoreAsync(files, artifact, expected, phase, intended, trust, pins, source, requireSignature: true, component: true, ct: ct);
+        string phase, CurrentAuthRepairScope intended, IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, FreshSchemaPlan source, CancellationToken ct)
+    {
+        return RequireExecutedEvidenceCoreAsync(files, artifact, expected, phase, intended, trust, pins, source, requireSignature: true, component: true, ct: ct);
+    }
+
     // Observation validation for the external assembler only; this method emits no claim, permit or signature.
     internal static Task RequireUnsignedForAssemblerAsync(CurrentAppOwnedRepairCustody files, CurrentAppOwnedRepairArtifact artifact, string expected,
-        string phase, CurrentAuthRepairScope intended, IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, FreshSchemaPlan source, CancellationToken ct) =>
-        RequireExecutedEvidenceCoreAsync(files, artifact, expected, phase, intended, trust, pins, source, requireSignature: false, component: true, ct: ct);
+        string phase, CurrentAuthRepairScope intended, IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, FreshSchemaPlan source, CancellationToken ct)
+    {
+        return RequireExecutedEvidenceCoreAsync(files, artifact, expected, phase, intended, trust, pins, source, requireSignature: false, component: true, ct: ct);
+    }
+
     private static async Task RequireExecutedEvidenceCoreAsync(CurrentAppOwnedRepairCustody files, CurrentAppOwnedRepairArtifact artifact, string expected,
         string phase, CurrentAuthRepairScope intended, IReceiptAttestationTrustStore trust, CurrentAuthRepairSigningPins pins, FreshSchemaPlan source, bool requireSignature, bool component, CancellationToken ct)
     {
@@ -156,9 +191,14 @@ internal static class CurrentAuthRepairProofReader
             {
                 string parameter = item.CaseId switch
                 {
-                    "history-10.0.12" => "10.0.12", "history-10.0.10" => "10.0.10", "reject-expression" => "unreviewed_auth_expression",
-                    "reject-extended-statistics" => "unreviewed_auth_statistics", "reject-statistics" => "ANALYZE public.refresh_sessions;",
-                    "reject-column" => "ADD COLUMN unreviewed", "reject-partial" => "TokenHash", _ => throw Invalid()
+                    "history-10.0.12" => "10.0.12",
+                    "history-10.0.10" => "10.0.10",
+                    "reject-expression" => "unreviewed_auth_expression",
+                    "reject-extended-statistics" => "unreviewed_auth_statistics",
+                    "reject-statistics" => "ANALYZE public.refresh_sessions;",
+                    "reject-column" => "ADD COLUMN unreviewed",
+                    "reject-partial" => "TokenHash",
+                    _ => throw Invalid()
                 };
                 if (!invocation.TestName.Contains(parameter, StringComparison.Ordinal)) { throw Invalid(); }
                 if (invocation.Command != "definition-current-auth-proof" || invocation.ExitCode != 0 || scenario.RetainedSlots.Count != 0) { throw Invalid(); }
@@ -206,30 +246,28 @@ internal static class CurrentAuthRepairProofReader
             string command = component ? "provider-current-auth-proof" : "apply-current-auth-repair";
             if (invocation.Command != command || (component && !invocation.TestName.Contains(item.CaseId, StringComparison.Ordinal)) ||
                 invocation.ExitCode != (item.CaseId is "success" or "replay" ? 0 : 1)) { throw Invalid(); }
-                        CurrentAuthProofRun run = proof.Runs.Single(x => x.RunId == invocation.RunId);
+            CurrentAuthProofRun run = proof.Runs.Single(x => x.RunId == invocation.RunId);
             if (component) { RequireComponentObservation(item, caseScope, run, Read); }
             else
             {
-var config = Decode<CurrentAuthRepairConfiguration>(Read(item.Configuration ?? throw Invalid()));
-            var binding = Decode<LocalExecutionBinding>(Read(item.RunBinding ?? throw Invalid()));
-            var target = Decode<CurrentAppOwnedRepairTargetPins>(Read(item.TargetPins ?? throw Invalid()));
-            if (invocation.ConfigurationSha256 != item.Configuration.Sha256 || config.ScopePath != item.Scope.Path || config.ReviewPath != item.Review.Path ||
-                config.AuthorizationPath != item.Authorization.Path || config.RunBindingPath != item.RunBinding.Path || config.TargetPinsPath != item.TargetPins.Path ||
-                binding.ComputeSha256() != caseScope.RunBindingSha256 || CurrentAppOwnedSnapshotSerialization.Sha256(target) != caseScope.TargetObservationSha256) { throw Invalid(); }
-            if (target.DockerContainerId != run.ContainerId || target.DockerVolume != run.Volume ||
-                CurrentAppOwnedRepairLocalTarget.RequireClaim(caseScope.Target, caseScope.OperationId, caseScope.RunBindingSha256, target)) { throw Invalid(); }
-            using (var container = JsonDocument.Parse(Read(run.Container)))
-            using (var volume = JsonDocument.Parse(Read(run.VolumeMetadata ?? throw Invalid())))
-            {
-                RequireDockerIdentity(container.RootElement,volume.RootElement,caseScope,target,run.LoopbackPort);
+                var config = Decode<CurrentAuthRepairConfiguration>(Read(item.Configuration ?? throw Invalid()));
+                var binding = Decode<LocalExecutionBinding>(Read(item.RunBinding ?? throw Invalid()));
+                var target = Decode<CurrentAppOwnedRepairTargetPins>(Read(item.TargetPins ?? throw Invalid()));
+                if (invocation.ConfigurationSha256 != item.Configuration.Sha256 || config.ScopePath != item.Scope.Path || config.ReviewPath != item.Review.Path ||
+                    config.AuthorizationPath != item.Authorization.Path || config.RunBindingPath != item.RunBinding.Path || config.TargetPinsPath != item.TargetPins.Path ||
+                    binding.ComputeSha256() != caseScope.RunBindingSha256 || CurrentAppOwnedSnapshotSerialization.Sha256(target) != caseScope.TargetObservationSha256) { throw Invalid(); }
+                if (target.DockerContainerId != run.ContainerId || target.DockerVolume != run.Volume ||
+                    CurrentAppOwnedRepairLocalTarget.RequireClaim(caseScope.Target, caseScope.OperationId, caseScope.RunBindingSha256, target)) { throw Invalid(); }
+                using var container = JsonDocument.Parse(Read(run.Container));
+                using var volume = JsonDocument.Parse(Read(run.VolumeMetadata ?? throw Invalid()));
+                RequireDockerIdentity(container.RootElement, volume.RootElement, caseScope, target, run.LoopbackPort);
                 CurrentAuthRepairEnvironment.RequireAuthDisposable(container.RootElement, volume.RootElement, caseScope.OperationId, caseScope.RunBindingSha256, invocation.StartedAtUtc);
                 if (volume.RootElement.GetProperty("Driver").GetString() != "local" || volume.RootElement.GetProperty("Scope").GetString() != "local") { throw Invalid(); }
                 string[] previousVolumes = Decode<string[]>(Read(run.PreviousVolumes ?? throw Invalid()));
                 string[] consumers = Decode<string[]>(Read(run.VolumeConsumers ?? throw Invalid()));
                 if (previousVolumes.Contains(run.Volume, StringComparer.Ordinal) || !consumers.SequenceEqual([run.ContainerId], StringComparer.Ordinal)) { throw Invalid(); }
             }
-                        }
-var fleetBefore = await files.ReadBaselineAsync((item.FleetBefore ?? throw Invalid()).Path, ct, sharedReader: true).ConfigureAwait(false);
+            var fleetBefore = await files.ReadBaselineAsync((item.FleetBefore ?? throw Invalid()).Path, ct, sharedReader: true).ConfigureAwait(false);
             var fleetAfter = await files.ReadBaselineAsync((item.FleetAfter ?? throw Invalid()).Path, ct, sharedReader: true).ConfigureAwait(false);
             // Verify artifact bytes as well as pooled snapshot hashes. Stream hashing avoids a whole baseline byte array.
             RequireBaselineHash(item.FleetBefore!, files); RequireBaselineHash(item.FleetAfter!, files);
@@ -255,17 +293,17 @@ var fleetBefore = await files.ReadBaselineAsync((item.FleetBefore ?? throw Inval
                 CurrentAuthNativePreservation.RequirePreserved(before, candidate); candidateHash = candidate.Snapshot.Sha256;
             }
             if (scenario.RetainedSlots.Select(x => x.Artifact.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != scenario.RetainedSlots.Count || scenario.RetainedSlots.Count(x => !x.Acknowledged) > 1) { throw Invalid(); }
-            DateTimeOffset lastObserved=invocation.StartedAtUtc;
+            DateTimeOffset lastObserved = invocation.StartedAtUtc;
             foreach (CurrentAuthProofSlot slot in scenario.RetainedSlots)
             {
                 byte[] receiptBytes = Read(slot.Artifact);
                 var receipt = Decode<CurrentAuthRepairReceipt>(receiptBytes);
                 if (!JsonSerializer.SerializeToUtf8Bytes(receipt).AsSpan().SequenceEqual(receiptBytes)) { throw Invalid(); }
                 PostgreSqlCurrentAuthRepair.RequireReceipt(receipt, caseScope, CurrentAppOwnedSnapshotSerialization.Sha256(authorization), caseTrust, casePins, predecessor, invocation.ExitedAtUtc);
-                RequireReceiptObservation(lastObserved,receipt.ObservedAtUtc);
+                RequireReceiptObservation(lastObserved, receipt.ObservedAtUtc);
                 if (Path.GetFileName(slot.Artifact.Path) != $"{caseScope.OperationId:D}-Auth-{CurrentAuthRepairEnvironment.Suffix(receipt.Classification)}.json") { throw Invalid(); }
                 if (item.CaseId is not ("host-unprobed-sdk" or "local-ordinary-trust") && receipt.AfterSha256 != candidateHash) { throw Invalid(); }
-                lastObserved=receipt.ObservedAtUtc;
+                lastObserved = receipt.ObservedAtUtc;
                 if (slot.Acknowledged) { predecessor = slot.Artifact.Sha256; receipts.Add(receipt); }
                 else if (!((item.CaseId == "prepared-publication" && receipt.Classification == CurrentAppOwnedCommitClassification.Prepared) ||
                     (item.CaseId == "terminal-publication" && receipt.Classification == CurrentAppOwnedCommitClassification.CommittedAndReadback))) { throw Invalid(); }
@@ -279,14 +317,15 @@ var fleetBefore = await files.ReadBaselineAsync((item.FleetBefore ?? throw Inval
         byte[] Read(CurrentAuthProofArtifact value)
         {
             ct.ThrowIfCancellationRequested(); CurrentAuthRepairCapacity.Require(admission: false); byte[] bytes = files.Read(value.Path, sharedReader: true, maximumBytes: 8_000_000);
-            if (CurrentAuthRepairPermit.Hash(bytes) != value.Sha256) { throw Invalid(); } return bytes;
+            return CurrentAuthRepairPermit.Hash(bytes) != value.Sha256 ? throw Invalid() : bytes;
         }
     }
     private static void RequireBaselineHash(CurrentAuthProofArtifact artifact, CurrentAppOwnedRepairCustody files)
     {
         files.Require(); using FileStream stream = SecureLocalFile.OpenReadShared(artifact.Path);
         if (!SecureLocalFile.HandleResolvesToApprovedPath(stream, artifact.Path) || stream.Length is < 1 or > 512L * 1024 * 1024 ||
-            Convert.ToHexStringLower(SHA256.HashData(stream)) != artifact.Sha256) { throw Invalid(); } files.Require();
+            Convert.ToHexStringLower(SHA256.HashData(stream)) != artifact.Sha256) { throw Invalid(); }
+        files.Require();
     }
     internal static void RequireEffects(string id, CurrentAuthProofScenario scenario, IReadOnlyList<CurrentAuthRepairReceipt> receipts, string before, string after, bool component = false)
     {
@@ -329,11 +368,19 @@ var fleetBefore = await files.ReadBaselineAsync((item.FleetBefore ?? throw Inval
         if (caseId is "host-unprobed-sdk" or "local-ordinary-trust")
         {
             bool rejected = false; try { CurrentAppOwnedMaintenanceHba.Require(rules, scope.Maintenance.Role, scope.Target.Kind); }
-            catch (MigrationExecutionException) { rejected = true; } if (!rejected) { throw Invalid(); }
+            catch (MigrationExecutionException) { rejected = true; }
+            if (!rejected) { throw Invalid(); }
         }
         else { CurrentAppOwnedMaintenanceHba.Require(rules, scope.Maintenance.Role, scope.Target.Kind); }
-        static string? Text(JsonElement row, string name) => row.GetProperty(name).ValueKind == JsonValueKind.Null ? null : row.GetProperty(name).GetString();
-        static string[] Strings(JsonElement row, string name) => row.GetProperty(name).ValueKind == JsonValueKind.Null ? [] : [.. row.GetProperty(name).EnumerateArray().Select(x => x.GetString()!)];
+        static string? Text(JsonElement row, string name)
+        {
+            return row.GetProperty(name).ValueKind == JsonValueKind.Null ? null : row.GetProperty(name).GetString();
+        }
+
+        static string[] Strings(JsonElement row, string name)
+        {
+            return row.GetProperty(name).ValueKind == JsonValueKind.Null ? [] : [.. row.GetProperty(name).EnumerateArray().Select(x => x.GetString()!)];
+        }
     }
     private static void RequireRun(CurrentAuthProofRun run, CurrentAuthClosedProof proof, Func<CurrentAuthProofArtifact, byte[]> read)
     {
@@ -369,7 +416,7 @@ var fleetBefore = await files.ReadBaselineAsync((item.FleetBefore ?? throw Inval
                 config.GetProperty("Labels").GetProperty("codex.repair.operation").GetString() != run.RunId.ToString("D")) { throw Invalid(); }
         }
         var absence = Decode<CurrentAuthProofAbsence>(read(run.Absence));
-        DateTimeOffset removedAt=disposed.RootElement.GetProperty("removedAtUtc").GetDateTimeOffset();        if ((run.ProxyCreated is null) != (run.ProxyDisposed is null)) { throw Invalid(); }
+        DateTimeOffset removedAt = disposed.RootElement.GetProperty("removedAtUtc").GetDateTimeOffset(); if ((run.ProxyCreated is null) != (run.ProxyDisposed is null)) { throw Invalid(); }
         if (run.ProxyCreated is not null)
         {
             using var createdProxy = JsonDocument.Parse(read(run.ProxyCreated)); using var disposedProxy = JsonDocument.Parse(read(run.ProxyDisposed!));
@@ -381,61 +428,69 @@ var fleetBefore = await files.ReadBaselineAsync((item.FleetBefore ?? throw Inval
                 !disposedProxy.RootElement.GetProperty("workerCompleted").GetBoolean() || disposedProxy.RootElement.GetProperty("completedAtUtc").GetDateTimeOffset() > removedAt ||
                 absence.ListeningPorts.Contains(proxyPort)) { throw Invalid(); }
         }
-        DateTimeOffset lastExited=proof.Cases.Where(x=>x.Invocation.RunId==run.RunId).Max(x=>x.Invocation.ExitedAtUtc);
-        RequireCleanupChronology(lastExited,removedAt,absence.ObservedAtUtc,completed,expires,proof.CompletedAtUtc);
+        DateTimeOffset lastExited = proof.Cases.Where(x => x.Invocation.RunId == run.RunId).Max(x => x.Invocation.ExitedAtUtc);
+        RequireCleanupChronology(lastExited, removedAt, absence.ObservedAtUtc, completed, expires, proof.CompletedAtUtc);
         if (absence.RunId != run.RunId || absence.ObservedAtUtc.Offset != TimeSpan.Zero || absence.ObservedAtUtc < began || absence.ObservedAtUtc > completed ||
             !absence.ContainersObserved || !absence.VolumesObserved || !absence.ListenersObserved || !absence.SecretsAbsent ||
             absence.ContainerIds.Contains(run.ContainerId, StringComparer.Ordinal) || absence.ContainerNames.Contains(run.Name, StringComparer.Ordinal) || absence.ContainerNames.Contains("/" + run.Name, StringComparer.Ordinal) ||
             (run.Volume is not null && absence.VolumeNames.Contains(run.Volume, StringComparer.Ordinal)) || absence.ListeningPorts.Contains(run.LoopbackPort)) { throw Invalid(); }
-        static bool Empty(JsonElement host, string field) => !host.TryGetProperty(field, out JsonElement value) || value.ValueKind == JsonValueKind.Null ||
+        static bool Empty(JsonElement host, string field)
+        {
+            return !host.TryGetProperty(field, out JsonElement value) || value.ValueKind == JsonValueKind.Null ||
             (value.ValueKind == JsonValueKind.Array && value.GetArrayLength() == 0);
+        }
     }
-    internal static void RequireReceiptObservation(DateTimeOffset previous,DateTimeOffset current)
-    {if(previous.Offset!=TimeSpan.Zero || current.Offset!=TimeSpan.Zero || current<previous) {throw Invalid();}}
-    internal static void RequireCaseScope(CurrentAuthRepairScope reviewed,CurrentAuthRepairScope held)
-    {if(JsonSerializer.Serialize(reviewed)!=JsonSerializer.Serialize(held)) {throw Invalid();}}
-    internal static void RequireCleanupChronology(DateTimeOffset exited,DateTimeOffset removed,DateTimeOffset observed,
-        DateTimeOffset disposed,DateTimeOffset lease,DateTimeOffset proofCompleted)
+    internal static void RequireReceiptObservation(DateTimeOffset previous, DateTimeOffset current)
+    { if (previous.Offset != TimeSpan.Zero || current.Offset != TimeSpan.Zero || current < previous) { throw Invalid(); } }
+    internal static void RequireCaseScope(CurrentAuthRepairScope reviewed, CurrentAuthRepairScope held)
+    { if (JsonSerializer.Serialize(reviewed) != JsonSerializer.Serialize(held)) { throw Invalid(); } }
+    internal static void RequireCleanupChronology(DateTimeOffset exited, DateTimeOffset removed, DateTimeOffset observed,
+        DateTimeOffset disposed, DateTimeOffset lease, DateTimeOffset proofCompleted)
     {
-        if(new[] {exited,removed,observed,disposed,lease,proofCompleted}.Any(x=>x.Offset!=TimeSpan.Zero) ||
-            removed<exited || observed<removed || disposed<observed || disposed>lease.AddMinutes(1) || disposed>proofCompleted) {throw Invalid();}
+        if (new[] { exited, removed, observed, disposed, lease, proofCompleted }.Any(x => x.Offset != TimeSpan.Zero) ||
+            removed < exited || observed < removed || disposed < observed || disposed > lease.AddMinutes(1) || disposed > proofCompleted) { throw Invalid(); }
     }
-    internal static void RequireDockerIdentity(JsonElement container,JsonElement volume,CurrentAuthRepairScope scope,
-        CurrentAppOwnedRepairTargetPins target,int port)
+    internal static void RequireDockerIdentity(JsonElement container, JsonElement volume, CurrentAuthRepairScope scope,
+        CurrentAppOwnedRepairTargetPins target, int port)
     {
         try
         {
-            if(container.GetProperty("Id").GetString()!=target.DockerContainerId || container.GetProperty("Image").GetString()!=target.DockerImageId ||
-                container.GetProperty("Config").GetProperty("Image").GetString()!=target.DockerImageReference ||
-                target.DockerImageReference!=Image || volume.GetProperty("Name").GetString()!=target.DockerVolume)
-            {throw Invalid();}
-            string pgData=container.GetProperty("Config").GetProperty("PgData").GetString() ?? throw Invalid();
-            if(target.HbaPath!=pgData.TrimEnd('/')+"/pg_hba.conf") {throw Invalid();}
-            var projected=JsonSerializer.SerializeToElement(new
+            if (container.GetProperty("Id").GetString() != target.DockerContainerId || container.GetProperty("Image").GetString() != target.DockerImageId ||
+                container.GetProperty("Config").GetProperty("Image").GetString() != target.DockerImageReference ||
+                target.DockerImageReference != Image || volume.GetProperty("Name").GetString() != target.DockerVolume)
+            { throw Invalid(); }
+            string pgData = container.GetProperty("Config").GetProperty("PgData").GetString() ?? throw Invalid();
+            if (target.HbaPath != pgData.TrimEnd('/') + "/pg_hba.conf") { throw Invalid(); }
+            var projected = JsonSerializer.SerializeToElement(new
             {
-                Id=target.DockerContainerId,Name=container.GetProperty("Name").GetString(),
-                Created=container.GetProperty("Created"),State=container.GetProperty("State"),
-                Mounts=container.GetProperty("Mounts"),NetworkSettings=container.GetProperty("NetworkSettings"),
-                Config=new {Env=new[] {"PGDATA="+pgData}}
+                Id = target.DockerContainerId,
+                Name = container.GetProperty("Name").GetString(),
+                Created = container.GetProperty("Created"),
+                State = container.GetProperty("State"),
+                Mounts = container.GetProperty("Mounts"),
+                NetworkSettings = container.GetProperty("NetworkSettings"),
+                Config = new { Env = new[] { "PGDATA=" + pgData } }
             });
-            DockerLocalTargetObservation observed=DockerLocalTargetObservation.Parse("["+projected.GetRawText()+"]","["+volume.GetRawText()+"]",
-                target.DockerContainerId ?? throw Invalid(),target.DockerVolume ?? throw Invalid(),port,false);
-            if(observed.VolumeDestination!="/var/lib/postgresql" || LocalDockerGenerationGuard.ComposeGeneration(observed)!=scope.TargetGeneration)
-            {throw Invalid();}
+            DockerLocalTargetObservation observed = DockerLocalTargetObservation.Parse("[" + projected.GetRawText() + "]", "[" + volume.GetRawText() + "]",
+                target.DockerContainerId ?? throw Invalid(), target.DockerVolume ?? throw Invalid(), port, false);
+            if (observed.VolumeDestination != "/var/lib/postgresql" || LocalDockerGenerationGuard.ComposeGeneration(observed) != scope.TargetGeneration)
+            { throw Invalid(); }
         }
-        catch(Exception failure) when(failure is JsonException or KeyNotFoundException or InvalidOperationException or FormatException or MigrationConsoleException)
-        {throw Invalid();}
-    }    private static ReceiptAttestationTrustStore CaseTrust(byte[] bytes, CurrentAuthRepairSigningPins pins, string parentKeyId)
+        catch (Exception failure) when (failure is JsonException or KeyNotFoundException or InvalidOperationException or FormatException or MigrationConsoleException)
+        { throw Invalid(); }
+    }
+    private static ReceiptAttestationTrustStore CaseTrust(byte[] bytes, CurrentAuthRepairSigningPins pins, string parentKeyId)
     {
         CurrentAuthProofPublicKey[] keys = Decode<CurrentAuthProofPublicKey[]>(bytes);
         if (keys.Length != 4 || keys.Select(x => x.KeyId).Distinct(StringComparer.Ordinal).Count() != 4 ||
             !keys.Select(x => x.KeyId).Order(StringComparer.Ordinal).SequenceEqual(new[] { pins.ReviewKeyId, pins.AuthorizationKeyId, pins.ReceiptKeyId, parentKeyId }.Order(StringComparer.Ordinal))) { throw Invalid(); }
         var trust = new ReceiptAttestationTrustStore(keys.Select(x => new TrustedAttestationKey(x.KeyId, Convert.FromBase64String(x.SubjectPublicKeyInfoBase64))));
-        if (!trust.TryGetPublicKeyFingerprintSha256(pins.ReviewKeyId, out string r) || r != pins.ReviewFingerprint ||
+        return !trust.TryGetPublicKeyFingerprintSha256(pins.ReviewKeyId, out string r) || r != pins.ReviewFingerprint ||
             !trust.TryGetPublicKeyFingerprintSha256(pins.AuthorizationKeyId, out string a) || a != pins.AuthorizationFingerprint ||
             !trust.TryGetPublicKeyFingerprintSha256(pins.ReceiptKeyId, out string e) || e != pins.ReceiptFingerprint ||
-            new[] { r, a, e }.Distinct(StringComparer.Ordinal).Count() != 3) { throw Invalid(); }
-        return trust;
+            new[] { r, a, e }.Distinct(StringComparer.Ordinal).Count() != 3
+            ? throw Invalid()
+            : trust;
     }
     private static void RequireComponentObservation(CurrentAuthProofCase item, CurrentAuthRepairScope scope, CurrentAuthProofRun run,
         Func<CurrentAuthProofArtifact, byte[]> read)
@@ -467,8 +522,8 @@ var fleetBefore = await files.ReadBaselineAsync((item.FleetBefore ?? throw Inval
             (labels.EnumerateObject().Count() != 1 || !labels.TryGetProperty("com.docker.volume.anonymous", out JsonElement anonymous) || anonymous.GetString() != string.Empty)) { throw Invalid(); }
         string[] previous = Decode<string[]>(read(run.PreviousVolumes ?? throw Invalid())), consumers = Decode<string[]>(read(run.VolumeConsumers ?? throw Invalid()));
         if (previous.Contains(run.Volume, StringComparer.Ordinal) || !consumers.SequenceEqual([run.ContainerId], StringComparer.Ordinal)) { throw Invalid(); }
-                if (ComponentGeneration(container, volume, run) != observation.ActualTargetGeneration) { throw Invalid(); }
-using var attempt = JsonDocument.Parse(read(run.Attempt));
+        if (ComponentGeneration(container, volume, run) != observation.ActualTargetGeneration) { throw Invalid(); }
+        using var attempt = JsonDocument.Parse(read(run.Attempt));
         DateTimeOffset created = volume.GetProperty("CreatedAt").GetDateTimeOffset();
         if (created < attempt.RootElement.GetProperty("began").GetDateTimeOffset().AddSeconds(-1) || created > attempt.RootElement.GetProperty("expires").GetDateTimeOffset()) { throw Invalid(); }
     }
@@ -486,12 +541,24 @@ using var attempt = JsonDocument.Parse(read(run.Attempt));
         DateTimeOffset created = container.GetProperty("Created").GetDateTimeOffset().ToUniversalTime(),
             started = container.GetProperty("State").GetProperty("StartedAt").GetDateTimeOffset().ToUniversalTime(),
             volumeCreated = volume.GetProperty("CreatedAt").GetDateTimeOffset().ToUniversalTime();
-        if (created > started || volumeCreated > started || started > DateTimeOffset.UtcNow) { throw Invalid(); }
-        return LocalDockerGenerationGuard.ComposeGeneration(new DockerLocalTargetObservation(run.ContainerId, "/" + run.Name,
+        return created > started || volumeCreated > started || started > DateTimeOffset.UtcNow
+            ? throw Invalid()
+            : LocalDockerGenerationGuard.ComposeGeneration(new DockerLocalTargetObservation(run.ContainerId, "/" + run.Name,
             run.Volume ?? throw Invalid(), "/var/lib/postgresql", pgData, created, started, volumeCreated));
     }
-    private static T Decode<T>(byte[] bytes) => MigrationConsole.DecodeAuthRepair<T>(bytes);
+    private static T Decode<T>(byte[] bytes)
+    {
+        return MigrationConsole.DecodeAuthRepair<T>(bytes);
+    }
+
     private static string AssemblyHash(string path) { using FileStream stream = SecureLocalFile.OpenReadShared(path); return Convert.ToHexStringLower(SHA256.HashData(stream)); }
-    private static bool SamePath(string left, string right) => Path.IsPathFullyQualified(left) && Path.IsPathFullyQualified(right) && StringComparer.OrdinalIgnoreCase.Equals(Path.GetFullPath(left), Path.GetFullPath(right));
-    private static MigrationExecutionException Invalid() => new("current_auth_executed_proof_invalid", "Current Auth requires authentic executed typed proof readback.");
+    private static bool SamePath(string left, string right)
+    {
+        return Path.IsPathFullyQualified(left) && Path.IsPathFullyQualified(right) && StringComparer.OrdinalIgnoreCase.Equals(Path.GetFullPath(left), Path.GetFullPath(right));
+    }
+
+    private static MigrationExecutionException Invalid()
+    {
+        return new("current_auth_executed_proof_invalid", "Current Auth requires authentic executed typed proof readback.");
+    }
 }

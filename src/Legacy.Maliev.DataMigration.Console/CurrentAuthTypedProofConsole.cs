@@ -23,11 +23,19 @@ public static partial class MigrationConsole
             using WindowsLocalRunAuthority authority = WindowsLocalRunAuthority.AcquireResume(binding.ArtifactRootCanonicalPath, binding);
             using var files = new CurrentAppOwnedRepairCustody(authority);
             int ownerFrame = 0;
-            Task ObserveOwner(CurrentAuthGitResource frame) => files.WriteNewAsync(Path.Combine(binding.ArtifactRootCanonicalPath,
+            Task ObserveOwner(CurrentAuthGitResource frame)
+            {
+                return files.WriteNewAsync(Path.Combine(binding.ArtifactRootCanonicalPath,
                 $"auth-assembly-owner-{frame.RunId:N}-{Interlocked.Increment(ref ownerFrame):D4}.json"),
                 JsonSerializer.SerializeToUtf8Bytes(frame), CancellationToken.None);
+            }
+
             await CurrentAuthOwnerSourceReader.RequireAsync(ObserveOwner, ct).ConfigureAwait(false);
-            T Read<T>(string path) => DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024));
+            T Read<T>(string path)
+            {
+                return DecodeAuthRepair<T>(files.Read(path, sharedReader: true, maximumBytes: 32 * 1024 * 1024));
+            }
+
             if (JsonSerializer.Serialize(Read<CurrentAuthTypedProofConfiguration>(configPath)) != JsonSerializer.Serialize(config) ||
                 Read<LocalExecutionBinding>(config.RunBindingPath) != binding) { throw CurrentAuthRepairPermit.Invalid(); }
             CurrentAuthRepairScope scope = Read<CurrentAuthRepairScope>(config.IntendedScopePath);
@@ -52,8 +60,14 @@ public static partial class MigrationConsole
             if (await SourceBackedLocalRepairSourceAcceptance.RequireAsync(ct).ConfigureAwait(false) != accepted)
             { throw CurrentAuthRepairPermit.Invalid(); }
             files.Require();
-            await output.WriteLineAsync(JsonSerializer.Serialize(new { kind = "current-auth-disposable-proof-assembled-v1", result.Path, result.Sha256,
-                executionAuthority = false, persistentAuthority = false })).ConfigureAwait(false);
+            await output.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                kind = "current-auth-disposable-proof-assembled-v1",
+                result.Path,
+                result.Sha256,
+                executionAuthority = false,
+                persistentAuthority = false
+            })).ConfigureAwait(false);
             return 0;
         }
         catch (Exception failure) when (failure is MigrationExecutionException or MigrationConsoleException or IOException or

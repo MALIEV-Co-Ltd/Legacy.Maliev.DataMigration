@@ -1,5 +1,3 @@
-using Legacy.Maliev.DataMigration.Console;
-
 namespace Legacy.Maliev.DataMigration.Tests;
 
 [Collection(LocalSnapshotIoTestGroup.Name)]
@@ -22,8 +20,8 @@ public sealed class CurrentAuthExecutedProofRecorderTests
             Assert.NotNull(recorder);
             var artifact = await recorder.RecordAsync("actual-regression", new { Value = 1 }, CancellationToken.None);
             Assert.True(File.Exists(artifact.Path));
-            Assert.Throws<IOException>(() => File.WriteAllText(artifact.Path, "changed"));
-            Assert.Throws<InvalidOperationException>(() => CurrentAuthExecutedProofRecorder.CreateFreshRootAuthority(parent, run));
+            _ = Assert.Throws<IOException>(() => File.WriteAllText(artifact.Path, "changed"));
+            _ = Assert.Throws<InvalidOperationException>(() => CurrentAuthExecutedProofRecorder.CreateFreshRootAuthority(parent, run));
         }
         finally
         {

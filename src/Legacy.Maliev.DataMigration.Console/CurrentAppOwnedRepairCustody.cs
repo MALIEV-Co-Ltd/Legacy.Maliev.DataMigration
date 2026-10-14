@@ -67,7 +67,7 @@ internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority auth
         }
         catch
         {
-            if (held) { _held.RemoveAt(_held.Count - 1); _borrowedLengths.Remove(stream); }
+            if (held) { _held.RemoveAt(_held.Count - 1); _ = _borrowedLengths.Remove(stream); }
             stream.Dispose();
             throw;
         }

@@ -16,7 +16,6 @@ internal sealed class CurrentAuthClosedCommitProxy : IAsyncDisposable
     private readonly CurrentAppOwnedRepairCustody _files;
     private readonly string _root;
     private readonly Task _worker;
-    private readonly Guid _operation;
     private readonly int _processId;
     private readonly DateTimeOffset _processStart, _began, _expires;
     private readonly string _image, _imageSha;
@@ -25,7 +24,7 @@ internal sealed class CurrentAuthClosedCommitProxy : IAsyncDisposable
     private bool _disposed;
     internal string ConnectionString { get; }
     internal int Port { get; }
-    internal Guid Operation => _operation;
+    internal Guid Operation { get; }
     internal int DroppedCount => Volatile.Read(ref _dropped);
 
     private CurrentAuthClosedCommitProxy(CurrentAuthRepairScope scope, string operatorConnection,
@@ -37,7 +36,7 @@ internal sealed class CurrentAuthClosedCommitProxy : IAsyncDisposable
         if (actual.Host != "127.0.0.1" || actual.Port is < 1 or > 65535 || actual.Username != scope.Maintenance.Role ||
             actual.Pooling || actual.SslMode != SslMode.Disable || string.IsNullOrEmpty(actual.Password) || !string.IsNullOrEmpty(actual.Options))
         { throw CurrentAuthRepairPermit.Invalid(); }
-        _files = files; _root = root; _operation = scope.OperationId; _began = DateTimeOffset.UtcNow; _expires = scope.Maintenance.ExpiresAtUtc;
+        _files = files; _root = root; Operation = scope.OperationId; _began = DateTimeOffset.UtcNow; _expires = scope.Maintenance.ExpiresAtUtc;
         if (_expires <= _began || _expires - _began > TimeSpan.FromMinutes(8)) { throw CurrentAuthRepairPermit.Invalid(); }
         using var process = Process.GetCurrentProcess(); _processId = process.Id;
         _processStart = new(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
@@ -55,10 +54,20 @@ internal sealed class CurrentAuthClosedCommitProxy : IAsyncDisposable
         var proxy = new CurrentAuthClosedCommitProxy(permit.Scope, operatorConnection, files, root);
         try
         {
-            await proxy.RecordAsync("created", new { proxy._operation, port = proxy.Port,
-                upstreamPort = new NpgsqlConnectionStringBuilder(operatorConnection).Port, proxy._processId, processStartTimeUtc = proxy._processStart,
-                executable = proxy._image, executableSha256 = proxy._imageSha, beganAtUtc = proxy._began, expiresAtUtc = proxy._expires,
-                loopbackAddress = ((IPEndPoint)proxy._listener.LocalEndpoint).Address.ToString(), upstreamAddress = "127.0.0.1" }, ct).ConfigureAwait(false);
+            await proxy.RecordAsync("created", new
+            {
+                proxy.Operation,
+                port = proxy.Port,
+                upstreamPort = new NpgsqlConnectionStringBuilder(operatorConnection).Port,
+                proxy._processId,
+                processStartTimeUtc = proxy._processStart,
+                executable = proxy._image,
+                executableSha256 = proxy._imageSha,
+                beganAtUtc = proxy._began,
+                expiresAtUtc = proxy._expires,
+                loopbackAddress = ((IPEndPoint)proxy._listener.LocalEndpoint).Address.ToString(),
+                upstreamAddress = "127.0.0.1"
+            }, ct).ConfigureAwait(false);
             return proxy;
         }
         catch { await proxy.DisposeAsync().ConfigureAwait(false); throw; }
@@ -111,7 +120,8 @@ internal sealed class CurrentAuthClosedCommitProxy : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) { return; } _disposed = true; bool settled = false, verified = false;
+        if (_disposed) { return; }
+        _disposed = true; bool settled = false, verified = false;
         try
         {
             await _lifetime.CancelAsync().ConfigureAwait(false); _listener.Stop();
@@ -127,16 +137,34 @@ internal sealed class CurrentAuthClosedCommitProxy : IAsyncDisposable
         {
             try
             {
-                await RecordAsync("disposed", new { _operation, port = Port, _processId, processStartTimeUtc = _processStart,
-                    executableSha256 = _imageSha, workerCompleted = settled, readersSettled = settled, cleanupFailed = !settled || !verified,
-                    armedAtUtc = Ticks(_armedTicks), droppedAtUtc = Ticks(_droppedTicks), droppedCommits = DroppedCount,
-                    completedAtUtc = DateTimeOffset.UtcNow }, CancellationToken.None).ConfigureAwait(false);
+                await RecordAsync("disposed", new
+                {
+                    Operation,
+                    port = Port,
+                    _processId,
+                    processStartTimeUtc = _processStart,
+                    executableSha256 = _imageSha,
+                    workerCompleted = settled,
+                    readersSettled = settled,
+                    cleanupFailed = !settled || !verified,
+                    armedAtUtc = Ticks(_armedTicks),
+                    droppedAtUtc = Ticks(_droppedTicks),
+                    droppedCommits = DroppedCount,
+                    completedAtUtc = DateTimeOffset.UtcNow
+                }, CancellationToken.None).ConfigureAwait(false);
             }
             finally { _lifetime.Dispose(); }
         }
     }
 
-    private static DateTimeOffset? Ticks(long ticks) => ticks == 0 ? null : new(ticks, TimeSpan.Zero);
-    private Task RecordAsync<T>(string phase, T value, CancellationToken ct) => _files.WriteNewAsync(
-        Path.Combine(_root, $"auth-closed-proxy-{_operation:N}-{phase}.json"), JsonSerializer.SerializeToUtf8Bytes(value), ct);
+    private static DateTimeOffset? Ticks(long ticks)
+    {
+        return ticks == 0 ? null : new(ticks, TimeSpan.Zero);
+    }
+
+    private Task RecordAsync<T>(string phase, T value, CancellationToken ct)
+    {
+        return _files.WriteNewAsync(
+            Path.Combine(_root, $"auth-closed-proxy-{Operation:N}-{phase}.json"), JsonSerializer.SerializeToUtf8Bytes(value), ct);
+    }
 }

@@ -145,7 +145,7 @@ public sealed class CurrentAuthGuardedNativeExecutionTests(ITestOutputHelper out
             _ = trust.TryGetPublicKeyFingerprintSha256(es.KeyId, out string ef);
             var pins = new CurrentAuthRepairSigningPins(rs.KeyId, rf, au.KeyId, af, es.KeyId, ef);
             var hashes = baseline.ToDictionary(x => x.Database, CurrentAppOwnedSnapshotSerialization.Sha256, StringComparer.Ordinal);
-            if (proof is not null) { await proof.NativeAsync("native-before", nativeBefore, ct); await proof.FleetAsync("fleet-before", baseline, ct); await proof.RecordAsync("case-source", source, ct); await proof.RecordAsync("case-pins", pins, ct); await proof.RecordAsync("case-public-keys", caseKeys.Select(key => new CurrentAuthProofPublicKey(key.KeyId, Convert.ToBase64String(key.SubjectPublicKeyInfo))).ToArray(), ct); }
+            if (proof is not null) { _ = await proof.NativeAsync("native-before", nativeBefore, ct); _ = await proof.FleetAsync("fleet-before", baseline, ct); _ = await proof.RecordAsync("case-source", source, ct); _ = await proof.RecordAsync("case-pins", pins, ct); _ = await proof.RecordAsync("case-public-keys", caseKeys.Select(key => new CurrentAuthProofPublicKey(key.KeyId, Convert.ToBase64String(key.SubjectPublicKeyInfo))).ToArray(), ct); }
             CurrentAuthComponentBootstrapSubject? subject = proof?.CreateComponentSubject(source, nativeBefore);
             string helper = subject?.Seed.DefinitionPrecursorSha256 ?? new('1', 64); // The uninstrumented test seam is never assembled as proof.
             var scope = new CurrentAuthRepairScope(operation, CurrentAuthRepairOperation.SixteenSameTypeTextCollations,
@@ -153,7 +153,7 @@ public sealed class CurrentAuthGuardedNativeExecutionTests(ITestOutputHelper out
                 CurrentAuthRepairPermit.OwnerPinsSha256, ApprovedCurrentAuthSchema.ClosureSha256, ApprovedCurrentAuthSchema.PhysicalSha256(false),
                 ApprovedCurrentAuthSchema.PhysicalSha256(true), subject is null ? CurrentAuthRepairPermit.OperationSha256(source, helper) : CurrentAuthComponentBootstrap.SubjectSha256(subject), helper, CurrentAuthRepairPermit.MaintenanceValidator,
                 new(DeltaTargetAuthorityKind.LocalAspire, "aspire://legacy-postgres-main-local/disposable-" + containerId, identity),
-                "local-aspire", "legacy-postgres-main-local", subject?.ActualTargetGeneration ?? "owned-native-fixture-" + containerId, subject?.ContainerObservationSha256 ?? new string('a', 64), binding,
+                "local-aspire", "legacy-postgres-main-local", subject?.ActualTargetGeneration ?? ("owned-native-fixture-" + containerId), subject?.ContainerObservationSha256 ?? new string('a', 64), binding,
                 hashes, CurrentAuthRepairPermit.FleetSha256(hashes), subject is null ? new string('b', 64) : string.Empty,
                 subject is null ? new string('c', 64) : string.Empty, subject is null ? new string('d', 64) : string.Empty, maintenance,
                 subject is null ? CurrentAuthProofAdmission.DisposableNativeBootstrap : CurrentAuthProofAdmission.DisposableNativeComponent, subject);
@@ -174,31 +174,40 @@ public sealed class CurrentAuthGuardedNativeExecutionTests(ITestOutputHelper out
                 DateTimeOffset providerStarted = DateTimeOffset.UtcNow;
                 if (proof is not null) { await proof.ObservePolicyAsync(op.ConnectionString, scope, ct); }
                 CurrentAuthRepairPermit.ValidateClaims(review, authorization, source, trust, pins, now);
-                if (proof is not null) { await proof.RecordAsync("scope", scope, ct); await proof.RecordAsync("review", review, ct); await proof.RecordAsync("authorization", authorization, ct); }
+                if (proof is not null) { _ = await proof.RecordAsync("scope", scope, ct); _ = await proof.RecordAsync("review", review, ct); _ = await proof.RecordAsync("authorization", authorization, ct); }
                 MigrationExecutionException failure = await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAuthRepairPermit.AdmitAsync(review, authorization, source, trust, pins, unsafeEnvironment, TimeProvider.System, ct));
                 Assert.Equal("current_app_owned_maintenance_hba_not_exclusive", failure.Code);
                 Assert.Empty(unsafeEnvironment.Evidence); Assert.Equal(0, unsafeEnvironment.Reservations);
                 CurrentAuthNativeObservation rejectedReadback = await CaptureAuth(op.ConnectionString, ct);
                 Assert.Equal(nativeBefore.Snapshot.Sha256, rejectedReadback.Snapshot.Sha256);
-                if (proof is not null) { await proof.NativeAsync("native-after", rejectedReadback, ct); await proof.FleetAsync("fleet-after", await unsafeEnvironment.InspectRejectedFleetAsync(ct), ct); await proof.RecordAsync("rejection", new { code = failure.Code, reservations = unsafeEnvironment.Reservations }, ct); await proof.RecordAsync("provider-invocation", new { startedAtUtc = providerStarted, exitedAtUtc = DateTimeOffset.UtcNow, returned = false, exceptionType = failure.GetType().FullName, rejectionCode = failure.Code }, ct); }
+                if (proof is not null) { _ = await proof.NativeAsync("native-after", rejectedReadback, ct); _ = await proof.FleetAsync("fleet-after", await unsafeEnvironment.InspectRejectedFleetAsync(ct), ct); _ = await proof.RecordAsync("rejection", new { code = failure.Code, reservations = unsafeEnvironment.Reservations }, ct); _ = await proof.RecordAsync("provider-invocation", new { startedAtUtc = providerStarted, exitedAtUtc = DateTimeOffset.UtcNow, returned = false, exceptionType = failure.GetType().FullName, rejectionCode = failure.Code }, ct); }
                 return;
             }
             await using var proxy = new CommitAcknowledgementProxy("127.0.0.1", op.Port, operation, proof);
             using (var process = System.Diagnostics.Process.GetCurrentProcess())
-                        {
+            {
                 string executable = Environment.ProcessPath ?? throw new InvalidOperationException("auth_proof_process_image_missing");
                 using var image = SecureLocalFile.OpenReadShared(executable);
-                var proxyObservation = new { operation, port = proxy.Port, processId = process.Id, processStartTimeUtc = process.StartTime.ToUniversalTime(),
-                    executable, executableSha256 = Convert.ToHexStringLower(SHA256.HashData(image)), expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(8), persistent = false };
+                var proxyObservation = new
+                {
+                    operation,
+                    port = proxy.Port,
+                    processId = process.Id,
+                    processStartTimeUtc = process.StartTime.ToUniversalTime(),
+                    executable,
+                    executableSha256 = Convert.ToHexStringLower(SHA256.HashData(image)),
+                    expiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(8),
+                    persistent = false
+                };
                 WriteLedger(operation, "proxy", proxyObservation);
-                if (proof is not null) { await proof.RecordAsync("proxy-created", proxyObservation, ct); }
+                if (proof is not null) { _ = await proof.RecordAsync("proxy-created", proxyObservation, ct); }
             }
             var execution = new NpgsqlConnectionStringBuilder(op.ConnectionString) { Port = proxy.Port };
             var environment = new NativeEnvironment(op.ConnectionString, admin.ConnectionString, scope, source, baseline, nativeBefore, fault == "lost-commit-ack" ? proxy : null, fault, proof);
             var r = await CurrentAuthRepairPermit.IssueReviewAsync(scope, source, baseline, trust, pins, environment, rs, DateTimeOffset.UtcNow.AddMinutes(20), TimeProvider.System, ct);
             var a = await CurrentAuthRepairPermit.AuthorizeAsync(r, source, trust, pins, environment, au, TimeProvider.System, ct);
             environment.AuthorizationSha256 = CurrentAppOwnedSnapshotSerialization.Sha256(a);
-            if (proof is not null) { await proof.RecordAsync("scope", scope, ct); await proof.RecordAsync("review", r, ct); await proof.RecordAsync("authorization", a, ct); }
+            if (proof is not null) { _ = await proof.RecordAsync("scope", scope, ct); _ = await proof.RecordAsync("review", r, ct); _ = await proof.RecordAsync("authorization", a, ct); }
             DateTimeOffset executionStarted = DateTimeOffset.UtcNow; string? actualFailureType = null; string? actualFailureCode = null;
             if (proof is not null) { await proof.ObservePolicyAsync(op.ConnectionString, scope, ct); }
             var permit = await CurrentAuthRepairPermit.AdmitAsync(r, a, source, trust, pins, environment, TimeProvider.System, ct);
@@ -224,7 +233,7 @@ public sealed class CurrentAuthGuardedNativeExecutionTests(ITestOutputHelper out
             if (fault == "prepared-publication") { Assert.Equal(nativeBefore.Snapshot.Sha256, actual.Snapshot.Sha256); CurrentAuthNativePreservation.RequireBefore(actual); }
             else { CurrentAuthNativePreservation.RequirePreserved(nativeBefore, actual); Assert.Equal(prepared.AfterSha256, actual.Snapshot.Sha256); }
             IReadOnlyList<CurrentAppOwnedDatabaseSnapshot> actualFleet = await environment.InspectFleetAsync(scope, ct);
-            if (proof is not null) { await proof.NativeAsync("native-after", actual, ct); await proof.FleetAsync("fleet-after", actualFleet, ct); }
+            if (proof is not null) { _ = await proof.NativeAsync("native-after", actual, ct); _ = await proof.FleetAsync("fleet-after", actualFleet, ct); }
             foreach (string remaining in names.Where(x => x != "Auth")) { Assert.Equal(hashes[remaining], actualFleet.Single(x => x.Database == remaining).Sha256); }
             string zero = new('0', 64), preparedHash = CurrentAppOwnedSnapshotSerialization.Sha256(prepared);
             PostgreSqlCurrentAuthRepair.RequireReceipt(prepared, scope, permit.AuthorizationSha256, trust, pins, zero, DateTimeOffset.UtcNow);
@@ -242,7 +251,7 @@ public sealed class CurrentAuthGuardedNativeExecutionTests(ITestOutputHelper out
             foreach (var pair in retained) { Assert.Equal(pair.Value, environment.Evidence[pair.Key]); }
             CurrentAuthNativeObservation finalReadback = await CaptureAuth(op.ConnectionString, ct);
             Assert.Equal(actual.Snapshot.Sha256, finalReadback.Snapshot.Sha256);
-            if (proof is not null) { await proof.NativeAsync("native-final", finalReadback, ct); await proof.RecordAsync("provider-invocation", new { startedAtUtc = executionStarted, exitedAtUtc = DateTimeOffset.UtcNow, returned = actualFailureType is null, exceptionType = actualFailureType, rejectionCode = actualFailureCode, replayRejected = true, reservations = environment.Reservations, droppedCommitCount = proxy.DroppedCommits }, ct); }
+            if (proof is not null) { _ = await proof.NativeAsync("native-final", finalReadback, ct); _ = await proof.RecordAsync("provider-invocation", new { startedAtUtc = executionStarted, exitedAtUtc = DateTimeOffset.UtcNow, returned = actualFailureType is null, exceptionType = actualFailureType, rejectionCode = actualFailureCode, replayRejected = true, reservations = environment.Reservations, droppedCommitCount = proxy.DroppedCommits }, ct); }
         });
     }
 
@@ -284,7 +293,7 @@ public sealed class CurrentAuthGuardedNativeExecutionTests(ITestOutputHelper out
                 catch (PostgresException failure) when (failure.SqlState == "28000") { rejected = true; }
                 if (!rejected) { throw CurrentAuthRepairPermit.Invalid(); }
             }
-            if (proof is not null) { await proof.RecordAsync("ordinary-rejections", scope.BeforeDatabaseSha256.Keys.Order(StringComparer.Ordinal).ToArray(), ct); }
+            if (proof is not null) { _ = await proof.RecordAsync("ordinary-rejections", scope.BeforeDatabaseSha256.Keys.Order(StringComparer.Ordinal).ToArray(), ct); }
             if (_arm) { proxy?.Arm(); _arm = false; }
         }
         public async Task<IReadOnlyList<CurrentAppOwnedDatabaseSnapshot>> InspectFleetAsync(CurrentAuthRepairScope current, CancellationToken ct)
@@ -332,7 +341,7 @@ public sealed class CurrentAuthGuardedNativeExecutionTests(ITestOutputHelper out
                 }
                 actual.Add(snapshot); await tx.RollbackAsync(ct);
             }
-            if (proof is not null) { await proof.RecordAsync("source-physical", physicalReadback, ct); await proof.CapacityAsync(admission: false, ct); }
+            if (proof is not null) { _ = await proof.RecordAsync("source-physical", physicalReadback, ct); await proof.CapacityAsync(admission: false, ct); }
             return actual.AsReadOnly();
         }
         public Task RequireFreshOperationAsync(CurrentAuthRepairScope current, CancellationToken ct)
@@ -348,20 +357,23 @@ public sealed class CurrentAuthGuardedNativeExecutionTests(ITestOutputHelper out
                 _reserved = true; Reservations++; return Task.CompletedTask;
             }
         }
-                public async Task RetainNewEvidenceAsync(string name, byte[] payload, CancellationToken ct)
+        public async Task RetainNewEvidenceAsync(string name, byte[] payload, CancellationToken ct)
         {
             if (!Evidence.TryAdd(name, payload.ToArray())) { throw CurrentAuthRepairPermit.Invalid(); }
             bool prepared = name.EndsWith("-prepared.json", StringComparison.Ordinal);
             if (prepared) { _arm = true; }
             bool acknowledged = !((prepared && fault == "prepared-publication") ||
                 (name.EndsWith("-committed-readback.json", StringComparison.Ordinal) && fault == "terminal-publication"));
-            if (proof is not null) { await proof.RecordAsync("receipt-slot", new { name, payload = Convert.ToBase64String(payload), acknowledged, observedAtUtc = DateTimeOffset.UtcNow }, ct); }
+            if (proof is not null) { _ = await proof.RecordAsync("receipt-slot", new { name, payload = Convert.ToBase64String(payload), acknowledged, observedAtUtc = DateTimeOffset.UtcNow }, ct); }
             if (!acknowledged) { throw new IOException("synthetic publication acknowledgement lost after immutable retention"); }
         }
-public Task ObserveCandidateAsync(CurrentAuthNativeObservation locked, CurrentAuthNativeObservation candidate, CancellationToken ct) =>
-            proof is null ? Task.CompletedTask : RecordCandidateAsync(candidate, ct);
-        private async Task RecordCandidateAsync(CurrentAuthNativeObservation candidate, CancellationToken ct) { await proof!.NativeAsync("native-candidate", candidate, ct); }
-                internal async Task<IReadOnlyList<CurrentAppOwnedDatabaseSnapshot>> InspectRejectedFleetAsync(CancellationToken ct)
+        public Task ObserveCandidateAsync(CurrentAuthNativeObservation locked, CurrentAuthNativeObservation candidate, CancellationToken ct)
+        {
+            return proof is null ? Task.CompletedTask : RecordCandidateAsync(candidate, ct);
+        }
+
+        private async Task RecordCandidateAsync(CurrentAuthNativeObservation candidate, CancellationToken ct) { _ = await proof!.NativeAsync("native-candidate", candidate, ct); }
+        internal async Task<IReadOnlyList<CurrentAppOwnedDatabaseSnapshot>> InspectRejectedFleetAsync(CancellationToken ct)
         {
             var pool = new CurrentAppOwnedSnapshotInternPool(); var actual = new List<CurrentAppOwnedDatabaseSnapshot>();
             var physicalReadback = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -380,9 +392,10 @@ public Task ObserveCandidateAsync(CurrentAuthNativeObservation locked, CurrentAu
                 }
                 await tx.RollbackAsync(ct);
             }
-            if (proof is not null) { await proof.RecordAsync("source-physical", physicalReadback, ct); await proof.CapacityAsync(admission: false, ct); }
+            if (proof is not null) { _ = await proof.RecordAsync("source-physical", physicalReadback, ct); await proof.CapacityAsync(admission: false, ct); }
             return actual;
-        }internal CurrentAuthRepairReceipt Receipt(string suffix)
+        }
+        internal CurrentAuthRepairReceipt Receipt(string suffix)
         {
             return JsonSerializer.Deserialize<CurrentAuthRepairReceipt>(Evidence[$"{scope.OperationId:D}-Auth-{suffix}.json"])!;
         }
@@ -564,7 +577,7 @@ public Task ObserveCandidateAsync(CurrentAuthNativeObservation locked, CurrentAu
         {
             await _lifetime.CancelAsync(); _listener.Stop();
             try { await _worker.WaitAsync(TimeSpan.FromSeconds(10)); }
-            finally { _lifetime.Dispose(); var observed = new { operation = _operation, port = Port, workerCompleted = _worker.IsCompleted, completedAtUtc = DateTimeOffset.UtcNow }; WriteLedger(_operation, "proxy-disposed", observed); if (_proof is not null) { await _proof.RecordAsync("proxy-disposed", observed, CancellationToken.None); } }
+            finally { _lifetime.Dispose(); var observed = new { operation = _operation, port = Port, workerCompleted = _worker.IsCompleted, completedAtUtc = DateTimeOffset.UtcNow }; WriteLedger(_operation, "proxy-disposed", observed); if (_proof is not null) { _ = await _proof.RecordAsync("proxy-disposed", observed, CancellationToken.None); } }
             Assert.True(_worker.IsCompleted);
         }
     }
@@ -576,7 +589,7 @@ public Task ObserveCandidateAsync(CurrentAuthNativeObservation locked, CurrentAu
         using var proof = await CurrentAuthExecutedProofRecorder.CreateAsync(run, caseId, CancellationToken.None);
         if (proof is not null) { await proof.CapacityAsync(admission: true, CancellationToken.None); }
         WriteLedger(run, "attempt", new { run, name, began, expires, persistent = false });
-        if (proof is not null) { await proof.RecordAsync("attempt", new { run, name, began, expires, persistent = false }, CancellationToken.None); }
+        if (proof is not null) { _ = await proof.RecordAsync("attempt", new { run, name, began, expires, persistent = false }, CancellationToken.None); }
         using var lifetime = new CancellationTokenSource(TimeSpan.FromMinutes(8));
         using DockerClient docker = new DockerClientBuilder().WithEndpoint(new Uri("npipe://./pipe/docker_engine")).Build();
         PostgreSqlContainer container = new PostgreSqlBuilder(Image).WithDockerEndpoint("npipe://./pipe/docker_engine")
@@ -594,7 +607,7 @@ public Task ObserveCandidateAsync(CurrentAuthNativeObservation locked, CurrentAu
         var volumesBefore = await docker.Volumes.ListAsync(lifetime.Token);
         HashSet<string> previousVolumes = (volumesBefore.Volumes ?? throw new InvalidOperationException("Volume inventory missing."))
             .Select(volume => volume.Name).ToHashSet(StringComparer.Ordinal);
-        if (proof is not null) { await proof.RecordAsync("previous-volumes", previousVolumes.Order(StringComparer.Ordinal).ToArray(), lifetime.Token); }
+        if (proof is not null) { _ = await proof.RecordAsync("previous-volumes", previousVolumes.Order(StringComparer.Ordinal).ToArray(), lifetime.Token); }
         try
         {
             bool absent = false;
@@ -628,10 +641,10 @@ public Task ObserveCandidateAsync(CurrentAuthNativeObservation locked, CurrentAu
                 Removed = false,
                 PersistentData = false
             }));
-            if (proof is not null) { await proof.ContainerAsync(metadata, lifetime.Token); await proof.ObserveImageAsync(docker, lifetime.Token); await proof.CapacityAsync(admission: false, lifetime.Token); }
+            if (proof is not null) { _ = await proof.ContainerAsync(metadata, lifetime.Token); await proof.ObserveImageAsync(docker, lifetime.Token); await proof.CapacityAsync(admission: false, lifetime.Token); }
             DateTimeOffset invocationStarted = DateTimeOffset.UtcNow;
             try { await body(run, ownedId, container.GetConnectionString(), lifetime.Token, proof); }
-            finally { if (proof is not null) { await proof.RecordAsync("invocation-window", new { startedAtUtc = invocationStarted, exitedAtUtc = DateTimeOffset.UtcNow }, CancellationToken.None); } }
+            finally { if (proof is not null) { _ = await proof.RecordAsync("invocation-window", new { startedAtUtc = invocationStarted, exitedAtUtc = DateTimeOffset.UtcNow }, CancellationToken.None); } }
         }
         catch
         {
@@ -721,7 +734,7 @@ public Task ObserveCandidateAsync(CurrentAuthNativeObservation locked, CurrentAu
                     PersistentData = false
                 }));
                 // A failed ownership observation must preserve the resource. Disposal is admitted only after exact removal/absence.
-                                bool disposed = false;
+                bool disposed = false;
                 try
                 {
                     if (proof is not null && removedAtUtc is not null && ownedId is not null) { await proof.ObserveAbsenceAsync(docker, ownedId, ownedVolume, observedPort, removedAtUtc.Value, cleanup.Token); }
@@ -733,7 +746,7 @@ public Task ObserveCandidateAsync(CurrentAuthNativeObservation locked, CurrentAu
                     {
                         var final = new { run, containerId = ownedId, volume = ownedVolume, removed, disposed, cleanupFailed = !removed || !disposed, removedAtUtc, completedAtUtc = DateTimeOffset.UtcNow };
                         WriteLedger(run, "disposed", final);
-                        if (proof is not null) { await proof.RecordAsync("disposed", final, CancellationToken.None); }
+                        if (proof is not null) { _ = await proof.RecordAsync("disposed", final, CancellationToken.None); }
                     }
                 }
             }
@@ -761,7 +774,7 @@ public Task ObserveCandidateAsync(CurrentAuthNativeObservation locked, CurrentAu
             if (consumers.Count != 1 || consumers.Single().ID != ownedId)
             { throw new InvalidOperationException("Disposable volume has an unowned consumer."); }
             ownedVolumeCreatedAt ??= volume.CreatedAt;
-            if (proof is not null) { await proof.RecordAsync("volume-metadata", volume, token); await proof.RecordAsync("volume-consumers", consumers.Select(x => x.ID).ToArray(), token); }
+            if (proof is not null) { _ = await proof.RecordAsync("volume-metadata", volume, token); _ = await proof.RecordAsync("volume-consumers", consumers.Select(x => x.ID).ToArray(), token); }
         }
 
         void RequireOwnership(ContainerInspectResponse metadata)

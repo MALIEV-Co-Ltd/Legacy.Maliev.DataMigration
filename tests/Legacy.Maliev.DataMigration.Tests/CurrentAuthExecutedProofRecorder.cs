@@ -65,9 +65,9 @@ internal sealed class CurrentAuthExecutedProofRecorder : IDisposable
                 CurrentAuthComponentBootstrap.RequireSeed(recorder.ComponentSeed, seedTrust, recorder.ComponentSeed.KeyId,
                     Convert.ToHexStringLower(SHA256.HashData(recorder.ComponentSeedPublicKey)), DateTimeOffset.UtcNow);
             }
-            await recorder.RecordAsync("run-binding", authority.Binding, ct).ConfigureAwait(false);
+            _ = await recorder.RecordAsync("run-binding", authority.Binding, ct).ConfigureAwait(false);
             using Process testhost = Process.GetCurrentProcess();
-            await recorder.RecordAsync("test-image", new
+            _ = await recorder.RecordAsync("test-image", new
             {
                 TestAssemblyPath = typeof(CurrentAuthExecutedProofRecorder).Assembly.Location,
                 TestAssemblySha256 = HashFile(typeof(CurrentAuthExecutedProofRecorder).Assembly.Location),
@@ -75,7 +75,7 @@ internal sealed class CurrentAuthExecutedProofRecorder : IDisposable
                 ConsoleAssemblySha256 = HashFile(typeof(MigrationConsole).Assembly.Location),
                 CoreAssemblyPath = typeof(CurrentAuthRepairPermit).Assembly.Location,
                 CoreAssemblySha256 = HashFile(typeof(CurrentAuthRepairPermit).Assembly.Location),
-                ProcessId = Environment.ProcessId,
+                Environment.ProcessId,
                 ProcessStartTimeUtc = new DateTimeOffset(testhost.StartTime.ToUniversalTime(), TimeSpan.Zero)
             }, ct).ConfigureAwait(false);
             return recorder;
@@ -101,7 +101,7 @@ internal sealed class CurrentAuthExecutedProofRecorder : IDisposable
         string[] values = config["Env"]!.AsArray().Select(x => x!.GetValue<string>())
             .Where(x => x.StartsWith("PGDATA=", StringComparison.Ordinal)).ToArray();
         if (values.Length != 1 || values[0].Length <= 7) { throw new InvalidOperationException("auth_proof_pgdata_unobserved"); }
-        config.Remove("Env"); config["PgData"] = values[0][7..];
+        _ = config.Remove("Env"); config["PgData"] = values[0][7..];
         return RecordAsync("container", json, ct);
     }
     private static void CanonicalDockerNames(JsonNode? node)
@@ -114,7 +114,7 @@ internal sealed class CurrentAuthExecutedProofRecorder : IDisposable
                 string canonical = key switch { "ID" => "Id", "NanoCPUs" => "NanoCpus", "HostIP" => "HostIp", _ => key };
                 if (canonical == key) { continue; }
                 if (value.ContainsKey(canonical)) { throw new InvalidOperationException("ambiguous_docker_metadata_property"); }
-                value.Remove(key); value.Add(canonical, child);
+                _ = value.Remove(key); value.Add(canonical, child);
             }
         }
         else if (node is JsonArray array) { foreach (JsonNode? child in array) { CanonicalDockerNames(child); } }
@@ -123,7 +123,7 @@ internal sealed class CurrentAuthExecutedProofRecorder : IDisposable
     internal async Task ObserveImageAsync(DockerClient docker, CancellationToken ct)
     {
         var image = await docker.Images.InspectImageAsync("postgres:18.4-bookworm@sha256:882236b897e39051d2368c5ccc6cda944904723506b2dfc97f2a8f5bc9afa382", ct).ConfigureAwait(false);
-        await RecordAsync("image-metadata", new { Id = image.ID, image.RepoDigests }, ct).ConfigureAwait(false);
+        _ = await RecordAsync("image-metadata", new { Id = image.ID, image.RepoDigests }, ct).ConfigureAwait(false);
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -146,9 +146,15 @@ internal sealed class CurrentAuthExecutedProofRecorder : IDisposable
             if (!observer(ref memory)) { throw new InvalidOperationException("auth_proof_capacity_unobserved"); }
             using var process = Process.GetCurrentProcess(); process.Refresh();
             CurrentAuthRepairCapacity.RequireValues(memory.AvailablePhysical, (ulong)process.WorkingSet64, admission);
-            await RecordAsync("capacity", new { observedAtUtc = DateTimeOffset.UtcNow, memory.AvailablePhysical,
-                ownedRssBytes = process.WorkingSet64, admission, processId = process.Id,
-                processStartTimeUtc = process.StartTime.ToUniversalTime() }, ct).ConfigureAwait(false);
+            _ = await RecordAsync("capacity", new
+            {
+                observedAtUtc = DateTimeOffset.UtcNow,
+                memory.AvailablePhysical,
+                ownedRssBytes = process.WorkingSet64,
+                admission,
+                processId = process.Id,
+                processStartTimeUtc = process.StartTime.ToUniversalTime()
+            }, ct).ConfigureAwait(false);
         }
         finally { NativeLibrary.Free(library); }
     }
@@ -164,8 +170,16 @@ internal sealed class CurrentAuthExecutedProofRecorder : IDisposable
         string[] volumeNames = [.. (volumes.Volumes ?? []).Select(x => x.Name).Order(StringComparer.Ordinal)];
         if (ids.Contains(ownedId, StringComparer.Ordinal) || (ownedVolume is not null && volumeNames.Contains(ownedVolume, StringComparer.Ordinal)) || ports.Contains(port))
         { throw new InvalidOperationException("auth_proof_owned_resource_still_present"); }
-        await RecordAsync("absence-inventory", new { run = _run, observedAtUtc = DateTimeOffset.UtcNow,
-            removedAtUtc, containerIds = ids, containerNames = names, volumeNames, listeningPorts = ports }, ct).ConfigureAwait(false);
+        _ = await RecordAsync("absence-inventory", new
+        {
+            run = _run,
+            observedAtUtc = DateTimeOffset.UtcNow,
+            removedAtUtc,
+            containerIds = ids,
+            containerNames = names,
+            volumeNames,
+            listeningPorts = ports
+        }, ct).ConfigureAwait(false);
         await ObserveSecretAbsenceAsync(ct).ConfigureAwait(false);
     }
 
@@ -190,7 +204,7 @@ internal sealed class CurrentAuthExecutedProofRecorder : IDisposable
         _files.Require();
         // These two fixed native fixture producers create credentials and signing keys in memory only.
         // Their accepted test-image hash is separately bound by the executed host/TRX proof; no general Console case uses this inventory contract.
-        await RecordAsync("secret-absence", new CurrentAuthRecordedSecretAbsence(_run, DateTimeOffset.UtcNow,
+        _ = await RecordAsync("secret-absence", new CurrentAuthRecordedSecretAbsence(_run, DateTimeOffset.UtcNow,
             "auth-native-fixture-no-credential-files-v1", _authority.Binding.ComputeSha256(), [], [], observed), ct).ConfigureAwait(false);
     }
 
@@ -233,10 +247,17 @@ internal sealed class CurrentAuthExecutedProofRecorder : IDisposable
         var policy = new CurrentAuthProofPolicy(scope, DateTimeOffset.UtcNow, identity, postmaster, loaded, role, expires, comment, hbaPath,
             new(hba.Path, hba.Sha256), new(rulesArtifact.Path, rulesArtifact.Sha256), flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
             counts[0], counts[1], counts[2], counts[3], counts[4], rules);
-        await RecordAsync("installed-policy", policy, ct).ConfigureAwait(false);
+        _ = await RecordAsync("installed-policy", policy, ct).ConfigureAwait(false);
         await tx.RollbackAsync(ct).ConfigureAwait(false);
-        static string? Text(JsonElement row, string field) => row.GetProperty(field).ValueKind == JsonValueKind.Null ? null : row.GetProperty(field).GetString();
-        static string[] Strings(JsonElement row, string field) => row.GetProperty(field).ValueKind == JsonValueKind.Null ? [] : [.. row.GetProperty(field).EnumerateArray().Select(x => x.GetString()!)];
+        static string? Text(JsonElement row, string field)
+        {
+            return row.GetProperty(field).ValueKind == JsonValueKind.Null ? null : row.GetProperty(field).GetString();
+        }
+
+        static string[] Strings(JsonElement row, string field)
+        {
+            return row.GetProperty(field).ValueKind == JsonValueKind.Null ? [] : [.. row.GetProperty(field).EnumerateArray().Select(x => x.GetString()!)];
+        }
     }
 
     private async Task<CurrentAuthRecordedArtifact> BytesAsync(string phase, byte[] bytes, CancellationToken ct)
@@ -287,10 +308,12 @@ internal sealed class CurrentAuthExecutedProofRecorder : IDisposable
         "reject-extended-statistics", "reject-statistics", "reject-column", "reject-partial", "success",
         "prepared-publication", "lost-commit-ack", "terminal-publication", "host-unprobed-sdk", "local-ordinary-trust"];
 
-    internal Task<CurrentAuthRecordedArtifact> NativeAsync(string phase, CurrentAuthNativeObservation value, CancellationToken ct) =>
-        RecordAsync(phase, new CurrentAuthRecordedNative(value.Snapshot, value.CopyTuples(),
+    internal Task<CurrentAuthRecordedArtifact> NativeAsync(string phase, CurrentAuthNativeObservation value, CancellationToken ct)
+    {
+        return RecordAsync(phase, new CurrentAuthRecordedNative(value.Snapshot, value.CopyTuples(),
             value.CopyStorage().ToDictionary(x => x.Key, x => new CurrentAuthRecordedStorage(x.Value.FileNode, x.Value.Blocks), StringComparer.Ordinal),
             value.CopyExpressions()), ct);
+    }
 
     internal async Task<CurrentAuthRecordedArtifact> FleetAsync(string phase, IReadOnlyList<CurrentAppOwnedDatabaseSnapshot> fleet, CancellationToken ct)
     {

@@ -1,6 +1,3 @@
-using System.Security.Cryptography;
-using System.Text.Json;
-
 namespace Legacy.Maliev.DataMigration.Console;
 
 // Pins are held independently in the operational root. This is a proof consumer,
@@ -54,7 +51,7 @@ internal static class CurrentAuthNamedClosedExternalReadback
         if (evidence.TrustedKeys.Count != 3 || evidence.TrustedKeys.Select(x => x.KeyId).Distinct(StringComparer.Ordinal).Count() != 3 ||
             new[] { pins.ReviewFingerprint, pins.AuthorizationFingerprint, pins.ReceiptFingerprint }.Distinct(StringComparer.Ordinal).Count() != 3 ||
             new[] { pins.ReviewFingerprint, pins.AuthorizationFingerprint, pins.ReceiptFingerprint }.Intersect(
-                new[] { runtimePins.ReviewFingerprint, runtimePins.AuthorizationFingerprint, runtimePins.ReceiptFingerprint }, StringComparer.Ordinal).Any())
+                [runtimePins.ReviewFingerprint, runtimePins.AuthorizationFingerprint, runtimePins.ReceiptFingerprint], StringComparer.Ordinal).Any())
         { throw CurrentAuthRepairPermit.Invalid(); }
         var trust = new ReceiptAttestationTrustStore(evidence.TrustedKeys.Select(key => new TrustedAttestationKey(key.KeyId,
             files.Read(key.SubjectPublicKeyInfoPath, sharedReader: true, maximumBytes: 65536))));

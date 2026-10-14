@@ -53,8 +53,8 @@ public sealed class WindowsFocusedCustodyImportTests : IDisposable
             parentFiles, parent.Binding, childFiles, child.Binding, artifact, run, CancellationToken.None));
         Assert.Equal(bytes, parentFiles.Read(imported.Path, sharedReader: true));
         parentFiles.Require(); childFiles.Require();
-        Assert.Throws<IOException>(() => File.WriteAllBytes(source, [4]));
-        Assert.Throws<IOException>(() => File.Delete(imported.Path));
+        _ = Assert.Throws<IOException>(() => File.WriteAllBytes(source, [4]));
+        _ = Assert.Throws<IOException>(() => File.Delete(imported.Path));
         childFiles.Dispose(); parentFiles.Dispose();
         childFiles.Dispose(); parentFiles.Dispose();
         File.WriteAllBytes(source, [4]); File.Delete(imported.Path);
@@ -66,16 +66,16 @@ public sealed class WindowsFocusedCustodyImportTests : IDisposable
         using WindowsLocalRunAuthority authority = WindowsLocalRunAuthority.AcquireFresh(Root);
         string path = Path.Combine(Root, "actual.json"); File.WriteAllBytes(path, [1, 2, 3]);
         using var files = new CurrentAppOwnedRepairCustody(authority);
-        Assert.Throws<MigrationExecutionException>(() => files.BorrowReadStream(path, maximumBytes: 2));
-        Assert.Throws<MigrationExecutionException>(() => files.BorrowReadStream(path, maximumBytes: 512L * 1024 * 1024 + 1));
+        _ = Assert.Throws<MigrationExecutionException>(() => files.BorrowReadStream(path, maximumBytes: 2));
+        _ = Assert.Throws<MigrationExecutionException>(() => files.BorrowReadStream(path, maximumBytes: (512L * 1024 * 1024) + 1));
         FileStream first = files.BorrowReadStream(path), second = files.BorrowReadStream(path);
         Assert.False(first.CanWrite); Assert.Equal(1, first.ReadByte()); Assert.Equal(1, second.ReadByte());
         files.Require();
-        Assert.Throws<IOException>(() => File.WriteAllBytes(path, [4]));
+        _ = Assert.Throws<IOException>(() => File.WriteAllBytes(path, [4]));
         files.Dispose();
-        Assert.Throws<ObjectDisposedException>(() => first.ReadByte());
-        Assert.Throws<ObjectDisposedException>(() => second.ReadByte());
-        Assert.Throws<ObjectDisposedException>(() => files.BorrowReadStream(path));
+        _ = Assert.Throws<ObjectDisposedException>(() => first.ReadByte());
+        _ = Assert.Throws<ObjectDisposedException>(() => second.ReadByte());
+        _ = Assert.Throws<ObjectDisposedException>(() => files.BorrowReadStream(path));
         File.WriteAllBytes(path, [4]);
     }
 
@@ -86,7 +86,7 @@ public sealed class WindowsFocusedCustodyImportTests : IDisposable
         string path = Path.Combine(Root, "actual.json"); File.WriteAllBytes(path, [1]);
         using var files = new CurrentAppOwnedRepairCustody(authority);
         files.BorrowReadStream(path).Dispose();
-        Assert.Throws<ObjectDisposedException>(files.Require);
+        _ = Assert.Throws<ObjectDisposedException>(files.Require);
     }
 
     public void Dispose()

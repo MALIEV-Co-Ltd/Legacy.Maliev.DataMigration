@@ -60,7 +60,8 @@ internal static class CurrentAuthTypedProofArtifactImport
         if (input.Length is < 1 or > 65536) { throw CurrentAuthRepairPermit.Invalid(); }
         byte[] bytes = new byte[checked((int)input.Length)]; input.ReadExactly(bytes);
         var binding = MigrationConsole.DecodeAuthRepair<LocalExecutionBinding>(bytes);
-        if (!StringComparer.OrdinalIgnoreCase.Equals(binding.ArtifactRootCanonicalPath, Path.GetFullPath(directory))) { throw CurrentAuthRepairPermit.Invalid(); }
-        return binding;
+        return !StringComparer.OrdinalIgnoreCase.Equals(binding.ArtifactRootCanonicalPath, Path.GetFullPath(directory))
+            ? throw CurrentAuthRepairPermit.Invalid()
+            : binding;
     }
 }

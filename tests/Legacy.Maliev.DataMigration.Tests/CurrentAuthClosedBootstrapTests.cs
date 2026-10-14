@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using Legacy.Maliev.DataMigration.Console;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
@@ -49,7 +48,7 @@ public sealed class CurrentAuthClosedBootstrapTests
             _ => seed with { AuthOwnerCommitSha = new('f', 40) }
         };
         seed = seed with { Signature = Convert.ToBase64String(signer.Sign(CurrentAuthClosedBootstrap.Payload(seed))) };
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthClosedBootstrap.RequireSeed(seed, trust, signer.KeyId,
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthClosedBootstrap.RequireSeed(seed, trust, signer.KeyId,
             signer.PublicKeyFingerprintSha256, DateTimeOffset.UnixEpoch.AddMinutes(1)));
     }
 
@@ -61,17 +60,24 @@ public sealed class CurrentAuthClosedBootstrapTests
         var trust = new ReceiptAttestationTrustStore([new TrustedAttestationKey(signer.KeyId, signer.ExportSubjectPublicKeyInfo())]);
         var seed = Fixture() with { KeyId = signer.KeyId };
         DateTimeOffset now = DateTimeOffset.UnixEpoch.AddMinutes(1);
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthClosedBootstrap.RequireSeed(seed, trust, signer.KeyId, signer.PublicKeyFingerprintSha256, now));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthClosedBootstrap.RequireSeed(seed, trust, signer.KeyId, signer.PublicKeyFingerprintSha256, now));
         seed = seed with { Signature = Convert.ToBase64String(signer.Sign(CurrentAuthClosedBootstrap.Payload(seed))) };
         CurrentAuthClosedBootstrap.RequireSeed(seed, trust, signer.KeyId, signer.PublicKeyFingerprintSha256, now);
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthClosedBootstrap.RequireSeed(seed with { NativeBeforeSha256 = H('9') }, trust,
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthClosedBootstrap.RequireSeed(seed with { NativeBeforeSha256 = H('9') }, trust,
             signer.KeyId, signer.PublicKeyFingerprintSha256, now));
     }
 
-    private static string H(char c) => new(c, 64);
-    private static CurrentAuthClosedBootstrapSeed Fixture() => new("current-auth-genuine-named-closed-bootstrap-seed-v1",
-        new Guid("11111111-2222-3333-4444-555555555555"), "success", new('a', 40), H('b'), ApprovedCurrentAuthSchema.AuthServiceCommit,
-        CurrentAuthRepairPermit.OwnerPinsSha256, ApprovedCurrentAuthSchema.ClosureSha256, H('c'), H('d'), H('e'), H('f'), H('1'),
-        H('2'), H('3'), H('4'), H('5'), H('6'), "unit-only-generation", H('7'), H('8'), DateTimeOffset.UnixEpoch,
-        DateTimeOffset.UnixEpoch.AddMinutes(8), "unit-only", null);
+    private static string H(char c)
+    {
+        return new(c, 64);
+    }
+
+    private static CurrentAuthClosedBootstrapSeed Fixture()
+    {
+        return new("current-auth-genuine-named-closed-bootstrap-seed-v1",
+            new Guid("11111111-2222-3333-4444-555555555555"), "success", new('a', 40), H('b'), ApprovedCurrentAuthSchema.AuthServiceCommit,
+            CurrentAuthRepairPermit.OwnerPinsSha256, ApprovedCurrentAuthSchema.ClosureSha256, H('c'), H('d'), H('e'), H('f'), H('1'),
+            H('2'), H('3'), H('4'), H('5'), H('6'), "unit-only-generation", H('7'), H('8'), DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch.AddMinutes(8), "unit-only", null);
+    }
 }

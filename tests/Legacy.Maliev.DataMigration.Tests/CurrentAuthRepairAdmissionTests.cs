@@ -26,6 +26,7 @@ public sealed class CurrentAuthRepairAdmissionTests
     [InlineData("after")]
     [InlineData("helper")]
     [InlineData("hba-validator")]
+    [InlineData("operand-owner-policy")]
     [InlineData("source-baseline")]
     [InlineData("missing-local")]
     [InlineData("signature")]
@@ -42,6 +43,7 @@ public sealed class CurrentAuthRepairAdmissionTests
             "before" => scope with { AuthBeforeSchemaSha256 = new string('0', 64) },
             "after" => scope with { AuthAfterSchemaSha256 = new string('0', 64) },
             "helper" => scope with { AuthHelperProofSha256 = new string('b', 64) },
+            "operand-owner-policy" => scope with { OwnerPolicySha256 = CurrentRepairOperandOwnerProfile.PolicySha256(CurrentRepairOperandOwnerPurpose.CustomerSequenceStart, scope.Target) },
             "hba-validator" => scope with { MaintenanceValidatorSha256 = new string('0', 64) },
             "source-baseline" => scope with { SourceSchemaPlanSha256 = new string('0', 64) },
             _ => scope,
@@ -57,6 +59,62 @@ public sealed class CurrentAuthRepairAdmissionTests
             fixture.Trust, fixture.Pins, fixture.Environment, new Clock(fixture.Now), CancellationToken.None));
         Assert.Equal(0, fixture.Environment.Calls); Assert.Equal(0, fixture.Environment.Reservations);
     }
+    [Fact]
+    public async Task Explicit_owner_policy_uses_v2_claims_and_null_keeps_original_local_serialization()
+    {
+        using var fixture = new Fixture();
+        Assert.DoesNotContain("OwnerPolicySha256", JsonSerializer.Serialize(fixture.Scope), StringComparison.Ordinal);
+        CurrentAuthRepairScope scope = fixture.Scope with
+        { OwnerPolicySha256 = CurrentRepairOperandOwnerProfile.PolicySha256(CurrentRepairOperandOwnerPurpose.AuthCollation16, fixture.Scope.Target) };
+        var (review, authorization) = fixture.SignPair(scope);
+        Assert.Equal("current-auth-repair-review-v2", review.Kind);
+        Assert.Equal("current-auth-repair-authorization-v2", authorization.Kind);
+        _ = await CurrentAuthRepairPermit.AdmitAsync(review, authorization, fixture.Source, fixture.Trust, fixture.Pins,
+            fixture.Environment, new Clock(fixture.Now), CancellationToken.None);
+        Assert.True(fixture.Environment.Calls > 0);
+    }
+
+    [Fact]
+    public void Fixed_operand_policy_binds_operation_kind_and_actual_system_without_portable_role_oids()
+    {
+        var production = new DeltaTargetAuthority(DeltaTargetAuthorityKind.ProductionCloudNativePg, "pure-profile-only", new string('d', 64));
+        Assert.Equal("legacy_auth_refresh", CurrentRepairOperandOwnerProfile.ExpectedOwnerName(CurrentRepairOperandOwnerPurpose.AuthCollation16, production));
+        Assert.Equal("legacy_customer_owner", CurrentRepairOperandOwnerProfile.ExpectedOwnerName(CurrentRepairOperandOwnerPurpose.CustomerSequenceStart, production));
+        Assert.Equal("legacy_local", CurrentRepairOperandOwnerProfile.ExpectedOwnerName(CurrentRepairOperandOwnerPurpose.AuthCollation16,
+            production with { Kind = DeltaTargetAuthorityKind.LocalAspire }));
+        string auth = CurrentRepairOperandOwnerProfile.PolicySha256(CurrentRepairOperandOwnerPurpose.AuthCollation16, production);
+        Assert.NotEqual(auth, CurrentRepairOperandOwnerProfile.PolicySha256(CurrentRepairOperandOwnerPurpose.CustomerSequenceStart, production));
+        Assert.NotEqual(auth, CurrentRepairOperandOwnerProfile.PolicySha256(CurrentRepairOperandOwnerPurpose.AuthCollation16,
+            production with { SystemIdentifierSha256 = new string('e', 64) }));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentRepairOperandOwnerProfile.ExpectedOwnerName((CurrentRepairOperandOwnerPurpose)99, production));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentRepairOperandOwnerProfile.ExpectedOwnerName(CurrentRepairOperandOwnerPurpose.AuthCollation16,
+            production with { Kind = "caller-supplied-owner" }));
+    }
+
+    [Fact]
+    public async Task Legacy_claim_domain_cannot_accept_new_owner_policy_even_with_legitimate_signature()
+    {
+        using var fixture = new Fixture();
+        CurrentAuthRepairScope scope = fixture.Scope with
+        { OwnerPolicySha256 = CurrentRepairOperandOwnerProfile.PolicySha256(CurrentRepairOperandOwnerPurpose.AuthCollation16, fixture.Scope.Target) };
+        var (review, authorization) = fixture.SignPair(scope, legacyDomain: true);
+        _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAuthRepairPermit.AdmitAsync(review, authorization,
+            fixture.Source, fixture.Trust, fixture.Pins, fixture.Environment, new Clock(fixture.Now), CancellationToken.None));
+        Assert.Equal(0, fixture.Environment.Calls);
+    }
+
+    [Fact]
+    public async Task Production_owner_policy_is_required_before_any_environment_callback()
+    {
+        using var fixture = new Fixture();
+        CurrentAuthRepairScope scope = fixture.Scope with
+        { Target = fixture.Scope.Target with { Kind = DeltaTargetAuthorityKind.ProductionCloudNativePg }, OwnerPolicySha256 = null };
+        var (review, authorization) = fixture.SignPair(scope);
+        _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAuthRepairPermit.AdmitAsync(review, authorization,
+            fixture.Source, fixture.Trust, fixture.Pins, fixture.Environment, new Clock(fixture.Now), CancellationToken.None));
+        Assert.Equal(0, fixture.Environment.Calls);
+    }
+
     [Fact]
     public async Task Foreign_review_domain_fails_before_callbacks()
     {
@@ -202,11 +260,11 @@ public sealed class CurrentAuthRepairAdmissionTests
                 new(DeltaTargetAuthorityKind.LocalAspire, "aspire://legacy-postgres-main-local/persistent-aaaaaaaaaaaa", new string('d', 64)), "local-aspire", "legacy-postgres-main-local", "docker:" + new string('a', 64) + ":1:2:3", new string('e', 64), binding, map, CurrentAuthRepairPermit.FleetSha256(map), new string('a', 64), new string('b', 64), new string('c', 64),
                 new("legacy_auth_fixture", "legacy-maliev-current-auth-v1:" + binding, Now.AddMinutes(-1), Now.AddHours(3), Now.AddMinutes(-2), Now.AddMinutes(-2), new string('b', 64), new string('c', 64), "/fixture/pg_hba.conf"));
         }
-        internal (CurrentAuthRepairSignedClaim Review, CurrentAuthRepairSignedClaim Authorization) SignPair(CurrentAuthRepairScope scope)
+        internal (CurrentAuthRepairSignedClaim Review, CurrentAuthRepairSignedClaim Authorization) SignPair(CurrentAuthRepairScope scope, bool legacyDomain = false)
         {
-            var review = new CurrentAuthRepairSignedClaim("current-auth-repair-review-v1", scope, Guid.NewGuid(), null, Now, Now.AddHours(1), "auth-review", null);
+            var review = new CurrentAuthRepairSignedClaim(scope.OwnerPolicySha256 is null || legacyDomain ? "current-auth-repair-review-v1" : "current-auth-repair-review-v2", scope, Guid.NewGuid(), null, Now, Now.AddHours(1), "auth-review", null);
             review = review with { Signature = Convert.ToBase64String(_review.SignData(CurrentAuthRepairPermit.Payload(review), HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)) };
-            var auth = new CurrentAuthRepairSignedClaim("current-auth-repair-authorization-v1", scope, Guid.NewGuid(), CurrentAuthRepairPermit.Hash(JsonSerializer.SerializeToUtf8Bytes(review)), Now, Now.AddMinutes(10), "auth-authorize", null);
+            var auth = new CurrentAuthRepairSignedClaim(scope.OwnerPolicySha256 is null || legacyDomain ? "current-auth-repair-authorization-v1" : "current-auth-repair-authorization-v2", scope, Guid.NewGuid(), CurrentAuthRepairPermit.Hash(JsonSerializer.SerializeToUtf8Bytes(review)), Now, Now.AddMinutes(10), "auth-authorize", null);
             auth = auth with { Signature = Convert.ToBase64String(_authorization.SignData(CurrentAuthRepairPermit.Payload(auth), HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)) }; return (review, auth);
         }
         internal CurrentAuthRepairReceipt SignReceipt(CurrentAuthRepairReceipt receipt)

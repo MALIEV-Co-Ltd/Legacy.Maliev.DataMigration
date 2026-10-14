@@ -33,10 +33,18 @@ internal static class CurrentAuthClosedTemplate
         ProductionSchemaCatalogInspector.ValidatePlan(source, DateTimeOffset.UtcNow);
         string root = binding.ArtifactRootCanonicalPath, volumeName = "legacy-delta-proof-" + operation.ToString("N");
         int frame = 0;
-        Task ObserveDocker(CurrentAppOwnedDockerResource value) => files.WriteNewAsync(Path.Combine(root,
+        Task ObserveDocker(CurrentAppOwnedDockerResource value)
+        {
+            return files.WriteNewAsync(Path.Combine(root,
             $"auth-template-docker-{value.RunId:N}-{Interlocked.Increment(ref frame):D5}.json"), JsonSerializer.SerializeToUtf8Bytes(value), CancellationToken.None);
-        Task ObserveOwner(CurrentAuthGitResource value) => files.WriteNewAsync(Path.Combine(root,
-            $"auth-template-owner-{value.RunId:N}-{Interlocked.Increment(ref frame):D5}.json"), JsonSerializer.SerializeToUtf8Bytes(value), CancellationToken.None);
+        }
+
+        Task ObserveOwner(CurrentAuthGitResource value)
+        {
+            return files.WriteNewAsync(Path.Combine(root,
+                    $"auth-template-owner-{value.RunId:N}-{Interlocked.Increment(ref frame):D5}.json"), JsonSerializer.SerializeToUtf8Bytes(value), CancellationToken.None);
+        }
+
         await CurrentAuthOwnerSourceReader.RequireAsync(ObserveOwner, ct).ConfigureAwait(false);
         string containerText = await CurrentAppOwnedRepairDockerProcess.RunDockerAsync(
             ["--host", "npipe:////./pipe/docker_engine", "inspect", "--type", "container", containerId], ct, ObserveDocker).ConfigureAwait(false);
@@ -62,7 +70,7 @@ internal static class CurrentAuthClosedTemplate
         { throw CurrentAuthRepairPermit.Invalid(); }
         string role = "auth_closed_" + operation.ToString("N");
         DateTimeOffset issued = DateTimeOffset.UtcNow, expires = created.AddMinutes(8);
-        expires = new(expires.Ticks - expires.Ticks % 10, TimeSpan.Zero);
+        expires = new(expires.Ticks - (expires.Ticks % 10), TimeSpan.Zero);
         if (expires <= issued) { throw CurrentAuthRepairPermit.Invalid(); }
         using var lease = CancellationTokenSource.CreateLinkedTokenSource(ct); lease.CancelAfter(expires - issued);
         var state = new CurrentAuthClosedTemplateState(operation, binding.ComputeSha256(), accepted, role, issued, expires,
@@ -127,7 +135,7 @@ internal static class CurrentAuthClosedTemplate
         var endpoint = new NpgsqlConnectionStringBuilder(adminConnection);
         if (endpoint.Host != "127.0.0.1" || endpoint.Database != "postgres" || endpoint.Username != "postgres" ||
             endpoint.Pooling || !string.IsNullOrEmpty(endpoint.Options)) { throw CurrentAuthRepairPermit.Invalid(); }
-        await RequireTargetAsync(files, binding, state, endpoint.Port, ct).ConfigureAwait(false);
+        _ = await RequireTargetAsync(files, binding, state, endpoint.Port, ct).ConfigureAwait(false);
         // Retain the admin connection only across the policy rewrite/reload. No admin
         // handle survives this method or enters the Console configuration.
         await using var connection = new NpgsqlConnection(endpoint.ConnectionString);
@@ -256,9 +264,17 @@ internal static class CurrentAuthClosedTemplate
         LocalExecutionBinding binding, CurrentAuthClosedTemplateState state, int port, CancellationToken ct)
     {
         RequireState(files, binding, state); int frame = 0;
-        Task Observe(CurrentAppOwnedDockerResource value) => files.WriteNewAsync(Path.Combine(binding.ArtifactRootCanonicalPath,
+        Task Observe(CurrentAppOwnedDockerResource value)
+        {
+            return files.WriteNewAsync(Path.Combine(binding.ArtifactRootCanonicalPath,
             $"auth-template-contact-{value.RunId:N}-{Interlocked.Increment(ref frame):D5}.json"), JsonSerializer.SerializeToUtf8Bytes(value), CancellationToken.None);
-        Task<string> Docker(string[] args) => CurrentAppOwnedRepairDockerProcess.RunDockerAsync(args, ct, Observe);
+        }
+
+        Task<string> Docker(string[] args)
+        {
+            return CurrentAppOwnedRepairDockerProcess.RunDockerAsync(args, ct, Observe);
+        }
+
         string containerText = await Docker(["--host", "npipe:////./pipe/docker_engine", "inspect", "--type", "container", state.ContainerId]).ConfigureAwait(false);
         string volumeText = await Docker(["--host", "npipe:////./pipe/docker_engine", "inspect", "--type", "volume", state.Volume]).ConfigureAwait(false);
         using var containers = JsonDocument.Parse(containerText); using var volumes = JsonDocument.Parse(volumeText);
@@ -313,7 +329,11 @@ internal static class CurrentAuthClosedTemplate
                repeat('a',64),'ไทย synthetic owner',1);
             """, ct).ConfigureAwait(false);
     }
-    private static string Q(string text) => "\"" + text.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+    private static string Q(string text)
+    {
+        return "\"" + text.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+    }
+
     private static async Task SqlAsync(NpgsqlConnection connection, NpgsqlTransaction? tx, string text, CancellationToken ct)
     { await using var command = new NpgsqlCommand(text, connection, tx); _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false); }
     private static async Task<T> ScalarAsync<T>(NpgsqlConnection connection, string text, CancellationToken ct)

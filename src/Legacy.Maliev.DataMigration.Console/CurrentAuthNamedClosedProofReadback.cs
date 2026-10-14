@@ -19,8 +19,11 @@ internal sealed record CurrentAuthNamedClosedReport(string Kind, string Phase, s
 internal static class CurrentAuthNamedClosedProofReadback
 {
     internal static readonly string[] Cases = ["success", "prepared-publication", "lost-commit-ack", "terminal-publication", "host-unprobed-sdk", "local-ordinary-trust", "final-fleet", "replay"];
-    internal static byte[] Payload(CurrentAuthNamedClosedReport value) =>
-        [.. "Legacy.Maliev.CurrentAuth.NamedClosedReport.v1\0"u8, .. JsonSerializer.SerializeToUtf8Bytes(value with { Signature = null })];
+    internal static byte[] Payload(CurrentAuthNamedClosedReport value)
+    {
+        return [.. "Legacy.Maliev.CurrentAuth.NamedClosedReport.v1\0"u8, .. JsonSerializer.SerializeToUtf8Bytes(value with { Signature = null })];
+    }
+
     internal static void RequireCaseSet(IReadOnlyList<CurrentAuthNamedClosedCase> cases)
     {
         if (cases is null || cases.Count != 8 || cases.Any(x => x is null) || !cases.Select(x => x.CaseId).Order(StringComparer.Ordinal).SequenceEqual(Cases.Order(StringComparer.Ordinal)) ||
@@ -53,7 +56,7 @@ internal static class CurrentAuthNamedClosedProofReadback
         byte[] Read(CurrentAuthProofArtifact artifact, int cap = 32 * 1024 * 1024)
         {
             byte[] value = files.Read(artifact.Path, sharedReader: true, maximumBytes: cap);
-            if (CurrentAuthRepairPermit.Hash(value) != artifact.Sha256) { throw CurrentAuthRepairPermit.Invalid(); } return value;
+            return CurrentAuthRepairPermit.Hash(value) != artifact.Sha256 ? throw CurrentAuthRepairPermit.Invalid() : value;
         }
         var host = MigrationConsole.DecodeAuthRepair<CurrentAuthTypedHostExit>(Read(report.Host));
         var hostScope = MigrationConsole.DecodeAuthRepair<CurrentAuthRepairScope>(Read(report.HostScope));
@@ -112,12 +115,29 @@ internal static class CurrentAuthNamedClosedProofReadback
             foreach (CurrentAuthProofArtifact artifact in item.Artifacts)
             {
                 FileStream stream = held.BorrowReadStream(artifact.Path); string sha = Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, ct).ConfigureAwait(false));
-                if (sha != artifact.Sha256) { throw CurrentAuthRepairPermit.Invalid(); } held.Require();
+                if (sha != artifact.Sha256) { throw CurrentAuthRepairPermit.Invalid(); }
+                held.Require();
             }
-            byte[] Bytes(string name, int cap = 32 * 1024 * 1024) => held.Read(Path.Combine(item.Root, name), sharedReader: true, maximumBytes: cap);
-            T Decode<T>(string name) => MigrationConsole.DecodeAuthRepair<T>(Bytes(name));
-            JsonDocument Doc(string name) => JsonDocument.Parse(Bytes(name));
-            string One(string pattern) => Path.GetFileName(Directory.GetFiles(item.Root, pattern).Single());
+            byte[] Bytes(string name, int cap = 32 * 1024 * 1024)
+            {
+                return held.Read(Path.Combine(item.Root, name), sharedReader: true, maximumBytes: cap);
+            }
+
+            T Decode<T>(string name)
+            {
+                return MigrationConsole.DecodeAuthRepair<T>(Bytes(name));
+            }
+
+            JsonDocument Doc(string name)
+            {
+                return JsonDocument.Parse(Bytes(name));
+            }
+
+            string One(string pattern)
+            {
+                return Path.GetFileName(Directory.GetFiles(item.Root, pattern).Single());
+            }
+
             using var executed = Doc(One("auth-closed-resource-*-test-image.json"));
             if (!StringComparer.OrdinalIgnoreCase.Equals(executed.RootElement.GetProperty("testAssemblyPath").GetString(), host.TestAssemblyPath) ||
                 executed.RootElement.GetProperty("TestAssemblySha256").GetString() != host.TestAssemblySha256 ||
@@ -162,7 +182,8 @@ internal static class CurrentAuthNamedClosedProofReadback
                 int expected = unsafePolicy || (call.GetProperty("command").GetString() == "apply-current-auth-repair" && item.CaseId is not ("success" or "replay")) ? 1 : 0;
                 if (item.CaseId == "replay" && call.Equals(invocations[^1])) { expected = 1; }
                 if (call.GetProperty("operation").GetGuid() != item.OperationId || start.Offset != TimeSpan.Zero || end.Offset != TimeSpan.Zero || start < previous || end < start || end > host.ExitedAtUtc ||
-                    call.GetProperty("exitCode").GetInt32() != expected) { throw CurrentAuthRepairPermit.Invalid(); } previous = end;
+                    call.GetProperty("exitCode").GetInt32() != expected) { throw CurrentAuthRepairPermit.Invalid(); }
+                previous = end;
             }
             XElement result = results.Single(x => ((string?)x.Attribute("testName"))?.Contains("caseId: \"" + item.CaseId + "\"", StringComparison.Ordinal) == true);
             XElement definition = trx.Descendants(ns + "UnitTest").Single(x => (string?)x.Attribute("id") == (string?)result.Attribute("testId"));
@@ -270,7 +291,8 @@ internal static class CurrentAuthNamedClosedProofReadback
         foreach (var value in receipts)
         {
             PostgreSqlCurrentAuthRepair.RequireReceipt(value.Receipt, scope, authorizationHash, trust, pins, predecessor, last);
-            if (value.Receipt.ObservedAtUtc < previous) { throw CurrentAuthRepairPermit.Invalid(); } previous = value.Receipt.ObservedAtUtc;
+            if (value.Receipt.ObservedAtUtc < previous) { throw CurrentAuthRepairPermit.Invalid(); }
+            previous = value.Receipt.ObservedAtUtc;
             string suffix = CurrentAuthRepairEnvironment.Suffix(value.Receipt.Classification);
             bool unack = (item.CaseId == "prepared-publication" && suffix == "prepared") || (item.CaseId == "terminal-publication" && suffix == "committed-readback");
             if (unack)
@@ -308,7 +330,11 @@ internal static class CurrentAuthNamedClosedProofReadback
         { throw CurrentAuthRepairPermit.Invalid(); }
         // These are exact provider classifications/readbacks, not a supplied success marker.
     }
-    private static string CurrentAuthRetainedReceiptChainInitial() => new CurrentAuthRetainedReceiptChain().PreviousSha256;
+    private static string CurrentAuthRetainedReceiptChainInitial()
+    {
+        return new CurrentAuthRetainedReceiptChain().PreviousSha256;
+    }
+
     private static void RequirePolicy(CurrentAuthProofPolicy policy, CurrentAuthRepairScope scope, bool unsafePolicy, Func<string, int, byte[]> read)
     {
         if (JsonSerializer.Serialize(policy.Scope) != JsonSerializer.Serialize(scope) || policy.SystemIdentifierSha256 != scope.Target.SystemIdentifierSha256 ||
@@ -329,8 +355,15 @@ internal static class CurrentAuthNamedClosedProofReadback
         try { CurrentAppOwnedMaintenanceHba.Require(policy.Rules, scope.Maintenance.Role, scope.Target.Kind); }
         catch (MigrationExecutionException) { rejected = true; }
         if (rejected != unsafePolicy) { throw CurrentAuthRepairPermit.Invalid(); }
-        static string? Text(JsonElement row, string name) => row.GetProperty(name).ValueKind == JsonValueKind.Null ? null : row.GetProperty(name).GetString();
-        static string[] Strings(JsonElement row, string name) => row.GetProperty(name).ValueKind == JsonValueKind.Null ? [] : [.. row.GetProperty(name).EnumerateArray().Select(x => x.GetString()!)];
+        static string? Text(JsonElement row, string name)
+        {
+            return row.GetProperty(name).ValueKind == JsonValueKind.Null ? null : row.GetProperty(name).GetString();
+        }
+
+        static string[] Strings(JsonElement row, string name)
+        {
+            return row.GetProperty(name).ValueKind == JsonValueKind.Null ? [] : [.. row.GetProperty(name).EnumerateArray().Select(x => x.GetString()!)];
+        }
     }
     private static void RequireAbsent(JsonElement value, CurrentAuthRepairScope scope, string containerId, int port)
     {
