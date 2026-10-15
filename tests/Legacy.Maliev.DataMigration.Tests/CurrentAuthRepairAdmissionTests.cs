@@ -16,6 +16,43 @@ public sealed class CurrentAuthRepairAdmissionTests
         _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => permit.RequireAsync(CancellationToken.None));
         Assert.Equal(1, fixture.Environment.Reservations);
     }
+    [Fact]
+    public async Task Reviewed_production_inventory_admits_all_49_bound_baselines()
+    {
+        using var fixture = new Fixture(production: true);
+        Assert.Equal(49, fixture.Scope.BeforeDatabaseSha256.Count);
+        CurrentAuthRepairPermit permit = await fixture.Admit();
+        await permit.StartAsync(CancellationToken.None);
+        Assert.Equal(1, fixture.Environment.Reservations);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("extra")]
+    [InlineData("substituted")]
+    [InlineData("case")]
+    [InlineData("legacy-53")]
+    public async Task Resigned_unreviewed_production_inventory_fails_before_callbacks(string fault)
+    {
+        using var fixture = new Fixture(production: true);
+        var map = fixture.Scope.BeforeDatabaseSha256.ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
+        string shadow = map.Keys.First(x => x.StartsWith("legacy_shadow_", StringComparison.Ordinal));
+        if (fault is "missing" or "substituted" or "case") { _ = map.Remove(shadow); }
+        if (fault == "substituted") { map.Add("unreviewed_shadow", new string('a', 64)); }
+        if (fault == "case") { map.Add(shadow.ToUpperInvariant(), new string('a', 64)); }
+        if (fault == "extra") { map.Add("unreviewed", new string('a', 64)); }
+        if (fault == "legacy-53")
+        {
+            for (int i = 0; i < 4; i++) { map.Add("unreviewed_" + i, new string('a', 64)); }
+        }
+        CurrentAuthRepairScope scope = fixture.Scope with
+        { BeforeDatabaseSha256 = map, GlobalPreservationSha256 = CurrentAuthRepairPermit.FleetSha256(map) };
+        var (review, authorization) = fixture.SignPair(scope);
+        _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAuthRepairPermit.AdmitAsync(review, authorization,
+            fixture.Source, fixture.Trust, fixture.Pins, fixture.Environment, new Clock(fixture.Now), CancellationToken.None));
+        Assert.Equal(0, fixture.Environment.Calls);
+        Assert.Equal(0, fixture.Environment.Reservations);
+    }
     [Theory]
     [InlineData("operation")]
     [InlineData("namespace")]
@@ -247,18 +284,24 @@ public sealed class CurrentAuthRepairAdmissionTests
         internal ReceiptAttestationTrustStore Trust { get; }
         internal CurrentAuthRepairSigningPins Pins { get; }
         internal Environment Environment { get; } = new();
-        internal Fixture()
+        internal Fixture(bool production = false)
         {
             Source = SourcePlan() with { CapturedAtUtc = Now };
             Trust = new([new("auth-review", _review.ExportSubjectPublicKeyInfo()), new("auth-authorize", _authorization.ExportSubjectPublicKeyInfo()), new("auth-receipt", _receipt.ExportSubjectPublicKeyInfo())]);
             _ = Trust.TryGetPublicKeyFingerprintSha256("auth-review", out string r); _ = Trust.TryGetPublicKeyFingerprintSha256("auth-authorize", out string a); _ = Trust.TryGetPublicKeyFingerprintSha256("auth-receipt", out string e);
             Pins = new("auth-review", r, "auth-authorize", a, "auth-receipt", e);
-            Environment.Fleet = DatabaseInventory.ActiveDatabases.Concat(["Auth", "postgres", "legacy_local"]).Select(x => new CurrentAppOwnedDatabaseSnapshot(x, [], [], [])).ToArray();
+            IEnumerable<string> names = production ? ReviewedProductionRepairInventory.ExportProductionNames()
+                : DatabaseInventory.ActiveDatabases.Concat(["Auth", "postgres", "legacy_local"]);
+            Environment.Fleet = names.Select(x => new CurrentAppOwnedDatabaseSnapshot(x, [], [], [])).ToArray();
             var map = Environment.Fleet.ToDictionary(x => x.Database, x => x.Sha256, StringComparer.Ordinal); string binding = new('f', 64), helper = new('a', 64);
             Scope = new(Guid.NewGuid(), CurrentAuthRepairOperation.SixteenSameTypeTextCollations, Source.SourceCommitSha, SchemaPlanCanonicalizer.ComputeSha256(Source), ApprovedCurrentAuthSchema.AuthServiceCommit,
                 CurrentAuthRepairPermit.OwnerPinsSha256, ApprovedCurrentAuthSchema.ClosureSha256, ApprovedCurrentAuthSchema.PhysicalSha256(false), ApprovedCurrentAuthSchema.PhysicalSha256(true), CurrentAuthRepairPermit.OperationSha256(Source, helper), helper, CurrentAuthRepairPermit.MaintenanceValidator,
-                new(DeltaTargetAuthorityKind.LocalAspire, "aspire://legacy-postgres-main-local/persistent-aaaaaaaaaaaa", new string('d', 64)), "local-aspire", "legacy-postgres-main-local", "docker:" + new string('a', 64) + ":1:2:3", new string('e', 64), binding, map, CurrentAuthRepairPermit.FleetSha256(map), new string('a', 64), new string('b', 64), new string('c', 64),
+                new(production ? DeltaTargetAuthorityKind.ProductionCloudNativePg : DeltaTargetAuthorityKind.LocalAspire, production ? "gke://maliev-website/auth-fixture" : "aspire://legacy-postgres-main-local/persistent-aaaaaaaaaaaa", new string('d', 64)), production ? "maliev-legacy" : "local-aspire", production ? "legacy-postgres-main" : "legacy-postgres-main-local", "docker:" + new string('a', 64) + ":1:2:3", new string('e', 64), binding, map, CurrentAuthRepairPermit.FleetSha256(map), new string('a', 64), new string('b', 64), new string('c', 64),
                 new("legacy_auth_fixture", "legacy-maliev-current-auth-v1:" + binding, Now.AddMinutes(-1), Now.AddHours(3), Now.AddMinutes(-2), Now.AddMinutes(-2), new string('b', 64), new string('c', 64), "/fixture/pg_hba.conf"));
+            if (production)
+            {
+                Scope = Scope with { OwnerPolicySha256 = CurrentRepairOperandOwnerProfile.PolicySha256(CurrentRepairOperandOwnerPurpose.AuthCollation16, Scope.Target) };
+            }
         }
         internal (CurrentAuthRepairSignedClaim Review, CurrentAuthRepairSignedClaim Authorization) SignPair(CurrentAuthRepairScope scope, bool legacyDomain = false)
         {

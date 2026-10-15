@@ -144,19 +144,7 @@ internal sealed class CurrentAuthRepairEnvironment : ICurrentAuthRepairEnvironme
     public async Task<IReadOnlyList<CurrentAppOwnedDatabaseSnapshot>> InspectFleetAsync(CurrentAuthRepairScope scope, CancellationToken ct)
     {
         RequireHealthy(); MatchScope(scope);
-        await using (var inventory = Connection("postgres"))
-        {
-            await inventory.OpenAsync(ct).ConfigureAwait(false);
-            await using var tx = await inventory.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
-            await ReadOnlyAsync(inventory, tx, ct).ConfigureAwait(false);
-            await PostgreSqlCurrentAuthRepair.RequireInstalledPolicyAsync(inventory, tx, _scope, ct).ConfigureAwait(false);
-            await using var command = new NpgsqlCommand("SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname COLLATE \"C\";", inventory, tx);
-            var names = new List<string>();
-            await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false))
-            { while (await reader.ReadAsync(ct).ConfigureAwait(false)) { names.Add(reader.GetString(0)); } }
-            if (!names.SequenceEqual(_expected.Keys.Order(StringComparer.Ordinal), StringComparer.Ordinal)) { throw CurrentAuthRepairPermit.Invalid(); }
-            await tx.RollbackAsync(ct).ConfigureAwait(false);
-        }
+        await ObserveApprovedFleetAsync(ct).ConfigureAwait(false);
         var results = new List<CurrentAppOwnedDatabaseSnapshot>(); var pool = new CurrentAppOwnedSnapshotInternPool(); _pendingAfter = null;
         string? pending = null;
         foreach (CurrentAppOwnedDatabaseSnapshot expected in _baseline)
@@ -190,7 +178,30 @@ internal sealed class CurrentAuthRepairEnvironment : ICurrentAuthRepairEnvironme
             { await RequirePhysicalAsync(connection, tx, _source.Databases.Single(x => x.Database == expected.Database), ct).ConfigureAwait(false); }
             await tx.RollbackAsync(ct).ConfigureAwait(false); results.Add(raw);
         }
+        await ObserveApprovedFleetAsync(ct).ConfigureAwait(false);
         RequireHealthy(); _pendingAfter = pending; return results.AsReadOnly();
+    }
+    private async Task ObserveApprovedFleetAsync(CancellationToken ct)
+    {
+        // Recheck the held signed topology/custody/run before each independent catalog boundary.
+        await RequireResourceAndCustodyAsync(_scope, ct).ConfigureAwait(false);
+        await using var inventory = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(_connection)
+        {
+            Database = "postgres",
+            Pooling = false,
+            Timeout = 5,
+            CommandTimeout = 30,
+            IncludeErrorDetail = false,
+            Options = "-c default_transaction_read_only=on"
+        }.ConnectionString);
+        await inventory.OpenAsync(ct).ConfigureAwait(false);
+        await using var tx = await inventory.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
+        await ReadOnlyAsync(inventory, tx, ct).ConfigureAwait(false);
+        await PostgreSqlCurrentAuthRepair.RequireInstalledPolicyAsync(inventory, tx, _scope, ct).ConfigureAwait(false);
+        await ReviewedProductionRepairInventoryObservation.RequireAsync(inventory, tx, _scope.Target.Kind,
+            _scope.Target.SystemIdentifierSha256, _expected.Keys, ct).ConfigureAwait(false);
+        await tx.RollbackAsync(ct).ConfigureAwait(false);
+        RequireHealthy();
     }
     internal async Task<CurrentAuthNativeObservation> GetAuthPreimageAsync(CancellationToken ct)
     {

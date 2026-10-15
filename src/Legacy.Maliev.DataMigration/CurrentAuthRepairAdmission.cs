@@ -234,7 +234,7 @@ internal sealed class CurrentAuthRepairPermit
             string.IsNullOrWhiteSpace(scope.TargetGeneration) ||
             !((DeltaSynchronizationPlanProducer.ValidAuthority(scope.Target, "local-aspire", "legacy-postgres-main-local") && scope.TargetNamespace == "local-aspire" && scope.TargetCluster == "legacy-postgres-main-local" &&
                 scope.BeforeDatabaseSha256.Keys.Order(StringComparer.Ordinal).SequenceEqual(DatabaseInventory.ActiveDatabases.Concat(["Auth", "postgres", "legacy_local"]).Order(StringComparer.Ordinal))) ||
-              (DeltaSynchronizationPlanProducer.ValidAuthority(scope.Target, "maliev-legacy", "legacy-postgres-main") && scope.TargetNamespace == "maliev-legacy" && scope.TargetCluster == "legacy-postgres-main" && scope.BeforeDatabaseSha256.Count == 53))) { throw Invalid(); }
+              (DeltaSynchronizationPlanProducer.ValidAuthority(scope.Target, "maliev-legacy", "legacy-postgres-main") && scope.TargetNamespace == "maliev-legacy" && scope.TargetCluster == "legacy-postgres-main" && ReviewedProductionRepairInventory.MatchesKeys(scope.Target.Kind, scope.BeforeDatabaseSha256.Keys)))) { throw Invalid(); }
         CurrentAppOwnedMaintenancePin m = scope.Maintenance;
         if (string.IsNullOrWhiteSpace(m.Role) || m.RoleComment != "legacy-maliev-current-auth-v1:" + scope.RunBindingSha256 ||
             m.IssuedAtUtc.Offset != TimeSpan.Zero || m.ExpiresAtUtc.Offset != TimeSpan.Zero || m.Postmaster.Offset != TimeSpan.Zero || m.ConfigLoaded.Offset != TimeSpan.Zero ||
