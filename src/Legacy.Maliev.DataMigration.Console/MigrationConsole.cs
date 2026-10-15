@@ -110,9 +110,17 @@ public static partial class MigrationConsole
         ArgumentNullException.ThrowIfNull(runtimeAttestationFactory);
         try
         {
+            if (arguments.Count > 0 && Production181PipelineCommand.IsCommand(arguments[0]))
+            {
+                return await Production181PipelineCommand.RunAsync(arguments.ToArray(), cancellationToken).ConfigureAwait(false);
+            }
             ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
             switch (invocation.Command)
             {
+                case "customer-sequence-named-closed-host-child":
+                    return await CustomerNamedClosedHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "customer-sequence-bootstrap-host-child":
+                    return await CustomerGuardedBootstrapHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
                 case "cnpg-exec-tunnel":
                     await CnpgExecTunnel.RunAsync(invocation.ConfigPath, getEnvironmentVariable, output, error,
                         cancellationToken).ConfigureAwait(false);
@@ -170,6 +178,12 @@ public static partial class MigrationConsole
                 case "verify-current-app-owned-v3-repair":
                 case "apply-current-app-owned-v3-repair":
                     return await RunCurrentAppOwnedV3RepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-customer-sequence-repair":
+                case "authorize-current-customer-sequence-repair":
+                case "verify-current-customer-sequence-repair":
+                case "apply-current-customer-sequence-repair":
+                    return await RunCurrentCustomerSequenceRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
                         output, error, cancellationToken).ConfigureAwait(false);
                 case "stage-source-backed-local-repair":
                 case "prepare-source-backed-local-repair-authority":
