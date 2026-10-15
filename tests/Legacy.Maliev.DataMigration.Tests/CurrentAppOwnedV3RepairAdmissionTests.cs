@@ -130,6 +130,45 @@ public sealed class CurrentAppOwnedV3RepairAdmissionTests
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedV3RepairPermit.ValidateClaims(review, authorization, fixture.Trust, fixture.Pins, fixture.Now));
     }
 
+    [Theory]
+    [InlineData("missing-control")]
+    [InlineData("missing-shadow")]
+    [InlineData("substituted-shadow")]
+    [InlineData("extra")]
+    public void Re_signed_production_inventory_is_exact_even_with_matching_fleet_digest(string fault)
+    {
+        using var f = new Claims();
+        var hashes = ReviewedProductionRepairInventory.ExportProductionNames()
+            .ToDictionary(x => x, _ => new string('a', 64), StringComparer.Ordinal);
+        var scope = f.Scope with
+        {
+            Target = new(DeltaTargetAuthorityKind.ProductionCloudNativePg, "gke://maliev-website/inventory-fixture", new string('d', 64)),
+            TargetNamespace = "maliev-legacy",
+            TargetCluster = "legacy-postgres-main",
+            BeforeDatabaseSha256 = hashes,
+            GlobalPreservationSha256 = CurrentAppOwnedV3RepairPermit.FleetSha256(hashes),
+        };
+        var (review, authorization) = f.SignPair(scope);
+        CurrentAppOwnedV3RepairPermit.ValidateClaims(review, authorization, f.Trust, f.Pins, f.Now);
+        string shadow = hashes.Keys.First(x => x.StartsWith("legacy_shadow_", StringComparison.Ordinal));
+        switch (fault)
+        {
+            case "missing-control": _ = hashes.Remove("legacy_migration_control"); break;
+            case "missing-shadow": _ = hashes.Remove(shadow); break;
+            case "substituted-shadow":
+                string hash = hashes[shadow];
+                _ = hashes.Remove(shadow);
+                hashes.Add("replacement_shadow", hash);
+                break;
+            case "extra": hashes.Add("unreviewed_extra", new string('a', 64)); break;
+            default: throw new InvalidOperationException();
+        }
+        scope = scope with { GlobalPreservationSha256 = CurrentAppOwnedV3RepairPermit.FleetSha256(hashes) };
+        (review, authorization) = f.SignPair(scope);
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAppOwnedV3RepairPermit.ValidateClaims(review, authorization,
+            f.Trust, f.Pins, f.Now));
+    }
+
     [Fact]
     public async Task Caller_mutation_cannot_change_admitted_scope_or_preimages()
     {

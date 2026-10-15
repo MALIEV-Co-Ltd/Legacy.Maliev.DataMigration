@@ -48,7 +48,7 @@ public sealed class CurrentAppOwnedRetained31ExecutorNativeTests(ITestOutputHelp
             FreshSchemaPlan before = Pair(ConsumerOverlaySelection.CurrentConsumerColumnsV1);
             FreshSchemaPlan after = Pair(ConsumerOverlaySelection.CurrentConsumerSchemaV2) with { CapturedAtUtc = before.CapturedAtUtc };
             CurrentAppOwnedRetained31Contract contract = CurrentAppOwnedRetained31Contract.Create(before, after, before.SourceCommitSha, DateTimeOffset.UtcNow);
-            string[] names = [.. DatabaseInventory.ActiveDatabases, "Auth", "postgres", "preserved-extra"];
+            string[] names = [.. DatabaseInventory.ActiveDatabases, "Auth", "postgres", "legacy_local"];
             Assert.Equal(26, names.Length);
             await using (var create = new NpgsqlConnection(admin.ConnectionString))
             {
