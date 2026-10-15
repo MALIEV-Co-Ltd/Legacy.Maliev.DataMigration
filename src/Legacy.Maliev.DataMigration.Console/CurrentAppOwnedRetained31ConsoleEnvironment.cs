@@ -167,17 +167,7 @@ internal sealed class CurrentAppOwnedRetained31ConsoleEnvironment : ICurrentAppO
     public async Task<string> InspectGlobalPreservationAsync(CancellationToken ct)
     {
         _files.Require(); RequireEvidenceInventory();
-        await using (var inventoryConnection = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(_connection)
-        { Database = "postgres", Pooling = false, IncludeErrorDetail = false, Options = "-c default_transaction_read_only=on" }.ConnectionString))
-        {
-            await inventoryConnection.OpenAsync(ct).ConfigureAwait(false);
-            await using var inventory = new NpgsqlCommand("SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname COLLATE \"C\";", inventoryConnection);
-            var names = new List<string>();
-            await using NpgsqlDataReader reader = await inventory.ExecuteReaderAsync(ct).ConfigureAwait(false);
-            while (await reader.ReadAsync(ct).ConfigureAwait(false)) { names.Add(reader.GetString(0)); }
-            if (!names.SequenceEqual(_expectedHashes.Keys.Order(StringComparer.Ordinal), StringComparer.Ordinal))
-            { throw CurrentAppOwnedRetained31Permit.Invalid(); }
-        }
+        await ObserveApprovedFleetAsync(ct).ConfigureAwait(false);
         var pool = new CurrentAppOwnedSnapshotInternPool();
         foreach (CurrentAppOwnedDatabaseSnapshot expected in _baseline)
         {
@@ -219,8 +209,32 @@ internal sealed class CurrentAppOwnedRetained31ConsoleEnvironment : ICurrentAppO
             }
             await tx.RollbackAsync(ct).ConfigureAwait(false);
         }
+        await ObserveApprovedFleetAsync(ct).ConfigureAwait(false);
         _files.Require(); RequireEvidenceInventory();
         return _scope.GlobalPreservationSha256;
+    }
+
+    private async Task ObserveApprovedFleetAsync(CancellationToken ct)
+    {
+        // Same held signed scope binds original target artifact/topology/system/run; no new authority contract.
+        await RequireResourceAndCustodyAsync(_scope, ct).ConfigureAwait(false);
+        await using var connection = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(_connection)
+        {
+            Database = "postgres",
+            Pooling = false,
+            Timeout = 5,
+            CommandTimeout = 30,
+            IncludeErrorDetail = false,
+            Options = "-c default_transaction_read_only=on"
+        }.ConnectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
+        await SetReadOnlyAsync(connection, transaction, ct).ConfigureAwait(false);
+        await PostgreSqlCurrentAppOwnedRetained31Repair.RequireInstalledPolicyAsync(connection, transaction, _scope, ct).ConfigureAwait(false);
+        await ReviewedProductionRepairInventoryObservation.RequireAsync(connection, transaction, _scope.Target.Kind,
+            _scope.Target.SystemIdentifierSha256, _expectedHashes.Keys, ct).ConfigureAwait(false);
+        await transaction.RollbackAsync(ct).ConfigureAwait(false);
+        _files.Require(); RequireEvidenceInventory();
     }
 
     public Task RequireFreshOperationAsync(CurrentAppOwnedRetained31Scope scope, CancellationToken ct)
