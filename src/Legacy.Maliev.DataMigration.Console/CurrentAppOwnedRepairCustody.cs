@@ -9,6 +9,7 @@ namespace Legacy.Maliev.DataMigration.Console;
 internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority authority) : IDisposable
 {
     private readonly List<(FileStream Stream, string Path, string Identity)> _held = [];
+    private readonly Dictionary<FileStream, long> _borrowedLengths = [];
     private readonly Dictionary<Guid, string[]> _retainedReceiptNames = [];
     private static readonly string[] ReceiptSuffixes = ["prepared", "committed-readback", "failed-or-uncertain"];
     private bool _disposed;
@@ -43,11 +44,39 @@ internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority auth
         }
         catch { stream.Dispose(); throw; }
     }
-    internal async Task<CurrentAppOwnedDatabaseSnapshot[]> ReadBaselineAsync(string path, CancellationToken ct)
+    // Borrowed read-only stream: custody owns it until Dispose. Callers must not dispose it.
+    // Streaming consumers call Require before/after use; identity, length and hardlink fences remain held.
+    internal FileStream BorrowReadStream(string path, long maximumBytes = 512L * 1024 * 1024)
+    {
+        Require();
+        if (maximumBytes is < 1 or > 512L * 1024 * 1024) { throw CurrentAppOwnedRepairPermit.Invalid(); }
+        string full = RequireInside(path);
+        FileStream stream = SecureLocalFile.OpenReadShared(full);
+        bool held = false;
+        try
+        {
+            ValidateHandle(stream, full);
+            long length = stream.Length;
+            if (length < 1 || length > maximumBytes) { throw CurrentAppOwnedRepairPermit.Invalid(); }
+            string identity = SecureLocalFile.GetHandleIdentity(stream);
+            _held.Add((stream, full, identity));
+            _borrowedLengths.Add(stream, length);
+            held = true;
+            Require();
+            return stream;
+        }
+        catch
+        {
+            if (held) { _held.RemoveAt(_held.Count - 1); _ = _borrowedLengths.Remove(stream); }
+            stream.Dispose();
+            throw;
+        }
+    }
+    internal async Task<CurrentAppOwnedDatabaseSnapshot[]> ReadBaselineAsync(string path, CancellationToken ct, bool sharedReader = false)
     {
         Require();
         string full = RequireInside(path);
-        FileStream stream = SecureLocalFile.OpenRead(full);
+        FileStream stream = sharedReader ? SecureLocalFile.OpenReadShared(full) : SecureLocalFile.OpenRead(full);
         var pool = new CurrentAppOwnedSnapshotInternPool();
         bool held = false;
         try
@@ -102,6 +131,8 @@ internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority auth
         {
             ValidateHandle(stream, path);
             if (SecureLocalFile.GetHandleIdentity(stream) != identity) { throw CurrentAppOwnedRepairPermit.Invalid(); }
+            if (_borrowedLengths.TryGetValue(stream, out long length) && stream.Length != length)
+            { throw CurrentAppOwnedRepairPermit.Invalid(); }
         }
         foreach ((Guid operationId, string[] names) in _retainedReceiptNames)
         {
@@ -176,6 +207,7 @@ internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority auth
         _disposed = true;
         foreach (var item in _held) { item.Stream.Dispose(); }
         _held.Clear();
+        _borrowedLengths.Clear();
     }
 
     [StructLayout(LayoutKind.Sequential)]
