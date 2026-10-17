@@ -12,14 +12,14 @@ internal static class CurrentCustomerClosedEightConsumer
     // fleet/custody/reservation and continuous budget checks remain mandatory.
     internal static void RequireScope(CustomerClosedEightReport proof, CurrentCustomerSequenceRepairScope scope)
     {
-        var s = proof.IntendedSubject;
+        var intendedSubject = proof.IntendedSubject;
         if (scope.ProofAdmission != CurrentCustomerSequenceProofAdmission.PersistentWithClosedConsoleProof || scope.ClosedConsoleSeed is not null || scope.BootstrapSubject is not null ||
             scope.Target.Kind != DeltaTargetAuthorityKind.LocalAspire ||
             !scope.Target.AuthorityId.StartsWith("aspire://legacy-postgres-main-local/persistent-", StringComparison.Ordinal) ||
-            scope.SourceSchemaPlanSha256 != s.SourceSchemaPlanSha256 || scope.DefinitionSha256 != s.DefinitionSha256 ||
-            scope.NativeBeforeStateSha256 != s.IntendedNativeBeforeStateSha256 || scope.TargetObservationSha256 != s.IntendedTargetObservationSha256 ||
-            scope.RunBindingSha256 != s.IntendedRunBindingSha256 || scope.DefinitionProofSha256 != proof.CompletedComponents.Completed.Definition.Sha256 ||
-            JsonSerializer.Serialize(scope.SourceObservation) != JsonSerializer.Serialize(s.Source) || JsonSerializer.Serialize(scope.OwnerObservation) != JsonSerializer.Serialize(s.Owner))
+            scope.SourceSchemaPlanSha256 != intendedSubject.SourceSchemaPlanSha256 || scope.DefinitionSha256 != intendedSubject.DefinitionSha256 ||
+            scope.NativeBeforeStateSha256 != intendedSubject.IntendedNativeBeforeStateSha256 || scope.TargetObservationSha256 != intendedSubject.IntendedTargetObservationSha256 ||
+            scope.RunBindingSha256 != intendedSubject.IntendedRunBindingSha256 || scope.DefinitionProofSha256 != proof.CompletedComponents.Completed.Definition.Sha256 ||
+            JsonSerializer.Serialize(scope.SourceObservation) != JsonSerializer.Serialize(intendedSubject.Source) || JsonSerializer.Serialize(scope.OwnerObservation) != JsonSerializer.Serialize(intendedSubject.Owner))
         { throw CurrentCustomerSequenceRepairPermit.Invalid(); }
         // Production is deliberately unavailable here: genuine eighteen-one
         // compatibility and full production fleet proof are separate reviewed
