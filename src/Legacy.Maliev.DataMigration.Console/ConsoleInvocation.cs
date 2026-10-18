@@ -54,6 +54,22 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "authorize-current-owner-iso-repair",
         "verify-current-owner-iso-repair",
         "apply-current-owner-iso-repair",
+        "review-current-customer-sequence-repair",
+        "authorize-current-customer-sequence-repair",
+        "verify-current-customer-sequence-repair",
+        "apply-current-customer-sequence-repair",
+        "customer-sequence-bootstrap-host-child",
+        "customer-sequence-named-closed-host-child",
+        "assemble-current-auth-typed-proof",
+        "prepare-current-auth-named-closed-proof",
+        "observe-current-auth-closed-intent",
+        "assemble-current-auth-named-closed-proof",
+        "produce-current-auth-typed-host",
+        "run-current-auth-typed-testhost",
+        "review-current-auth-repair",
+        "authorize-current-auth-repair",
+        "verify-current-auth-repair",
+        "apply-current-auth-repair",
         "inspect-target-schema-gaps",
         "inspect-production-schema-catalog",
         "inspect-local-schema-catalog",
@@ -93,6 +109,12 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
                 : throw new CommandLineException("config_reference_required", "An absolute protected child configuration reference is required.");
         }
         string? configPath = null;
+        if (arguments[0] is "customer-sequence-bootstrap-host-child" or "customer-sequence-named-closed-host-child")
+        {
+            return arguments.Count == 2 && Path.IsPathFullyQualified(arguments[1])
+                ? new(arguments[0], arguments[1])
+                : throw new CommandLineException("config_reference_required", "An absolute protected child configuration reference is required.");
+        }
         for (var index = 1; index < arguments.Count; index++)
         {
             string option = arguments[index];

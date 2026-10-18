@@ -1,67 +1,60 @@
 using Legacy.Maliev.DataMigration.Console;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace Legacy.Maliev.DataMigration.Tests;
 
 [Collection(LocalSnapshotIoTestGroup.Name)]
 public sealed class WindowsFocusedCustodyImportTests : IDisposable
 {
-    private readonly string _parent = Path.Combine(Path.GetTempPath(), $"iso-custody-import-{Guid.NewGuid():N}");
+    private readonly string _parent = Path.Combine(Path.GetTempPath(), $"auth-custody-import-{Guid.NewGuid():N}");
     private string Root => Path.Combine(_parent, "artifacts");
 
     [WindowsLocalRunTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Actual_extra_hardlink_on_source_or_preexisting_target_is_rejected(bool targetAlias)
+    public async Task Actual_extra_hardlink_on_source_or_reused_target_is_rejected(bool targetAlias)
     {
         using WindowsLocalRunAuthority parent = WindowsLocalRunAuthority.AcquireFresh(Root);
-        Guid run = Guid.NewGuid(); string childRoot = Path.Combine(Root, "iso-executed-" + run.ToString("N"));
+        Guid run = Guid.NewGuid(); string childRoot = Path.Combine(Root, "auth-executed-" + run.ToString("N"));
         using WindowsLocalRunAuthority child = WindowsLocalRunAuthority.AcquireFresh(childRoot);
         using var parentFiles = new CurrentAppOwnedRepairCustody(parent);
         using var childFiles = new CurrentAppOwnedRepairCustody(child);
         string source = Path.Combine(childRoot, "actual.json"); byte[] bytes = [1, 2, 3];
         File.WriteAllBytes(source, bytes);
-        string target = Path.Combine(Root, "actual.json");
+        string target = Path.Combine(Root, "auth-import-" + run.ToString("N") + "-actual.json");
         string aliased = targetAlias ? target : source;
         if (targetAlias) { File.WriteAllBytes(target, bytes); }
         string alias = Path.Combine(Path.GetDirectoryName(aliased)!, "extra-link.json");
         Assert.True(CreateHardLink(alias, aliased, IntPtr.Zero));
-        if (targetAlias)
-        {
-            _ = await Assert.ThrowsAsync<IOException>(() => IsoComponentArtifactImport.ImportActualAsync(
-                childFiles, parentFiles, childRoot, Root, [source], CancellationToken.None));
-        }
-        else
-        {
-            var rejection = await Assert.ThrowsAsync<MigrationExecutionException>(() => IsoComponentArtifactImport.ImportActualAsync(
-                childFiles, parentFiles, childRoot, Root, [source], CancellationToken.None));
-            Assert.Equal(CurrentAppOwnedRepairPermit.Invalid().Code, rejection.Code);
-        }
+        var artifact = new CurrentAuthProofArtifact(source, Convert.ToHexStringLower(SHA256.HashData(bytes)));
+        var rejection = await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAuthTypedProofArtifactImport.ImportAsync(
+            parentFiles, parent.Binding, childFiles, child.Binding, artifact, run, CancellationToken.None));
+        Assert.Equal(CurrentAppOwnedRepairPermit.Invalid().Code, rejection.Code);
         Assert.Equal(bytes, File.ReadAllBytes(source));
         if (targetAlias) { Assert.Equal(bytes, File.ReadAllBytes(target)); }
         else { Assert.False(File.Exists(target)); }
     }
 
     [WindowsLocalRunFact]
-    public async Task Actual_import_rejects_duplicate_destination_and_retains_shared_reads_until_custody_disposal()
+    public async Task Actual_import_reuse_retains_shared_reads_and_releases_only_on_custody_disposal()
     {
         using WindowsLocalRunAuthority parent = WindowsLocalRunAuthority.AcquireFresh(Root);
-        Guid run = Guid.NewGuid(); string childRoot = Path.Combine(Root, "iso-executed-" + run.ToString("N"));
+        Guid run = Guid.NewGuid(); string childRoot = Path.Combine(Root, "auth-executed-" + run.ToString("N"));
         using WindowsLocalRunAuthority child = WindowsLocalRunAuthority.AcquireFresh(childRoot);
         using var parentFiles = new CurrentAppOwnedRepairCustody(parent);
         using var childFiles = new CurrentAppOwnedRepairCustody(child);
         string source = Path.Combine(childRoot, "actual.json"); byte[] bytes = [1, 2, 3];
         File.WriteAllBytes(source, bytes);
-        var artifacts = await IsoComponentArtifactImport.ImportActualAsync(
-            childFiles, parentFiles, childRoot, Root, [source], CancellationToken.None);
-        IsoDefinitionArtifact imported = artifacts[source];
-        Assert.Equal(source, imported.SourcePath);
-        _ = await Assert.ThrowsAsync<IOException>(() => IsoComponentArtifactImport.ImportActualAsync(
-            childFiles, parentFiles, childRoot, Root, [source], CancellationToken.None));
+        var artifact = new CurrentAuthProofArtifact(source, Convert.ToHexStringLower(SHA256.HashData(bytes)));
+        CurrentAuthProofArtifact imported = await CurrentAuthTypedProofArtifactImport.ImportAsync(
+            parentFiles, parent.Binding, childFiles, child.Binding, artifact, run, CancellationToken.None);
+        Assert.Equal(imported, await CurrentAuthTypedProofArtifactImport.ImportAsync(
+            parentFiles, parent.Binding, childFiles, child.Binding, artifact, run, CancellationToken.None));
         Assert.Equal(bytes, parentFiles.Read(imported.Path, sharedReader: true));
         parentFiles.Require(); childFiles.Require();
         _ = Assert.Throws<IOException>(() => File.WriteAllBytes(source, [4]));
-        _ = Assert.Throws<IOException>(() => { File.Delete(imported.Path); });
+        _ = Assert.Throws<IOException>(() => File.Delete(imported.Path));
         childFiles.Dispose(); parentFiles.Dispose();
         childFiles.Dispose(); parentFiles.Dispose();
         File.WriteAllBytes(source, [4]); File.Delete(imported.Path);

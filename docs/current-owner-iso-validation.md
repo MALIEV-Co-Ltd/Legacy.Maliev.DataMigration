@@ -25,7 +25,17 @@ This is source preparation. Persistent schema changes, row refresh, production r
 - Full Console formatter verification was interrupted at the same runtime floor (`894e56c736eb4ef78adebd975e92f6c0`). Full Tests verification remains not run after application. Neither is marked passing.
 - The interrupted regression left no current-run Testcontainers or .NET workers at independent observation. An unrelated Redis container created October 1 was preserved.
 
-## Required continuation
+## Integration with protected main `caf6ad3414ca860518674e919510a778efd236a7`
+
+The original candidate is commit `945356d53ed977785d3099300c6042e249850106`. A normal merge of current main preserves both command families, all four operand-owner purposes and the patched PKCS package. Auth custody tests remain in `WindowsFocusedCustodyImportTests`; the independent ISO cases now use `WindowsIsoFocusedCustodyImportTests` to preserve both sets.
+
+The first integrated test compilation hit `System.OutOfMemoryException` under the unchanged 512 MiB child heap cap. The process observer also failed; every known worker and both initially unobserved PIDs were independently absent afterward. A retry with `DOTNET_PROCESSOR_COUNT=1` only in the owned helper environment passed the complete Release build with zero warnings/errors (`0b88468399794734876394aa063be6a0`) and 656 combined focused tests, zero failures/skips (`2a75a1f26b55481b81aa55afc268cc51`). The heap cap, host admission/floor and owned RSS guard were unchanged. Full-suite, formatting, native and hosted results must still be recorded separately; the original 640-file scan does not certify the merged tree.
+
+## Remaining gates
+
+Fresh owner observation found clean Country head `ea5930bd13cdb0dd5d8ab9c60a85fb90c8dfe0f7` and Catalog head `f78e5b2b2d3c72ce8dbc13ab40dbcfaa58215339`. Git comparisons confirm both complete Data directories are identical to the previous heads, and all six actual file hashes still match. Update only the current overlay head pins; retain the original signed row-profile identifiers and every file pin. Two added negative cases explicitly reject the old heads. The attempted red build was interrupted by the unchanged 1 GiB memory floor before tests; no observed red result or post-repin test pass is claimed. The 656-pass result above predates this repin.
+
+Integrated full Core formatting verification passed (`8c7547b8b91b4c74806ffef38b2c0b2d`). Console verification was interrupted at the 1 GiB floor (`72757bd2d94d43afbdda3f645decc753`) after reporting one whitespace defect in `CurrentOwnerIsoIntendedRuntimeReadback.Read`. That block has been expanded; a fresh successful Console check is still required. Tests formatting and the complete regression suite remain incomplete. Do not claim the final repinned tree has passed the earlier build/tests/scan.
 
 Complete Console and Tests formatter verification, relevant regression suites, current-main integration, review and exact-head hosted Release/tests/static/security/coverage gates with unchanged policies. Before protected merge, require every repository protection and check, then verify the exact merged-main SHA.
 

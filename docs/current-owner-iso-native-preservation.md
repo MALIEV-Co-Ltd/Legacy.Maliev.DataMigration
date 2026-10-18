@@ -4,7 +4,7 @@ All build, test, formatter, native PostgreSQL and Docker checks are **UNRUN**. N
 
 ## Fixed closure
 
-The unchanged `ApprovedCurrentOwnerIsoOverlay` binds the fresh exact source23/100 plan, explicit `LiteralWidthV1`, CountryService head `744b4747b1b6db1e106d1c19872043bc66bcad7a`, CatalogService head `61a5cf8ccf5c0754c6a5ba3906c59517962e3fc3` and six owner source pins. Observation arguments do not authenticate those inputs. Future protected source acceptance and complete target-specific local26/production49 fleet custody are separate prerequisites.
+The unchanged `ApprovedCurrentOwnerIsoOverlay` binds the fresh exact source23/100 plan, explicit `LiteralWidthV1`, CountryService head `ea5930bd13cdb0dd5d8ab9c60a85fb90c8dfe0f7`, CatalogService head `f78e5b2b2d3c72ce8dbc13ab40dbcfaa58215339` and six owner source pins. Observation arguments do not authenticate those inputs. Future protected source acceptance and complete target-specific local26/production49 fleet custody are separate prerequisites.
 
 The four operands are Country.public.Country.ISO2/ISO3 and Material.public.Country.ISO2/ISO3. Only native `pg_attribute.atttypid` 1042 (bpchar) →1043 (varchar) may change, with unchanged widths/typmods, nullable state, collation, generated/default/identity behavior and all other attribute fields. An existing exact normal type dependency may change that same endpoint. References to pinned built-in types may be absent: absence and tuple multiplicity must remain unchanged. Each operand's one exact normal dependency to the retained `public.legacy_ci_as` collation remains unchanged. Unknown outgoing or any incoming operand dependency is unsupported.
 

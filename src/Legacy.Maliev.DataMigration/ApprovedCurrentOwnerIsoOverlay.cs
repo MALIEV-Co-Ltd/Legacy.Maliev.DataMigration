@@ -17,8 +17,8 @@ internal sealed class ApprovedCurrentOwnerIsoOverlay
 {
     private static readonly string[] DefaultColumnNames = ["CreatedDate", "ModifiedDate"];
     private static readonly string[] CollatedColumnNames = ["Name", "Continent", "CountryCode", "ISO2", "ISO3"];
-    internal const string CountryHead = "744b4747b1b6db1e106d1c19872043bc66bcad7a";
-    internal const string CatalogHead = "61a5cf8ccf5c0754c6a5ba3906c59517962e3fc3";
+    internal const string CountryHead = "ea5930bd13cdb0dd5d8ab9c60a85fb90c8dfe0f7";
+    internal const string CatalogHead = "f78e5b2b2d3c72ce8dbc13ab40dbcfaa58215339";
     private readonly FreshSchemaPlan _source;
     private readonly string _digest;
     private static readonly CurrentOwnerIsoOperand[] FixedOperands =

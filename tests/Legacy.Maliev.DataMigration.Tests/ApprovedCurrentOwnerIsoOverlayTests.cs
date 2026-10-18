@@ -92,6 +92,8 @@ public sealed class ApprovedCurrentOwnerIsoOverlayTests
     [InlineData("stale")]
     [InlineData("dirty")]
     [InlineData("owner-head")]
+    [InlineData("old-country-head")]
+    [InlineData("old-catalog-head")]
     [InlineData("owner-pin")]
     [InlineData("owner-missing")]
     [InlineData("owner-stale")]
@@ -104,6 +106,8 @@ public sealed class ApprovedCurrentOwnerIsoOverlayTests
         if (fault == "stale") { schema = schema with { CapturedAtUtc = Now.AddHours(-3) }; }
         if (fault == "dirty") { owners[0] = owners[0] with { Clean = false }; }
         if (fault == "owner-head") { owners[0] = owners[0] with { Head = new('f', 40) }; }
+        if (fault == "old-country-head") { owners[0] = owners[0] with { Head = "744b4747b1b6db1e106d1c19872043bc66bcad7a" }; }
+        if (fault == "old-catalog-head") { owners[1] = owners[1] with { Head = "61a5cf8ccf5c0754c6a5ba3906c59517962e3fc3" }; }
         if (fault == "owner-pin") { owners[0] = owners[0] with { Files = new Dictionary<string, string>() }; }
         if (fault == "owner-missing") { owners = [owners[0]]; }
         if (fault == "owner-stale") { owners[0] = owners[0] with { ObservedAtUtc = Now.AddHours(-3) }; }

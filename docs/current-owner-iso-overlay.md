@@ -4,7 +4,7 @@ This is pure preparation and disposable feasibility test source. It grants no da
 
 The explicit `LiteralWidthV1` selection derives four physical consumption operands: Country.public.Country.ISO2/ISO3 and Material.public.Country.ISO2/ISO3, nullable character(2/3) to character varying(2/3). The selected physical view changes only those type fields. It never returns a fabricated historical signed source plan. Fresh exact source-plan and independently observed clean current owner pins are mandatory; these observations are caller inputs, not authenticated source acceptance.
 
-Owner heads: CountryService `744b4747b1b6db1e106d1c19872043bc66bcad7a`; CatalogService `61a5cf8ccf5c0754c6a5ba3906c59517962e3fc3`. Six exact source file hashes are embedded in the contract. Catalog's current migration refuses nonempty consolidated Country. This test source does not bypass that owner migration.
+Owner heads: CountryService `ea5930bd13cdb0dd5d8ab9c60a85fb90c8dfe0f7`; CatalogService `f78e5b2b2d3c72ce8dbc13ab40dbcfaa58215339`. Six exact source file hashes are embedded in the contract. Catalog's current migration refuses nonempty consolidated Country. This test source does not bypass that owner migration.
 
 ## Literal preservation
 

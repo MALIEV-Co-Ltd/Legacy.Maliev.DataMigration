@@ -73,7 +73,9 @@ internal static class IsoIntendedRuntimeReader
             : store;
     }
     internal static byte[] Read(CurrentAppOwnedRepairCustody files, IsoDefinitionArtifact artifact, int maximum)
-    { byte[] bytes = files.Read(artifact.Path, sharedReader: true, maximumBytes: maximum); return CurrentAppOwnedRepairPermit.Hash(bytes) != artifact.Sha256 ? throw Invalid() : bytes;
+    {
+        byte[] bytes = files.Read(artifact.Path, sharedReader: true, maximumBytes: maximum);
+        return CurrentAppOwnedRepairPermit.Hash(bytes) != artifact.Sha256 ? throw Invalid() : bytes;
     }
     internal static string Image(string path) { using var held = SecureLocalFile.OpenReadShared(path); return Convert.ToHexStringLower(SHA256.HashData(held)); }
     internal static MigrationExecutionException Invalid()

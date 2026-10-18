@@ -178,24 +178,7 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
         _files.Require(); RequireEvidenceInventory();
         if (_failed || JsonSerializer.Serialize(scope) != JsonSerializer.Serialize(_scope))
         { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
-        await using (var inventoryConnection = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(_connection)
-        {
-            Database = "postgres",
-            Pooling = false,
-            IncludeErrorDetail = false,
-            Timeout = 5,
-            CommandTimeout = 30,
-            Options = "-c default_transaction_read_only=on"
-        }.ConnectionString))
-        {
-            await inventoryConnection.OpenAsync(ct).ConfigureAwait(false);
-            await using var inventory = new NpgsqlCommand("SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname COLLATE \"C\";", inventoryConnection);
-            var names = new List<string>();
-            await using NpgsqlDataReader reader = await inventory.ExecuteReaderAsync(ct).ConfigureAwait(false);
-            while (await reader.ReadAsync(ct).ConfigureAwait(false)) { names.Add(reader.GetString(0)); }
-            if (!names.SequenceEqual(_expectedHashes.Keys.Order(StringComparer.Ordinal), StringComparer.Ordinal))
-            { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
-        }
+        await ObserveApprovedFleetAsync(ct).ConfigureAwait(false);
         var pool = new CurrentAppOwnedSnapshotInternPool();
         var results = new List<CurrentAppOwnedDatabaseSnapshot>();
         string? observedPending = null;
@@ -241,6 +224,7 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
             await tx.RollbackAsync(ct).ConfigureAwait(false);
             results.Add(raw);
         }
+        await ObserveApprovedFleetAsync(ct).ConfigureAwait(false);
         _files.Require(); RequireEvidenceInventory();
         _pendingAfterObserved = observedPending;
         return results.AsReadOnly();
@@ -257,6 +241,29 @@ internal sealed class CurrentAppOwnedV3RepairConsoleEnvironment : ICurrentAppOwn
                 AddedCatalogKeys = new HashSet<string>(_nativeBefore[name].AddedCatalogKeys, StringComparer.Ordinal),
                 NewObjectClosure = new HashSet<string>(_nativeBefore[name].NewObjectClosure, StringComparer.Ordinal),
             }).ToArray();
+    }
+
+    private async Task ObserveApprovedFleetAsync(CancellationToken ct)
+    {
+        // Same held signed scope binds original target artifact/topology/system/run; no new authority contract.
+        await RequireResourceAndCustodyAsync(_scope, ct).ConfigureAwait(false);
+        await using var connection = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(_connection)
+        {
+            Database = "postgres",
+            Pooling = false,
+            Timeout = 5,
+            CommandTimeout = 30,
+            IncludeErrorDetail = false,
+            Options = "-c default_transaction_read_only=on"
+        }.ConnectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
+        await SetReadOnlyAsync(connection, transaction, ct).ConfigureAwait(false);
+        await PostgreSqlCurrentAppOwnedV3Repair.RequireInstalledPolicyAsync(connection, transaction, _scope, ct).ConfigureAwait(false);
+        await ReviewedProductionRepairInventoryObservation.RequireAsync(connection, transaction, _scope.Target.Kind,
+            _scope.Target.SystemIdentifierSha256, _expectedHashes.Keys, ct).ConfigureAwait(false);
+        await transaction.RollbackAsync(ct).ConfigureAwait(false);
+        _files.Require(); RequireEvidenceInventory();
     }
 
     public Task RequireFreshOperationAsync(CurrentAppOwnedV3RepairScope scope, CancellationToken ct)
