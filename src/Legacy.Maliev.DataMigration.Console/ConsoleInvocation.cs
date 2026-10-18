@@ -4,6 +4,8 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
 {
     private static readonly HashSet<string> Commands =
     [
+        "owner-iso-bootstrap-host-child",
+        "owner-iso-named-closed-host-child",
         "plan",
         "plan-digest",
         "execute-shadow",
@@ -47,6 +49,11 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "authorize-current-app-owned-v3-repair",
         "verify-current-app-owned-v3-repair",
         "apply-current-app-owned-v3-repair",
+        "observe-current-owner-iso-intended-runtime",
+        "review-current-owner-iso-repair",
+        "authorize-current-owner-iso-repair",
+        "verify-current-owner-iso-repair",
+        "apply-current-owner-iso-repair",
         "inspect-target-schema-gaps",
         "inspect-production-schema-catalog",
         "inspect-local-schema-catalog",
@@ -79,6 +86,12 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
             throw new CommandLineException("subcommand_invalid", "An approved subcommand is required.");
         }
 
+        if (arguments[0] is "owner-iso-bootstrap-host-child" or "owner-iso-named-closed-host-child")
+        {
+            return arguments.Count == 2 && Path.IsPathFullyQualified(arguments[1])
+                ? new(arguments[0], arguments[1])
+                : throw new CommandLineException("config_reference_required", "An absolute protected child configuration reference is required.");
+        }
         string? configPath = null;
         for (var index = 1; index < arguments.Count; index++)
         {

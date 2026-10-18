@@ -113,6 +113,10 @@ public static partial class MigrationConsole
             ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
             switch (invocation.Command)
             {
+                case "owner-iso-bootstrap-host-child":
+                    return await OwnerIsoGuardedBootstrapHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "owner-iso-named-closed-host-child":
+                    return await OwnerIsoNamedClosedBootstrapHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
                 case "cnpg-exec-tunnel":
                     await CnpgExecTunnel.RunAsync(invocation.ConfigPath, getEnvironmentVariable, output, error,
                         cancellationToken).ConfigureAwait(false);
@@ -170,6 +174,15 @@ public static partial class MigrationConsole
                 case "verify-current-app-owned-v3-repair":
                 case "apply-current-app-owned-v3-repair":
                     return await RunCurrentAppOwnedV3RepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "observe-current-owner-iso-intended-runtime":
+                    return await RunOwnerIsoIntendedObservationAsync(invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-owner-iso-repair":
+                case "authorize-current-owner-iso-repair":
+                case "verify-current-owner-iso-repair":
+                case "apply-current-owner-iso-repair":
+                    return await RunCurrentOwnerIsoRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
                         output, error, cancellationToken).ConfigureAwait(false);
                 case "stage-source-backed-local-repair":
                 case "prepare-source-backed-local-repair-authority":
