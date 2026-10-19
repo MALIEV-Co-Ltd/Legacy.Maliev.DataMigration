@@ -33,6 +33,14 @@ The first integrated test compilation hit `System.OutOfMemoryException` under th
 
 ## Remaining gates
 
+### October 20 hosted failure correction
+
+Protected main `caf6ad3414ca860518674e919510a778efd236a7` passed required CI `39157184621`. PR head `ef77894c7fded0bb8e8ddb530462d4ed1dd13f63` failed required CI `39161504435`: SQL tests 196 passed / 1 failed / 1 skipped; Core tests 2705 passed / 2 failed / 178 skipped. Both Release builds had zero warnings/errors and the secret scan was clean.
+
+Two negative tests still classified enum value 4 as unknown after ISO selection 4 was added. They now exercise undefined value 5 and assert it is undefined. SQL constructor acceptance and the exact Country/Material profile mappings explicitly cover ISO selection 4. The pure storage test now records definition artifacts only when its ledger is configured, retaining every storage assertion. A configured invalid ledger still throws; the genuine precursor reader still requires all 17 authenticated cases, their held entry/exit artifacts and stdout markers. Ordinary unit execution without a ledger emits no definition-proof marker and grants no proof authority.
+
+The corrected local Release build was NOT RUN: admission refused process startup below the unchanged 3 GiB minimum (`ba2f5ef2d1b34255a3ba369491405091`). Consequently local focused tests, full suites and formatter checks are NOT RUN for this correction. The owner-approved draft-before-validation exception applies; require the replacement exact-head hosted build, full SQL/Core suites, formatter/static/security/coverage and compatibility checks before accepting the fix or merging. No production or persistent-local database action is authorized by this test correction.
+
 Fresh owner observation found clean Country head `ea5930bd13cdb0dd5d8ab9c60a85fb90c8dfe0f7` and Catalog head `f78e5b2b2d3c72ce8dbc13ab40dbcfaa58215339`. Git comparisons confirm both complete Data directories are identical to the previous heads, and all six actual file hashes still match. Update only the current overlay head pins; retain the original signed row-profile identifiers and every file pin. Two added negative cases explicitly reject the old heads. The attempted red build was interrupted by the unchanged 1 GiB memory floor before tests; no observed red result or post-repin test pass is claimed. The 656-pass result above predates this repin.
 
 Integrated full Core formatting verification passed (`8c7547b8b91b4c74806ffef38b2c0b2d`). Console verification was interrupted at the 1 GiB floor (`72757bd2d94d43afbdda3f645decc753`) after reporting one whitespace defect in `CurrentOwnerIsoIntendedRuntimeReadback.Read`. That block has been expanded; a fresh successful Console check is still required. Tests formatting and the complete regression suite remain incomplete. Do not claim the final repinned tree has passed the earlier build/tests/scan.

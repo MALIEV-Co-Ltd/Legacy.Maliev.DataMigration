@@ -226,7 +226,8 @@ public sealed partial class CurrentOwnerIsoNativePreservationTests(ITestOutputHe
     [Fact]
     public void Physical_storage_does_not_accept_invented_file_sizes_counts_or_visibility()
     {
-        using var recorder = new IsoDefinitionRecorder("pure-storage", null, null);
+        using IsoDefinitionRecorder? recorder = Environment.GetEnvironmentVariable("MALIEV_ISO_DEFINITION_LEDGER") is null
+            ? null : new IsoDefinitionRecorder("pure-storage", null, null);
         var row = new JsonObject { ["relfilenode"] = 42, ["relpages"] = 1, ["reltuples"] = 8, ["relallvisible"] = 0, ["relallfrozen"] = 0 };
         CurrentOwnerIsoNativePreservation.RequireStorage(row, new(42, 1, 8), 8, true, false);
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentOwnerIsoNativePreservation.RequireStorage(row, new(43, 1, 8), 8, true, false));
@@ -234,8 +235,11 @@ public sealed partial class CurrentOwnerIsoNativePreservationTests(ITestOutputHe
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentOwnerIsoNativePreservation.RequireStorage(row, new(42, 1, 8), 7, true, false));
         row["relallvisible"] = 1;
         _ = Assert.Throws<MigrationExecutionException>(() => CurrentOwnerIsoNativePreservation.RequireStorage(row, new(42, 1, 8), 8, true, false));
-        recorder.CompleteInvocation();
-        output.WriteLine("ISO_DEFINITION_CASE=pure-storage");
+        if (recorder is not null)
+        {
+            recorder.CompleteInvocation();
+            output.WriteLine("ISO_DEFINITION_CASE=pure-storage");
+        }
     }
 
     private static void MaliciousNegatives(CurrentOwnerIsoNativeObservation before, CurrentOwnerIsoNativeObservation after, ApprovedCurrentOwnerIsoOverlay overlay)
