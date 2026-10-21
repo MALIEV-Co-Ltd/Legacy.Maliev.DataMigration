@@ -30,6 +30,22 @@ internal static class CurrentAppOwnedRepairPreservation
     internal static async Task<CurrentAppOwnedDatabaseSnapshot> CaptureAsync(NpgsqlConnection connection,
         NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
+        return await CaptureCoreAsync(connection, transaction, includeViewDefinitions: false, cancellationToken).ConfigureAwait(false);
+    }
+
+    // Negative evidence retains view catalog definitions without evaluating views or admitting them to repair.
+    internal static async Task<CurrentAppOwnedDatabaseSnapshot> CaptureRejectedDependencyEvidenceAsync(NpgsqlConnection connection,
+        NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var readOnly = new NpgsqlCommand("SHOW transaction_read_only;", connection, transaction);
+        return StringComparer.Ordinal.Equals(await readOnly.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), "on")
+            ? await CaptureCoreAsync(connection, transaction, includeViewDefinitions: true, cancellationToken).ConfigureAwait(false)
+            : throw CurrentAppOwnedRepairPermit.Invalid();
+    }
+
+    private static async Task<CurrentAppOwnedDatabaseSnapshot> CaptureCoreAsync(NpgsqlConnection connection,
+        NpgsqlTransaction transaction, bool includeViewDefinitions, CancellationToken cancellationToken)
+    {
         if (transaction.Connection != connection ||
             transaction.IsolationLevel is not (System.Data.IsolationLevel.Serializable or System.Data.IsolationLevel.RepeatableRead))
         { throw CurrentAppOwnedRepairPermit.Invalid(); }
@@ -89,6 +105,7 @@ internal static class CurrentAppOwnedRepairPreservation
                 string kind = reader.GetString(2);
                 if (kind == "r") { relationNames.Add((reader.GetString(0), reader.GetString(1))); }
                 else if (kind == "S") { sequenceNames.Add((reader.GetString(0), reader.GetString(1), reader.GetString(3))); }
+                else if (kind == "v" && includeViewDefinitions) { /* Complete pg_class/pg_rewrite tuples are retained above; a view has no stored rows. */ }
                 else { throw CurrentAppOwnedRepairPermit.Invalid(); }
             }
         }

@@ -60,7 +60,7 @@ internal sealed class IsoDefinitionRecorder : IDisposable
 
     internal void Write(string phase, object actual)
     {
-        if (phase.Length == 0 || phase.Any(x => !char.IsAsciiLetterOrDigit(x) && x != '-')) { throw IsoDefinitionCases.Invalid(); }
+        if (phase.Length == 0 || phase.Any(x => !char.IsAsciiLetterOrDigit(x) && x != '-' && x != '_')) { throw IsoDefinitionCases.Invalid(); }
         using var file = new FileStream(Path.Combine(_directory, _caseId + "-" + phase + ".json"),
             FileMode.CreateNew, FileAccess.Write, FileShare.Read);
         JsonSerializer.Serialize(file, actual, actual.GetType()); file.Flush(flushToDisk: true);

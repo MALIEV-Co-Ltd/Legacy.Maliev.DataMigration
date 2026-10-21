@@ -201,6 +201,12 @@ public sealed partial class CurrentOwnerIsoNativePreservationTests(ITestOutputHe
         await using var connection = new NpgsqlConnection(endpoint);
         await connection.OpenAsync(ct);
         await ExecuteAsync(connection, fault, ct);
+        await using (var writable = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct))
+        {
+            _ = await Assert.ThrowsAsync<MigrationExecutionException>(() =>
+                CurrentAppOwnedRepairPreservation.CaptureRejectedDependencyEvidenceAsync(connection, writable, ct));
+            await writable.RollbackAsync(ct);
+        }
         IsoDefinitionRecorder.Raw("before-rejection", await CaptureDefinitionRawAsync(connection, ct));
         await using var tx = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
         var rejection = await Assert.ThrowsAsync<MigrationExecutionException>(async () =>
@@ -218,7 +224,7 @@ public sealed partial class CurrentOwnerIsoNativePreservationTests(ITestOutputHe
     {
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
         await ExecuteAsync(connection, "SET TRANSACTION READ ONLY;", ct, transaction);
-        var actual = await CurrentAppOwnedRepairPreservation.CaptureAsync(connection, transaction, ct);
+        var actual = await CurrentAppOwnedRepairPreservation.CaptureRejectedDependencyEvidenceAsync(connection, transaction, ct);
         await transaction.RollbackAsync(ct);
         return actual;
     }
