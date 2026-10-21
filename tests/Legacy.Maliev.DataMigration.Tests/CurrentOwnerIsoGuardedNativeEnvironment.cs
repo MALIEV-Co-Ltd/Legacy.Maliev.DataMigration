@@ -104,7 +104,7 @@ internal sealed class IsoGuardedNativeEnvironment(string endpoint, string ordina
             await PostgreSqlCurrentOwnerIsoRepair.RequireInstalledPolicyAsync(connection, tx, scope, ct);
             var snapshot = pool.Intern(await CurrentAppOwnedRepairPreservation.CaptureAsync(connection, tx, ct));
             bool affected = expected.Database is "Country" or "Material";
-            bool selected = affected && (_completed.Contains(expected.Database) || _prepared.TryGetValue(expected.Database, out var prepared) && snapshot.Sha256 == prepared.AfterSha256);
+            bool selected = affected && (_completed.Contains(expected.Database) || (_prepared.TryGetValue(expected.Database, out var prepared) && snapshot.Sha256 == prepared.AfterSha256));
             string expectedSha = selected ? _prepared[expected.Database].AfterSha256! : expected.Sha256;
             if (snapshot.Sha256 != expectedSha) { throw CurrentOwnerIsoRepairPermit.Invalid(); }
             if (affected)

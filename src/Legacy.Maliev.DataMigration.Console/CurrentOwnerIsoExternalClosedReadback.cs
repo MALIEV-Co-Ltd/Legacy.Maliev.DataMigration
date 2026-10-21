@@ -30,8 +30,8 @@ internal static class IsoExternalClosedReader
         using var proofFiles = new CurrentAppOwnedRepairCustody(authority);
         if (MigrationConsole.DecodeOwnerIso<LocalExecutionBinding>(proofFiles.Read(evidence.ProofBindingPath, sharedReader: true, maximumBytes: 65536)) != binding) { throw IsoIntendedRuntimeReader.Invalid(); }
         var pins = MigrationConsole.DecodeOwnerIso<CurrentOwnerIsoRepairSigningPins>(proofFiles.Read(evidence.ProofSigningPinsPath, sharedReader: true, maximumBytes: 65536));
-        if (new[] { pins.ReviewFingerprint, pins.AuthorizationFingerprint, pins.ReceiptFingerprint }.Intersect(new[] { runtimePins.ReviewFingerprint, runtimePins.AuthorizationFingerprint, runtimePins.ReceiptFingerprint }, StringComparer.Ordinal).Any() ||
-            new[] { pins.ReviewKeyId, pins.AuthorizationKeyId, pins.ReceiptKeyId }.Intersect(new[] { runtimePins.ReviewKeyId, runtimePins.AuthorizationKeyId, runtimePins.ReceiptKeyId }, StringComparer.Ordinal).Any()) { throw IsoIntendedRuntimeReader.Invalid(); }
+        if (new[] { pins.ReviewFingerprint, pins.AuthorizationFingerprint, pins.ReceiptFingerprint }.Intersect([runtimePins.ReviewFingerprint, runtimePins.AuthorizationFingerprint, runtimePins.ReceiptFingerprint], StringComparer.Ordinal).Any() ||
+            new[] { pins.ReviewKeyId, pins.AuthorizationKeyId, pins.ReceiptKeyId }.Intersect([runtimePins.ReviewKeyId, runtimePins.AuthorizationKeyId, runtimePins.ReceiptKeyId], StringComparer.Ordinal).Any()) { throw IsoIntendedRuntimeReader.Invalid(); }
         var trust = IsoIntendedRuntimeReader.Trust(proofFiles, evidence.ProofTrustedKeys, pins);
         var runs = new HashSet<Guid>();
         foreach (var pair in new[] { (IsoComponentProofPhase.Native, evidence.OriginalNativePhase, nativeBytes), (IsoComponentProofPhase.Maintenance, evidence.OriginalMaintenancePhase, maintenanceBytes) })

@@ -48,3 +48,10 @@ Integrated full Core formatting verification passed (`8c7547b8b91b4c74806ffef38b
 Complete Console and Tests formatter verification, relevant regression suites, current-main integration, review and exact-head hosted Release/tests/static/security/coverage gates with unchanged policies. Before protected merge, require every repository protection and check, then verify the exact merged-main SHA.
 
 Genuine current PostgreSQL 18.1 components, target-shaped closed proof, recovery/decrypt-and-restore proof, remaining Auth/Customer/ContactRequest prerequisites, fresh source capture and separate signed target-specific plans/authorizations remain required before persistent effects. An earlier PostgreSQL 18.4 feasibility result is not a current production proof. Do not use this checkpoint or a source merge as database execution authority.
+
+
+## Hosted formatting follow-up (2026-10-21)
+
+Exact head `4ef76dcd02ac818a8e10b338e3fc5550f21b6329`, required run `39307747477`, completed both Release builds with zero warnings and errors. SQL tests: 198 passed, 0 failed, 1 skipped. Core tests: 2708 passed, 0 failed, 178 skipped. The run then failed formatting: two IDE0300 collection arguments and two IDE0048 boolean grouping diagnostics.
+
+This follow-up uses collection expressions only for the two Intersect arguments and adds explicit parentheses without changing boolean evaluation. No migration admission, authorization, preservation, or test assertion is relaxed. Local build, focused tests, full suite and formatter are NOT RUN: free host memory was below the unchanged 3 GiB admission guard. Published as draft preparation under the owner-approved validation-order exception; replacement exact-head hosted validation and all existing review/protection gates remain required. This is not database repair or data parity completion.

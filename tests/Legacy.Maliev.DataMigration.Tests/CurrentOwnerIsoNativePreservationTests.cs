@@ -543,7 +543,7 @@ public sealed partial class CurrentOwnerIsoNativePreservationTests(ITestOutputHe
                 host.Memory != 512 * 1024 * 1024 || host.NanoCPUs != 750000000 ||
                 metadata.State is null || metadata.State.Running != active ||
                 host.PortBindings is not { Count: > 0 } configuredPorts || configuredPorts.Values.SelectMany(x => x ?? []).Any(binding => binding.HostIP != "127.0.0.1") ||
-                active && (network.Ports is not { Count: > 0 } ports || ports.Values.SelectMany(x => x ?? []).Any(binding => binding.HostIP != "127.0.0.1")))
+                (active && (network.Ports is not { Count: > 0 } ports || ports.Values.SelectMany(x => x ?? []).Any(binding => binding.HostIP != "127.0.0.1"))))
             { throw new InvalidOperationException("Disposable resource ownership mismatch"); }
         }
     }
