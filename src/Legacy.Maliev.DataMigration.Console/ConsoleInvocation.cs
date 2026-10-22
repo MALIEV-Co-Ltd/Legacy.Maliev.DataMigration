@@ -88,6 +88,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "authorize-canonical-bootstrap",
         "bootstrap-canonical-database",
         "cnpg-exec-tunnel",
+        "inspect-sql-source-endpoint",
     ];
 
     private static readonly string[] SecretOptionFragments =
@@ -131,9 +132,12 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
             configPath = arguments[++index];
         }
 
-        return string.IsNullOrWhiteSpace(configPath)
-            ? throw new CommandLineException("config_reference_required", "A protected configuration file reference is required.")
-            : new(arguments[0], configPath);
+        return arguments[0] == "inspect-sql-source-endpoint" &&
+            (string.IsNullOrWhiteSpace(configPath) || !Path.IsPathFullyQualified(configPath))
+            ? throw new CommandLineException("config_reference_required", "An absolute protected configuration reference is required.")
+            : string.IsNullOrWhiteSpace(configPath)
+                ? throw new CommandLineException("config_reference_required", "A protected configuration file reference is required.")
+                : new(arguments[0], configPath);
     }
 }
 
