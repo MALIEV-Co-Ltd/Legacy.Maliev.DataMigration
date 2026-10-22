@@ -8,6 +8,7 @@ FROM ${DOTNET_SDK_IMAGE} AS build
 
 WORKDIR /source
 COPY src/Legacy.Maliev.DataMigration/Legacy.Maliev.DataMigration.csproj src/Legacy.Maliev.DataMigration/
+COPY src/Legacy.Maliev.DataMigration.SqlServer/Legacy.Maliev.DataMigration.SqlServer.csproj src/Legacy.Maliev.DataMigration.SqlServer/
 COPY src/Legacy.Maliev.DataMigration.Console/Legacy.Maliev.DataMigration.Console.csproj src/Legacy.Maliev.DataMigration.Console/
 RUN dotnet restore src/Legacy.Maliev.DataMigration.Console/Legacy.Maliev.DataMigration.Console.csproj
 
