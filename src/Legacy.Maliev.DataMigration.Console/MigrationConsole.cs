@@ -91,6 +91,21 @@ public static partial class MigrationConsole
             new DefaultAuthorizationRuntimeAttestationFactory(), runtimeFactory, cancellationToken);
     }
 
+    internal static Task<int> RunSqlSourceEndpointForTestsAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        Func<string, string?> getEnvironmentVariable,
+        IBackupProcessRunner runner,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        return RunCoreAsync(arguments, output, error, getEnvironmentVariable,
+            new DefaultExact25BackupRuntimeFactory(), new DefaultAuthorizationRuntimeAttestationFactory(),
+            new DefaultQuotationSnapshotRuntimeFactory(), cancellationToken,
+            sqlSourceEndpointRunner: runner, sqlSourceEndpointTimeProvider: timeProvider);
+    }
+
     private static async Task<int> RunCoreAsync(
         IReadOnlyList<string> arguments,
         TextWriter output,
@@ -100,7 +115,9 @@ public static partial class MigrationConsole
         IAuthorizationRuntimeAttestationFactory runtimeAttestationFactory,
         IQuotationSnapshotRuntimeFactory quotationSnapshotRuntimeFactory,
         CancellationToken cancellationToken,
-        IIncrementalConsoleRuntime? incrementalRuntime = null)
+        IIncrementalConsoleRuntime? incrementalRuntime = null,
+        IBackupProcessRunner? sqlSourceEndpointRunner = null,
+        TimeProvider? sqlSourceEndpointTimeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentNullException.ThrowIfNull(output);
@@ -125,6 +142,18 @@ public static partial class MigrationConsole
                     return await CustomerNamedClosedHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
                 case "customer-sequence-bootstrap-host-child":
                     return await CustomerGuardedBootstrapHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "inspect-sql-source-endpoint":
+                    if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.Ordinal))
+                    {
+                        throw new MigrationConsoleException("sql_source_endpoint_deploy_gate_invalid", "Deployment must remain disabled.");
+                    }
+                    SqlSourceEndpointConfiguration endpointConfiguration = await ReadProtectedJsonAsync<SqlSourceEndpointConfiguration>(
+                        invocation.ConfigPath, "sql_source_endpoint_config_unprotected", cancellationToken, 64 * 1024).ConfigureAwait(false);
+                    SqlSourceEndpointObservation endpoint = await new SqlSourceEndpointInspector(
+                        sqlSourceEndpointRunner ?? new SystemBackupProcessRunner(), sqlSourceEndpointTimeProvider ?? TimeProvider.System)
+                        .InspectAsync(endpointConfiguration, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync(JsonSerializer.Serialize(endpoint, JsonOptions)).ConfigureAwait(false);
+                    return 0;
                 case "cnpg-exec-tunnel":
                     await CnpgExecTunnel.RunAsync(invocation.ConfigPath, getEnvironmentVariable, output, error,
                         cancellationToken).ConfigureAwait(false);
@@ -1330,9 +1359,14 @@ public static partial class MigrationConsole
     private static async Task<T> ReadProtectedJsonAsync<T>(
         string path,
         string unprotectedCode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? maximumByteLength = null)
     {
         await using FileStream stream = OwnerProtectedFilePolicy.OpenRead(path, unprotectedCode);
+        if (maximumByteLength is int maximum && stream.Length > maximum)
+        {
+            throw new MigrationConsoleException("configuration_invalid", "The protected JSON document exceeds its size bound.");
+        }
         try
         {
             return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, cancellationToken).ConfigureAwait(false) ??

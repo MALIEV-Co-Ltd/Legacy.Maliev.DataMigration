@@ -44,6 +44,22 @@ public sealed class ConsoleCommandContractTests
     }
 
     [Fact]
+    public void Parse_SqlEndpointRequiresAnAbsoluteProtectedReference()
+    {
+        string path = Path.GetFullPath("inspection.json");
+        ConsoleInvocation invocation = ConsoleInvocation.Parse(["inspect-sql-source-endpoint", "--config", path]);
+        Assert.Equal("inspect-sql-source-endpoint", invocation.Command);
+        Assert.Equal(path, invocation.ConfigPath);
+        CommandLineException relative = Assert.Throws<CommandLineException>(() =>
+            ConsoleInvocation.Parse(["inspect-sql-source-endpoint", "--config", "inspection.json"]));
+        Assert.Equal("config_reference_required", relative.Code);
+        CommandLineException secret = Assert.Throws<CommandLineException>(() =>
+            ConsoleInvocation.Parse(["inspect-sql-source-endpoint", "--password", "private-canary"]));
+        Assert.Equal("secret_cli_argument_forbidden", secret.Code);
+        Assert.DoesNotContain("private-canary", secret.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Parse_RejectsSecretBearingArguments()
     {
         CommandLineException exception = Assert.Throws<CommandLineException>(() =>
