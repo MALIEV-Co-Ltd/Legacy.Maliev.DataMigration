@@ -106,7 +106,7 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         Match nextSection = Regex.Match(jobs, "^[^\\s#][^\\r\\n]*:", RegexOptions.Multiline, TimeSpan.FromSeconds(1));
         if (nextSection.Success) jobs = jobs[..nextSection.Index];
         Match[] jobHeaders = [.. Regex.Matches(jobs, "^  (?<name>[A-Za-z_][A-Za-z0-9_-]*):\\r?$", RegexOptions.Multiline, TimeSpan.FromSeconds(1)).Cast<Match>()];
-        Match validationHeader = Assert.Single(jobHeaders.Where(header => header.Groups["name"].Value == "validate"));
+        Match validationHeader = Assert.Single(jobHeaders, header => header.Groups["name"].Value == "validate");
         int validationIndex = Array.IndexOf(jobHeaders, validationHeader);
         string validation = jobs[(validationHeader.Index + validationHeader.Length)..(validationIndex + 1 < jobHeaders.Length ? jobHeaders[validationIndex + 1].Index : jobs.Length)];
         Match[] headers = [.. Regex.Matches(validation, "^      - name: (?<name>[^\\r\\n]+)\\r?$", RegexOptions.Multiline, TimeSpan.FromSeconds(1)).Cast<Match>()];
