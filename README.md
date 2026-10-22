@@ -1,5 +1,24 @@
 # Legacy.Maliev.DataMigration
 
+## Inspect SQL-source endpoint metadata
+
+`inspect-sql-source-endpoint --config <absolute owner-protected JSON path>`
+observes only the approved production context, namespace `maliev`, service
+`maliev-mssql`, and the caller-pinned SQL pod UID/container. Its protected JSON
+contains `context`, `namespace`, `serviceName`, `expectedPodName`,
+`expectedPodUid`, `containerName`, and `plannedLocalPort`. Deployment must remain
+explicitly disabled. No credentials, SQL login, secret projection, listener or
+remote session is requested. This command does not call the backup producer.
+
+The result is `metadata_observed` with `transportState=planned_not_ready`;
+`127.0.0.1:<plannedLocalPort>` and the structured forward parameters are a plan,
+not a live endpoint. Service selectors and Kubernetes readiness/status are
+observations, not proof of routing, an available local port, SQL authentication
+or runtime identity stronger than Kubernetes status. A separately admitted
+transport must re-observe identity and establish readiness before use. The
+existing CNPG tunnel targets PostgreSQL and does not provide this SQL endpoint.
+Inspection grants no backup, migration, database-write or infrastructure authority.
+
 Current operator-host execution uses the [protected incremental console](docs/incremental-operator-console.md): signed admission, one held Windows run lock, immediate encrypted per-database delivery/local verification, explicit signed resume, and preserve-first failures. `execute-shadow` no longer accepts legacy execution-only configuration. Migration and AppHost consumers now enforce the same exact-23 inventory, excluding Log. This software repair authorizes no live run or reuse of historical exact-24 approvals.
 
 For already populated canonical targets, the [daily read-only delta workflow](docs/daily-readonly-delta.md)
