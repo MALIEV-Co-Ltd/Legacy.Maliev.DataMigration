@@ -7,6 +7,36 @@ permissions:
   contents: read
 
 jobs:
+  runner-image-compatibility:
+    name: runner image compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out DataMigration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build and inspect the .NET 10 runner image
+        shell: bash
+        env:
+          DOTNET_SDK_IMAGE: mcr.microsoft.com/dotnet/sdk:10.0.402-noble@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2
+          DOTNET_RUNTIME_IMAGE: mcr.microsoft.com/dotnet/runtime:10.0.13-noble@sha256:0cf09aaccf6a9f68900aed4c73fb28fe25bb59ec85de4dea08ba02240a8635f3
+        run: |
+          set -euo pipefail
+          tag="legacy-shadow-ci:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --file deploy/exact24-shadow-runner.Dockerfile \
+            --build-arg "DOTNET_SDK_IMAGE=$DOTNET_SDK_IMAGE" \
+            --build-arg "DOTNET_RUNTIME_IMAGE=$DOTNET_RUNTIME_IMAGE" --tag "$tag" .
+          docker run --rm --network none --read-only --entrypoint dotnet "$tag" --list-runtimes \
+            | tee "$RUNNER_TEMP/shadow-runner-runtimes.txt"
+          grep -Fxq 'Microsoft.NETCore.App 10.0.13 [/usr/share/dotnet/shared/Microsoft.NETCore.App]' \
+            "$RUNNER_TEMP/shadow-runner-runtimes.txt"
+      - name: Remove the owned validation image
+        if: always()
+        shell: bash
+        run: |
+          tag="legacy-shadow-ci:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if docker image inspect "$tag" >/dev/null 2>&1; then docker image rm "$tag"; fi
   validate:
     name: validate
     runs-on: ubuntu-24.04
