@@ -117,6 +117,10 @@ public static partial class MigrationConsole
             ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
             switch (invocation.Command)
             {
+                case "owner-iso-bootstrap-host-child":
+                    return await OwnerIsoGuardedBootstrapHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "owner-iso-named-closed-host-child":
+                    return await OwnerIsoNamedClosedBootstrapHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
                 case "customer-sequence-named-closed-host-child":
                     return await CustomerNamedClosedHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
                 case "customer-sequence-bootstrap-host-child":
@@ -196,6 +200,15 @@ public static partial class MigrationConsole
                 case "verify-current-app-owned-v3-repair":
                 case "apply-current-app-owned-v3-repair":
                     return await RunCurrentAppOwnedV3RepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "observe-current-owner-iso-intended-runtime":
+                    return await RunOwnerIsoIntendedObservationAsync(invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-owner-iso-repair":
+                case "authorize-current-owner-iso-repair":
+                case "verify-current-owner-iso-repair":
+                case "apply-current-owner-iso-repair":
+                    return await RunCurrentOwnerIsoRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
                         output, error, cancellationToken).ConfigureAwait(false);
                 case "review-current-customer-sequence-repair":
                 case "authorize-current-customer-sequence-repair":

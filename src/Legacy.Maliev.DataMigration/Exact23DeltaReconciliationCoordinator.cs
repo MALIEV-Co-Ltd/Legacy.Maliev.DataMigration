@@ -238,7 +238,7 @@ public sealed class Exact23DeltaReconciliationCoordinator(
 
     private static bool ValidExtensionState(DatabaseSchemaPlan schema, string? sha256)
     {
-        return schema.TargetExtensionProfile is null
+        return !ApprovedConsumerColumnOverlayManifest.HasState(schema)
             ? sha256 is null
             : sha256 is not null && Fixed(sha256, sha256);
     }

@@ -9,6 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Docker.DotNet.Enhanced" Version="4.3.3" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
     <ProjectReference Include="../Legacy.Maliev.DataMigration/Legacy.Maliev.DataMigration.csproj" />
     <ProjectReference Include="../Legacy.Maliev.DataMigration.SqlServer/Legacy.Maliev.DataMigration.SqlServer.csproj" />
   </ItemGroup>

@@ -4,7 +4,7 @@ using Npgsql;
 
 namespace Legacy.Maliev.DataMigration;
 
-internal enum CurrentRepairOperandOwnerPurpose { AuthCollation16 = 1, CustomerSequenceStart = 2 }
+internal enum CurrentRepairOperandOwnerPurpose { AuthCollation16 = 1, CustomerSequenceStart = 2, CountryIsoLiteral = 3, MaterialCountryIsoLiteral = 4 }
 
 /// <summary>Fixed operand owners, separately bound to actual target identity and trusted native preimages.</summary>
 internal static class CurrentRepairOperandOwnerProfile
@@ -23,6 +23,8 @@ internal static class CurrentRepairOperandOwnerProfile
                 {
                     CurrentRepairOperandOwnerPurpose.AuthCollation16 => "legacy_auth_refresh",
                     CurrentRepairOperandOwnerPurpose.CustomerSequenceStart => "legacy_customer_owner",
+                    CurrentRepairOperandOwnerPurpose.CountryIsoLiteral => "legacy_country_owner",
+                    CurrentRepairOperandOwnerPurpose.MaterialCountryIsoLiteral => "legacy_material_owner",
                     _ => throw Invalid(),
                 },
                 _ => throw Invalid(),
@@ -48,10 +50,18 @@ internal static class CurrentRepairOperandOwnerProfile
         CurrentAppOwnedDatabaseSnapshot snapshot, CancellationToken cancellationToken)
     {
         string owner = ExpectedOwnerName(purpose, target);
-        string database = purpose == CurrentRepairOperandOwnerPurpose.AuthCollation16 ? "Auth" : "Customer";
+        bool iso = purpose is CurrentRepairOperandOwnerPurpose.CountryIsoLiteral or CurrentRepairOperandOwnerPurpose.MaterialCountryIsoLiteral;
+        string database = purpose switch
+        {
+            CurrentRepairOperandOwnerPurpose.AuthCollation16 => "Auth",
+            CurrentRepairOperandOwnerPurpose.CustomerSequenceStart => "Customer",
+            CurrentRepairOperandOwnerPurpose.CountryIsoLiteral => "Country",
+            CurrentRepairOperandOwnerPurpose.MaterialCountryIsoLiteral => "Material",
+            _ => throw Invalid(),
+        };
         if (connection.Database != database || snapshot.Database != database || transaction.Connection != connection ||
             transaction.IsolationLevel is not (System.Data.IsolationLevel.RepeatableRead or System.Data.IsolationLevel.Serializable)) { throw Invalid(); }
-        string[] tables = purpose == CurrentRepairOperandOwnerPurpose.AuthCollation16 ? AuthTables : CustomerTables;
+        string[] tables = iso ? ["Country"] : purpose == CurrentRepairOperandOwnerPurpose.AuthCollation16 ? AuthTables : CustomerTables;
         var rows = new List<OwnerRow>();
         const string sql = """
             WITH tables AS (SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -63,13 +73,13 @@ internal static class CurrentRepairOperandOwnerProfile
                 WHERE $2
               UNION ALL
               SELECT s.oid,t.oid,encode(sha256(convert_to(to_jsonb(d)::text,'UTF8')),'hex')
-                FROM tables t JOIN pg_class s ON s.relname='Customer_ID_seq' AND s.relkind='S'
+                FROM tables t JOIN pg_class s ON s.relname=$4 AND s.relkind='S'
                 JOIN pg_namespace n ON n.oid=s.relnamespace AND n.nspname='public'
                 JOIN pg_attribute a ON a.attrelid=t.oid AND a.attname='ID' AND a.attnum>0 AND NOT a.attisdropped
                   AND a.attidentity='d' AND a.atttypid='integer'::regtype
                 JOIN pg_depend d ON d.classid='pg_class'::regclass AND d.objid=s.oid AND d.objsubid=0
                   AND d.refclassid='pg_class'::regclass AND d.refobjid=t.oid AND d.refobjsubid=a.attnum AND d.deptype='i'
-                WHERE NOT $2)
+                WHERE NOT $2 OR $3)
             SELECT c.oid,c.relname,c.relkind::text,x.parent,c.relowner,r.rolname::text,
               r.rolsuper,r.rolinherit,r.rolcreaterole,r.rolcreatedb,r.rolcanlogin,r.rolreplication,r.rolbypassrls,r.rolconnlimit,
               encode(sha256(convert_to(to_jsonb(c)::text,'UTF8')),'hex'),
@@ -80,7 +90,9 @@ internal static class CurrentRepairOperandOwnerProfile
             """;
         await using var command = new NpgsqlCommand(sql, connection, transaction);
         _ = command.Parameters.AddWithValue(tables);
-        _ = command.Parameters.AddWithValue(purpose == CurrentRepairOperandOwnerPurpose.AuthCollation16);
+        _ = command.Parameters.AddWithValue(purpose == CurrentRepairOperandOwnerPurpose.AuthCollation16 || iso);
+        _ = command.Parameters.AddWithValue(iso);
+        _ = command.Parameters.AddWithValue(iso ? "Country_ID_seq" : "Customer_ID_seq");
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -108,7 +120,8 @@ internal static class CurrentRepairOperandOwnerProfile
             rows.Any(x => !tableRows.Any(t => t.Oid == x.Parent))) { throw Invalid(); }
         if (purpose == CurrentRepairOperandOwnerPurpose.CustomerSequenceStart &&
             (rows.Count != 2 || rows.Count(x => x.Kind == "S" && x.Name == "Customer_ID_seq") != 1)) { throw Invalid(); }
-        // Auth indexes may be legitimately rebuilt; their CURRENT OIDs/raw bindings above remain exact.
+        if (iso && rows.Count(x => x.Kind == "S" && x.Name == "Country_ID_seq") != 1) { throw Invalid(); }
+        // Auth/ISO indexes may be legitimately rebuilt; their CURRENT OIDs/raw bindings above remain exact.
         // The returned semantic ownership digest retains index name, role and parent, not a stale index allocation.
         return Digest(new
         {
