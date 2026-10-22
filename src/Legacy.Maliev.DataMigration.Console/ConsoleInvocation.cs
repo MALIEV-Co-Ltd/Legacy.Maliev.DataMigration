@@ -132,15 +132,12 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
             configPath = arguments[++index];
         }
 
-        if (arguments[0] == "inspect-sql-source-endpoint" &&
-            (string.IsNullOrWhiteSpace(configPath) || !Path.IsPathFullyQualified(configPath)))
-        {
-            throw new CommandLineException("config_reference_required", "An absolute protected configuration reference is required.");
-        }
-
-        return string.IsNullOrWhiteSpace(configPath)
-            ? throw new CommandLineException("config_reference_required", "A protected configuration file reference is required.")
-            : new(arguments[0], configPath);
+        return arguments[0] == "inspect-sql-source-endpoint" &&
+            (string.IsNullOrWhiteSpace(configPath) || !Path.IsPathFullyQualified(configPath))
+            ? throw new CommandLineException("config_reference_required", "An absolute protected configuration reference is required.")
+            : string.IsNullOrWhiteSpace(configPath)
+                ? throw new CommandLineException("config_reference_required", "A protected configuration file reference is required.")
+                : new(arguments[0], configPath);
     }
 }
 

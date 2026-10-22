@@ -213,11 +213,9 @@ internal sealed partial class SqlSourceEndpointInspector(IBackupProcessRunner ru
         BackupProcessResult result = await runner.RunAsync(
             new SecureBackupProcessInvocation("kubectl", arguments, string.Empty), cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
-        if (result.ExitCode != 0 || Encoding.UTF8.GetByteCount(result.StandardOutput) > MaximumObservationBytes)
-        {
-            throw Failure("observation_failed");
-        }
-        return result.StandardOutput;
+        return result.ExitCode != 0 || Encoding.UTF8.GetByteCount(result.StandardOutput) > MaximumObservationBytes
+            ? throw Failure("observation_failed")
+            : result.StandardOutput;
     }
 
     private static void RejectDuplicateProperties(JsonElement element)
@@ -243,25 +241,37 @@ internal sealed partial class SqlSourceEndpointInspector(IBackupProcessRunner ru
         }
     }
 
-    private static bool Matches(JsonElement element, string property, string expected) =>
-        string.Equals(element.GetProperty(property).GetString(), expected, StringComparison.Ordinal);
+    private static bool Matches(JsonElement element, string property, string expected)
+    {
+        return string.Equals(element.GetProperty(property).GetString(), expected, StringComparison.Ordinal);
+    }
 
-    private static bool IsTcp(JsonElement port) =>
-        !port.TryGetProperty("protocol", out JsonElement protocol) ||
-        string.Equals(protocol.GetString(), "TCP", StringComparison.Ordinal);
+    private static bool IsTcp(JsonElement port)
+    {
+        return !port.TryGetProperty("protocol", out JsonElement protocol) ||
+            string.Equals(protocol.GetString(), "TCP", StringComparison.Ordinal);
+    }
 
-    private static bool IsDeleting(JsonElement metadata) =>
-        metadata.TryGetProperty("deletionTimestamp", out JsonElement value) && value.ValueKind != JsonValueKind.Null;
+    private static bool IsDeleting(JsonElement metadata)
+    {
+        return metadata.TryGetProperty("deletionTimestamp", out JsonElement value) && value.ValueKind != JsonValueKind.Null;
+    }
 
-    private static bool SafeIdentifier(string? value) =>
-        value is not null && KubernetesIdentifier().IsMatch(value);
+    private static bool SafeIdentifier(string? value)
+    {
+        return value is not null && KubernetesIdentifier().IsMatch(value);
+    }
 
-    private static bool SafeRuntimeIdentity(string value) =>
-        value.Length is > 0 and <= 512 && value.All(character =>
+    private static bool SafeRuntimeIdentity(string value)
+    {
+        return value.Length is > 0 and <= 512 && value.All(character =>
             char.IsAsciiLetterOrDigit(character) || character is ':' or '/' or '.' or '-' or '_' or '@');
+    }
 
-    private static MigrationConsoleException Failure(string suffix) =>
-        new("sql_source_endpoint_" + suffix, "SQL source endpoint metadata inspection was refused.");
+    private static MigrationConsoleException Failure(string suffix)
+    {
+        return new("sql_source_endpoint_" + suffix, "SQL source endpoint metadata inspection was refused.");
+    }
 
     [GeneratedRegex("^[a-z0-9](?:[-a-z0-9.]{0,61}[a-z0-9])?$", RegexOptions.CultureInvariant)]
     private static partial Regex KubernetesIdentifier();

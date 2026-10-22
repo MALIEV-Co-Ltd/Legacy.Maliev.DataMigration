@@ -179,6 +179,9 @@ public sealed class SqlSourceEndpointInspectorTests
             case "duplicate-container":
                 pod["status"]!["containerStatuses"]!.AsArray().Add(pod["status"]!["containerStatuses"]![0]!.DeepClone());
                 break;
+            case "duplicate-json":
+            default:
+                break;
         }
         var runner = new MetadataRunner
         {
@@ -262,7 +265,7 @@ public sealed class SqlSourceEndpointInspectorTests
         cancellation.Cancel();
         var runner = new MetadataRunner();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             new SqlSourceEndpointInspector(runner, TimeProvider.System).InspectAsync(Valid, cancellation.Token));
 
         Assert.Equal(0, runner.Calls);
@@ -272,7 +275,7 @@ public sealed class SqlSourceEndpointInspectorTests
     public async Task Console_DispatchReadsProtectedConfigAndReturnsPlannedMetadata()
     {
         string root = Path.Combine(Path.GetTempPath(), "sql-endpoint-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
+        _ = Directory.CreateDirectory(root);
         try
         {
             string path = Path.Combine(root, "inspection.json");
@@ -307,7 +310,7 @@ public sealed class SqlSourceEndpointInspectorTests
     public async Task Console_RejectsAdmissionBeforeNativeIo(string mode)
     {
         string root = Path.Combine(Path.GetTempPath(), "sql-endpoint-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
+        _ = Directory.CreateDirectory(root);
         try
         {
             string path = Path.Combine(root, "inspection.json");
@@ -349,7 +352,7 @@ public sealed class SqlSourceEndpointInspectorTests
             return;
         }
         string root = Path.Combine(Path.GetTempPath(), "sql-endpoint-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
+        _ = Directory.CreateDirectory(root);
         try
         {
             string path = Path.Combine(root, "inspection.json");
@@ -414,7 +417,7 @@ public sealed class SqlSourceEndpointInspectorTests
                 "context" when Calls == 1 => "other",
                 "context-final" when Calls == 6 => "other",
                 "json" when Calls == 2 => "{private-native-canary",
-                "oversized" when Calls == 2 => new string('x', 1024 * 1024 + 1),
+                "oversized" when Calls == 2 => new string('x', (1024 * 1024) + 1),
                 _ => body,
             };
             return Task.FromResult(new BackupProcessResult(
@@ -437,12 +440,22 @@ public sealed class SqlSourceEndpointInspectorTests
             return new ClockTimer(this);
         }
 
-        internal void Expire() => _callback!(_state);
+        internal void Expire()
+        {
+            _callback!(_state);
+        }
 
         private sealed class ClockTimer(DeadlineClock owner) : ITimer
         {
-            public bool Change(TimeSpan dueTime, TimeSpan period) => throw new NotSupportedException();
-            public void Dispose() => owner.Disposed = true;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                throw new NotSupportedException();
+            }
+
+            public void Dispose()
+            {
+                owner.Disposed = true;
+            }
             public ValueTask DisposeAsync()
             {
                 Dispose();
