@@ -57,18 +57,21 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             await container.StartAsync(lifetime.Token);
             var inspected = await docker.Containers.InspectContainerAsync(container.Id, lifetime.Token);
             id = inspected.ID;
-            Assert.Equal(owner, inspected.Config.Labels[OwnerLabel]);
+            var inspectedConfig = inspected.Config ?? throw new InvalidOperationException("Owned container configuration is missing.");
+            var inspectedHost = inspected.HostConfig ?? throw new InvalidOperationException("Owned container limits are missing.");
+            var inspectedNetwork = inspected.NetworkSettings ?? throw new InvalidOperationException("Owned container bindings are missing.");
+            Assert.Equal(owner, inspectedConfig.Labels[OwnerLabel]);
             Assert.Equal("/" + name, inspected.Name);
             Assert.Empty(inspected.Mounts);
-            Assert.Equal(3L * 1024 * 1024 * 1024, inspected.HostConfig.Memory);
-            Assert.Equal(inspected.HostConfig.Memory, inspected.HostConfig.MemorySwap);
-            Assert.Equal(2_000_000_000, inspected.HostConfig.NanoCPUs);
-            Assert.All(inspected.NetworkSettings.Ports.Values.SelectMany(value => value), binding => Assert.Equal("127.0.0.1", binding.HostIP));
+            Assert.Equal(3L * 1024 * 1024 * 1024, inspectedHost.Memory);
+            Assert.Equal(inspectedHost.Memory, inspectedHost.MemorySwap);
+            Assert.Equal(2_000_000_000, inspectedHost.NanoCPUs);
+            Assert.All(inspectedNetwork.Ports.Values.SelectMany(value => value), binding => Assert.Equal("127.0.0.1", binding.HostIP));
             WriteEvidence("running", new
             {
                 Stage = "running", Owner = owner, Id = id, inspected.Created, inspected.Image,
-                inspected.HostConfig.Memory, inspected.HostConfig.MemorySwap, inspected.HostConfig.NanoCPUs,
-                Ports = inspected.NetworkSettings.Ports, Persistent = false,
+                inspectedHost.Memory, inspectedHost.MemorySwap, inspectedHost.NanoCPUs,
+                Ports = inspectedNetwork.Ports, Persistent = false,
             });
             var connection = new SqlConnectionStringBuilder(container.GetConnectionString())
             {
@@ -111,7 +114,8 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
                 {
                     // Name lookup covers a failed StartAsync after creation but before its handle was returned.
                     var owned = await docker.Containers.InspectContainerAsync(id ?? name, cleanup.Token);
-                    Assert.Equal(owner, owned.Config.Labels[OwnerLabel]);
+                    var ownedConfig = owned.Config ?? throw new InvalidOperationException("Cleanup ownership configuration is missing.");
+                    Assert.Equal(owner, ownedConfig.Labels[OwnerLabel]);
                     Assert.Equal("/" + name, owned.Name);
                     id = owned.ID;
                     await container.StopAsync(cleanup.Token);
@@ -163,7 +167,8 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             var method = assembly.GetType("Legacy.Maliev.DataMigration.SourceUnicodeWitness.ProviderWitness", true)!
                 .GetMethod("RunAsync", BindingFlags.Public | BindingFlags.Static)!;
             var pending = (Task<string>)method.Invoke(null, [connectionString, token])!;
-            var json = await pending.WaitAsync(token);
+            // The helper shares this finite token and must finish its connection scopes before container cleanup.
+            var json = await pending;
             return JsonSerializer.Deserialize<ProviderReceipt>(json) ?? throw new InvalidOperationException("Missing EF receipt.");
         }
         finally
