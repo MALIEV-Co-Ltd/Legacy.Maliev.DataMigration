@@ -1,6 +1,7 @@
 using System.Data;
 using System.Net;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Text.Json;
@@ -29,8 +30,9 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
         var owner = Guid.NewGuid().ToString("N");
         var name = "source-unicode-" + owner;
         using var lifetime = new CancellationTokenSource(TimeSpan.FromMinutes(10));
-        using var docker = new DockerClientConfiguration().CreateClient();
+        using var docker = new DockerClientBuilder().WithEndpoint(new Uri("unix:///var/run/docker.sock")).Build();
         var container = new MsSqlBuilder(Image)
+            .WithDockerEndpoint("unix:///var/run/docker.sock")
             .WithName(name)
             .WithLabel(OwnerLabel, owner)
             .WithLabel("com.maliev.expires-utc", DateTime.UtcNow.AddMinutes(12).ToString("o"))
@@ -46,6 +48,7 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             }).Build();
         string? id = null;
         Exception? primaryFailure = null;
+        Exception? cleanupFailure = null;
         try
         {
             WriteEvidence("planned", new { Stage = "planned", Owner = owner, Name = name, Image, Persistent = false });
@@ -98,7 +101,6 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
         {
             primaryFailure = error;
             WriteEvidence("failure", new { Stage = "failed", ExceptionType = error.GetType().FullName });
-            throw;
         }
         finally
         {
@@ -124,11 +126,15 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
                     WriteEvidence("cleanup", new { Stage = "not-created", Owner = owner, Name = name, Absent = true });
                 }
             }
-            catch (Exception cleanupFailure) when (primaryFailure is not null)
+            catch (Exception error)
             {
-                throw new AggregateException("Synthetic provider validation and owned cleanup both failed.", primaryFailure, cleanupFailure);
+                cleanupFailure = error;
             }
         }
+        if (primaryFailure is not null && cleanupFailure is not null)
+            throw new AggregateException("Synthetic provider validation and owned cleanup both failed.", primaryFailure, cleanupFailure);
+        if (primaryFailure is not null) ExceptionDispatchInfo.Capture(primaryFailure).Throw();
+        if (cleanupFailure is not null) ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
     }
 
     private void WriteEvidence(string name, object value)
@@ -244,12 +250,12 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             {
                 Assert.NotEmpty(row.SqlErrorNumbers);
                 if (row.Input.IsNull && field.Required)
-                    Assert.All(row.SqlErrorNumbers, number => Assert.Contains(number, new[] { 515, 3621 }));
+                    Assert.All(row.SqlErrorNumbers, number => Assert.True(number is 515 or 3621));
                 else
                 {
                     Assert.True(row.Input.Utf16Units > field.Capacity);
                     Assert.Contains(row.SqlErrorNumbers, number => number is 8152 or 2628);
-                    Assert.All(row.SqlErrorNumbers, number => Assert.Contains(number, new[] { 8152, 2628, 3621 }));
+                    Assert.All(row.SqlErrorNumbers, number => Assert.True(number is 8152 or 2628 or 3621));
                 }
                 Assert.Equal(ValueEvidence.From(row.Update ? "before" : null), row.FreshRead);
             }
