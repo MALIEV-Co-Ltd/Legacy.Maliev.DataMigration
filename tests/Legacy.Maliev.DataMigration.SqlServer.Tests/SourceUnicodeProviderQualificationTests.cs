@@ -114,7 +114,8 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
                 {
                     // Name lookup covers a failed StartAsync after creation but before its handle was returned.
                     var owned = await docker.Containers.InspectContainerAsync(id ?? name, cleanup.Token);
-                    var ownedConfig = owned.Config ?? throw new InvalidOperationException("Cleanup ownership configuration is missing.");
+                    var ownedConfig = owned.Config;
+                    Assert.NotNull(ownedConfig);
                     Assert.Equal(owner, ownedConfig.Labels[OwnerLabel]);
                     Assert.Equal("/" + name, owned.Name);
                     id = owned.ID;
