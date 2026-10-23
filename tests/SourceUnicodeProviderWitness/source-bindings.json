@@ -1,0 +1,38 @@
+{
+  "qualification": "Controlled current-source provider behavior; not original deployed runtime or complete HTTP acceptance",
+  "currentSources": [
+    { "sha": "d23065d499333ece5ef73013b085a8aaa062b163", "parents": ["449d87ea9d1d6ab40f1ec444353ab6aba80a5a76"], "observation": "Read-only local Git objects" },
+    { "sha": "edf4e45d7ffce2f55b0d607ca82d51e81c330781", "parents": ["d5385fdd683e443668bcef10e5e1e5286e43e707"], "observation": "Read-only GitHub tree; all listed blobs equal local checkpoint" }
+  ],
+  "paths": [
+    { "path": "Maliev.OrderService.Data/Maliev.OrderService.Data.csproj", "blob": "533cb81cd3b902741bb79bf86439bc63882dbd11", "facet": "net8.0 / EF SQL Server 8.0.28 declaration" },
+    { "path": "Maliev.OrderService.Data/Database/OrderContext/OrderContext.cs", "blob": "79d9f74582553559cdbb41417d7be4e1113db6d1", "facet": "Nullable TrackingNumber250, Description250, Name100 with generated-on-add unnamed default" },
+    { "path": "Maliev.OrderService.Data/Database/OrderContext/Order.cs", "blob": "94ed738967cb01b0f550882835fa780df57e564d", "facet": "Order string properties" },
+    { "path": "Maliev.OrderService.Api/Controllers/OrdersController.cs", "blob": "4d4d734ac28966fbe6b6b7d2861fd741bbd5b9e3", "facet": "Literal assignment; POST returns tracked saved entity; independent GET reads storage; PUT returns204" },
+    { "path": "Maliev.OrderService.Api/ServiceExtensions.cs", "blob": "5c1ad55da54885dac9b5357c3c95e908df038855", "facet": "Order ConfigureDbContext uses UseSqlServer with named connection configuration" },
+    { "path": "Maliev.CustomerService.Data/Maliev.CustomerService.Data.csproj", "blob": "1e36f084bae3bd5da9f0357470480eb95debde6a", "facet": "net8.0 / EF SQL Server 8.0.28 declaration" },
+    { "path": "Maliev.CustomerService.Data/Database/CustomerContext/CustomerContext.cs", "blob": "38b4ec89d02eb098b53678bf20212ed8da087998", "facet": "Company.Name required256; Registrar/TaxNumber nullable256" },
+    { "path": "Maliev.CustomerService.Data/Database/CustomerContext/Company.cs", "blob": "3ffcc556453566d85ebedcb378687e1c2d91ae60", "facet": "Company string properties" },
+    { "path": "Maliev.CustomerService.Api/Controllers/CompaniesController.cs", "blob": "f6bc317ae9bdce65296b06603a450731061e0d83", "facet": "Literal assignment; POST returns tracked saved entity; independent GET reads storage; PUT returns204" }
+  ],
+  "existingLocalResolvedArtifacts": [
+    { "path": "Maliev.OrderService.Data/obj/project.assets.json", "sha256": "8fa74356177ded582c4b46f80dc5ae6193534d3a08227ec77449384cd32c3827", "modifiedUtc": "2026-09-24T01:44:40.5539921Z" },
+    { "path": "Maliev.CustomerService.Data/obj/project.assets.json", "sha256": "dc8c89b1170ad8832f3a302209487c39d9e0d129d36ab370a3b4bad9a842edcc", "modifiedUtc": "2026-09-24T01:44:40.7332487Z" },
+    { "path": "Maliev.OrderService.Api/bin/Release/net8.0/Maliev.OrderService.Api.deps.json", "sha256": "0e40b32122534528be83913f17b53b6eb1a272d421eacd47101cd45cdc86aea4", "modifiedUtc": "2026-09-21T09:18:20.0218954Z" }
+  ],
+  "resolvedArtifactLimits": "The three existing local artifacts list EF8.0.28/SqlClient5.1.7/Azure.Identity1.11.4/MSAL4.61.3/Caching.Memory8.0.1. Their timestamps and hashes are not a signed source-build or production deployment binding. No raw artifact or operational history is copied.",
+  "initialSource": {
+    "sha": "5fac706a7983a6d359b39acbd670e6800afe020e",
+    "parents": [],
+    "orderDataProjectBlob": "cd3c10e244870826447567bd963182d8e531f6f5",
+    "customerDataProjectBlob": "57a6443101c3f53a00c130b710755e9f4ac1031d",
+    "declaredEfVersion": "8.0.3",
+    "disposition": "Not enrolled or executed. Historical resolved graph remains unproved; the minimum declared graph has current vulnerability advisories. No package override, suppression or whole-source credit.",
+    "minimumGraphAdvisories": [
+      "https://github.com/advisories/GHSA-wvxc-855f-jvrv",
+      "https://github.com/advisories/GHSA-m5vv-6r4h-3vj9",
+      "https://github.com/advisories/GHSA-x674-v45j-fwxw",
+      "https://github.com/advisories/GHSA-qj66-m88j-hmgj"
+    ]
+  }
+}
