@@ -121,7 +121,7 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
                     id = owned.ID;
                     await container.StopAsync(cleanup.Token);
                     await container.DisposeAsync().AsTask().WaitAsync(cleanup.Token);
-                    var absent = await Assert.ThrowsAsync<DockerApiException>(() => docker.Containers.InspectContainerAsync(id, cleanup.Token));
+                    var absent = await Assert.ThrowsAsync<DockerContainerNotFoundException>(() => docker.Containers.InspectContainerAsync(id, cleanup.Token));
                     Assert.Equal(HttpStatusCode.NotFound, absent.StatusCode);
                     WriteEvidence("cleanup", new { Stage = "removed", Owner = owner, Id = id, Absent = true });
                 }
