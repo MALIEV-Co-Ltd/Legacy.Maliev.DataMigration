@@ -103,12 +103,12 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             Assert.Contains(ef.Assemblies, value => value.Name == "Microsoft.Data.SqlClient" && value.InformationalVersion!.StartsWith("5.1.7", StringComparison.Ordinal));
             Assert.All(ef.Assemblies, value => Assert.Equal("source-ef-8.0.28", value.LoadContext));
             Assert.All(ef.Assemblies, value => Assert.StartsWith("source-ef-8.0.28" + Path.DirectorySeparatorChar, value.RelativePath, StringComparison.Ordinal));
-            Assert.Equal(432, ef.Observations.Length);
+            Assert.Equal(576, ef.Observations.Length);
             VerifyObservations(ef.Observations, false);
             connection.InitialCatalog = "RawParameterControl";
             var raw = await RunRawAsync(connection.ConnectionString, lifetime.Token);
             WriteEvidence("raw-sqlclient-7.1", raw);
-            Assert.Equal(864, raw.Observations.Length);
+            Assert.Equal(1152, raw.Observations.Length);
             Assert.Contains(raw.Assemblies, value => value.Name == "Microsoft.Data.SqlClient" && value.InformationalVersion!.StartsWith("7.1.0", StringComparison.Ordinal));
             VerifyObservations(raw.Observations, true);
         }
@@ -186,8 +186,47 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
                 ("Category.Name", "Name", 50, false, null),
                 ("FileFormat.Name", "Name", 50, false, null),
                 ("FileFormat.Extension", "Extension", 50, false, null),
+                ("Process.Name", "Name", 50, true, null),
+                ("OrderStatus.Name", "Name", 50, true, null),
+                ("OrderStatus.Description", "Description", 100, false, null),
             ],
             FieldCase.All.Select(field => (field.Name, field.Column, field.Capacity, field.Required, field.InsertDefault)));
+    }
+
+    [Fact]
+    public void ProcessAndStatusExpansionRetainsNineFieldMatricesAndRequiredNullMetadata()
+    {
+        string[] retained = ["Order.TrackingNumber", "Order.Name", "Order.Description", "Company.Name", "Company.Registrar", "Company.TaxNumber", "Category.Name", "FileFormat.Name", "FileFormat.Extension"];
+        Assert.Equal(retained, FieldCase.All.Take(retained.Length).Select(value => value.Name));
+        Assert.Equal(["Company.Name", "Process.Name", "OrderStatus.Name"], FieldCase.All.Where(value => value.Required).Select(value => value.Name));
+        var description = Assert.Single(FieldCase.All, value => value.Name == "OrderStatus.Description");
+        Assert.False(description.Required);
+        Assert.Null(description.InsertDefault);
+        Assert.Equal(100, description.Capacity);
+        foreach (var raw in new[] { false, true })
+        {
+            var identities = new HashSet<(string Field, string Vector, bool Update, bool Ansi, int? Size)>();
+            foreach (var field in FieldCase.All)
+            {
+                int?[] sizes = raw ? [field.Capacity, 4000] : [null];
+                Assert.Equal(12, field.Vectors().Count());
+                foreach (var (vector, _) in field.Vectors())
+                {
+                    foreach (var update in new[] { false, true })
+                    {
+                        foreach (var ansi in new[] { true, false })
+                        {
+                            foreach (var size in sizes)
+                            {
+                                Assert.True(identities.Add((field.Name, vector, update, ansi, size)));
+                            }
+                        }
+                    }
+                }
+            }
+            Assert.Equal(raw ? 1152 : 576, identities.Count);
+            Assert.Equal(raw ? 864 : 432, identities.Count(value => retained.Contains(value.Field, StringComparer.Ordinal)));
+        }
     }
 
     [Fact]
@@ -348,7 +387,7 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
     {
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(token);
-        await ExecuteAsync(connection, "CREATE TABLE Orders (ID int IDENTITY PRIMARY KEY, Name nvarchar(100) NULL DEFAULT(N'unnamed'), Description nvarchar(250) NULL, TrackingNumber nvarchar(250) NULL); CREATE TABLE Company (ID int IDENTITY PRIMARY KEY, Name nvarchar(256) NOT NULL, Registrar nvarchar(256) NULL, TaxNumber nvarchar(256) NULL); CREATE TABLE Category (ID int IDENTITY PRIMARY KEY, Name nvarchar(50) NULL); CREATE TABLE FileFormat (ID int IDENTITY PRIMARY KEY, Name nvarchar(50) NULL, Extension nvarchar(50) NULL);", token);
+        await ExecuteAsync(connection, "CREATE TABLE Orders (ID int IDENTITY PRIMARY KEY, Name nvarchar(100) NULL DEFAULT(N'unnamed'), Description nvarchar(250) NULL, TrackingNumber nvarchar(250) NULL); CREATE TABLE Company (ID int IDENTITY PRIMARY KEY, Name nvarchar(256) NOT NULL, Registrar nvarchar(256) NULL, TaxNumber nvarchar(256) NULL); CREATE TABLE Category (ID int IDENTITY PRIMARY KEY, Name nvarchar(50) NULL); CREATE TABLE FileFormat (ID int IDENTITY PRIMARY KEY, Name nvarchar(50) NULL, Extension nvarchar(50) NULL); CREATE TABLE Process (ID int IDENTITY PRIMARY KEY, Name nvarchar(50) NOT NULL); CREATE TABLE OrderStatus (ID int IDENTITY PRIMARY KEY, Name nvarchar(50) NOT NULL, Description nvarchar(100) NULL);", token);
         var observations = new List<Observation>();
         foreach (var field in FieldCase.All)
         {
