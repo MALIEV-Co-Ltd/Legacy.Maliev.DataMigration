@@ -22,7 +22,9 @@
     { "path": "Maliev.OrderService.Api/Controllers/ProcessesController.cs", "blob": "d65fe4fff0427579467baf94333117776451de11", "facet": "Literal Name assignment on POST/PUT; tracked saved POST entity and independent GET; no ordinary MVC admission claim" },
     { "path": "Maliev.OrderStatusService.Data/Database/OrderStatusContext/OrderStatus.cs", "blob": "625c6cfea220b94cb4176b18a17d3b9d29d25072", "facet": "Name/Description properties; no model string-length annotations" },
     { "path": "Maliev.OrderStatusService.Data/Database/OrderStatusContext/OrderStatusContext.cs", "blob": "3c51a831719c127eff30593f1245390cd92f1bb6", "facet": "Name required50 and Description nullable100; neither string has an insert default; original status context remains separate from OrderContext" },
-    { "path": "Maliev.OrderStatusService.Api/Controllers/OrderStatusesController.cs", "blob": "65d40f242c27d82c22359748f2beac339361b692", "facet": "Literal Name/Description assignment on POST/PUT; tracked saved POST entity and independent GET; no ordinary MVC admission claim" }
+    { "path": "Maliev.OrderStatusService.Api/Controllers/OrderStatusesController.cs", "blob": "65d40f242c27d82c22359748f2beac339361b692", "facet": "Literal Name/Description assignment on POST/PUT; tracked saved POST entity and independent GET; no ordinary MVC admission claim" },
+    {"path": "Maliev.OrderService.Api/Controllers/FilesController.cs", "blob": "3621dbe000faa67a60fda392f1ec80c56f50f255", "facet": "Metadata-only POST/PUT assignments; no GCS/Document/OrderLabel operation and no ordinary original MVC admission claim"},
+    {"path": "Maliev.OrderService.Data/Database/OrderContext/OrderFile.cs", "blob": "f6fa00f63b591e20b622bcd8dbb1e287f0456e3d", "facet": "OrderFile Bucket/ObjectName properties without data annotations; required50 Bucket and required unbounded ObjectName come from the existing pinned OrderContext mapping"}
   ],
   "catalogSourceAssociations": [
     {
@@ -134,5 +136,82 @@
       "https://github.com/advisories/GHSA-x674-v45j-fwxw",
       "https://github.com/advisories/GHSA-qj66-m88j-hmgj"
     ]
-  }
+  },
+  "orderFileSourceAssociations": [
+    {
+      "sha": "5fac706a7983a6d359b39acbd670e6800afe020e",
+      "parents": [],
+      "paths": [
+        {
+          "path": "Maliev.OrderService.Api/Controllers/FilesController.cs",
+          "blob": "3621dbe000faa67a60fda392f1ec80c56f50f255"
+        },
+        {
+          "path": "Maliev.OrderService.Data/Database/OrderContext/OrderContext.cs",
+          "blob": "130b92275a21a2ff9b5b6ac3d1d92f0e1074a001"
+        },
+        {
+          "path": "Maliev.OrderService.Data/Database/OrderContext/OrderFile.cs",
+          "blob": "790e23c20ff406d15c99b722e3a0559b8c43f974"
+        }
+      ],
+      "disposition": "OrderFile.Bucket required50/no-default and required unbounded ObjectName companion metadata binding only; controlled current-provider qualification, no initial EF8.0.3/MVC/deployed/whole-source acceptance"
+    },
+    {
+      "sha": "72eb9f1949176392141951d35e6e06f7c30af4c2",
+      "parents": [
+        "023aa2f143fa5a8f557d72c1302b9add64792d6a"
+      ],
+      "paths": [
+        {
+          "path": "Maliev.OrderService.Api/Controllers/FilesController.cs",
+          "blob": "3621dbe000faa67a60fda392f1ec80c56f50f255"
+        },
+        {
+          "path": "Maliev.OrderService.Data/Database/OrderContext/OrderContext.cs",
+          "blob": "c95270b54fcb6a82cf50e920bea5a0d020ed546f"
+        },
+        {
+          "path": "Maliev.OrderService.Data/Database/OrderContext/OrderFile.cs",
+          "blob": "f6fa00f63b591e20b622bcd8dbb1e287f0456e3d"
+        }
+      ],
+      "disposition": "OrderFile.Bucket required50/no-default and required unbounded ObjectName companion metadata binding only; controlled current-provider qualification, no initial EF8.0.3/MVC/deployed/whole-source acceptance"
+    },
+    {
+      "sha": "2aab25eb07894fc0267b03b85bad96490219d2fa",
+      "parents": [
+        "56014f2efc7c7f24b777c51d17a454e023d12bdd"
+      ],
+      "paths": [
+        {
+          "path": "Maliev.OrderService.Api/Controllers/FilesController.cs",
+          "blob": "3621dbe000faa67a60fda392f1ec80c56f50f255"
+        },
+        {
+          "path": "Maliev.OrderService.Data/Database/OrderContext/OrderContext.cs",
+          "blob": "79d9f74582553559cdbb41417d7be4e1113db6d1"
+        },
+        {
+          "path": "Maliev.OrderService.Data/Database/OrderContext/OrderFile.cs",
+          "blob": "f6fa00f63b591e20b622bcd8dbb1e287f0456e3d"
+        }
+      ],
+      "disposition": "OrderFile.Bucket required50/no-default and required unbounded ObjectName companion metadata binding only; controlled current-provider qualification, no initial EF8.0.3/MVC/deployed/whole-source acceptance"
+    }
+  ],
+  "orderFileLegacyOwnership": {
+    "repository": "MALIEV-Co-Ltd/Legacy.Maliev.OrderService",
+    "acceptedMain": "9adc45618291c99f705e401ff3a8e6970cfa5604",
+    "paths": [
+      "Legacy.Maliev.OrderService.Data/OrderDbContexts.cs",
+      "Legacy.Maliev.OrderService.Data/OrderFileSourceConstraints.cs",
+      "Legacy.Maliev.OrderService.Data/OrderFileLifetime.cs",
+      "Legacy.Maliev.OrderService.Data/Migrations/Order/20261018110000_EnforceOrderFileBucketSourceLength.cs",
+      "Legacy.Maliev.OrderService.Api/Controllers/FilesController.cs",
+      "Legacy.Maliev.OrderService.Application/Models/OrderModels.cs"
+    ],
+    "disposition": "Qualification only. Preserve accepted87/88 Bucket required50/UTF16 guards,70 literal metadata/dedup/reparent/lifetime behavior and108 POST validation order. No Order runtime normalization, ObjectName cap or duplicate closure credit."
+  },
+  "orderFileQualificationLimits": "One new bounded field, OrderFile.Bucket, in reduced synthetic OrderFile rows with required unbounded ObjectName. ObjectName is a companion/control, not a fourteenth matrix field. Excludes OrderId/FKs, timestamps, real file/Order service calls, GCS access, DocumentService/OrderLabel/financial workflows, original app startup/MVC, deployed sessions, initial EF8.0.3 and whole-source acceptance. Existing context pins are reused; no source configuration is copied or executed."
 }
