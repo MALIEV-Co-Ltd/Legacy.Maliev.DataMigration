@@ -46,8 +46,22 @@ public sealed record ProviderReceipt(string Provider, string Runtime, string Sql
 
 public sealed record FieldCase(string Name, string Column, int Capacity, bool Required, string? InsertDefault = null)
 {
-    public bool IsOrder => Name.StartsWith("Order.", StringComparison.Ordinal);
-    public string Table => IsOrder ? "Orders" : "Company";
+    public string Table => Name[..Name.IndexOf('.')] switch
+    {
+        "Order" => "Orders",
+        "Company" => "Company",
+        "Category" => "Category",
+        "FileFormat" => "FileFormat",
+        _ => throw new InvalidOperationException("Unknown synthetic table."),
+    };
+    public string[] Columns => Table switch
+    {
+        "Orders" => ["Name", "Description", "TrackingNumber"],
+        "Company" => ["Name", "Registrar", "TaxNumber"],
+        "Category" => ["Name"],
+        "FileFormat" => ["Name", "Extension"],
+        _ => throw new InvalidOperationException("Unknown synthetic table."),
+    };
     public static readonly FieldCase[] All =
     [
         new("Order.TrackingNumber", "TrackingNumber", 250, false),
@@ -56,6 +70,9 @@ public sealed record FieldCase(string Name, string Column, int Capacity, bool Re
         new("Company.Name", "Name", 256, true),
         new("Company.Registrar", "Registrar", 256, false),
         new("Company.TaxNumber", "TaxNumber", 256, false),
+        new("Category.Name", "Name", 50, false),
+        new("FileFormat.Name", "Name", 50, false),
+        new("FileFormat.Extension", "Extension", 50, false),
     ];
 
     public IEnumerable<(string Name, string? Value)> Vectors()

@@ -6,15 +6,61 @@
   ],
   "paths": [
     { "path": "Maliev.OrderService.Data/Maliev.OrderService.Data.csproj", "blob": "533cb81cd3b902741bb79bf86439bc63882dbd11", "facet": "net8.0 / EF SQL Server 8.0.28 declaration" },
-    { "path": "Maliev.OrderService.Data/Database/OrderContext/OrderContext.cs", "blob": "79d9f74582553559cdbb41417d7be4e1113db6d1", "facet": "Nullable TrackingNumber250, Description250, Name100 with generated-on-add unnamed default" },
+    { "path": "Maliev.OrderService.Data/Database/OrderContext/OrderContext.cs", "blob": "79d9f74582553559cdbb41417d7be4e1113db6d1", "facet": "Nullable TrackingNumber250, Description250, Name100 with generated-on-add unnamed default; nullable Category.Name50 and FileFormat.Name50/Extension50 without string defaults" },
     { "path": "Maliev.OrderService.Data/Database/OrderContext/Order.cs", "blob": "94ed738967cb01b0f550882835fa780df57e564d", "facet": "Order string properties" },
     { "path": "Maliev.OrderService.Api/Controllers/OrdersController.cs", "blob": "4d4d734ac28966fbe6b6b7d2861fd741bbd5b9e3", "facet": "Literal assignment; POST returns tracked saved entity; independent GET reads storage; PUT returns204" },
     { "path": "Maliev.OrderService.Api/ServiceExtensions.cs", "blob": "5c1ad55da54885dac9b5357c3c95e908df038855", "facet": "Order ConfigureDbContext uses UseSqlServer with named connection configuration" },
     { "path": "Maliev.CustomerService.Data/Maliev.CustomerService.Data.csproj", "blob": "1e36f084bae3bd5da9f0357470480eb95debde6a", "facet": "net8.0 / EF SQL Server 8.0.28 declaration" },
     { "path": "Maliev.CustomerService.Data/Database/CustomerContext/CustomerContext.cs", "blob": "38b4ec89d02eb098b53678bf20212ed8da087998", "facet": "Company.Name required256; Registrar/TaxNumber nullable256" },
     { "path": "Maliev.CustomerService.Data/Database/CustomerContext/Company.cs", "blob": "3ffcc556453566d85ebedcb378687e1c2d91ae60", "facet": "Company string properties" },
-    { "path": "Maliev.CustomerService.Api/Controllers/CompaniesController.cs", "blob": "f6bc317ae9bdce65296b06603a450731061e0d83", "facet": "Literal assignment; POST returns tracked saved entity; independent GET reads storage; PUT returns204" }
+    { "path": "Maliev.CustomerService.Api/Controllers/CompaniesController.cs", "blob": "f6bc317ae9bdce65296b06603a450731061e0d83", "facet": "Literal assignment; POST returns tracked saved entity; independent GET reads storage; PUT returns204" },
+    { "path": "Maliev.OrderService.Data/Database/OrderContext/Category.cs", "blob": "a15c2cab37d63f244851279482c52e49d3ca556c", "facet": "Nullable Category.Name property; no model string-length annotation" },
+    { "path": "Maliev.OrderService.Data/Database/OrderContext/FileFormat.cs", "blob": "9001b8fbfd4626b5e5469a1558c0d1f4f094ba9d", "facet": "Nullable FileFormat.Name/Extension properties; no model string-length annotations" },
+    { "path": "Maliev.OrderService.Api/Controllers/CategoriesController.cs", "blob": "1d013ebbfa31ce859f9dea60f78c665254078afe", "facet": "Literal Name assignment on POST/PUT; POST returns tracked saved entity; independent GET reads storage; PUT returns204" },
+    { "path": "Maliev.OrderService.Api/Controllers/FileFormatsController.cs", "blob": "5d6da037da66140c0a47b0803a838d94cc44e219", "facet": "Literal Name/Extension assignment on POST/PUT; POST returns tracked saved entity; independent GET reads storage; PUT returns204" }
   ],
+  "catalogSourceAssociations": [
+    {
+      "sha": "5fac706a7983a6d359b39acbd670e6800afe020e",
+      "parents": [],
+      "paths": [
+        { "path": "Maliev.OrderService.Data/Database/OrderContext/Category.cs", "blob": "5e335cfb31e3d0e73789e434b7ebd822b6c23ade" },
+        { "path": "Maliev.OrderService.Data/Database/OrderContext/FileFormat.cs", "blob": "4852b2aa43fafcb1a27bdbe3dbf3fafd65f95b53" },
+        { "path": "Maliev.OrderService.Data/Database/OrderContext/OrderContext.cs", "blob": "130b92275a21a2ff9b5b6ac3d1d92f0e1074a001" },
+        { "path": "Maliev.OrderService.Api/Controllers/CategoriesController.cs", "blob": "1d013ebbfa31ce859f9dea60f78c665254078afe" },
+        { "path": "Maliev.OrderService.Api/Controllers/FileFormatsController.cs", "blob": "5d6da037da66140c0a47b0803a838d94cc44e219" }
+      ],
+      "disposition": "Three catalog storage-facet lineage associations only. This current-source EF8.0.28 witness does not execute or accept the initial EF8.0.3 graph or close this source SHA."
+    },
+    {
+      "sha": "72eb9f1949176392141951d35e6e06f7c30af4c2",
+      "parents": ["023aa2f143fa5a8f557d72c1302b9add64792d6a"],
+      "paths": [
+        { "path": "Maliev.OrderService.Data/Database/OrderContext/Category.cs", "blob": "a15c2cab37d63f244851279482c52e49d3ca556c" },
+        { "path": "Maliev.OrderService.Data/Database/OrderContext/FileFormat.cs", "blob": "9001b8fbfd4626b5e5469a1558c0d1f4f094ba9d" },
+        { "path": "Maliev.OrderService.Data/Database/OrderContext/OrderContext.cs", "blob": "c95270b54fcb6a82cf50e920bea5a0d020ed546f" }
+      ],
+      "disposition": "Documentation successor retaining the three catalog storage mappings; no whole-source acceptance."
+    },
+    {
+      "sha": "2aab25eb07894fc0267b03b85bad96490219d2fa",
+      "parents": ["56014f2efc7c7f24b777c51d17a454e023d12bdd"],
+      "paths": [
+        { "path": "Maliev.OrderService.Data/Database/OrderContext/OrderContext.cs", "blob": "79d9f74582553559cdbb41417d7be4e1113db6d1" }
+      ],
+      "disposition": "Connection-configuration successor retaining the three catalog storage mappings; no source connection is opened and no whole-source acceptance."
+    }
+  ],
+  "catalogLegacyOwnership": {
+    "repository": "MALIEV-Co-Ltd/Legacy.Maliev.OrderService",
+    "acceptedMain": "7f15a966ddd731a57839d506a4b2500aa225e981",
+    "paths": [
+      "Legacy.Maliev.OrderService.Data/OrderRepositories.cs",
+      "Legacy.Maliev.OrderService.Data/NullableCatalogSourceConstraints.cs",
+      "Legacy.Maliev.OrderService.Data/Migrations/Order/20261018100000_EnforceNullableCatalogSourceStrings.cs"
+    ],
+    "disposition": "Provider qualification only. Preserve accepted issue85 HTTP/direct-repository safety guards, nullable values and existing UTF16 CHECKs. Any physical-padding runtime repair needs its own bounded tests, protected PR and accepted-main evidence; no duplicate issue85 or issue141 closure credit."
+  },
   "existingLocalResolvedArtifacts": [
     { "path": "Maliev.OrderService.Data/obj/project.assets.json", "sha256": "8fa74356177ded582c4b46f80dc5ae6193534d3a08227ec77449384cd32c3827", "modifiedUtc": "2026-09-24T01:44:40.5539921Z" },
     { "path": "Maliev.CustomerService.Data/obj/project.assets.json", "sha256": "dc8c89b1170ad8832f3a302209487c39d9e0d129d36ab370a3b4bad9a842edcc", "modifiedUtc": "2026-09-24T01:44:40.7332487Z" },

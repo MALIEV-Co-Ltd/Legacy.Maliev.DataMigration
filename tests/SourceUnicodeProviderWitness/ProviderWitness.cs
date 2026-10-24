@@ -15,7 +15,7 @@ public static class ProviderWitness
     {
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
-        await ExecuteAsync(connection, "CREATE TABLE Orders (ID int IDENTITY PRIMARY KEY, Name nvarchar(100) NULL DEFAULT(N'unnamed'), Description nvarchar(250) NULL, TrackingNumber nvarchar(250) NULL); CREATE TABLE Company (ID int IDENTITY PRIMARY KEY, Name nvarchar(256) NOT NULL, Registrar nvarchar(256) NULL, TaxNumber nvarchar(256) NULL);", cancellationToken);
+        await ExecuteAsync(connection, "CREATE TABLE Orders (ID int IDENTITY PRIMARY KEY, Name nvarchar(100) NULL DEFAULT(N'unnamed'), Description nvarchar(250) NULL, TrackingNumber nvarchar(250) NULL); CREATE TABLE Company (ID int IDENTITY PRIMARY KEY, Name nvarchar(256) NOT NULL, Registrar nvarchar(256) NULL, TaxNumber nvarchar(256) NULL); CREATE TABLE Category (ID int IDENTITY PRIMARY KEY, Name nvarchar(50) NULL); CREATE TABLE FileFormat (ID int IDENTITY PRIMARY KEY, Name nvarchar(50) NULL, Extension nvarchar(50) NULL);", cancellationToken);
         var observations = new List<Observation>();
         foreach (var field in FieldCase.All)
         {
@@ -48,7 +48,16 @@ public static class ProviderWitness
         await using var context = new WitnessContext(connection, capture);
         var order = new Order { Name = "before", Description = "before", TrackingNumber = "before" };
         var company = new Company { Name = "before", Registrar = "before", TaxNumber = "before" };
-        object entity = field.IsOrder ? order : company;
+        var category = new Category { Name = "before" };
+        var fileFormat = new FileFormat { Name = "before", Extension = "before" };
+        object entity = field.Table switch
+        {
+            "Orders" => order,
+            "Company" => company,
+            "Category" => category,
+            "FileFormat" => fileFormat,
+            _ => throw new InvalidOperationException("Unknown synthetic table."),
+        };
         if (update)
         {
             _ = context.Add(entity);
@@ -78,11 +87,23 @@ public static class ProviderWitness
         }
         // Original controllers return the tracked entity after SaveChanges for POST; PUT returns 204.
         var immediate = Get(entity, field);
-        var id = field.IsOrder ? order.Id : company.Id;
+        var id = entity switch
+        {
+            Order value => value.Id,
+            Company value => value.Id,
+            Category value => value.Id,
+            FileFormat value => value.Id,
+            _ => throw new InvalidOperationException("Unknown synthetic entity."),
+        };
         await using var fresh = new WitnessContext(connection, new ParameterCapture(field.Column));
-        object? read = field.IsOrder
-            ? await fresh.Orders.AsNoTracking().SingleOrDefaultAsync(value => value.Id == id, token)
-            : await fresh.Companies.AsNoTracking().SingleOrDefaultAsync(value => value.Id == id, token);
+        object? read = field.Table switch
+        {
+            "Orders" => await fresh.Orders.AsNoTracking().SingleOrDefaultAsync(value => value.Id == id, token),
+            "Company" => await fresh.Companies.AsNoTracking().SingleOrDefaultAsync(value => value.Id == id, token),
+            "Category" => await fresh.Categories.AsNoTracking().SingleOrDefaultAsync(value => value.Id == id, token),
+            "FileFormat" => await fresh.FileFormats.AsNoTracking().SingleOrDefaultAsync(value => value.Id == id, token),
+            _ => throw new InvalidOperationException("Unknown synthetic table."),
+        };
         var stored = read is null ? null : Get(read, field);
         var after = Convert.ToInt32(await ScalarAsync(connection, $"SELECT COUNT(*) FROM [{field.Table}];", token), System.Globalization.CultureInfo.InvariantCulture);
         await using var physical = new SqlCommand($"SELECT DATALENGTH([{field.Column}]), CONVERT(varchar(64),HASHBYTES('SHA2_256',CONVERT(varbinary(max),[{field.Column}])),2) FROM [{field.Table}] WHERE ID=@id;", connection) { CommandTimeout = 30 };
@@ -95,16 +116,7 @@ public static class ProviderWitness
             bytes = reader.IsDBNull(0) ? null : reader.GetInt32(0);
             hash = reader.IsDBNull(1) ? null : reader.GetString(1);
         }
-        var otherFields = read is not Company remaining ||
-            ((field.Column == "Name" || remaining.Name == "before") &&
-            (field.Column == "Registrar" || remaining.Registrar == "before") &&
-            (field.Column == "TaxNumber" || remaining.TaxNumber == "before"));
-        if (read is Order remainingOrder)
-        {
-            otherFields = (field.Column == "Name" || remainingOrder.Name == "before") &&
-                (field.Column == "Description" || remainingOrder.Description == "before") &&
-                (field.Column == "TrackingNumber" || remainingOrder.TrackingNumber == "before");
-        }
+        var otherFields = read is null || field.Columns.All(column => column == field.Column || Get(read, field with { Column = column }) == "before");
         return new("EF8.0.28", field.Name, vector, update, ansi, actualAnsi, null, succeeded, errors,
             ValueEvidence.From(input), ValueEvidence.From(immediate), ValueEvidence.From(stored),
             bytes, hash, after - before, otherFields, capture.Parameters.ToArray());
@@ -112,25 +124,48 @@ public static class ProviderWitness
 
     private static string? Get(object entity, FieldCase field)
     {
-        return entity is Order order
+        return entity is Category category
+            ? field.Column == "Name" ? category.Name : throw new InvalidOperationException("Unknown synthetic field.")
+            : entity is FileFormat fileFormat
             ? field.Column switch
             {
-                "Name" => order.Name,
-                "Description" => order.Description,
-                "TrackingNumber" => order.TrackingNumber,
+                "Name" => fileFormat.Name,
+                "Extension" => fileFormat.Extension,
                 _ => throw new InvalidOperationException("Unknown synthetic field."),
-            } : field.Column switch
-            {
-                "Name" => ((Company)entity).Name,
-                "Registrar" => ((Company)entity).Registrar,
-                "TaxNumber" => ((Company)entity).TaxNumber,
-                _ => throw new InvalidOperationException("Unknown synthetic field."),
-            };
+            } : entity is Order order
+                ? field.Column switch
+                {
+                    "Name" => order.Name,
+                    "Description" => order.Description,
+                    "TrackingNumber" => order.TrackingNumber,
+                    _ => throw new InvalidOperationException("Unknown synthetic field."),
+                } : field.Column switch
+                {
+                    "Name" => ((Company)entity).Name,
+                    "Registrar" => ((Company)entity).Registrar,
+                    "TaxNumber" => ((Company)entity).TaxNumber,
+                    _ => throw new InvalidOperationException("Unknown synthetic field."),
+                };
     }
 
     private static void Set(object entity, FieldCase field, string? value)
     {
-        if (entity is Order order)
+        if (entity is Category category)
+        {
+            category.Name = field.Column == "Name" ? value : throw new InvalidOperationException("Unknown synthetic field.");
+        }
+        else if (entity is FileFormat fileFormat)
+        {
+            if (field.Column == "Name")
+            {
+                fileFormat.Name = value;
+            }
+            else
+            {
+                fileFormat.Extension = field.Column == "Extension" ? value : throw new InvalidOperationException("Unknown synthetic field.");
+            }
+        }
+        else if (entity is Order order)
         {
             if (field.Column == "Name")
             {
@@ -201,7 +236,7 @@ public static class ProviderWitness
                 return update.Groups["parameter"].Value;
             }
             var insert = Regex.Match(command,
-                @"INSERT\s+INTO\s+\[(?:Orders|Company)\]\s*\((?<columns>[^)]*)\).*?VALUES\s*\((?<values>[^)]*)\)",
+                @"INSERT\s+INTO\s+\[(?:Orders|Company|Category|FileFormat)\]\s*\((?<columns>[^)]*)\).*?VALUES\s*\((?<values>[^)]*)\)",
                 RegexOptions.Singleline | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
             if (!insert.Success)
             {
@@ -234,6 +269,8 @@ public static class ProviderWitness
     {
         internal DbSet<Order> Orders => Set<Order>();
         internal DbSet<Company> Companies => Set<Company>();
+        internal DbSet<Category> Categories => Set<Category>();
+        internal DbSet<FileFormat> FileFormats => Set<FileFormat>();
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         {
             _ = optionsBuilder.UseSqlServer(connection, options => options.CommandTimeout(30)).AddInterceptors(capture);
@@ -256,6 +293,19 @@ public static class ProviderWitness
                 _ = entity.Property(value => value.Registrar).HasMaxLength(256);
                 _ = entity.Property(value => value.TaxNumber).HasMaxLength(256);
             });
+            _ = modelBuilder.Entity<Category>(entity =>
+            {
+                _ = entity.ToTable("Category");
+                _ = entity.Property(value => value.Id).HasColumnName("ID");
+                _ = entity.Property(value => value.Name).HasMaxLength(50);
+            });
+            _ = modelBuilder.Entity<FileFormat>(entity =>
+            {
+                _ = entity.ToTable("FileFormat");
+                _ = entity.Property(value => value.Id).HasColumnName("ID");
+                _ = entity.Property(value => value.Name).HasMaxLength(50);
+                _ = entity.Property(value => value.Extension).HasMaxLength(50);
+            });
         }
     }
 
@@ -273,5 +323,18 @@ public static class ProviderWitness
         public string? Name { get; set; }
         public string? Registrar { get; set; }
         public string? TaxNumber { get; set; }
+    }
+
+    private sealed class Category
+    {
+        public int Id { get; set; }
+        public string? Name { get; set; }
+    }
+
+    private sealed class FileFormat
+    {
+        public int Id { get; set; }
+        public string? Name { get; set; }
+        public string? Extension { get; set; }
     }
 }
