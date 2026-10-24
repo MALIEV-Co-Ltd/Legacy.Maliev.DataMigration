@@ -52,6 +52,8 @@ public sealed record FieldCase(string Name, string Column, int Capacity, bool Re
         "Company" => "Company",
         "Category" => "Category",
         "FileFormat" => "FileFormat",
+        "Process" => "Process",
+        "OrderStatus" => "OrderStatus",
         _ => throw new InvalidOperationException("Unknown synthetic table."),
     };
     public string[] Columns => Table switch
@@ -60,6 +62,8 @@ public sealed record FieldCase(string Name, string Column, int Capacity, bool Re
         "Company" => ["Name", "Registrar", "TaxNumber"],
         "Category" => ["Name"],
         "FileFormat" => ["Name", "Extension"],
+        "Process" => ["Name"],
+        "OrderStatus" => ["Name", "Description"],
         _ => throw new InvalidOperationException("Unknown synthetic table."),
     };
     public static readonly FieldCase[] All =
@@ -73,6 +77,9 @@ public sealed record FieldCase(string Name, string Column, int Capacity, bool Re
         new("Category.Name", "Name", 50, false),
         new("FileFormat.Name", "Name", 50, false),
         new("FileFormat.Extension", "Extension", 50, false),
+        new("Process.Name", "Name", 50, true),
+        new("OrderStatus.Name", "Name", 50, true),
+        new("OrderStatus.Description", "Description", 100, false),
     ];
 
     public IEnumerable<(string Name, string? Value)> Vectors()
