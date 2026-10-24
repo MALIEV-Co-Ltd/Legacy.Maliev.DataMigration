@@ -70,13 +70,16 @@ public sealed class ApprovedCurrentCustomerSequenceDefinitionTests
     [Fact]
     public void Reviewed_owner_revision_requires_current_head_even_when_model_bytes_are_unchanged()
     {
-        const string current = "f845b030dc74a179fe0f5021183828fa045775bc";
-        const string previous = "e8493c35ca02e1ad0b35acf17d57c64640d263d8";
+        const string current = "4d8f41c8e0aee7a4da9b2945b8e99fc79579ffcb";
+        const string previous = "f845b030dc74a179fe0f5021183828fa045775bc";
+        const string earlier = "e8493c35ca02e1ad0b35acf17d57c64640d263d8";
         Assert.Equal(current, ApprovedCurrentCustomerSequenceDefinition.CustomerOwnerHead);
         _ = ApprovedCurrentCustomerSequenceDefinition.Create(Source(), Owner() with { Head = current },
             new('a', 40), Source().CatalogReportSha256, Now);
         _ = Assert.Throws<MigrationExecutionException>(() => ApprovedCurrentCustomerSequenceDefinition.Create(
             Source(), Owner() with { Head = previous }, new('a', 40), Source().CatalogReportSha256, Now));
+        _ = Assert.Throws<MigrationExecutionException>(() => ApprovedCurrentCustomerSequenceDefinition.Create(
+            Source(), Owner() with { Head = earlier }, new('a', 40), Source().CatalogReportSha256, Now));
     }
 
     [Theory]

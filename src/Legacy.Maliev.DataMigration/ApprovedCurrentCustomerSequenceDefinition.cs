@@ -22,7 +22,7 @@ internal sealed record CurrentCustomerSequenceObservation(CurrentCustomerSequenc
 /// <summary>Pure fixed physical preparation; native semantics require the trusted reader and signed native-state pin.</summary>
 internal sealed class ApprovedCurrentCustomerSequenceDefinition
 {
-    internal const string CustomerOwnerHead = "f845b030dc74a179fe0f5021183828fa045775bc";
+    internal const string CustomerOwnerHead = "4d8f41c8e0aee7a4da9b2945b8e99fc79579ffcb";
     internal const string ContextSha256 = "6e5d93ba8d385099b0d06d782db17344fe9656fc056ddeed1c00c2f07710b970";
     internal const string OwnerSnapshotSha256 = "795475768f136faad32445b7eafa56d87ad6b98a58394292329b4534e450a7be";
     internal const string CandidateSql = "ALTER SEQUENCE public.\"Customer_ID_seq\" START WITH 1000;";
