@@ -44,7 +44,12 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
                 host.MemorySwap = host.Memory;
                 host.NanoCPUs = 2_000_000_000;
                 foreach (var bindings in host.PortBindings.Values)
-                    foreach (var binding in bindings) binding.HostIP = "127.0.0.1";
+                {
+                    foreach (var binding in bindings)
+                    {
+                        binding.HostIP = "127.0.0.1";
+                    }
+                }
             }).Build();
         string? id = null;
         Exception? primaryFailure = null;
@@ -69,9 +74,16 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             Assert.All(inspectedNetwork.Ports.Values.SelectMany(value => value), binding => Assert.Equal("127.0.0.1", binding.HostIP));
             WriteEvidence("running", new
             {
-                Stage = "running", Owner = owner, Id = id, inspected.Created, inspected.Image,
-                inspectedHost.Memory, inspectedHost.MemorySwap, inspectedHost.NanoCPUs,
-                Ports = inspectedNetwork.Ports, Persistent = false,
+                Stage = "running",
+                Owner = owner,
+                Id = id,
+                inspected.Created,
+                inspected.Image,
+                inspectedHost.Memory,
+                inspectedHost.MemorySwap,
+                inspectedHost.NanoCPUs,
+                inspectedNetwork.Ports,
+                Persistent = false,
             });
             var connection = new SqlConnectionStringBuilder(container.GetConnectionString())
             {
@@ -137,14 +149,24 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             }
         }
         if (primaryFailure is not null && cleanupFailure is not null)
+        {
             throw new AggregateException("Synthetic provider validation and owned cleanup both failed.", primaryFailure, cleanupFailure);
-        if (primaryFailure is not null) ExceptionDispatchInfo.Capture(primaryFailure).Throw();
-        if (cleanupFailure is not null) ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+        }
+
+        if (primaryFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(primaryFailure).Throw();
+        }
+
+        if (cleanupFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+        }
     }
 
     private void WriteEvidence(string name, object value)
     {
-        Directory.CreateDirectory(evidenceDirectory);
+        _ = Directory.CreateDirectory(evidenceDirectory);
         var json = JsonSerializer.Serialize(value);
         File.WriteAllText(Path.Combine(evidenceDirectory, name + ".json"), json);
         output.WriteLine(json);
@@ -181,31 +203,29 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
     private sealed class WitnessLoadContext(string path) : AssemblyLoadContext("source-ef-8.0.28", isCollectible: true)
     {
         private readonly AssemblyDependencyResolver resolver = new(path);
-        private readonly string root = Path.GetDirectoryName(Path.GetFullPath(path))! + Path.DirectorySeparatorChar;
+        private readonly string root = Path.GetDirectoryName(Path.GetFullPath(path)) + Path.DirectorySeparatorChar;
         protected override Assembly? Load(AssemblyName assemblyName)
         {
             var resolved = resolver.ResolveAssemblyToPath(assemblyName);
-            if (resolved is not null)
-            {
-                if (!Path.GetFullPath(resolved).StartsWith(root, StringComparison.Ordinal))
-                    throw new FileNotFoundException("An isolated dependency resolved outside the witness directory.");
-                return LoadFromAssemblyPath(resolved);
-            }
-            if (assemblyName.Name!.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal) ||
+            return resolved is not null
+                ? !Path.GetFullPath(resolved).StartsWith(root, StringComparison.Ordinal)
+                    ? throw new FileNotFoundException("An isolated dependency resolved outside the witness directory.")
+                    : LoadFromAssemblyPath(resolved)
+                : assemblyName.Name!.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal) ||
                 assemblyName.Name.StartsWith("Microsoft.Data.", StringComparison.Ordinal) ||
                 assemblyName.Name.StartsWith("Microsoft.Extensions.", StringComparison.Ordinal) ||
                 assemblyName.Name.StartsWith("Microsoft.Identity", StringComparison.Ordinal) ||
                 assemblyName.Name.StartsWith("Azure.", StringComparison.Ordinal) ||
-                assemblyName.Name.StartsWith("Microsoft.SqlServer.", StringComparison.Ordinal))
-                throw new FileNotFoundException("The isolated source provider dependency must not fall back to the host.");
-            return null;
+                assemblyName.Name.StartsWith("Microsoft.SqlServer.", StringComparison.Ordinal)
+                ? throw new FileNotFoundException("The isolated source provider dependency must not fall back to the host.")
+                : null;
         }
         protected override nint LoadUnmanagedDll(string unmanagedDllName)
         {
             var resolved = resolver.ResolveUnmanagedDllToPath(unmanagedDllName);
-            if (resolved is not null && !Path.GetFullPath(resolved).StartsWith(root, StringComparison.Ordinal))
-                throw new FileNotFoundException("An isolated native dependency resolved outside the witness directory.");
-            return resolved is null ? nint.Zero : LoadUnmanagedDllFromPath(resolved);
+            return resolved is not null && !Path.GetFullPath(resolved).StartsWith(root, StringComparison.Ordinal)
+                ? throw new FileNotFoundException("An isolated native dependency resolved outside the witness directory.")
+                : resolved is null ? nint.Zero : LoadUnmanagedDllFromPath(resolved);
         }
     }
 
@@ -220,12 +240,17 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             var expectedImmediate = !raw && !row.Update && row.Input.IsNull && field.InsertDefault is not null && row.Succeeded
                 ? ValueEvidence.From(field.InsertDefault) : row.Input;
             if (raw || row.Input.IsNull || row.Input.Utf16Units <= field.Capacity)
+            {
                 Assert.Equal(expectedImmediate, row.ImmediateEntity);
+            }
+
             Assert.Equal(row.Succeeded && !row.Update ? 1 : 0, row.RowCountDelta);
             Assert.NotEmpty(row.Parameters);
             Assert.Contains(row.Parameters, value => value.Type == "NVarChar");
             if (!raw && !row.Update && row.Input.IsNull && field.InsertDefault is not null)
+            {
                 Assert.DoesNotContain(row.Parameters, value => value.IsSelectedField);
+            }
             else
             {
                 var selected = Assert.Single(row.Parameters, value => value.IsSelectedField);
@@ -233,7 +258,11 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
                 Assert.Equal(row.Input.Utf16Units, selected.InputUtf16Units);
                 Assert.Equal(row.Input.IsNull, selected.ValueIsNull);
             }
-            if (raw) Assert.Contains(row.Parameters, value => value.Size == row.ExplicitParameterSize);
+            if (raw)
+            {
+                Assert.Contains(row.Parameters, value => value.Size == row.ExplicitParameterSize);
+            }
+
             if (row.Input.IsNull && field.Required)
             {
                 Assert.False(row.Succeeded);
@@ -256,7 +285,9 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             {
                 Assert.NotEmpty(row.SqlErrorNumbers);
                 if (row.Input.IsNull && field.Required)
+                {
                     Assert.All(row.SqlErrorNumbers, number => Assert.True(number is 515 or 3621));
+                }
                 else
                 {
                     Assert.True(row.Input.Utf16Units > field.Capacity);
@@ -282,11 +313,22 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
         await ExecuteAsync(connection, "CREATE TABLE Orders (ID int IDENTITY PRIMARY KEY, Name nvarchar(100) NULL DEFAULT(N'unnamed'), Description nvarchar(250) NULL, TrackingNumber nvarchar(250) NULL); CREATE TABLE Company (ID int IDENTITY PRIMARY KEY, Name nvarchar(256) NOT NULL, Registrar nvarchar(256) NULL, TaxNumber nvarchar(256) NULL);", token);
         var observations = new List<Observation>();
         foreach (var field in FieldCase.All)
+        {
             foreach (var size in new[] { field.Capacity, 4000 })
+            {
                 foreach (var ansi in new[] { true, false })
+                {
                     foreach (var update in new[] { false, true })
-                        foreach (var vector in field.Vectors())
-                            observations.Add(await ObserveRawAsync(connection, field, size, ansi, update, vector.Name, vector.Value, token));
+                    {
+                        foreach (var (Name, Value) in field.Vectors())
+                        {
+                            observations.Add(await ObserveRawAsync(connection, field, size, ansi, update, Name, Value, token));
+                        }
+                    }
+                }
+            }
+        }
+
         return new("ExplicitSqlClient7.1", RuntimeInformation.FrameworkDescription, connection.ServerVersion,
             [AssemblyEvidence.From(typeof(SqlConnection).Assembly)], observations.ToArray());
     }
@@ -298,17 +340,21 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
         var actualAnsi = Convert.ToInt32(await ScalarAsync(connection, "SELECT SESSIONPROPERTY('ANSI_WARNINGS');", token), System.Globalization.CultureInfo.InvariantCulture);
         var id = 0;
         if (update)
+        {
             id = Convert.ToInt32(await ScalarAsync(connection, field.IsOrder
                 ? "INSERT Orders (Name,Description,TrackingNumber) OUTPUT INSERTED.ID VALUES (N'before',N'before',N'before');"
                 : "INSERT Company (Name,Registrar,TaxNumber) OUTPUT INSERTED.ID VALUES (N'before',N'before',N'before');", token), System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         var before = Convert.ToInt32(await ScalarAsync(connection, $"SELECT COUNT(*) FROM [{field.Table}];", token), System.Globalization.CultureInfo.InvariantCulture);
         string[] columns = field.IsOrder ? ["Name", "Description", "TrackingNumber"] : ["Name", "Registrar", "TaxNumber"];
         var insert = $"INSERT [{field.Table}] ({string.Join(',', columns)}) OUTPUT INSERTED.ID VALUES ({string.Join(',', columns.Select(column => column == field.Column ? "@value" : "N'before'"))});";
         await using var command = new SqlCommand(update
-            ? $"UPDATE [{field.Table}] SET [{field.Column}]=@value OUTPUT INSERTED.ID WHERE ID=@id;" : insert, connection) { CommandTimeout = 30 };
+            ? $"UPDATE [{field.Table}] SET [{field.Column}]=@value OUTPUT INSERTED.ID WHERE ID=@id;" : insert, connection)
+        { CommandTimeout = 30 };
         var parameter = command.Parameters.Add("@value", SqlDbType.NVarChar, size);
         parameter.Value = (object?)input ?? DBNull.Value;
-        command.Parameters.AddWithValue("@id", id);
+        _ = command.Parameters.AddWithValue("@id", id);
         var errors = Array.Empty<int>();
         var succeeded = false;
         try
@@ -322,7 +368,7 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
         }
         var after = Convert.ToInt32(await ScalarAsync(connection, $"SELECT COUNT(*) FROM [{field.Table}];", token), System.Globalization.CultureInfo.InvariantCulture);
         await using var read = new SqlCommand($"SELECT [{field.Column}],DATALENGTH([{field.Column}]),CONVERT(varchar(64),HASHBYTES('SHA2_256',CONVERT(varbinary(max),[{field.Column}])),2),{string.Join(',', columns)} FROM [{field.Table}] WHERE ID=@id;", connection) { CommandTimeout = 30 };
-        read.Parameters.AddWithValue("@id", id);
+        _ = read.Parameters.AddWithValue("@id", id);
         await using var reader = await read.ExecuteReaderAsync(token);
         string? stored = null;
         int? bytes = null;
@@ -334,7 +380,12 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             bytes = reader.IsDBNull(1) ? null : reader.GetInt32(1);
             hash = reader.IsDBNull(2) ? null : reader.GetString(2);
             for (var index = 0; index < columns.Length; index++)
-                if (columns[index] != field.Column) otherFields &= reader.GetString(index + 3) == "before";
+            {
+                if (columns[index] != field.Column)
+                {
+                    otherFields &= reader.GetString(index + 3) == "before";
+                }
+            }
         }
         return new("ExplicitSqlClient7.1", field.Name, vector, update, ansi, actualAnsi, size, succeeded, errors,
             ValueEvidence.From(input), ValueEvidence.From(input), ValueEvidence.From(stored), bytes, hash,
@@ -346,7 +397,7 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
     private static async Task ExecuteAsync(SqlConnection connection, string text, CancellationToken token)
     {
         await using var command = new SqlCommand(text, connection) { CommandTimeout = 30 };
-        await command.ExecuteNonQueryAsync(token);
+        _ = await command.ExecuteNonQueryAsync(token);
     }
 
     private static async Task<object?> ScalarAsync(SqlConnection connection, string text, CancellationToken token)

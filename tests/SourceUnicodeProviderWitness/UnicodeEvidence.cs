@@ -9,21 +9,29 @@ public sealed record ValueEvidence(bool IsNull, int? Utf16Units, string? Utf16Li
 {
     public static ValueEvidence From(string? value)
     {
-        if (value is null) return new(true, null, null);
+        if (value is null)
+        {
+            return new(true, null, null);
+        }
         var bytes = new byte[value.Length * 2];
         for (var index = 0; index < value.Length; index++)
+        {
             BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(index * 2, 2), value[index]);
+        }
         return new(false, value.Length, Convert.ToHexString(SHA256.HashData(bytes)));
     }
 }
 
 public sealed record AssemblyEvidence(string Name, string? Version, string? InformationalVersion, string Sha256, string? LoadContext, string RelativePath)
 {
-    public static AssemblyEvidence From(Assembly assembly) => new(
-        assembly.GetName().Name!, assembly.GetName().Version?.ToString(),
-        assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
-        Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))),
-        AssemblyLoadContext.GetLoadContext(assembly)?.Name, Path.GetRelativePath(AppContext.BaseDirectory, assembly.Location));
+    public static AssemblyEvidence From(Assembly assembly)
+    {
+        return new(
+            assembly.GetName().Name!, assembly.GetName().Version?.ToString(),
+            assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))),
+            AssemblyLoadContext.GetLoadContext(assembly)?.Name, Path.GetRelativePath(AppContext.BaseDirectory, assembly.Location));
+    }
 }
 
 public sealed record ParameterEvidence(string Name, string Type, int Size, bool IsNullable, int? InputUtf16Units,
@@ -61,8 +69,8 @@ public sealed record FieldCase(string Name, string Column, int Capacity, bool Re
         yield return ("ascii-limit-nonbreaking-space", new string('A', Capacity) + "\u00a0");
         yield return ("ascii-limit-tab", new string('A', Capacity) + "\t");
         yield return ("supplementary-limit", string.Concat(Enumerable.Repeat("😀", Capacity / 2)));
-        yield return ("supplementary-overflow", string.Concat(Enumerable.Repeat("😀", Capacity / 2 + 1)));
+        yield return ("supplementary-overflow", string.Concat(Enumerable.Repeat("😀", (Capacity / 2) + 1)));
         yield return ("supplementary-limit-space", string.Concat(Enumerable.Repeat("😀", Capacity / 2)) + " ");
-        yield return ("mixed-overflow-spaces", string.Concat(Enumerable.Repeat("😀", Capacity / 2 - 1)) + "   ");
+        yield return ("mixed-overflow-spaces", string.Concat(Enumerable.Repeat("😀", (Capacity / 2) - 1)) + "   ");
     }
 }
