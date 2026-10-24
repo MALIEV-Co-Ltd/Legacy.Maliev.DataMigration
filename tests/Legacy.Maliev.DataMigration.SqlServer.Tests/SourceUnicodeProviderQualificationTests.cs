@@ -175,10 +175,9 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
     [Fact]
     public void WitnessFieldRosterRetainsAcceptedFieldsAndAddsNullableCatalogBoundaries()
     {
-        Assert.Equal(
-            new[]
-            {
-                ("Order.TrackingNumber", "TrackingNumber", 250, false, (string?)null),
+        Assert.Equal<(string Name, string Column, int Capacity, bool Required, string? InsertDefault)>(
+            [
+                ("Order.TrackingNumber", "TrackingNumber", 250, false, null),
                 ("Order.Name", "Name", 100, false, "unnamed"),
                 ("Order.Description", "Description", 250, false, null),
                 ("Company.Name", "Name", 256, true, null),
@@ -187,7 +186,7 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
                 ("Category.Name", "Name", 50, false, null),
                 ("FileFormat.Name", "Name", 50, false, null),
                 ("FileFormat.Extension", "Extension", 50, false, null),
-            },
+            ],
             FieldCase.All.Select(field => (field.Name, field.Column, field.Capacity, field.Required, field.InsertDefault)));
     }
 
@@ -254,15 +253,16 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
         var expected = new HashSet<(string Field, string Vector, bool Update, bool AnsiWarnings, int? ExplicitParameterSize)>();
         foreach (var field in FieldCase.All)
         {
-            foreach (var vector in field.Vectors())
+            int?[] sizes = raw ? [field.Capacity, 4000] : [null];
+            foreach (var (vectorName, _) in field.Vectors())
             {
                 foreach (var update in new[] { false, true })
                 {
                     foreach (var ansi in new[] { true, false })
                     {
-                        foreach (var size in raw ? new int?[] { field.Capacity, 4000 } : new int?[] { null })
+                        foreach (var size in sizes)
                         {
-                            Assert.True(expected.Add((field.Name, vector.Name, update, ansi, size)), "Witness matrix identity is duplicated.");
+                            Assert.True(expected.Add((field.Name, vectorName, update, ansi, size)), "Witness matrix identity is duplicated.");
                         }
                     }
                 }

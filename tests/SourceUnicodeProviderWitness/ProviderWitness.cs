@@ -124,33 +124,28 @@ public static class ProviderWitness
 
     private static string? Get(object entity, FieldCase field)
     {
-        if (entity is Category category)
-        {
-            return field.Column == "Name" ? category.Name : throw new InvalidOperationException("Unknown synthetic field.");
-        }
-        if (entity is FileFormat fileFormat)
-        {
-            return field.Column switch
+        return entity is Category category
+            ? field.Column == "Name" ? category.Name : throw new InvalidOperationException("Unknown synthetic field.")
+            : entity is FileFormat fileFormat
+            ? field.Column switch
             {
                 "Name" => fileFormat.Name,
                 "Extension" => fileFormat.Extension,
                 _ => throw new InvalidOperationException("Unknown synthetic field."),
-            };
-        }
-        return entity is Order order
-            ? field.Column switch
-            {
-                "Name" => order.Name,
-                "Description" => order.Description,
-                "TrackingNumber" => order.TrackingNumber,
-                _ => throw new InvalidOperationException("Unknown synthetic field."),
-            } : field.Column switch
-            {
-                "Name" => ((Company)entity).Name,
-                "Registrar" => ((Company)entity).Registrar,
-                "TaxNumber" => ((Company)entity).TaxNumber,
-                _ => throw new InvalidOperationException("Unknown synthetic field."),
-            };
+            } : entity is Order order
+                ? field.Column switch
+                {
+                    "Name" => order.Name,
+                    "Description" => order.Description,
+                    "TrackingNumber" => order.TrackingNumber,
+                    _ => throw new InvalidOperationException("Unknown synthetic field."),
+                } : field.Column switch
+                {
+                    "Name" => ((Company)entity).Name,
+                    "Registrar" => ((Company)entity).Registrar,
+                    "TaxNumber" => ((Company)entity).TaxNumber,
+                    _ => throw new InvalidOperationException("Unknown synthetic field."),
+                };
     }
 
     private static void Set(object entity, FieldCase field, string? value)
