@@ -4,7 +4,9 @@ This is pure preparation and disposable feasibility test source. It grants no da
 
 The explicit `LiteralWidthV1` selection derives four physical consumption operands: Country.public.Country.ISO2/ISO3 and Material.public.Country.ISO2/ISO3, nullable character(2/3) to character varying(2/3). The selected physical view changes only those type fields. It never returns a fabricated historical signed source plan. Fresh exact source-plan and independently observed clean current owner pins are mandatory; these observations are caller inputs, not authenticated source acceptance.
 
-Owner heads: CountryService `ea5930bd13cdb0dd5d8ab9c60a85fb90c8dfe0f7`; CatalogService `f78e5b2b2d3c72ce8dbc13ab40dbcfaa58215339`. Six exact source file hashes are embedded in the contract. Catalog's current migration refuses nonempty consolidated Country. This test source does not bypass that owner migration.
+Owner heads reviewed on 2026-10-24 (Asia/Bangkok): CountryService `0e4565e9affc4e16587996d4cb95c327c3f94b18`; CatalogService `7da867238630564d1f275b7f1beef822804414f5`. Six exact source file hashes are embedded in the contract and remain byte-identical at these clean heads. Catalog's current migration refuses nonempty consolidated Country. This test source does not bypass that owner migration.
+
+Relative to the previously accepted heads (`ea5930bd13cdb0dd5d8ab9c60a85fb90c8dfe0f7` and `f78e5b2b2d3c72ce8dbc13ab40dbcfaa58215339`), Country's Data changes update Microsoft package references to 10.0.13; Catalog's Data changes restore the Newtonsoft exchange-rate response adapter and its package reference. The pinned contexts, model snapshots, lookup contexts and literal-width migration are unchanged. This review establishes schema-source equivalence only. Runtime compatibility, fresh source observations and target-specific execution evidence remain separate prerequisites. Both previous heads and the older historical heads must reject as current observations; historical row profile IDs remain unchanged.
 
 ## Literal preservation
 
@@ -14,7 +16,7 @@ The disposable PostgreSQL 18.4 tests compare `bpcharsend` before to `convert_to(
 
 ## Remaining integration and proof obligations
 
-- No build, focused suite, formatter, or native proof has been run for this source preparation. Root owns admission and validation.
+- Validation is revision-specific. Earlier disposable feasibility evidence does not establish native PostgreSQL 18.1 proof or persistent repair completion for the current owner bindings. Root owns admission and validation.
 - Prove the candidate on native PostgreSQL with the immutable image before accepting literal-width behavior. Include direct byte lengths, bounded source inputs and every retained row; do not infer data preservation from schema hashes.
 - Fresh independent complete target catalog and private actual-value snapshots must bind the exact target and source SHA. Preserve Material.Country's own before values; standalone Country is not its provenance.
 - A future runtime must reject arbitrary dependencies, triggers, policies, partitions, unexpected catalog state and unknown collations, with complete fleet preservation. The pure TableCopyPlan check cannot observe native dependencies outside that model.
@@ -24,3 +26,9 @@ The disposable PostgreSQL 18.4 tests compare `bpcharsend` before to `convert_to(
 - Preserve the reviewed exact local 26 / production 49 non-template database keys, all 51 production catalog entries including template flags, and target-specific EF history. Independent system-bound inventory observations bracket each complete fleet capture. Missing, extra, substituted, case-changed and historical count-only inventories reject. No adoption or history fabrication is included.
 
 Required validation: Release build with zero warnings/errors, focused pure tests, existing consumer selection/V1/V2/V3 regression suites, formatter/analyzers, then serialized disposable native proof under unchanged resource admission. Production writes remain outside this slice.
+
+## Owner-binding refresh validation (2026-10-24 Asia/Bangkok)
+
+The refresh starts from protected main `299c9ad0a86741b822c030fc51dd7c494a7af0d1`. The two regression cases for the previous Country/Catalog heads failed before the constant update (`Assert.Throws`: no exception); the other 702 focused cases passed. After the update, the Release solution build completed with zero warnings and zero errors, and the focused owner/schema/admission/console/serialization/overlay suite passed all 704 cases with zero skipped.
+
+The full local suite has not run for these bindings. Its pinned consumer-owner proof binary is absent, and host memory subsequently fell below the unchanged 3 GiB SDK admission threshold; additional local owner builds and disposable workers were not started. The existing hosted validation must prepare the pinned proof and pass its complete suite, formatting, static/security and boundary checks on the exact proposed head before protected merge. Fresh PostgreSQL 18.1 proof, recovery proof and both persistent-target repairs/reconciliations remain outstanding. This source change performs no database operation and establishes no data parity.
