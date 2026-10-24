@@ -14,6 +14,7 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         "Validate .NET solution",
         "Prepare PostgreSQL 18 client wrappers",
         "Verify PostgreSQL 18 snapshot producer compatibility",
+        "Preserve synthetic source provider receipts",
     ];
     private static readonly string[] MinimumPermissions = ["contents: read"];
 
@@ -89,6 +90,25 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         _ = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ValidateWorkflow(previousPin));
     }
 
+    [Fact]
+    public void RequiredValidation_RejectsChangedSyntheticReceiptCustody()
+    {
+        string source = ReadWorkflow().ReplaceLineEndings("\n");
+        foreach ((string original, string replacement) in new[]
+        {
+            ("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "actions/upload-artifact@main"),
+            ("if: always()", "if: success()"),
+            ("path: tests/Legacy.Maliev.DataMigration.SqlServer.Tests/bin/Release/net10.0/source-unicode-evidence/**/*.json", "path: **/*"),
+            ("retention-days: 7", "retention-days: 90"),
+            ("      - name: Preserve synthetic source provider receipts\n", "      - name: Preserve synthetic source provider receipts\n        continue-on-error: true\n"),
+        })
+        {
+            string changed = source.Replace(original, replacement, StringComparison.Ordinal);
+            Assert.NotEqual(source, changed);
+            _ = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ValidateWorkflow(changed));
+        }
+    }
+
     private static string ReadWorkflow()
     {
         DirectoryInfo? root = new(AppContext.BaseDirectory);
@@ -135,6 +155,13 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         Assert.False(Regex.IsMatch(source, "^ {4}(?:if|continue-on-error|permissions):", RegexOptions.Multiline, TimeSpan.FromSeconds(1)));
         Assert.Contains("LEGACY_DEPLOY_ENABLED: 'false'", validation, StringComparison.Ordinal);
         Assert.Equal("MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@e3a6093324a24968876782153286f52db8b29fd8", Scalar(Body(4), "uses"));
+        Assert.Equal("always()", Scalar(Body(7), "if"));
+        Assert.Equal("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", Scalar(Body(7), "uses"));
+        Assert.Equal("source-unicode-provider-${{ github.sha }}", Scalar(Body(7), "name"));
+        Assert.Equal("tests/Legacy.Maliev.DataMigration.SqlServer.Tests/bin/Release/net10.0/source-unicode-evidence/**/*.json", Scalar(Body(7), "path"));
+        Assert.Equal("7", Scalar(Body(7), "retention-days"));
+        Assert.Equal("warn", Scalar(Body(7), "if-no-files-found"));
+        Assert.False(Regex.IsMatch(Body(7), "^ +(?:continue-on-error|permissions|env|run|shell):", RegexOptions.Multiline, TimeSpan.FromSeconds(1)));
     }
 
     private static string Scalar(string body, string name)

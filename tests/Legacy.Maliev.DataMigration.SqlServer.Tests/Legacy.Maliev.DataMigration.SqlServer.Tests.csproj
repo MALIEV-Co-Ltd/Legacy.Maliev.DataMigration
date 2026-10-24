@@ -22,6 +22,9 @@
     <PackageReference Include="Testcontainers.MsSql" Version="4.16.0" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="../SourceUnicodeProviderWitness/SourceUnicodeProviderWitness.csproj" ReferenceOutputAssembly="false" />
+    <Compile Include="../SourceUnicodeProviderWitness/UnicodeEvidence.cs" Link="SourceUnicodeWitness/UnicodeEvidence.cs" />
+    <None Include="../SourceUnicodeProviderWitness/source-bindings.json" Link="SourceUnicodeWitness/source-bindings.json" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="../../src/Legacy.Maliev.DataMigration/Legacy.Maliev.DataMigration.csproj" />
     <ProjectReference Include="../../src/Legacy.Maliev.DataMigration.SqlServer/Legacy.Maliev.DataMigration.SqlServer.csproj" />
     <ProjectReference Include="../../src/Legacy.Maliev.DataMigration.Console/Legacy.Maliev.DataMigration.Console.csproj" />
@@ -30,4 +33,10 @@
     <None Include="../Legacy.Maliev.DataMigration.Tests/Fixtures/SourceScripts/*.sql" Link="Fixtures/SourceScripts/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../Legacy.Maliev.DataMigration.Tests/Fixtures/Quotation/*.sql" Link="Fixtures/Quotation/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="CopySourceUnicodeProviderWitness" AfterTargets="Build">
+    <ItemGroup>
+      <SourceUnicodeWitnessFiles Include="../SourceUnicodeProviderWitness/bin/$(Configuration)/net10.0/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(SourceUnicodeWitnessFiles)" DestinationFiles="@(SourceUnicodeWitnessFiles->'$(TargetDir)source-ef-8.0.28/%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
 </Project>
