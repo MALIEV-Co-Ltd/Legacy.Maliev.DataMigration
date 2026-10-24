@@ -241,7 +241,7 @@ public static class ProviderWitness
                 return update.Groups["parameter"].Value;
             }
             var insert = Regex.Match(command,
-                @"INSERT\s+INTO\s+\[(?:Orders|Company)\]\s*\((?<columns>[^)]*)\).*?VALUES\s*\((?<values>[^)]*)\)",
+                @"INSERT\s+INTO\s+\[(?:Orders|Company|Category|FileFormat)\]\s*\((?<columns>[^)]*)\).*?VALUES\s*\((?<values>[^)]*)\)",
                 RegexOptions.Singleline | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
             if (!insert.Success)
             {
