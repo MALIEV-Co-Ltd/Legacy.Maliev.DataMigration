@@ -65,7 +65,7 @@ public sealed class ApprovedCurrentAuthSchemaTests
     {
         CurrentAuthSourcePin[] pins = ApprovedCurrentAuthSchema.SourcePins();
         Assert.Equal(13, pins.Length);
-        Assert.Equal("ac3e31768341be0ac982fb515680ed7caf915e0f5de769a49d6ede8567a6c087",
+        Assert.Equal("222d3a5e28af5c92da613bd2b17256bc6684c6670a07e925f19aa525a48dfbd2",
             pins.Single(pin => pin.RelativePath.EndsWith("/ServiceCollectionExtensions.cs", StringComparison.Ordinal)).Sha256);
         RequireSource(pins);
         _ = Assert.Throws<InvalidOperationException>(() => RequireSource(pins, "5a81aba3d85c2a22cf999d7f02cdcd7f7fa38198"));
@@ -81,6 +81,28 @@ public sealed class ApprovedCurrentAuthSchemaTests
         pins[0] = pins[0] with { Sha256 = new string('a', 64) };
         _ = Assert.Throws<InvalidOperationException>(() => RequireSource(pins));
         RequireSource(ApprovedCurrentAuthSchema.SourcePins());
+    }
+
+    [Theory]
+    [InlineData("head")]
+    [InlineData("service-pin")]
+    [InlineData("entity-pin")]
+    public void Prior_owner_head_and_source_pins_cannot_be_used_as_current_observations(string fault)
+    {
+        CurrentAuthSourcePin[] pins = ApprovedCurrentAuthSchema.SourcePins();
+        string head = ApprovedCurrentAuthSchema.AuthServiceCommit;
+        if (fault == "head") { head = "f7079f133b1e607b8909636a5114ebccc73b27bc"; }
+        if (fault == "service-pin")
+        {
+            int index = Array.FindIndex(pins, pin => pin.RelativePath.EndsWith("/ServiceCollectionExtensions.cs", StringComparison.Ordinal));
+            pins[index] = pins[index] with { Sha256 = "ac3e31768341be0ac982fb515680ed7caf915e0f5de769a49d6ede8567a6c087" };
+        }
+        if (fault == "entity-pin")
+        {
+            int index = Array.FindIndex(pins, pin => pin.RelativePath.EndsWith("/IdentityActionToken.cs", StringComparison.Ordinal));
+            pins[index] = pins[index] with { Sha256 = "71fe26148fc57e74d7c6cab8ddbd4c9643f16ba2e515e8b6929c765bd582ff56" };
+        }
+        _ = Assert.Throws<InvalidOperationException>(() => RequireSource(pins, head));
     }
 
     [Fact]

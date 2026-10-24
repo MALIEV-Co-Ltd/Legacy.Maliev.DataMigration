@@ -20,7 +20,7 @@ internal sealed record CurrentAuthHistoryObservation(
 /// <summary>Pure closed Auth preparation contract. No execution or source-acceptance authority.</summary>
 internal static class ApprovedCurrentAuthSchema
 {
-    private const string OwnerCommit = "f7079f133b1e607b8909636a5114ebccc73b27bc";
+    private const string OwnerCommit = "d05c1ed990303beb2fba630b49c78adca9d0b610";
     internal const string AuthServiceCommit = OwnerCommit;
     private const string Domain = "Legacy.Maliev.CurrentAuthClosure.v1";
     private static readonly CurrentAuthSourcePin[] Pins =
@@ -28,10 +28,10 @@ internal static class ApprovedCurrentAuthSchema
         new("Legacy.Maliev.AuthService.Infrastructure/RefreshSessionDbContext.cs", "2c0233b91a1698135a07ca4d472dd57c5167e6b4bcd9bf6dd1c0eb2daba63f4f"),
         new("Legacy.Maliev.AuthService.Infrastructure/PostgresRefreshSessionStore.cs", "d1dc74fff3cdcabfb5bfcb51844f9808da865f3568542909e0e665ccc603d1e6"),
         new("Legacy.Maliev.AuthService.Infrastructure/GoogleIdentityNonceService.cs", "4159ba3fad180cccb5e68fe6f05df04e5f6aa2c9913ca3560974c35ba86b2006"),
-        new("Legacy.Maliev.AuthService.Infrastructure/ServiceCollectionExtensions.cs", "ac3e31768341be0ac982fb515680ed7caf915e0f5de769a49d6ede8567a6c087"),
+        new("Legacy.Maliev.AuthService.Infrastructure/ServiceCollectionExtensions.cs", "222d3a5e28af5c92da613bd2b17256bc6684c6670a07e925f19aa525a48dfbd2"),
         new("Legacy.Maliev.AuthService.Infrastructure/Migrations/RefreshSessionDbContextModelSnapshot.cs", "2f6e883920112ec63d13cbe8026cbaf07ce3080f3f3101f57ef3dffcafdbc1ad"),
         new("Legacy.Maliev.AuthService.Domain/RefreshSession.cs", "00ed65f2619b356d64851e25109ef31c87e9bef3f8ba3c59383e4dd31b97107b"),
-        new(RelativePath: "Legacy.Maliev.AuthService.Domain/IdentityActionToken.cs", Sha256: "71fe26148fc57e74d7c6cab8ddbd4c9643f16ba2e515e8b6929c765bd582ff56"),
+        new(RelativePath: "Legacy.Maliev.AuthService.Domain/IdentityActionToken.cs", Sha256: "ed03a9730d27dd6e81b986d5e78b9b673da699e5e6d2b3bf17c83ca20a168018"),
         new("Legacy.Maliev.AuthService.Domain/GoogleIdentityNonce.cs", "d9a8cbb4930b668f099776a47f2945f07f06f42cd2dfaf21653f977cb720d566"),
         new("Legacy.Maliev.AuthService.Infrastructure/Migrations/20260715104357_InitialRefreshSessions.cs", "60656d8afd6ec7f7400aec07a13957495e8ae293a8358ee985d73638765cb47c"),
         new(RelativePath: "Legacy.Maliev.AuthService.Infrastructure/Migrations/20260715140429_AddIdentityActionTokens.cs", Sha256: "e4a2a7ba883e98cef0dca189ba6ce073d7e6418a887551a356a2aba586f59a9b"),
