@@ -103,12 +103,12 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             Assert.Contains(ef.Assemblies, value => value.Name == "Microsoft.Data.SqlClient" && value.InformationalVersion!.StartsWith("5.1.7", StringComparison.Ordinal));
             Assert.All(ef.Assemblies, value => Assert.Equal("source-ef-8.0.28", value.LoadContext));
             Assert.All(ef.Assemblies, value => Assert.StartsWith("source-ef-8.0.28" + Path.DirectorySeparatorChar, value.RelativePath, StringComparison.Ordinal));
-            Assert.Equal(288, ef.Observations.Length);
+            Assert.Equal(432, ef.Observations.Length);
             VerifyObservations(ef.Observations, false);
             connection.InitialCatalog = "RawParameterControl";
             var raw = await RunRawAsync(connection.ConnectionString, lifetime.Token);
             WriteEvidence("raw-sqlclient-7.1", raw);
-            Assert.Equal(576, raw.Observations.Length);
+            Assert.Equal(864, raw.Observations.Length);
             Assert.Contains(raw.Assemblies, value => value.Name == "Microsoft.Data.SqlClient" && value.InformationalVersion!.StartsWith("7.1.0", StringComparison.Ordinal));
             VerifyObservations(raw.Observations, true);
         }
@@ -173,6 +173,25 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
     }
 
     [Fact]
+    public void WitnessFieldRosterRetainsAcceptedFieldsAndAddsNullableCatalogBoundaries()
+    {
+        Assert.Equal(
+            new[]
+            {
+                ("Order.TrackingNumber", "TrackingNumber", 250, false, (string?)null),
+                ("Order.Name", "Name", 100, false, "unnamed"),
+                ("Order.Description", "Description", 250, false, null),
+                ("Company.Name", "Name", 256, true, null),
+                ("Company.Registrar", "Registrar", 256, false, null),
+                ("Company.TaxNumber", "TaxNumber", 256, false, null),
+                ("Category.Name", "Name", 50, false, null),
+                ("FileFormat.Name", "Name", 50, false, null),
+                ("FileFormat.Extension", "Extension", 50, false, null),
+            },
+            FieldCase.All.Select(field => (field.Name, field.Column, field.Capacity, field.Required, field.InsertDefault)));
+    }
+
+    [Fact]
     public void ReceiptHashPreservesUtf16CodeUnitsIncludingUnpairedSurrogates()
     {
         Assert.NotEqual(ValueEvidence.From("\ud800"), ValueEvidence.From("\ufffd"));
@@ -232,6 +251,25 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
     private static void VerifyObservations(Observation[] observations, bool raw)
     {
         Assert.Equal(observations.Length, observations.Select(value => (value.Field, value.Vector, value.Update, value.AnsiWarnings, value.ExplicitParameterSize)).Distinct().Count());
+        var expected = new HashSet<(string Field, string Vector, bool Update, bool AnsiWarnings, int? ExplicitParameterSize)>();
+        foreach (var field in FieldCase.All)
+        {
+            foreach (var vector in field.Vectors())
+            {
+                foreach (var update in new[] { false, true })
+                {
+                    foreach (var ansi in new[] { true, false })
+                    {
+                        foreach (var size in raw ? new int?[] { field.Capacity, 4000 } : new int?[] { null })
+                        {
+                            Assert.True(expected.Add((field.Name, vector.Name, update, ansi, size)), "Witness matrix identity is duplicated.");
+                        }
+                    }
+                }
+            }
+        }
+        Assert.True(expected.SetEquals(observations.Select(value => (value.Field, value.Vector, value.Update, value.AnsiWarnings, value.ExplicitParameterSize))),
+            "Every declared field/vector/operation/session/parameter-size identity must be observed exactly once.");
         foreach (var row in observations)
         {
             var field = Assert.Single(FieldCase.All, value => value.Name == row.Field);
@@ -310,7 +348,7 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
     {
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(token);
-        await ExecuteAsync(connection, "CREATE TABLE Orders (ID int IDENTITY PRIMARY KEY, Name nvarchar(100) NULL DEFAULT(N'unnamed'), Description nvarchar(250) NULL, TrackingNumber nvarchar(250) NULL); CREATE TABLE Company (ID int IDENTITY PRIMARY KEY, Name nvarchar(256) NOT NULL, Registrar nvarchar(256) NULL, TaxNumber nvarchar(256) NULL);", token);
+        await ExecuteAsync(connection, "CREATE TABLE Orders (ID int IDENTITY PRIMARY KEY, Name nvarchar(100) NULL DEFAULT(N'unnamed'), Description nvarchar(250) NULL, TrackingNumber nvarchar(250) NULL); CREATE TABLE Company (ID int IDENTITY PRIMARY KEY, Name nvarchar(256) NOT NULL, Registrar nvarchar(256) NULL, TaxNumber nvarchar(256) NULL); CREATE TABLE Category (ID int IDENTITY PRIMARY KEY, Name nvarchar(50) NULL); CREATE TABLE FileFormat (ID int IDENTITY PRIMARY KEY, Name nvarchar(50) NULL, Extension nvarchar(50) NULL);", token);
         var observations = new List<Observation>();
         foreach (var field in FieldCase.All)
         {
@@ -338,16 +376,15 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
     {
         await ExecuteAsync(connection, $"SET ANSI_WARNINGS {(ansi ? "ON" : "OFF")};", token);
         var actualAnsi = Convert.ToInt32(await ScalarAsync(connection, "SELECT SESSIONPROPERTY('ANSI_WARNINGS');", token), System.Globalization.CultureInfo.InvariantCulture);
+        var columns = field.Columns;
         var id = 0;
         if (update)
         {
-            id = Convert.ToInt32(await ScalarAsync(connection, field.IsOrder
-                ? "INSERT Orders (Name,Description,TrackingNumber) OUTPUT INSERTED.ID VALUES (N'before',N'before',N'before');"
-                : "INSERT Company (Name,Registrar,TaxNumber) OUTPUT INSERTED.ID VALUES (N'before',N'before',N'before');", token), System.Globalization.CultureInfo.InvariantCulture);
+            id = Convert.ToInt32(await ScalarAsync(connection,
+                $"INSERT [{field.Table}] ({string.Join(',', columns)}) OUTPUT INSERTED.ID VALUES ({string.Join(',', columns.Select(_ => "N'before'"))});", token), System.Globalization.CultureInfo.InvariantCulture);
         }
 
         var before = Convert.ToInt32(await ScalarAsync(connection, $"SELECT COUNT(*) FROM [{field.Table}];", token), System.Globalization.CultureInfo.InvariantCulture);
-        string[] columns = field.IsOrder ? ["Name", "Description", "TrackingNumber"] : ["Name", "Registrar", "TaxNumber"];
         var insert = $"INSERT [{field.Table}] ({string.Join(',', columns)}) OUTPUT INSERTED.ID VALUES ({string.Join(',', columns.Select(column => column == field.Column ? "@value" : "N'before'"))});";
         await using var command = new SqlCommand(update
             ? $"UPDATE [{field.Table}] SET [{field.Column}]=@value OUTPUT INSERTED.ID WHERE ID=@id;" : insert, connection)
