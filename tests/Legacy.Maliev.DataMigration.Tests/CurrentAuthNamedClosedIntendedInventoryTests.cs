@@ -83,7 +83,10 @@ public sealed class CurrentAuthNamedClosedIntendedInventoryTests
         }
 
         internal void Require(CurrentAuthNamedClosedIntendedFacts facts) { RequireCandidate(facts); RequireSigned(facts); }
-        internal void RequireCandidate(CurrentAuthNamedClosedIntendedFacts facts) => CurrentAuthNamedClosedIntent.RequireCandidate(facts, _source, _binding, _now);
+        internal void RequireCandidate(CurrentAuthNamedClosedIntendedFacts facts)
+        {
+            CurrentAuthNamedClosedIntent.RequireCandidate(facts, _source, _binding, _now);
+        }
         internal void RequireSigned(CurrentAuthNamedClosedIntendedFacts facts)
         {
             var artifact = new CurrentAuthProofArtifact(@"D:\pure-unit\held.json", new string('a', 64));
@@ -115,6 +118,9 @@ public sealed class CurrentAuthNamedClosedIntendedInventoryTests
             return database with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(database) };
         }
 
-        public void Dispose() => _key.Dispose();
+        public void Dispose()
+        {
+            _key.Dispose();
+        }
     }
 }
