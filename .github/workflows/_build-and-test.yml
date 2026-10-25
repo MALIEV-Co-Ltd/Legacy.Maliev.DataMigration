@@ -68,7 +68,7 @@ jobs:
       - name: Set up .NET for owner migration proof
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.402
       - name: Prepare exact-pinned consumer owner migrations
         shell: pwsh
         run: ./scripts/prepare-consumer-owner-migration-proof.ps1
@@ -76,6 +76,7 @@ jobs:
         uses: MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@e3a6093324a24968876782153286f52db8b29fd8
         with:
           solution: Legacy.Maliev.DataMigration.slnx
+          dotnet-version: 10.0.402
       - name: Prepare PostgreSQL 18 client wrappers
         shell: bash
         run: |
