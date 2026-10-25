@@ -39,7 +39,7 @@ internal static class CurrentAuthNamedClosedIntent
             !DeltaSynchronizationPlanProducer.ValidAuthority(facts.Target, facts.TargetNamespace, facts.TargetCluster) ||
             facts.SourceCommitSha != source.SourceCommitSha || facts.SourceSchemaPlanSha256 != SchemaPlanCanonicalizer.ComputeSha256(source) ||
             facts.RunBindingSha256 != binding.ComputeSha256() || facts.OperationId == Guid.Empty ||
-            facts.BeforeDatabaseSha256.Count != (facts.Target.Kind == DeltaTargetAuthorityKind.LocalAspire ? 26 : 53) ||
+            !ReviewedProductionRepairInventory.MatchesKeys(facts.Target.Kind, facts.BeforeDatabaseSha256.Keys) ||
             facts.BeforeDatabaseSha256.Values.Any(x => !CurrentAuthRepairPermit.HashShape(x)) ||
             facts.GlobalPreservationSha256 != CurrentAuthRepairPermit.FleetSha256(facts.BeforeDatabaseSha256) ||
             !CurrentAuthRepairPermit.HashShape(facts.DefinitionPrecursorSha256) || !CurrentAuthRepairPermit.HashShape(facts.TargetObservationSha256) ||
@@ -72,7 +72,7 @@ internal static class CurrentAuthNamedClosedIntent
             value.AuthOwnerCommitSha != ApprovedCurrentAuthSchema.AuthServiceCommit || value.AuthOwnerSourcePinsSha256 != CurrentAuthRepairPermit.OwnerPinsSha256 ||
             value.AuthClosureSha256 != ApprovedCurrentAuthSchema.ClosureSha256 || value.BeforeSchemaSha256 != ApprovedCurrentAuthSchema.PhysicalSha256(false) ||
             value.AfterSchemaSha256 != ApprovedCurrentAuthSchema.PhysicalSha256(true) || value.OperationSha256 != CurrentAuthRepairPermit.OperationSha256(source, facts.DefinitionPrecursorSha256) ||
-            facts.OperationId == Guid.Empty || facts.BeforeDatabaseSha256.Count != (facts.Target.Kind == DeltaTargetAuthorityKind.LocalAspire ? 26 : 53) ||
+            facts.OperationId == Guid.Empty || !ReviewedProductionRepairInventory.MatchesKeys(facts.Target.Kind, facts.BeforeDatabaseSha256.Keys) ||
             !DatabaseInventory.ActiveDatabases.All(facts.BeforeDatabaseSha256.ContainsKey) || !facts.BeforeDatabaseSha256.ContainsKey("Auth") ||
             !facts.BeforeDatabaseSha256.ContainsKey("postgres") || (facts.Target.Kind == DeltaTargetAuthorityKind.LocalAspire && !facts.BeforeDatabaseSha256.ContainsKey("legacy_local")) ||
             facts.GlobalPreservationSha256 != CurrentAuthRepairPermit.FleetSha256(facts.BeforeDatabaseSha256) ||
