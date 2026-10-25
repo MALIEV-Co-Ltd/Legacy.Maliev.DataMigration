@@ -93,8 +93,11 @@ public sealed class CurrentAuthNamedClosedIntendedInventoryTests
                 CurrentAuthRepairPermit.OperationSha256(_source, facts.DefinitionPrecursorSha256), new string('a', 64), new string('b', 64), new string('c', 64),
                 @"D:\pure-unit\binding.json", @"D:\pure-unit\source.json", @"D:\pure-unit\pins.json", artifact, artifact,
                 _now, _now.AddHours(1), 180001, "pure-review", null);
-            observation = observation with { Signature = Convert.ToBase64String(_key.SignData(CurrentAuthNamedClosedIntent.Payload(observation),
-                HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)) };
+            observation = observation with
+            {
+                Signature = Convert.ToBase64String(_key.SignData(CurrentAuthNamedClosedIntent.Payload(observation),
+                HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
+            };
             CurrentAuthNamedClosedIntent.Require(observation, _source, _trust, _pins, _now);
         }
 
@@ -103,8 +106,12 @@ public sealed class CurrentAuthNamedClosedIntendedInventoryTests
             TableCopyPlan[] tables = [database.Tables[0],
                 ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.GoogleAnalyticsOutbox, "PK_GoogleAnalyticsOutbox", "UX_GoogleAnalyticsOutbox_EventKey", true),
                 ApprovedSourceDispositionManifestTests.Outbox(CurrentQuotationSourceContract.QuotationOutcomeOutbox, "PK_QuotationOutcomeOutbox", "UQ_QuotationOutcomeOutbox_EventKey", false), .. database.Tables.Skip(3)];
-            database = database with { Tables = tables, SourceDispositionProfile = ApprovedSourceDispositionManifest.QuotationOutboxesV1,
-                SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase("Quotation", tables) };
+            database = database with
+            {
+                Tables = tables,
+                SourceDispositionProfile = ApprovedSourceDispositionManifest.QuotationOutboxesV1,
+                SourceTableDispositions = ApprovedSourceDispositionManifest.DispositionsForDatabase("Quotation", tables)
+            };
             return database with { TargetSchemaSha256 = PostgreSqlSchemaFingerprint.ComputeExpected(database) };
         }
 
