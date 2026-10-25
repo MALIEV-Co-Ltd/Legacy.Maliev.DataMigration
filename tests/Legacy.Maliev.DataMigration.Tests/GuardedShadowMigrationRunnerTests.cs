@@ -466,7 +466,9 @@ public sealed class GuardedShadowMigrationRunnerTests
     {
         Harness harness = CreateHarness();
         harness.Source.RowsPerTable = 3;
-        harness.Source.ValueFactory = _ => new string('x', 3 * 1024 * 1024);
+        // The fake target retains every row; share immutable bytes without reducing each row's payload.
+        string payload = new('x', 3 * 1024 * 1024);
+        harness.Source.ValueFactory = _ => payload;
 
         MigrationExecutionResult result = await harness.Runner.ExecuteAsync(CreateRequest(), CancellationToken.None);
 

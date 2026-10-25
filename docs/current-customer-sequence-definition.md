@@ -65,3 +65,11 @@ hosted validation and required reviews remain mandatory before any merge.
 The genuine production 18.1 image is now preloaded and all four full layer diffIDs
 and actual UID 26/GID 102 were verified independently; an image preload is not a
 component test or database proof. No persistent target was altered by this slice.
+
+## October 24 owner-source review (Asia/Bangkok)
+
+The current reviewed clean CustomerService head is `4d8f41c8e0aee7a4da9b2945b8e99fc79579ffcb`. Both pinned schema files remain byte-identical: context `6e5d93ba8d385099b0d06d782db17344fe9656fc056ddeed1c00c2f07710b970`, snapshot `795475768f136faad32445b7eafa56d87ad6b98a58394292329b4534e450a7be`. Relative to prior accepted `f845b030dc74a179fe0f5021183828fa045775bc`, the entire Data-directory diff is one paging expression in CustomerRepository: `Math.Clamp(pageSize ?? total, 1, 250)` becomes `Math.Max(pageSize ?? total, 1)`. This is a runtime paging change; it changes no context, snapshot or migration. This review does not establish application runtime acceptance.
+
+Only the owner head binding changes. Both historical heads remain rejected as current observations. Source seed checks, both schema hashes, the exact START-only candidate, all native tuple comparisons, sequence allocation preservation, historical fingerprints and every execution/maintenance/proof fence remain unchanged. No source observation, native proof, signed definition or authorization from the older heads becomes current through this update. Source preparation performs no DDL or row operation.
+
+For this binding update, the revised current-owner regression failed before the constant changed (763 other focused cases passed). Afterward the Release solution build passed with zero warnings/errors and all 764 focused cases passed under the unchanged 512 MiB child GC cap. These are source validation results, not a new accepted native PostgreSQL 18.1 proof or database repair. Full hosted checks on the final proposed head and exact protected-main checks remain required.
