@@ -90,6 +90,44 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         _ = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ValidateWorkflow(previousPin));
     }
 
+    [Theory]
+    [InlineData("10.0.x", "10.0.402")]
+    [InlineData("10.0.402", "10.0.x")]
+    [InlineData("10.0.x", "10.0.x")]
+    [InlineData("10.0.403", "10.0.402")]
+    [InlineData("10.0.402", "10.0.403")]
+    [InlineData("10.0.403", "10.0.403")]
+    public void RequiredValidation_RejectsFloatingMismatchedOrUnreviewedSdkVersions(string preparationVersion, string validationVersion)
+    {
+        string source = ReadWorkflow().ReplaceLineEndings("\n");
+        ValidateWorkflow(source);
+        string changed = source
+            .Replace("          dotnet-version: 10.0.402\n      - name: Prepare exact-pinned consumer owner migrations\n",
+                "          dotnet-version: " + preparationVersion + "\n      - name: Prepare exact-pinned consumer owner migrations\n", StringComparison.Ordinal)
+            .Replace("          solution: Legacy.Maliev.DataMigration.slnx\n          dotnet-version: 10.0.402\n",
+                "          solution: Legacy.Maliev.DataMigration.slnx\n          dotnet-version: " + validationVersion + "\n", StringComparison.Ordinal);
+        Assert.NotEqual(source, changed);
+        _ = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ValidateWorkflow(changed));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RequiredValidation_RejectsMissingExplicitSdkVersion(bool preparation)
+    {
+        string source = ReadWorkflow().ReplaceLineEndings("\n");
+        ValidateWorkflow(source);
+        string original = preparation
+            ? "          dotnet-version: 10.0.402\n      - name: Prepare exact-pinned consumer owner migrations\n"
+            : "          solution: Legacy.Maliev.DataMigration.slnx\n          dotnet-version: 10.0.402\n";
+        string replacement = preparation
+            ? "      - name: Prepare exact-pinned consumer owner migrations\n"
+            : "          solution: Legacy.Maliev.DataMigration.slnx\n";
+        string changed = source.Replace(original, replacement, StringComparison.Ordinal);
+        Assert.NotEqual(source, changed);
+        _ = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ValidateWorkflow(changed));
+    }
+
     [Fact]
     public void RequiredValidation_RejectsChangedSyntheticReceiptCustody()
     {
@@ -140,7 +178,7 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         }
 
         Assert.Equal("actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68", Scalar(Body(2), "uses"));
-        Assert.Equal("10.0.x", Scalar(Body(2), "dotnet-version"));
+        Assert.Equal("10.0.402", Scalar(Body(2), "dotnet-version"));
         Assert.Equal("pwsh", Scalar(Body(3), "shell"));
         Assert.Equal("./scripts/prepare-consumer-owner-migration-proof.ps1", Scalar(Body(3), "run"));
         foreach (int index in new[] { 2, 3 })
@@ -155,6 +193,7 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         Assert.False(Regex.IsMatch(source, "^ {4}(?:if|continue-on-error|permissions):", RegexOptions.Multiline, TimeSpan.FromSeconds(1)));
         Assert.Contains("LEGACY_DEPLOY_ENABLED: 'false'", validation, StringComparison.Ordinal);
         Assert.Equal("MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@e3a6093324a24968876782153286f52db8b29fd8", Scalar(Body(4), "uses"));
+        Assert.Equal("10.0.402", Scalar(Body(4), "dotnet-version"));
         Assert.Equal("always()", Scalar(Body(7), "if"));
         Assert.Equal("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", Scalar(Body(7), "uses"));
         Assert.Equal("source-unicode-provider-${{ github.sha }}", Scalar(Body(7), "name"));
