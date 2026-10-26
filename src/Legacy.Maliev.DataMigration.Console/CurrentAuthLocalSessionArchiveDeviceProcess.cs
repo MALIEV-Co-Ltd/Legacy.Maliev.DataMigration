@@ -21,8 +21,9 @@ internal static class CurrentAuthLocalSessionArchiveDeviceProcess
         string firstRoot, string secondRoot, CurrentAppOwnedRepairCustody firstFiles,
         CurrentAppOwnedRepairCustody secondFiles, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         CurrentAuthArchiveCapacity.Require(admission: false);
-        ct.ThrowIfCancellationRequested(); firstFiles.Require(); secondFiles.Require();
+        firstFiles.Require(); secondFiles.Require();
         var request = new CurrentAuthArchiveDeviceRequest(scope, firstRoot, secondRoot);
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(request);
         if (bytes.Length > Limit) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }

@@ -157,8 +157,11 @@ public sealed class CurrentAuthLocalSessionArchiveConsoleTests
                 new string('a', 64), new string('b', 64), new string('c', 64), new("synthetic_archive_operator", "legacy-maliev-current-auth-session-archive-v1:" + binding,
                     now.AddMinutes(-1), now.AddHours(1), now.AddMinutes(-2), now.AddMinutes(-2), new string('b', 64), new string('c', 64), "/synthetic/hba"));
         }
+        string firstRoot = Path.Combine(Path.GetTempPath(), "synthetic-archive-first-" + operation.ToString("N"));
+        string secondRoot = Path.Combine(Path.GetTempPath(), "synthetic-archive-second-" + operation.ToString("N"));
         return new(operation, Policy(true), Policy(false), new string('a', 64), 3, new string('b', 64),
-            new(@"D:\synthetic-first\archive.json", @"B:\synthetic-second\archive.json", @"D:\synthetic-first\recovery.pkcs8", @"B:\synthetic-second\recovery.pkcs8"),
+            new(Path.Combine(firstRoot, "archive.json"), Path.Combine(secondRoot, "archive.json"),
+                Path.Combine(firstRoot, "recovery.pkcs8"), Path.Combine(secondRoot, "recovery.pkcs8")),
             new string('c', 64), new string('d', 64), new string('e', 64), new string('f', 64), new string('a', 64), now, now.AddMinutes(4));
     }
 }
