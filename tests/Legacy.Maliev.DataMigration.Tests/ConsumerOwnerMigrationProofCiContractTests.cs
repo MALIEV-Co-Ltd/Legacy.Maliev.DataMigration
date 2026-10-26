@@ -134,7 +134,8 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         string source = ReadWorkflow().ReplaceLineEndings("\n");
         foreach ((string original, string replacement) in new[]
         {
-            ("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "actions/upload-artifact@main"),
+            ("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"),
+            ("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", "actions/upload-artifact@main"),
             ("if: always()", "if: success()"),
             ("path: tests/Legacy.Maliev.DataMigration.SqlServer.Tests/bin/Release/net10.0/source-unicode-evidence/**/*.json", "path: **/*"),
             ("retention-days: 7", "retention-days: 90"),
@@ -195,7 +196,7 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
         Assert.Equal("MALIEV-Co-Ltd/Legacy.Maliev.Workflows/actions/dotnet-validate@e3a6093324a24968876782153286f52db8b29fd8", Scalar(Body(4), "uses"));
         Assert.Equal("10.0.402", Scalar(Body(4), "dotnet-version"));
         Assert.Equal("always()", Scalar(Body(7), "if"));
-        Assert.Equal("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", Scalar(Body(7), "uses"));
+        Assert.Equal("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", Scalar(Body(7), "uses"));
         Assert.Equal("source-unicode-provider-${{ github.sha }}", Scalar(Body(7), "name"));
         Assert.Equal("tests/Legacy.Maliev.DataMigration.SqlServer.Tests/bin/Release/net10.0/source-unicode-evidence/**/*.json", Scalar(Body(7), "path"));
         Assert.Equal("7", Scalar(Body(7), "retention-days"));
