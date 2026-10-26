@@ -110,7 +110,7 @@ public sealed class SourceUnicodeProviderQualificationTests(ITestOutputHelper ou
             var raw = await RunRawAsync(connection.ConnectionString, lifetime.Token);
             WriteEvidence("raw-sqlclient-7.1", raw);
             Assert.Equal(1248, raw.Observations.Length);
-            Assert.Contains(raw.Assemblies, value => value.Name == "Microsoft.Data.SqlClient" && value.InformationalVersion!.StartsWith("7.1.0", StringComparison.Ordinal));
+            Assert.Contains(raw.Assemblies, value => value.Name == "Microsoft.Data.SqlClient" && value.InformationalVersion!.StartsWith("7.1.1", StringComparison.Ordinal));
             VerifyObservations(raw.Observations, true);
             VerifyObjectNameCompanions(raw, true);
         }
