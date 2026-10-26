@@ -92,6 +92,13 @@ internal static class CurrentAuthNativePreservation
             CurrentRepairOperandOwnerPurpose.AuthCollation16, scope.Target, observation.Snapshot, cancellationToken);
     }
 
+    // Current archive observation only; no transition or execution authority.
+    internal static void RequireCurrentExplicitCShape(CurrentAuthNativeObservation observation)
+    {
+        if (observation.Snapshot.Database != "Auth") { throw Invalid("database"); }
+        RequireWholeShape(observation, after: true);
+    }
+
     private static void RequireWholeShape(CurrentAuthNativeObservation observation, bool after)
     {
         RequireCaptureBinding(observation);
