@@ -10,6 +10,10 @@ public enum ConsumerOverlaySelection
     CurrentConsumerColumnsV1 = 1,
     /// <summary>Adds current application-owned tables and explicit C text collations.</summary>
     CurrentConsumerSchemaV2 = 2,
+    /// <summary>Adds durable child receipts, quotation completion and invoice ownership evidence.</summary>
+    CurrentConsumerSchemaV3 = 3,
+    /// <summary>Appends reviewed literal Country ISO widths to the complete V3 profile.</summary>
+    CurrentConsumerSchemaV3Iso = 4,
 }
 
 internal static class ApprovedConsumerOverlaySelection
@@ -26,6 +30,8 @@ internal static class ApprovedConsumerOverlaySelection
                 _ => ApprovedTargetExtensionManifest.ProfileForDatabase(database),
             },
             ConsumerOverlaySelection.CurrentConsumerSchemaV2 => ApprovedCurrentConsumerSchemaManifest.ProfileForDatabase(database),
+            ConsumerOverlaySelection.CurrentConsumerSchemaV3Iso => CurrentConsumerSchemaV3IsoManifest.ProfileForDatabase(database),
+            ConsumerOverlaySelection.CurrentConsumerSchemaV3 => CurrentConsumerSchemaV3Manifest.ProfileForDatabase(database),
             _ => throw ApprovedConsumerColumnOverlayManifest.Invalid("consumer_overlay_selection_invalid"),
         };
     }
@@ -35,12 +41,18 @@ internal static class ApprovedConsumerOverlaySelection
         return schema.Databases.Any(database =>
         database.TargetExtensionProfile is ApprovedConsumerColumnOverlayManifest.CustomerV2 or
             ApprovedConsumerColumnOverlayManifest.QuotationV1 ||
-            ApprovedCurrentConsumerSchemaManifest.IsProfile(database.TargetExtensionProfile));
+            ApprovedCurrentConsumerSchemaManifest.IsProfile(database.TargetExtensionProfile) ||
+            CurrentConsumerSchemaV3Manifest.IsProfile(database.TargetExtensionProfile) ||
+            CurrentConsumerSchemaV3IsoManifest.IsProfile(database.TargetExtensionProfile));
     }
 
     internal static bool IsApproved(FreshSchemaPlan schema)
     {
         ConsumerOverlaySelection selection = schema.Databases.Any(database =>
+            CurrentConsumerSchemaV3IsoManifest.IsProfile(database.TargetExtensionProfile))
+            ? ConsumerOverlaySelection.CurrentConsumerSchemaV3Iso : schema.Databases.Any(database =>
+            CurrentConsumerSchemaV3Manifest.IsProfile(database.TargetExtensionProfile))
+            ? ConsumerOverlaySelection.CurrentConsumerSchemaV3 : schema.Databases.Any(database =>
             ApprovedCurrentConsumerSchemaManifest.IsProfile(database.TargetExtensionProfile))
             ? ConsumerOverlaySelection.CurrentConsumerSchemaV2 : IsCurrent(schema)
             ? ConsumerOverlaySelection.CurrentConsumerColumnsV1 : ConsumerOverlaySelection.HistoricalDefaults;

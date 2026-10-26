@@ -13,7 +13,7 @@ internal static class ApprovedConsumerColumnOverlayManifest
         var definition = (schema.Database, schema.TargetExtensionProfile) switch
         {
             ("CustomerIdentity", CustomerV2 or ApprovedCurrentConsumerSchemaManifest.CustomerIdentity) => (Table: "AspNetUsers", Key: "Id", KeyType: "character varying(450)", Column: "PasswordSetupRequired", Type: "boolean", Nullable: false, Default: "false"),
-            ("Quotation", QuotationV1 or ApprovedCurrentConsumerSchemaManifest.Quotation) => (Table: "Quotation", Key: "ID", KeyType: "integer", Column: "DecisionOrderVersion", Type: "timestamp without time zone", Nullable: true, Default: null),
+            ("Quotation", QuotationV1 or ApprovedCurrentConsumerSchemaManifest.Quotation or CurrentConsumerSchemaV3Manifest.Quotation) => (Table: "Quotation", Key: "ID", KeyType: "integer", Column: "DecisionOrderVersion", Type: "timestamp without time zone", Nullable: true, Default: null),
             _ => default,
         };
         if (definition.Table is null) { return null; }
@@ -33,6 +33,11 @@ internal static class ApprovedConsumerColumnOverlayManifest
 
     internal static IReadOnlyList<TableCopyPlan> ComposePhysical(DatabaseSchemaPlan schema, bool mapSourceDispositions = true)
     {
+        if (CurrentConsumerSchemaV3IsoManifest.IsProfile(schema.TargetExtensionProfile))
+        {
+            DatabaseSchemaPlan baseline = CurrentConsumerSchemaV3IsoManifest.BasePlan(schema);
+            return CurrentConsumerSchemaV3IsoManifest.Apply(schema.Database, ComposePhysical(baseline, mapSourceDispositions));
+        }
         var extras = ApprovedTargetExtensionManifest.TablesFor(schema);
         var overlay = For(schema);
         var mapped = mapSourceDispositions ? ApprovedSourceDispositionManifest.TargetTablesFor(schema) : schema.Tables;

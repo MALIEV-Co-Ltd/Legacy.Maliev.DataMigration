@@ -4,6 +4,8 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
 {
     private static readonly HashSet<string> Commands =
     [
+        "owner-iso-bootstrap-host-child",
+        "owner-iso-named-closed-host-child",
         "plan",
         "plan-digest",
         "execute-shadow",
@@ -36,6 +38,38 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "apply-source-backed-local-repair-next",
         "reconcile-source-backed-local-repair",
         "renew-source-backed-local-repair",
+        "authorize-current-app-owned-eight-repair",
+        "verify-current-app-owned-eight-repair",
+        "apply-current-app-owned-eight-repair",
+        "review-current-app-owned-retained31-repair",
+        "authorize-current-app-owned-retained31-repair",
+        "verify-current-app-owned-retained31-repair",
+        "apply-current-app-owned-retained31-repair",
+        "review-current-app-owned-v3-repair",
+        "authorize-current-app-owned-v3-repair",
+        "verify-current-app-owned-v3-repair",
+        "apply-current-app-owned-v3-repair",
+        "observe-current-owner-iso-intended-runtime",
+        "review-current-owner-iso-repair",
+        "authorize-current-owner-iso-repair",
+        "verify-current-owner-iso-repair",
+        "apply-current-owner-iso-repair",
+        "review-current-customer-sequence-repair",
+        "authorize-current-customer-sequence-repair",
+        "verify-current-customer-sequence-repair",
+        "apply-current-customer-sequence-repair",
+        "customer-sequence-bootstrap-host-child",
+        "customer-sequence-named-closed-host-child",
+        "assemble-current-auth-typed-proof",
+        "prepare-current-auth-named-closed-proof",
+        "observe-current-auth-closed-intent",
+        "assemble-current-auth-named-closed-proof",
+        "produce-current-auth-typed-host",
+        "run-current-auth-typed-testhost",
+        "review-current-auth-repair",
+        "authorize-current-auth-repair",
+        "verify-current-auth-repair",
+        "apply-current-auth-repair",
         "inspect-target-schema-gaps",
         "inspect-production-schema-catalog",
         "inspect-local-schema-catalog",
@@ -54,6 +88,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "authorize-canonical-bootstrap",
         "bootstrap-canonical-database",
         "cnpg-exec-tunnel",
+        "inspect-sql-source-endpoint",
     ];
 
     private static readonly string[] SecretOptionFragments =
@@ -68,7 +103,19 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
             throw new CommandLineException("subcommand_invalid", "An approved subcommand is required.");
         }
 
+        if (arguments[0] is "owner-iso-bootstrap-host-child" or "owner-iso-named-closed-host-child")
+        {
+            return arguments.Count == 2 && Path.IsPathFullyQualified(arguments[1])
+                ? new(arguments[0], arguments[1])
+                : throw new CommandLineException("config_reference_required", "An absolute protected child configuration reference is required.");
+        }
         string? configPath = null;
+        if (arguments[0] is "customer-sequence-bootstrap-host-child" or "customer-sequence-named-closed-host-child")
+        {
+            return arguments.Count == 2 && Path.IsPathFullyQualified(arguments[1])
+                ? new(arguments[0], arguments[1])
+                : throw new CommandLineException("config_reference_required", "An absolute protected child configuration reference is required.");
+        }
         for (var index = 1; index < arguments.Count; index++)
         {
             string option = arguments[index];
@@ -85,9 +132,12 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
             configPath = arguments[++index];
         }
 
-        return string.IsNullOrWhiteSpace(configPath)
-            ? throw new CommandLineException("config_reference_required", "A protected configuration file reference is required.")
-            : new(arguments[0], configPath);
+        return arguments[0] == "inspect-sql-source-endpoint" &&
+            (string.IsNullOrWhiteSpace(configPath) || !Path.IsPathFullyQualified(configPath))
+            ? throw new CommandLineException("config_reference_required", "An absolute protected configuration reference is required.")
+            : string.IsNullOrWhiteSpace(configPath)
+                ? throw new CommandLineException("config_reference_required", "A protected configuration file reference is required.")
+                : new(arguments[0], configPath);
     }
 }
 

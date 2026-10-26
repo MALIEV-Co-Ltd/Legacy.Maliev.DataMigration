@@ -533,6 +533,16 @@ public sealed class CloudNativePgTargetObserver : ICloudNativePgTargetObserver, 
         HttpMessageHandler handler = HostRuntimeTrust.CreateKubernetesHandler(options.ApiServer, options.ServiceAccountTokenFile, options.ServiceAccountCaFile);
         return new(new HttpClient(handler) { BaseAddress = options.ApiServer }, options.ServiceAccountTokenFile, Task.Delay) { _protectedHost = true };
     }
+    internal static CloudNativePgTargetObserver CreateForCurrentAppOwnedRepair(CloudNativePgTargetObserverOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.ApiServer is null || !options.ApiServer.IsAbsoluteUri) { throw HostRuntimeTrust.Invalid(); }
+        if (options.ApiServer.HostNameType != UriHostNameType.IPv4) { return CreateForHost(options); }
+        HttpMessageHandler handler = HostRuntimeTrust.CreateRepairKubernetesIpv4Handler(
+            options.ApiServer, options.ServiceAccountTokenFile, options.ServiceAccountCaFile);
+        return new(new HttpClient(handler) { BaseAddress = options.ApiServer }, options.ServiceAccountTokenFile, Task.Delay) { _protectedHost = true };
+    }
+
     private bool _protectedHost;
     private static readonly TimeSpan StableReadDelay = TimeSpan.FromSeconds(2);
     private readonly HttpClient _client;

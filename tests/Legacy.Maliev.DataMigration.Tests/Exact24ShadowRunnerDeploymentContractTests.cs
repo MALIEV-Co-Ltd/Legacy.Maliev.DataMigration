@@ -1,3 +1,5 @@
+using System.Xml.Linq;
+
 namespace Legacy.Maliev.DataMigration.Tests;
 
 public sealed class Exact24ShadowRunnerDeploymentContractTests
@@ -127,6 +129,29 @@ public sealed class Exact24ShadowRunnerDeploymentContractTests
         Assert.Contains("@sha256:[0-9a-f]{64}", builder, StringComparison.Ordinal);
         Assert.Contains("--build-arg \"DOTNET_SDK_IMAGE=$DotNetSdkImage\"", builder, StringComparison.Ordinal);
         Assert.Contains("--build-arg \"DOTNET_RUNTIME_IMAGE=$DotNetRuntimeImage\"", builder, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DockerRestore_CopiesTheCompleteConsoleProjectReferenceClosure()
+    {
+        string root = FindRepositoryRoot();
+        string beforeRestore = Slice(Read("deploy", "exact24-shadow-runner.Dockerfile").Replace("\r\n", "\n", StringComparison.Ordinal),
+            "WORKDIR /source", "RUN dotnet restore ");
+        var pending = new Queue<string>(["src/Legacy.Maliev.DataMigration.Console/Legacy.Maliev.DataMigration.Console.csproj"]);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        while (pending.TryDequeue(out string? project))
+        {
+            if (!visited.Add(project)) { continue; }
+            string fullPath = Path.GetFullPath(Path.Combine(root, project));
+            string directory = Path.GetDirectoryName(project)!.Replace('\\', '/');
+            Assert.Contains($"COPY {project} {directory}/\n", beforeRestore, StringComparison.Ordinal);
+            foreach (XElement reference in XDocument.Load(fullPath).Descendants("ProjectReference"))
+            {
+                string include = reference.Attribute("Include")!.Value.Replace('\\', Path.DirectorySeparatorChar);
+                string target = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(fullPath)!, include));
+                pending.Enqueue(Path.GetRelativePath(root, target).Replace('\\', '/'));
+            }
+        }
     }
 
     [Fact]

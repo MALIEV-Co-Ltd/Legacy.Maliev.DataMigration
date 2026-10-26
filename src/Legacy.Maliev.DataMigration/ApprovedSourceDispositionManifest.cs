@@ -42,7 +42,7 @@ internal static class ApprovedSourceDispositionManifest
         [
             .. plan.Tables.Where(table => !IsOutbox(table)),
             AnalyticsArchive(analytics),
-            plan.TargetExtensionProfile == ApprovedCurrentConsumerSchemaManifest.Quotation
+            plan.TargetExtensionProfile is ApprovedCurrentConsumerSchemaManifest.Quotation or CurrentConsumerSchemaV3Manifest.Quotation
                 ? ApprovedCurrentConsumerSchemaManifest.WithExplicitTextCollations(AcceptedOutcome()) : AcceptedOutcome(),
         ];
     }

@@ -91,6 +91,21 @@ public static partial class MigrationConsole
             new DefaultAuthorizationRuntimeAttestationFactory(), runtimeFactory, cancellationToken);
     }
 
+    internal static Task<int> RunSqlSourceEndpointForTestsAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        Func<string, string?> getEnvironmentVariable,
+        IBackupProcessRunner runner,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        return RunCoreAsync(arguments, output, error, getEnvironmentVariable,
+            new DefaultExact25BackupRuntimeFactory(), new DefaultAuthorizationRuntimeAttestationFactory(),
+            new DefaultQuotationSnapshotRuntimeFactory(), cancellationToken,
+            sqlSourceEndpointRunner: runner, sqlSourceEndpointTimeProvider: timeProvider);
+    }
+
     private static async Task<int> RunCoreAsync(
         IReadOnlyList<string> arguments,
         TextWriter output,
@@ -100,7 +115,9 @@ public static partial class MigrationConsole
         IAuthorizationRuntimeAttestationFactory runtimeAttestationFactory,
         IQuotationSnapshotRuntimeFactory quotationSnapshotRuntimeFactory,
         CancellationToken cancellationToken,
-        IIncrementalConsoleRuntime? incrementalRuntime = null)
+        IIncrementalConsoleRuntime? incrementalRuntime = null,
+        IBackupProcessRunner? sqlSourceEndpointRunner = null,
+        TimeProvider? sqlSourceEndpointTimeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentNullException.ThrowIfNull(output);
@@ -110,9 +127,33 @@ public static partial class MigrationConsole
         ArgumentNullException.ThrowIfNull(runtimeAttestationFactory);
         try
         {
+            if (arguments.Count > 0 && Production181PipelineCommand.IsCommand(arguments[0]))
+            {
+                return await Production181PipelineCommand.RunAsync(arguments.ToArray(), cancellationToken).ConfigureAwait(false);
+            }
             ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
             switch (invocation.Command)
             {
+                case "owner-iso-bootstrap-host-child":
+                    return await OwnerIsoGuardedBootstrapHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "owner-iso-named-closed-host-child":
+                    return await OwnerIsoNamedClosedBootstrapHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "customer-sequence-named-closed-host-child":
+                    return await CustomerNamedClosedHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "customer-sequence-bootstrap-host-child":
+                    return await CustomerGuardedBootstrapHostLauncher.RunWaitingChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "inspect-sql-source-endpoint":
+                    if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.Ordinal))
+                    {
+                        throw new MigrationConsoleException("sql_source_endpoint_deploy_gate_invalid", "Deployment must remain disabled.");
+                    }
+                    SqlSourceEndpointConfiguration endpointConfiguration = await ReadProtectedJsonAsync<SqlSourceEndpointConfiguration>(
+                        invocation.ConfigPath, "sql_source_endpoint_config_unprotected", cancellationToken, 64 * 1024).ConfigureAwait(false);
+                    SqlSourceEndpointObservation endpoint = await new SqlSourceEndpointInspector(
+                        sqlSourceEndpointRunner ?? new SystemBackupProcessRunner(), sqlSourceEndpointTimeProvider ?? TimeProvider.System)
+                        .InspectAsync(endpointConfiguration, cancellationToken).ConfigureAwait(false);
+                    await output.WriteLineAsync(JsonSerializer.Serialize(endpoint, JsonOptions)).ConfigureAwait(false);
+                    return 0;
                 case "cnpg-exec-tunnel":
                     await CnpgExecTunnel.RunAsync(invocation.ConfigPath, getEnvironmentVariable, output, error,
                         cancellationToken).ConfigureAwait(false);
@@ -154,6 +195,56 @@ public static partial class MigrationConsole
                     return await RunHistoricalLocalReviewBoundaryAsync(invocation.ConfigPath,
                         getEnvironmentVariable, output, error, new DefaultHistoricalLocalReviewRuntime(),
                         cancellationToken).ConfigureAwait(false);
+                case "authorize-current-app-owned-eight-repair":
+                case "verify-current-app-owned-eight-repair":
+                case "apply-current-app-owned-eight-repair":
+                    return await RunCurrentAppOwnedEightRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-app-owned-retained31-repair":
+                case "authorize-current-app-owned-retained31-repair":
+                case "verify-current-app-owned-retained31-repair":
+                case "apply-current-app-owned-retained31-repair":
+                    return await RunCurrentAppOwnedRetained31RepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "assemble-current-auth-typed-proof":
+                    return await RunCurrentAuthTypedProofAssemblerAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "prepare-current-auth-named-closed-proof":
+                    return await RunCurrentAuthClosedPreparationAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "observe-current-auth-closed-intent":
+                    return await RunCurrentAuthNamedClosedIntentAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "assemble-current-auth-named-closed-proof":
+                    return await RunCurrentAuthNamedClosedAssemblerAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-typed-host":
+                    return await RunCurrentAuthTypedHostProducerAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-typed-testhost":
+                    return await RunCurrentAuthTypedTestHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-auth-repair":
+                case "authorize-current-auth-repair":
+                case "verify-current-auth-repair":
+                case "apply-current-auth-repair":
+                    return await RunCurrentAuthRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-app-owned-v3-repair":
+                case "authorize-current-app-owned-v3-repair":
+                case "verify-current-app-owned-v3-repair":
+                case "apply-current-app-owned-v3-repair":
+                    return await RunCurrentAppOwnedV3RepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "observe-current-owner-iso-intended-runtime":
+                    return await RunOwnerIsoIntendedObservationAsync(invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-owner-iso-repair":
+                case "authorize-current-owner-iso-repair":
+                case "verify-current-owner-iso-repair":
+                case "apply-current-owner-iso-repair":
+                    return await RunCurrentOwnerIsoRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-customer-sequence-repair":
+                case "authorize-current-customer-sequence-repair":
+                case "verify-current-customer-sequence-repair":
+                case "apply-current-customer-sequence-repair":
+                    return await RunCurrentCustomerSequenceRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
                 case "stage-source-backed-local-repair":
                 case "prepare-source-backed-local-repair-authority":
                 case "authorize-source-backed-local-repair":
@@ -1268,9 +1359,14 @@ public static partial class MigrationConsole
     private static async Task<T> ReadProtectedJsonAsync<T>(
         string path,
         string unprotectedCode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? maximumByteLength = null)
     {
         await using FileStream stream = OwnerProtectedFilePolicy.OpenRead(path, unprotectedCode);
+        if (maximumByteLength is int maximum && stream.Length > maximum)
+        {
+            throw new MigrationConsoleException("configuration_invalid", "The protected JSON document exceeds its size bound.");
+        }
         try
         {
             return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, cancellationToken).ConfigureAwait(false) ??

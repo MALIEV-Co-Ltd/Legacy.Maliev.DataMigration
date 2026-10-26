@@ -37,12 +37,22 @@ public sealed class ConsumerOverlaySelectionTests
 
     [Theory]
     [InlineData(-1)]
-    [InlineData(3)]
+    [InlineData(5)]
     [InlineData(2147483647)]
     public void UnknownSelectionCannotMintAProfile(int selection)
     {
+        Assert.False(Enum.IsDefined((ConsumerOverlaySelection)selection));
         _ = Assert.Throws<MigrationExecutionException>(() => ApprovedConsumerOverlaySelection.ProfileForDatabase(
             "CustomerIdentity", (ConsumerOverlaySelection)selection));
+    }
+
+    [Fact]
+    public void IsoSelectionUsesTheReviewedCountryAndMaterialProfiles()
+    {
+        Assert.Equal(CurrentConsumerSchemaV3IsoManifest.Country, ApprovedConsumerOverlaySelection.ProfileForDatabase(
+            "Country", ConsumerOverlaySelection.CurrentConsumerSchemaV3Iso));
+        Assert.Equal(CurrentConsumerSchemaV3IsoManifest.Material, ApprovedConsumerOverlaySelection.ProfileForDatabase(
+            "Material", ConsumerOverlaySelection.CurrentConsumerSchemaV3Iso));
     }
 
     [Theory]
