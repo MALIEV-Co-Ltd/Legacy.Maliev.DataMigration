@@ -23,10 +23,10 @@ public sealed class CurrentAuthArchiveComponentReadbackTests
         byte[] original = "synthetic-rejected-artifact-A"u8.ToArray();
         byte[] substituted = "synthetic-rejected-artifact-B"u8.ToArray();
         Assert.Equal(original.Length, substituted.Length);
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.RequireArtifactBytes(substituted,
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.RequireArtifactBytes(substituted,
             CurrentAuthLocalSessionArchivePolicy.HashBytes(original)));
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.RequireArtifactBytes(original, new('0', 64)));
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.RequireArtifactBytes([], CurrentAuthLocalSessionArchivePolicy.HashBytes([])));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.RequireArtifactBytes(original, new('0', 64)));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.RequireArtifactBytes([], CurrentAuthLocalSessionArchivePolicy.HashBytes([])));
     }
     [Fact]
     public void Held_reader_cannot_be_constructed_without_the_fixed_async_authentication_path()
@@ -59,7 +59,7 @@ public sealed class CurrentAuthArchiveComponentReadbackTests
             "relative-key" => input with { TrustedKeys = input.TrustedKeys.Select(x => x with { SubjectPublicKeyInfoPath = "relative.der" }).ToArray() },
             _ => throw new InvalidOperationException(),
         };
-        await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.OpenAsync(input, CancellationToken.None));
+        _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.OpenAsync(input, CancellationToken.None));
     }
 
     [Theory]
@@ -99,7 +99,7 @@ public sealed class CurrentAuthArchiveComponentReadbackTests
             };
             scope = scope with { ComponentSubject = scope.ComponentSubject with { Seed = seed } }; held = seed;
         }
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.RequireAuthenticatedClaims(scope, held, pins, trust, now));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.RequireAuthenticatedClaims(scope, held, pins, trust, now));
     }
 
     [Theory]
@@ -118,8 +118,11 @@ public sealed class CurrentAuthArchiveComponentReadbackTests
         DateTimeOffset now = DateTimeOffset.UtcNow;
         var scope = CurrentAuthArchiveComponentBootstrapSubjectTests.SyntheticScope(now);
         var seed = scope.ComponentSubject!.Seed;
-        var precursor = scope.LocalObservationPolicy with { ProofAdmission = CurrentAuthProofAdmission.DisposableNativeBootstrap,
-            AuthHelperProofSha256 = seed.DefinitionPrecursorSha256 };
+        var precursor = scope.LocalObservationPolicy with
+        {
+            ProofAdmission = CurrentAuthProofAdmission.DisposableNativeBootstrap,
+            AuthHelperProofSha256 = seed.DefinitionPrecursorSha256
+        };
         seed = seed with { PrecursorSubjectSha256 = CurrentAuthRepairProofReader.Subject(precursor) };
         string binding = precursor.RunBindingSha256, source = seed.SourceSchemaPlanSha256, proof = seed.DefinitionPrecursorSha256;
         switch (fault)
@@ -136,7 +139,7 @@ public sealed class CurrentAuthArchiveComponentReadbackTests
             case "proof": proof = new('0', 64); break;
             default: throw new InvalidOperationException();
         }
-        Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.RequirePrecursorBinding(precursor, seed, binding, source, proof));
+        _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveComponentReadback.RequirePrecursorBinding(precursor, seed, binding, source, proof));
     }
 
     private static CurrentAuthArchiveComponentReadbackInput Input()
@@ -144,8 +147,11 @@ public sealed class CurrentAuthArchiveComponentReadbackTests
         // Names only; these paths are never created or opened by the rejected-input tests.
         string root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "synthetic-archive-readback-no-resources"));
         CurrentAuthArchiveProofArtifact Artifact(string name) { return new(Path.Combine(root, name), new('a', 64)); }
-        DeltaTrustedKeyReference[] Keys(string prefix) { return [new(prefix + "-review", Path.Combine(root, prefix + "-review.der")),
-            new(prefix + "-authorization", Path.Combine(root, prefix + "-authorization.der")), new(prefix + "-evidence", Path.Combine(root, prefix + "-evidence.der"))]; }
+        DeltaTrustedKeyReference[] Keys(string prefix)
+        {
+            return [new(prefix + "-review", Path.Combine(root, prefix + "-review.der")),
+            new(prefix + "-authorization", Path.Combine(root, prefix + "-authorization.der")), new(prefix + "-evidence", Path.Combine(root, prefix + "-evidence.der"))];
+        }
         return new(Artifact("parent-binding.json"), Artifact("parent-seed.json"), Artifact("scope.json"), Artifact("source.json"),
             Artifact("pins.json"), Keys("parent"), Artifact("tests.dll"), Artifact("console.dll"), Artifact("core.dll"),
             Artifact("precursor-binding.json"), Artifact("precursor-scope.json"), Artifact("precursor-source.json"), Artifact("precursor-pins.json"),

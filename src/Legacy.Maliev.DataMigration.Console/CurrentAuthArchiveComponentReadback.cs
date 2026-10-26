@@ -196,8 +196,8 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         var files = new CurrentAppOwnedRepairCustody(authority);
         try
         {
-            if (!Read(files, artifact).AsSpan().SequenceEqual(bytes) || SecureLocalFile.GetHandleIdentity(initial) != identity) { throw Invalid(); }
-            return (authority, files);
+            return !Read(files, artifact).AsSpan().SequenceEqual(bytes) || SecureLocalFile.GetHandleIdentity(initial) != identity
+                ? throw Invalid() : (authority, files);
         }
         catch { try { files.Dispose(); } finally { authority.Dispose(); } throw; }
     }
