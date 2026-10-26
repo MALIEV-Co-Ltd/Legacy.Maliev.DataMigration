@@ -133,6 +133,3 @@ public sealed class CurrentAuthArchiveFixturePolicyNativeTests
         byte[] bytes = new byte[checked((int)held.Length)]; held.ReadExactly(bytes); return bytes;
     }
 }
-
-
-

@@ -97,4 +97,3 @@ public sealed class CurrentAuthArchiveFixtureTargetNativeTests
 
 internal sealed record CurrentAuthArchiveFixtureHostInput(string ParentRunBindingPath,
     CurrentAuthArchiveProofArtifact SourcePlan, string AcceptedCommit);
-

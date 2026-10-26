@@ -117,5 +117,3 @@ public sealed class CurrentAuthArchiveGuardedExecutionTests
         return Convert.ToHexStringLower(SHA256.HashData(bytes));
     }
 }
-
-

@@ -400,5 +400,3 @@ internal sealed class CurrentAuthArchiveFixtureInstalledPolicy(CurrentAuthArchiv
 internal sealed record CurrentAuthArchiveFixtureOwnedCredential(CurrentAuthArchiveProofArtifact Artifact,
     WindowsRunFileIdentity.Identity CreationIdentity);
 internal enum CurrentAuthArchiveFixtureSecretFault { None, CancelAfterCreate, PartialWrite }
-
-

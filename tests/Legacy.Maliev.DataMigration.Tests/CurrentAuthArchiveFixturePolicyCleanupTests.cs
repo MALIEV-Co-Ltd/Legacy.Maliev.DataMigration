@@ -126,4 +126,3 @@ public sealed class CurrentAuthArchiveFixturePolicyCleanupTests
         Assert.True(cleanupVerified);
     }
 }
-
