@@ -131,6 +131,12 @@ public static partial class MigrationConsole
             {
                 return await Production181PipelineCommand.RunAsync(arguments.ToArray(), cancellationToken).ConfigureAwait(false);
             }
+            if (arguments.Count > 0 && arguments[0] == CurrentAuthLocalSessionArchiveDeviceProcess.Command)
+            {
+                var device = RequireArchiveDeviceInvocation(arguments);
+                return await RunCurrentAuthArchiveDeviceObserverAsync(device.Path, device.Sha256, output, error,
+                    cancellationToken).ConfigureAwait(false);
+            }
             ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
             switch (invocation.Command)
             {
@@ -218,6 +224,12 @@ public static partial class MigrationConsole
                     return await RunCurrentAuthTypedHostProducerAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "run-current-auth-typed-testhost":
                     return await RunCurrentAuthTypedTestHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-auth-local-session-archive":
+                case "authorize-current-auth-local-session-archive":
+                case "verify-current-auth-local-session-archive":
+                case "apply-current-auth-local-session-archive":
+                    return await RunCurrentAuthLocalSessionArchiveBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
                 case "review-current-auth-repair":
                 case "authorize-current-auth-repair":
                 case "verify-current-auth-repair":
