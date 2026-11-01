@@ -10,6 +10,8 @@ Report hashes are references to executed evidence, never success markers. The re
 
 Claims authentication is separate from observation. A caller-supplied subject is not an independent source, image, precursor or target readback. The pure observed-context validator cannot itself produce those facts. Until the concrete held observer is implemented and tested, permit admission rejects first-provider bootstrap before environment contact. The public Console also rejects that lane. No interface, synthetic fixture or valid signature removes this fence.
 
+The held input reader authenticates both run bindings, key sets, source, loaded images, parent seed and genuine helper report under retained custody. It re-observes the current Auth owner around helper readback and retains actual Git audit frames. This supplies no paired target, policy, catalog or device observations. Its precursor scope is a new derived artifact containing the real helper digest while preserving the genuine precursor subject; the immutable original scope is never rewritten. Successful runtime readback and concrete observer integration remain required.
+
 A later closed disposable transition must consume completed genuine provider reports through a separately reviewed contract. It must not relabel a first-provider seed as a completed provider or closed report.
 
 ## Required executed cases
