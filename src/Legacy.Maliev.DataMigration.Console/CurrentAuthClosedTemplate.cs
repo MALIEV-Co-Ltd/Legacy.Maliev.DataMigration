@@ -105,7 +105,8 @@ internal static class CurrentAuthClosedTemplate
             await inspector.ApplySchemaAsync(physical, lease.Token).ConfigureAwait(false); await inspector.FinalizeSchemaAsync(physical, lease.Token).ConfigureAwait(false);
             await tx.CommitAsync(lease.Token).ConfigureAwait(false);
         }
-        foreach (string database in DatabaseInventory.ActiveDatabases.Concat(["postgres", "legacy_local"]))
+        // Auxiliary sentinels must not change the exact source23 physical fingerprints.
+        foreach (string database in new[] { "postgres", "legacy_local" })
         {
             await using var connection = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(endpoint.ConnectionString) { Database = database }.ConnectionString);
             await connection.OpenAsync(lease.Token).ConfigureAwait(false);
