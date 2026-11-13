@@ -16,6 +16,18 @@ internal sealed record CurrentAuthArchiveDeviceProof(string Domain, Guid Operati
 /// <summary>Actual held Windows native disk extent/descriptor observation. No configured device claims.</summary>
 internal static class CurrentAuthLocalSessionArchiveRecoveryDevices
 {
+    internal static CurrentAuthArchiveDeviceProof ObservePreflightInChild(CurrentAuthArchiveDevicePreflightRequest request, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!OperatingSystem.IsWindows()) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
+        CurrentAuthLocalSessionArchiveDeviceProcess.RequirePreflight(request, DateTimeOffset.UtcNow);
+        CurrentAuthArchivePhysicalDevice first = Read(request.FirstRoot, ct), second = Read(request.SecondRoot, ct);
+        RequireIndependent(first, second);
+        return new("Legacy.Maliev.CurrentAuth.ArchivePhysicalDevices.v1", request.OperationId, request.SourceCommitSha,
+            CurrentAuthRepairPermit.OwnerPinsSha256, request.LocalRunBindingSha256, request.ProductionRunBindingSha256,
+            request.LocalTargetObservationSha256, request.ProductionTargetObservationSha256, request.Paths, first, second, DateTimeOffset.UtcNow);
+    }
+
     // Called only by the fixed child route: parent never executes synchronous driver calls.
     internal static CurrentAuthArchiveDeviceProof ObserveInChild(CurrentAuthArchiveScope scope, string firstRoot, string secondRoot, CancellationToken ct)
     {

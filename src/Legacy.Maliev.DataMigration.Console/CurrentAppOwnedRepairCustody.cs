@@ -123,6 +123,13 @@ internal sealed class CurrentAppOwnedRepairCustody(WindowsLocalRunAuthority auth
         ValidateHandle(stream, full);
         Require();
     }
+    internal void RequireRunBinding(string root, string sha256)
+    {
+        Require();
+        if (!StringComparer.OrdinalIgnoreCase.Equals(authority.Binding.ArtifactRootCanonicalPath, root) ||
+            authority.Binding.ComputeSha256() != sha256) { throw CurrentAppOwnedRepairPermit.Invalid(); }
+    }
+
     internal void Require()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

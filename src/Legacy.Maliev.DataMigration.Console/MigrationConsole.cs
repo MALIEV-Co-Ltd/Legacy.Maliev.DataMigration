@@ -137,6 +137,12 @@ public static partial class MigrationConsole
                 return await RunCurrentAuthArchiveDeviceObserverAsync(device.Path, device.Sha256, output, error,
                     cancellationToken).ConfigureAwait(false);
             }
+            if (arguments.Count > 0 && arguments[0] == CurrentAuthLocalSessionArchiveDeviceProcess.PreflightCommand)
+            {
+                var device = RequireArchiveDevicePreflightInvocation(arguments);
+                return await RunCurrentAuthArchiveDevicePreflightAsync(device.Path, device.Sha256, output, error,
+                    cancellationToken).ConfigureAwait(false);
+            }
             ConsoleInvocation invocation = ConsoleInvocation.Parse(arguments);
             switch (invocation.Command)
             {

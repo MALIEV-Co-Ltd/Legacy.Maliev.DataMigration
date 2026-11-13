@@ -44,6 +44,33 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         await RequireAsync(ct).ConfigureAwait(false); return _seed;
     }
 
+    internal async Task<CurrentAuthArchiveComponentBootstrapSeed> RequireEnvironmentAsync(
+        CurrentAuthArchiveScope scope, FreshSchemaPlan source, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        await RequireAsync(ct).ConfigureAwait(false);
+        RequireSameEnvironment(_scope, _source, scope, source);
+        return _seed;
+    }
+
+    internal async Task RequireObservedEnvironmentAsync(CurrentAuthArchiveScope scope, FreshSchemaPlan source,
+        CurrentAuthArchiveComponentBootstrapSubject observed, CancellationToken ct)
+    {
+        _ = await RequireEnvironmentAsync(scope, source, ct).ConfigureAwait(false);
+        CurrentAuthArchiveComponentBootstrap.RequireScope(scope, observed, _trust, _pins, AcceptedSourceCommitSha,
+            SourceSchemaPlanSha256, ParentRunBindingSha256, TestAssemblySha256, ConsoleAssemblySha256,
+            CoreAssemblySha256, DateTimeOffset.UtcNow);
+    }
+
+    // Pure identity seam only; successful matching is not authenticated readback or admission.
+    internal static void RequireSameEnvironment(CurrentAuthArchiveScope heldScope, FreshSchemaPlan heldSource,
+        CurrentAuthArchiveScope scope, FreshSchemaPlan source)
+    {
+        if (!JsonSerializer.SerializeToUtf8Bytes(heldScope).AsSpan().SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(scope)) ||
+            SchemaPlanCanonicalizer.ComputeSha256(heldSource) != SchemaPlanCanonicalizer.ComputeSha256(source))
+        { throw Invalid(); }
+    }
+
     private CurrentAuthArchiveComponentReadback(CurrentAuthArchiveComponentReadbackInput input,
         WindowsLocalRunAuthority parent, CurrentAppOwnedRepairCustody parentFiles,
         WindowsLocalRunAuthority precursor, CurrentAppOwnedRepairCustody precursorFiles)

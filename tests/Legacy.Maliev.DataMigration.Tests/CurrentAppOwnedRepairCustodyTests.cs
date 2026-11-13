@@ -10,6 +10,18 @@ public sealed class CurrentAppOwnedRepairCustodyTests : IDisposable
     private string Root => Path.Combine(_parent, "artifacts");
 
     [WindowsLocalRunFact]
+    public void Run_binding_requires_the_actual_held_root_and_authority_hash()
+    {
+        using WindowsLocalRunAuthority authority = WindowsLocalRunAuthority.AcquireFresh(Root);
+        using var custody = new CurrentAppOwnedRepairCustody(authority);
+        custody.RequireRunBinding(authority.Binding.ArtifactRootCanonicalPath, authority.Binding.ComputeSha256());
+        _ = Assert.Throws<MigrationExecutionException>(() => custody.RequireRunBinding(Path.Combine(Root, "different"), authority.Binding.ComputeSha256()));
+        _ = Assert.Throws<MigrationExecutionException>(() => custody.RequireRunBinding(authority.Binding.ArtifactRootCanonicalPath, new('0', 64)));
+        custody.Dispose();
+        _ = Assert.Throws<ObjectDisposedException>(() => custody.RequireRunBinding(authority.Binding.ArtifactRootCanonicalPath, authority.Binding.ComputeSha256()));
+    }
+
+    [WindowsLocalRunFact]
     public void Enumerates_exact_operation_receipts_and_holds_them_against_replacement()
     {
         using WindowsLocalRunAuthority authority = WindowsLocalRunAuthority.AcquireFresh(Root);

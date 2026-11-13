@@ -85,9 +85,12 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
     private static void RequiredValidation_RejectsPreviousSetupDotnetPin()
     {
         string source = ReadWorkflow();
-        string previousPin = source.Replace("actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68", "actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1", StringComparison.Ordinal);
-        Assert.NotEqual(source, previousPin);
-        _ = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ValidateWorkflow(previousPin));
+        foreach (string oldPin in new[] { "a98b56852c35b8e3190ac28c8c2271da59106c68", "26b0ec14cb23fa6904739307f278c14f94c95bf1" })
+        {
+            string previousPin = source.Replace("actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73", "actions/setup-dotnet@" + oldPin, StringComparison.Ordinal);
+            Assert.NotEqual(source, previousPin);
+            _ = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ValidateWorkflow(previousPin));
+        }
     }
 
     [Theory]
@@ -178,7 +181,7 @@ public sealed class ConsumerOwnerMigrationProofCiContractTests
             return validation[(headers[index].Index + headers[index].Length)..(index + 1 < headers.Length ? headers[index + 1].Index : validation.Length)];
         }
 
-        Assert.Equal("actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68", Scalar(Body(2), "uses"));
+        Assert.Equal("actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73", Scalar(Body(2), "uses"));
         Assert.Equal("10.0.402", Scalar(Body(2), "dotnet-version"));
         Assert.Equal("pwsh", Scalar(Body(3), "shell"));
         Assert.Equal("./scripts/prepare-consumer-owner-migration-proof.ps1", Scalar(Body(3), "run"));

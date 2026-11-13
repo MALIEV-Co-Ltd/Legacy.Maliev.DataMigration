@@ -6,11 +6,11 @@ using Npgsql;
 
 namespace Legacy.Maliev.DataMigration.Console;
 
-internal sealed class CurrentAuthLocalSessionArchiveEnvironment : ICurrentAuthLocalSessionArchiveEnvironment, IDisposable
+internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurrentAuthLocalSessionArchiveEnvironment, IDisposable
 {
     private static readonly string[] DockerOverrides = ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"];
     private readonly CurrentAppOwnedRepairCustody _localFiles, _productionFiles;
-    private readonly WindowsLocalRunAuthority _localAuthority;
+    private readonly WindowsLocalRunAuthority _localAuthority, _productionAuthority;
     private readonly CurrentAuthArchiveScope _scope;
     private readonly FreshSchemaPlan _source;
     private readonly CurrentAppOwnedRepairTargetPins _localTarget, _productionTarget;
@@ -32,7 +32,7 @@ internal sealed class CurrentAuthLocalSessionArchiveEnvironment : ICurrentAuthLo
         string localConnection, string productionConnection, string localOrdinary, string productionOrdinary,
         CurrentAuthArchiveDeviceProof devices, IReceiptAttestationTrustStore trust, CurrentAuthArchivePins pins, string authorization)
     {
-        _localFiles = localFiles; _productionFiles = productionFiles; _localAuthority = localAuthority;
+        _localFiles = localFiles; _productionFiles = productionFiles; _localAuthority = localAuthority; _productionAuthority = productionAuthority;
         _scope = MigrationConsole.DecodeAuthRepair<CurrentAuthArchiveScope>(JsonSerializer.SerializeToUtf8Bytes(scope));
         _source = MigrationConsole.DecodeAuthRepair<FreshSchemaPlan>(JsonSerializer.SerializeToUtf8Bytes(source));
         _localTarget = localTarget; _productionTarget = productionTarget; _localConnection = localConnection; _productionConnection = productionConnection;
@@ -71,7 +71,7 @@ internal sealed class CurrentAuthLocalSessionArchiveEnvironment : ICurrentAuthLo
             scope.ProductionObservationPolicy.MaintenanceValidatorSha256 != CurrentAuthRepairEnvironment.IntegratedMaintenanceValidatorSha256)
         { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
         await CurrentAuthOwnerSourceReader.RequireAsync(resource => FrameAsync("git", resource), ct).ConfigureAwait(false);
-        await RequireTargetsAsync(ct).ConfigureAwait(false);
+        _ = await RequireTargetsAsync(ct).ConfigureAwait(false);
         await _storage.RequireCustodyAsync(ct).ConfigureAwait(false);
         // During the exact writer transaction, these temporary readers claim no zero
         // clients; provider policy checks zero others before/after each callback.
@@ -133,7 +133,7 @@ internal sealed class CurrentAuthLocalSessionArchiveEnvironment : ICurrentAuthLo
     {
         RequireHealthy();
         await _storage.RequireCustodyAsync(ct).ConfigureAwait(false);
-        await RequireTargetsAsync(ct).ConfigureAwait(false);
+        _ = await RequireTargetsAsync(ct).ConfigureAwait(false);
         await using var connection = Connection(local, "postgres"); await connection.OpenAsync(ct).ConfigureAwait(false);
         await using var tx = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
         await ReadOnlyAsync(connection, tx, ct).ConfigureAwait(false);
@@ -280,7 +280,7 @@ internal sealed class CurrentAuthLocalSessionArchiveEnvironment : ICurrentAuthLo
         return CurrentAppOwnedRepairDockerProcess.RunDockerAsync(arguments, ct, resource => FrameAsync("docker", resource));
     }
 
-    private async Task RequireTargetsAsync(CancellationToken ct)
+    private async Task<(ObservedDocker Local, ObservedDocker? Comparison)> RequireTargetsAsync(CancellationToken ct)
     {
         CurrentAuthRepairScope local = _scope.LocalObservationPolicy, production = _scope.ProductionObservationPolicy;
         var endpoint = RequireEndpoint(_localConnection, local); var productionEndpoint = RequireEndpoint(_productionConnection, production);
@@ -301,9 +301,10 @@ internal sealed class CurrentAuthLocalSessionArchiveEnvironment : ICurrentAuthLo
         CurrentAppOwnedRepairLocalTarget.RequireVolumeConsumers(await DockerAsync(["ps", "--all", "--no-trunc", "--filter", "volume=" + volumeName, "--format", "{{.ID}}"], ct).ConfigureAwait(false), id);
         string stat = await DockerAsync(["exec", id, "env", "TZ=UTC", "LC_ALL=C", "stat", "--printf=%d|%i|%f|%u|%g|%h|%s|%y|%z", "--", _localTarget.HbaPath], ct).ConfigureAwait(false);
         if (CurrentAuthLocalSessionArchivePolicy.HashBytes(Encoding.UTF8.GetBytes(stat)) != _localTarget.HbaStatSha256) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
+        ObservedDocker? comparison = null;
         if (_scope.ProofAdmission == CurrentAuthArchiveProofAdmission.DisposableNativeBootstrap)
         {
-            await RequireComparisonDisposableAsync(production, productionEndpoint, ct).ConfigureAwait(false);
+            comparison = await RequireComparisonDisposableAsync(production, productionEndpoint, ct).ConfigureAwait(false);
         }
         else
         {
@@ -315,8 +316,9 @@ internal sealed class CurrentAuthLocalSessionArchiveEnvironment : ICurrentAuthLo
         }
         await RequireOrdinaryRejectedAsync(endpoint, _localOrdinary, local, ct).ConfigureAwait(false);
         await RequireOrdinaryRejectedAsync(productionEndpoint, _productionOrdinary, production, ct).ConfigureAwait(false);
+        return (new(container, volume, actual), comparison);
     }
-    private async Task RequireComparisonDisposableAsync(CurrentAuthRepairScope policy, NpgsqlConnectionStringBuilder endpoint, CancellationToken ct)
+    private async Task<ObservedDocker> RequireComparisonDisposableAsync(CurrentAuthRepairScope policy, NpgsqlConnectionStringBuilder endpoint, CancellationToken ct)
     {
         CurrentAppOwnedRepairTargetPins target = _productionTarget;
         string id = target.DockerContainerId ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid();
@@ -336,7 +338,9 @@ internal sealed class CurrentAuthLocalSessionArchiveEnvironment : ICurrentAuthLo
         { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
         CurrentAppOwnedRepairLocalTarget.RequireVolumeConsumers(await DockerAsync(["ps", "--all", "--no-trunc", "--filter", "volume=" + name, "--format", "{{.ID}}"], ct).ConfigureAwait(false), id);
         string stat = await DockerAsync(["exec", id, "env", "TZ=UTC", "LC_ALL=C", "stat", "--printf=%d|%i|%f|%u|%g|%h|%s|%y|%z", "--", target.HbaPath], ct).ConfigureAwait(false);
-        if (CurrentAuthLocalSessionArchivePolicy.HashBytes(Encoding.UTF8.GetBytes(stat)) != target.HbaStatSha256) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
+        return CurrentAuthLocalSessionArchivePolicy.HashBytes(Encoding.UTF8.GetBytes(stat)) != target.HbaStatSha256
+            ? throw CurrentAuthLocalSessionArchivePolicy.Invalid()
+            : new(container, volume, actual);
     }
     private static NpgsqlConnectionStringBuilder RequireEndpoint(string text, CurrentAuthRepairScope policy)
     {

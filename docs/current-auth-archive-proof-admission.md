@@ -12,9 +12,17 @@ Claims authentication is separate from observation. A caller-supplied subject is
 
 The held input reader authenticates both run bindings, key sets, source, loaded images, parent seed and genuine helper report under retained custody. It re-observes the current Auth owner around helper readback and retains actual Git audit frames. This supplies no paired target, policy, catalog or device observations. Its precursor scope is a new derived artifact containing the real helper digest while preserving the genuine precursor subject; the immutable original scope is never rewritten. Successful runtime readback and concrete observer integration remain required.
 
+The fixed environment now supplies a separate read-only paired observer. It binds the environment to the reader's exact held scope and canonical source, checks source/owner/custody and both targets, captures complete local26/comparison49 fleets with catalog brackets, rechecks Docker identities, installed policy and physical-device custody, and authenticates held inputs again after native observation. It derives the observed subject from these captures without an injected observation callback. Container and volume artifact digests cover the fixed Docker command's UTF-8 output bytes; the installed-policy digest covers the maintenance pin whose role, expiry, HBA bytes/rules and privileges were independently checked. No bootstrap permit or public route consumes this method yet. A successful genuine paired invocation, complete closed cases and separate admission review remain required before activation.
+
+The catalog subject digest binds both ordered database flag sets, run/target bindings, system identity and read-only status. Capture clocks remain in the original observations and are independently checked by `RequireFleet`; they are excluded from this repeatable subject digest so a later fresh capture of unchanged native facts can match. The digest helper alone neither validates a catalog nor admits an operation.
+
+Observation holds the environment's reservation gate, rejects an already reserved or terminal operation and retains create-new PII-free catalog brackets and candidate subject frames under existing custody. Held-input authentication runs again after retention. A candidate frame on a failed attempt is not a completed proof, permit or immutable effect receipt.
+
 A later closed disposable transition must consume completed genuine provider reports through a separately reviewed contract. It must not relabel a first-provider seed as a completed provider or closed report.
 
 ## Required executed cases
+
+The initial recovery-device proof uses a separate fixed read-only preflight request. Its short lease binds operation, source, requested run/target identifiers and exact recovery paths, without a completed scope, future proof hash or caller-supplied device claims. The accepted Console parent verifies both held run roots and binding hashes, holds the request and uses the same bounded child cleanup; the child validates compiled source and reads actual native devices. Target identifiers remain operands for later independent target authentication. This removes the circular input dependency only. The completed-scope device route, later proof matching and all execution-admission fences remain unchanged. Genuine preflight execution and paired observer integration still require accepted-main runtime evidence.
 
 | Phase | Exact cases |
 |---|---|
