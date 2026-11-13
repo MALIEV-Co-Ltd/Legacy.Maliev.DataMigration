@@ -11,7 +11,7 @@ internal sealed record CurrentAuthArchiveDeviceResource(Guid RunId, string Execu
     int? ProcessId, long? StartUtcTicks, DateTimeOffset ExpiresAtUtc, bool Exited, bool ReadersSettled, bool CleanupFailed);
 
 /// <summary>Fixed accepted-bundle child isolates potentially blocking read-only Windows driver calls.</summary>
-internal static class CurrentAuthLocalSessionArchiveDeviceProcess
+internal static partial class CurrentAuthLocalSessionArchiveDeviceProcess
 {
     internal const string Command = "observe-current-auth-archive-recovery-devices";
     private static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(20), Cleanup = TimeSpan.FromSeconds(5);
@@ -55,9 +55,10 @@ internal static class CurrentAuthLocalSessionArchiveDeviceProcess
         }
     }
 
-    internal static ProcessStartInfo StartInfo(string configPath, string configSha256)
+    internal static ProcessStartInfo StartInfo(string configPath, string configSha256, string command = Command)
     {
-        if (!Path.IsPathFullyQualified(configPath) || !CurrentAuthRepairPermit.HashShape(configSha256))
+        if (!Path.IsPathFullyQualified(configPath) || !CurrentAuthRepairPermit.HashShape(configSha256) ||
+            command is not (Command or PreflightCommand))
         { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
         string executable = Path.Combine(AppContext.BaseDirectory, "Legacy.Maliev.DataMigration.Console.exe");
         var start = new ProcessStartInfo(executable)
@@ -74,15 +75,15 @@ internal static class CurrentAuthLocalSessionArchiveDeviceProcess
         start.Environment.Clear();
         string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         start.Environment["SystemRoot"] = windows; start.Environment["WINDIR"] = windows;
-        start.ArgumentList.Add(Command); start.ArgumentList.Add(Path.GetFullPath(configPath)); start.ArgumentList.Add(configSha256);
+        start.ArgumentList.Add(command); start.ArgumentList.Add(Path.GetFullPath(configPath)); start.ArgumentList.Add(configSha256);
         return start;
     }
 
     private static async Task<string> RunAsync(string configPath, string configSha256,
-        Func<CurrentAuthArchiveDeviceResource, Task> observe, CancellationToken ct)
+        Func<CurrentAuthArchiveDeviceResource, Task> observe, CancellationToken ct, string command = Command)
     {
         if (!OperatingSystem.IsWindows()) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
-        ProcessStartInfo start = StartInfo(configPath, configSha256);
+        ProcessStartInfo start = StartInfo(configPath, configSha256, command);
         // Every running bundle file is owner/link/handle checked and held read-only
         // through final child exit. No replacing a DLL between acceptance and launch.
         var bundle = new List<FileStream>();

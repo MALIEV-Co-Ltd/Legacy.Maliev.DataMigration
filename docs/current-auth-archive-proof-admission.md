@@ -22,6 +22,8 @@ A later closed disposable transition must consume completed genuine provider rep
 
 ## Required executed cases
 
+The initial recovery-device proof uses a separate fixed read-only preflight request. Its short lease binds operation, source, requested run/target identifiers and exact recovery paths, without a completed scope, future proof hash or caller-supplied device claims. The accepted Console parent verifies both held run roots and binding hashes, holds the request and uses the same bounded child cleanup; the child validates compiled source and reads actual native devices. Target identifiers remain operands for later independent target authentication. This removes the circular input dependency only. The completed-scope device route, later proof matching and all execution-admission fences remain unchanged. Genuine preflight execution and paired observer integration still require accepted-main runtime evidence.
+
 | Phase | Exact cases |
 |---|---|
 | Helper | dual-durable-readback; first-only-recovery; second-only-recovery; key-corruption; cipher-corruption |
