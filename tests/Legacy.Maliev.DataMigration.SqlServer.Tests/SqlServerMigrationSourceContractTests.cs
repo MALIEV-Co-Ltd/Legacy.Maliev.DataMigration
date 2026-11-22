@@ -6,7 +6,7 @@ public sealed class SqlServerMigrationSourceContractTests
 {
     [Theory]
     [InlineData(-1)]
-    [InlineData(5)]
+    [InlineData(6)]
     public void Constructor_RejectsUnknownConsumerOverlaySelectionBeforeOpeningSource(int selection)
     {
         Assert.False(Enum.IsDefined((ConsumerOverlaySelection)selection));
@@ -22,6 +22,7 @@ public sealed class SqlServerMigrationSourceContractTests
     [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV2)]
     [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV3)]
     [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV3Iso)]
+    [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV3CompanyStorage)]
     public void Constructor_AcceptsApprovedConsumerOverlayWithoutOpeningSource(ConsumerOverlaySelection selection)
     {
         _ = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(

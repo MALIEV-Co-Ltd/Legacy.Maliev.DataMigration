@@ -519,6 +519,11 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
             throw new MigrationExecutionException("shadow_schema_finalization_invalid", "The shadow schema can be finalized exactly once before inspection.");
         }
 
+        if (CustomerCompanyStorageManifest.IsProfile(plan.TargetExtensionProfile))
+        {
+            await ExecuteAsync(CustomerCompanyStorageManifest.CreateNormalizerSql, cancellationToken).ConfigureAwait(false);
+        }
+
         foreach (TableCopyPlan table in schemaTables)
         {
             foreach (IdentityCopyPlan identity in table.Identities)
@@ -662,6 +667,7 @@ internal sealed class PostgreSqlWholeDatabaseTransaction(
         ArgumentNullException.ThrowIfNull(plan);
         _inspectionStarted = true;
         await RequireSupportedPhysicalBehaviorAsync(cancellationToken).ConfigureAwait(false);
+        await CustomerCompanyStorageManifest.RequireNormalizerAsync(plan, connection, transaction, cancellationToken).ConfigureAwait(false);
         List<PostgreSqlSchemaFingerprint.TableShape> tables = [];
         const string tableSql = """
             SELECT n.nspname, c.relname
