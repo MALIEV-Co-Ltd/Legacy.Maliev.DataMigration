@@ -10,7 +10,7 @@ public sealed class PostgreSqlAdapterTestGroup : ICollectionFixture<PostgreSqlAd
 {
     public const string Name = "PostgreSQL adapter";
 }
-public sealed class PostgreSqlAdapterFixture : IAsyncLifetime
+public class PostgreSqlAdapterFixture : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _container;
 
@@ -18,13 +18,23 @@ public sealed class PostgreSqlAdapterFixture : IAsyncLifetime
     {
     }
 
-    internal PostgreSqlAdapterFixture(int memoryLimitMiB)
+    internal PostgreSqlAdapterFixture(int memoryLimitMiB) : this(memoryLimitMiB, quiescent: false)
+    {
+    }
+
+    internal PostgreSqlAdapterFixture(int memoryLimitMiB, bool quiescent)
     {
         if (memoryLimitMiB is not (256 or 384))
         {
             throw new ArgumentOutOfRangeException(nameof(memoryLimitMiB), "Only the reviewed PostgreSQL fixture budgets are permitted.");
         }
-        _container = new PostgreSqlBuilder("postgres:18-alpine")
+        var builder = new PostgreSqlBuilder("postgres:18-alpine");
+        if (quiescent)
+        {
+            builder = builder.WithCommand("-c", "autovacuum=off")
+                .WithLabel("legacy.maliev.fixture", "company-storage-native-preservation");
+        }
+        _container = builder
             .WithCreateParameterModifier(parameters =>
             {
                 parameters.HostConfig!.Memory = (long)memoryLimitMiB * 1024 * 1024;
