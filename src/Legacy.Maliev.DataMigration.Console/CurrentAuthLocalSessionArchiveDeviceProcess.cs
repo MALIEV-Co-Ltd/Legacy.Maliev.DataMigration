@@ -231,10 +231,10 @@ public static partial class MigrationConsole
             { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
             CurrentAuthArchiveDeviceProof proof = CurrentAuthLocalSessionArchiveRecoveryDevices.ObserveInChild(request.Scope, request.FirstRoot, request.SecondRoot, ct);
             if (SecureLocalFile.GetHandleIdentity(held) != identity || !SecureLocalFile.HandleResolvesToApprovedPath(held, configPath)) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
-            await output.WriteAsync(JsonSerializer.Serialize(proof)).ConfigureAwait(false); return 0;
+            await output.WriteUncancelledAsync(JsonSerializer.Serialize(proof)).ConfigureAwait(false); return 0;
         }
         catch (Exception failure) when (failure is MigrationExecutionException or IOException or UnauthorizedAccessException or JsonException or ArgumentException or InvalidOperationException)
-        { await error.WriteAsync("current_auth_archive_device_observer_failed").ConfigureAwait(false); return 1; }
+        { await error.WriteUncancelledAsync("current_auth_archive_device_observer_failed").ConfigureAwait(false); return 1; }
     }
     private static string CompiledDeviceSource(Assembly assembly)
     {

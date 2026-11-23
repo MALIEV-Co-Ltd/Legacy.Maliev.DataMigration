@@ -123,9 +123,9 @@ public static partial class MigrationConsole
             CurrentAuthLocalSessionArchiveDeviceProcess.RequirePreflightProof(proof, request, DateTimeOffset.UtcNow);
             if (SecureLocalFile.GetHandleIdentity(held) != identity || !SecureLocalFile.HandleResolvesToApprovedPath(held, path))
             { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
-            await output.WriteAsync(JsonSerializer.Serialize(proof)).ConfigureAwait(false); return 0;
+            await output.WriteUncancelledAsync(JsonSerializer.Serialize(proof)).ConfigureAwait(false); return 0;
         }
         catch (Exception failure) when (failure is MigrationExecutionException or IOException or UnauthorizedAccessException or JsonException or ArgumentException or InvalidOperationException)
-        { await error.WriteAsync("current_auth_archive_device_preflight_failed").ConfigureAwait(false); return 1; }
+        { await error.WriteUncancelledAsync("current_auth_archive_device_preflight_failed").ConfigureAwait(false); return 1; }
     }
 }

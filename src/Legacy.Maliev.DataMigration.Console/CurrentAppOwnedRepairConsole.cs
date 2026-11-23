@@ -56,7 +56,7 @@ public static partial class MigrationConsole
                     before, after, trust, pins, environment, signer, TimeProvider.System, cancellationToken).ConfigureAwait(false);
                 await files.WriteNewAsync(configuration.AuthorizationOutputPath, JsonSerializer.SerializeToUtf8Bytes(authorization),
                     cancellationToken).ConfigureAwait(false);
-                await output.WriteLineAsync("current_app_owned_eight_authorization_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_app_owned_eight_authorization_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             CurrentAppOwnedRepairSignedClaim permission = Read<CurrentAppOwnedRepairSignedClaim>(configuration.AuthorizationPath);
@@ -66,7 +66,7 @@ public static partial class MigrationConsole
             { throw CurrentAppOwnedRepairPermit.Invalid(); }
             if (command == "verify-current-app-owned-eight-repair")
             {
-                await output.WriteLineAsync("current_app_owned_eight_verify_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_app_owned_eight_verify_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             using var receiptSigner = new P256MigrationEvidenceSigner(pins.ReceiptKeyId,
@@ -81,7 +81,7 @@ public static partial class MigrationConsole
                 previous = CurrentAppOwnedRepairPermit.Hash(JsonSerializer.SerializeToUtf8Bytes(receipt));
             }
             await permit.RequireAsync(cancellationToken).ConfigureAwait(false);
-            await output.WriteLineAsync("current_app_owned_eight_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
+            await output.WriteLineUncancelledAsync("current_app_owned_eight_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
             return 0;
 
             T Read<T>(string path)
@@ -99,7 +99,7 @@ public static partial class MigrationConsole
             JsonException or IOException or UnauthorizedAccessException or Npgsql.NpgsqlException or
             Exact25FullBackupException or System.Security.Cryptography.CryptographicException or FormatException or ArgumentException)
         {
-            await error.WriteLineAsync("current_app_owned_eight_boundary_failed_no_success_claim").ConfigureAwait(false);
+            await error.WriteLineUncancelledAsync("current_app_owned_eight_boundary_failed_no_success_claim").ConfigureAwait(false);
             return 1;
         }
         static T Decode<T>(byte[] bytes)

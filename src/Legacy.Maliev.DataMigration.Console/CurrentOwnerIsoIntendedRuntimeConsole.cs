@@ -19,10 +19,10 @@ public static partial class MigrationConsole
             var observed = await IsoIntendedRuntimeObserver.ObserveAndRetainAsync(files, binding, config, ct).ConfigureAwait(false);
             byte[] retained = files.Read(config.OutputPath, sharedReader: true, maximumBytes: 8_000_000);
             if (CurrentAppOwnedSnapshotSerialization.Sha256(DecodeOwnerIso<IsoIntendedRuntimeObservation>(retained)) != CurrentAppOwnedSnapshotSerialization.Sha256(observed)) { throw IsoIntendedRuntimeReader.Invalid(); }
-            await output.WriteLineAsync("Actual read-only intended target observations retained: " + CurrentAppOwnedRepairPermit.Hash(retained)).ConfigureAwait(false); return 0;
+            await output.WriteLineUncancelledAsync("Actual read-only intended target observations retained: " + CurrentAppOwnedRepairPermit.Hash(retained)).ConfigureAwait(false); return 0;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception failure) when (failure is MigrationExecutionException or IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or FormatException or System.Security.Cryptography.CryptographicException)
-        { await error.WriteLineAsync("iso_intended_runtime_observation_failed").ConfigureAwait(false); return 1; }
+        { await error.WriteLineUncancelledAsync("iso_intended_runtime_observation_failed").ConfigureAwait(false); return 1; }
     }
 }

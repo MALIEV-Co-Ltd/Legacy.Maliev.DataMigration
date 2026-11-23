@@ -222,9 +222,9 @@ public static partial class MigrationConsole
             CurrentAuthNamedClosedIntent.Require(observation, source, trust, pins, DateTimeOffset.UtcNow);
             await files.WriteNewAsync(config.OutputPath, JsonSerializer.SerializeToUtf8Bytes(observation), ct).ConfigureAwait(false);
             CurrentAuthNamedClosedIntent.Require(Read<CurrentAuthNamedClosedIntendedObservation>(config.OutputPath), source, trust, pins, DateTimeOffset.UtcNow);
-            await output.WriteLineAsync("current_auth_intended_target_observed_no_authority").ConfigureAwait(false); return 0;
+            await output.WriteLineUncancelledAsync("current_auth_intended_target_observed_no_authority").ConfigureAwait(false); return 0;
         }
         catch (Exception failure) when (failure is MigrationExecutionException or MigrationConsoleException or IOException or UnauthorizedAccessException or JsonException or CryptographicException or InvalidOperationException or NpgsqlException)
-        { await error.WriteLineAsync("current_auth_intended_observation_failed").ConfigureAwait(false); return 1; }
+        { await error.WriteLineUncancelledAsync("current_auth_intended_observation_failed").ConfigureAwait(false); return 1; }
     }
 }

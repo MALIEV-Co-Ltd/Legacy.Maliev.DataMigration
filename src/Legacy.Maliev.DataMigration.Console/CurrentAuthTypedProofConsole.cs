@@ -60,7 +60,7 @@ public static partial class MigrationConsole
             if (await SourceBackedLocalRepairSourceAcceptance.RequireAsync(ct).ConfigureAwait(false) != accepted)
             { throw CurrentAuthRepairPermit.Invalid(); }
             files.Require();
-            await output.WriteLineAsync(JsonSerializer.Serialize(new
+            await output.WriteLineUncancelledAsync(JsonSerializer.Serialize(new
             {
                 kind = "current-auth-disposable-proof-assembled-v1",
                 result.Path,
@@ -73,7 +73,7 @@ public static partial class MigrationConsole
         catch (Exception failure) when (failure is MigrationExecutionException or MigrationConsoleException or IOException or
             UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or JsonException or FormatException or InvalidOperationException)
         {
-            await error.WriteLineAsync("current_auth_typed_proof_assembly_failed").ConfigureAwait(false); return 1;
+            await error.WriteLineUncancelledAsync("current_auth_typed_proof_assembly_failed").ConfigureAwait(false); return 1;
         }
     }
 }

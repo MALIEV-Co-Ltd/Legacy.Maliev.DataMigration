@@ -58,7 +58,7 @@ public static partial class MigrationConsole
                 _ => throw BootstrapInvalid("canonical_database_bootstrap_command_invalid"),
             };
             await WriteNewJsonAsync(configuration.OutputPath, result, cancellationToken).ConfigureAwait(false);
-            await output.WriteLineAsync(command.Replace('-', '_') + "_complete").ConfigureAwait(false);
+            await output.WriteLineUncancelledAsync(command.Replace('-', '_') + "_complete").ConfigureAwait(false);
             return 0;
         }
         catch (Exception failure)
@@ -75,7 +75,7 @@ public static partial class MigrationConsole
             {
                 code = "canonical_database_bootstrap_failed";
             }
-            await error.WriteLineAsync(code).ConfigureAwait(false);
+            await error.WriteLineUncancelledAsync(code).ConfigureAwait(false);
             return failure is OperationCanceledException ? 130 : failure is MigrationConsoleException ? 65 : 70;
         }
     }

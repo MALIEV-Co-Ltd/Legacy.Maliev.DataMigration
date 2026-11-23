@@ -131,7 +131,7 @@ public static partial class MigrationConsole
                     source, baseline, trust, pins, environment, signer, configuration.ReviewExpiresAtUtc.Value,
                     TimeProvider.System, cancellationToken).ConfigureAwait(false);
                 await WriteClaimAsync(configuration.ReviewOutputPath, issued).ConfigureAwait(false);
-                await output.WriteLineAsync("current_customer_sequence_review_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_customer_sequence_review_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             if (command == "authorize-current-customer-sequence-repair")
@@ -143,7 +143,7 @@ public static partial class MigrationConsole
                 CurrentCustomerSequenceRepairSignedClaim authorization = await CurrentCustomerSequenceRepairPermit.AuthorizeAsync(review!,
                     source, trust, pins, environment, signer, TimeProvider.System, cancellationToken).ConfigureAwait(false);
                 await WriteClaimAsync(configuration.AuthorizationOutputPath, authorization).ConfigureAwait(false);
-                await output.WriteLineAsync("current_customer_sequence_authorization_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_customer_sequence_authorization_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             CurrentCustomerSequenceRepairPermit permit = await CurrentCustomerSequenceRepairPermit.AdmitAsync(review!, permission!, source, trust, pins, environment, TimeProvider.System, cancellationToken).ConfigureAwait(false);
@@ -151,7 +151,7 @@ public static partial class MigrationConsole
             {
                 if (command == "verify-current-customer-sequence-repair")
                 {
-                    await output.WriteLineAsync("current_customer_sequence_verify_complete_no_ddl").ConfigureAwait(false);
+                    await output.WriteLineUncancelledAsync("current_customer_sequence_verify_complete_no_ddl").ConfigureAwait(false);
                     return 0;
                 }
                 if (closedObservation is not null) { await closedObservation.CreateWriterAfterActualAdmissionAsync(permit, cancellationToken).ConfigureAwait(false); }
@@ -162,7 +162,7 @@ public static partial class MigrationConsole
                     closedObservation?.WriterConnectionString ?? connection, preimage, permit, signer, trust, pins, cancellationToken).ConfigureAwait(false);
                 if (receipt.Classification != CurrentAppOwnedCommitClassification.CommittedAndReadback || receipt.Database != "Customer")
                 { throw CurrentCustomerSequenceRepairPermit.Invalid(); }
-                await output.WriteLineAsync("current_customer_sequence_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_customer_sequence_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
                 return 0;
             }
             finally { permit.Stop(); }
@@ -191,7 +191,7 @@ public static partial class MigrationConsole
             InvalidOperationException or KeyNotFoundException or
             Exact25FullBackupException or System.Security.Cryptography.CryptographicException or FormatException or ArgumentException)
         {
-            await error.WriteLineAsync("current_customer_sequence_boundary_failed_no_success_claim").ConfigureAwait(false);
+            await error.WriteLineUncancelledAsync("current_customer_sequence_boundary_failed_no_success_claim").ConfigureAwait(false);
             return 1;
         }
     }

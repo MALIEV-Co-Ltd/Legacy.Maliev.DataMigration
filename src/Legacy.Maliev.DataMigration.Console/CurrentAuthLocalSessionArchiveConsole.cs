@@ -103,24 +103,24 @@ public static partial class MigrationConsole
                     using var signer = Signer(pins.ReviewKeyId, config.ReviewPrivateKeyPath, pins.ReviewFingerprint);
                     CurrentAuthArchiveClaim issued = CurrentAuthLocalSessionArchivePolicy.Sign(CurrentAuthLocalSessionArchivePolicy.ReviewDomain, scope, signer);
                     await ClaimAsync(config.ReviewOutputPath, issued).ConfigureAwait(false);
-                    await output.WriteLineAsync("current_auth_session_archive_review_complete_no_delete").ConfigureAwait(false); return 0;
+                    await output.WriteLineUncancelledAsync("current_auth_session_archive_review_complete_no_delete").ConfigureAwait(false); return 0;
                 }
                 if (config.AuthorizationPrivateKeyPath is null || config.AuthorizationOutputPath is null) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
                 using var authorizer = Signer(pins.AuthorizationKeyId, config.AuthorizationPrivateKeyPath, pins.AuthorizationFingerprint);
                 var permission = new CurrentAuthArchiveAuthorization(scope.OperationId, CurrentAuthLocalSessionArchivePolicy.Hash(review!), DateTimeOffset.UtcNow, scope.ExpiresAtUtc);
                 RequireAuthorization(permission, scope, review!, DateTimeOffset.UtcNow);
                 await ClaimAsync(config.AuthorizationOutputPath, CurrentAuthLocalSessionArchivePolicy.Sign(CurrentAuthLocalSessionArchivePolicy.AuthorizationDomain, permission, authorizer)).ConfigureAwait(false);
-                await output.WriteLineAsync("current_auth_session_archive_authorization_complete_no_delete").ConfigureAwait(false); return 0;
+                await output.WriteLineUncancelledAsync("current_auth_session_archive_authorization_complete_no_delete").ConfigureAwait(false); return 0;
             }
             CurrentAuthLocalSessionArchivePermit permit = await CurrentAuthLocalSessionArchivePermit.AdmitAsync(review!, authorization!, trust, pins, environment, TimeProvider.System, ct).ConfigureAwait(false);
             try
             {
                 if (command == "verify-current-auth-local-session-archive")
-                { await output.WriteLineAsync("current_auth_session_archive_verify_complete_no_delete").ConfigureAwait(false); return 0; }
+                { await output.WriteLineUncancelledAsync("current_auth_session_archive_verify_complete_no_delete").ConfigureAwait(false); return 0; }
                 using var evidence = Signer(pins.EvidenceKeyId, config.EvidencePrivateKeyPath, pins.EvidenceFingerprint);
                 CurrentAuthArchiveReceipt terminal = await PostgreSqlCurrentAuthLocalSessionArchive.ExecuteAsync(localConnection, permit, evidence, ct).ConfigureAwait(false);
                 environment.RequireTerminal(terminal);
-                await output.WriteLineAsync("current_auth_session_archive_complete_readback_verified_history_retained").ConfigureAwait(false); return 0;
+                await output.WriteLineUncancelledAsync("current_auth_session_archive_complete_readback_verified_history_retained").ConfigureAwait(false); return 0;
             }
             finally { permit.Stop(); }
             T ReadLocal<T>(string path)
@@ -161,7 +161,7 @@ public static partial class MigrationConsole
         }
         catch (Exception failure) when (failure is MigrationExecutionException or MigrationConsoleException or JsonException or System.Xml.XmlException or IOException or UnauthorizedAccessException or
             Npgsql.NpgsqlException or Exact25FullBackupException or System.Security.Cryptography.CryptographicException or FormatException or ArgumentException or InvalidOperationException)
-        { await error.WriteLineAsync("current_auth_session_archive_boundary_failed_no_success_claim").ConfigureAwait(false); return 1; }
+        { await error.WriteLineUncancelledAsync("current_auth_session_archive_boundary_failed_no_success_claim").ConfigureAwait(false); return 1; }
     }
     internal static void RequireArchiveCommand(string command)
     {

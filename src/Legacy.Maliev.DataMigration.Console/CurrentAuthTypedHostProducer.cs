@@ -397,11 +397,11 @@ public static partial class MigrationConsole
             var retained = DecodeAuthRepair<CurrentAuthTypedHostExit>(files.Read(config.OutputPath, sharedReader: true));
             if (retained != host || !SecureLocalFile.HandleResolvesToApprovedPath(executableImage, CurrentAuthTypedHostProducer.Dotnet)) { throw CurrentAuthRepairPermit.Invalid(); }
             CurrentAuthTypedProofAssembler.RequireHost(retained, binding, scope, pins, trust, DateTimeOffset.UtcNow);
-            await output.WriteLineAsync("current_auth_typed_host_observed_no_execution_authority").ConfigureAwait(false); return 0;
+            await output.WriteLineUncancelledAsync("current_auth_typed_host_observed_no_execution_authority").ConfigureAwait(false); return 0;
         }
         catch (Exception failure) when (failure is MigrationExecutionException or MigrationConsoleException or IOException or
             UnauthorizedAccessException or System.ComponentModel.Win32Exception or JsonException or InvalidOperationException or TimeoutException or OperationCanceledException)
-        { await error.WriteLineAsync("current_auth_typed_host_failed_no_proof").ConfigureAwait(false); return 1; }
+        { await error.WriteLineUncancelledAsync("current_auth_typed_host_failed_no_proof").ConfigureAwait(false); return 1; }
     }
 
     private static async Task<int> RunCurrentAuthTypedTestHostAsync(string configPath, TextWriter output, TextWriter error, CancellationToken ct)

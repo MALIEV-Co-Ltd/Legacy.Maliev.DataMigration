@@ -179,7 +179,7 @@ public static partial class MigrationConsole
             await WriteNewJsonAsync(completePath, result, cancellationToken).ConfigureAwait(false);
             File.Replace(completePath, config.OutputPath, destinationBackupFileName: null);
             published = true;
-            await output.WriteLineAsync(command.Replace('-', '_') + "_complete").ConfigureAwait(false);
+            await output.WriteLineUncancelledAsync(command.Replace('-', '_') + "_complete").ConfigureAwait(false);
             return 0;
         }
         catch (Exception failure)
@@ -189,7 +189,7 @@ public static partial class MigrationConsole
                 try { File.Delete(reservedOutputPath); }
                 catch (IOException) { /* A concurrent handle keeps the reservation visible for review. */ }
             }
-            await error.WriteLineAsync(ClassifyDeltaFailure(failure)).ConfigureAwait(false);
+            await error.WriteLineUncancelledAsync(ClassifyDeltaFailure(failure)).ConfigureAwait(false);
             return failure is MigrationConsoleException or MigrationExecutionException or ArgumentException or
                 FormatException or CryptographicException ? 65 : 70;
         }

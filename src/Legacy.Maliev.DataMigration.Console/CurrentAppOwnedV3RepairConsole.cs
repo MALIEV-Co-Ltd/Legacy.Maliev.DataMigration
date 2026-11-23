@@ -81,7 +81,7 @@ public static partial class MigrationConsole
                     before, after, baseline, trust, pins, environment, signer, configuration.ReviewExpiresAtUtc.Value,
                     TimeProvider.System, cancellationToken).ConfigureAwait(false);
                 await WriteClaimAsync(configuration.ReviewOutputPath, issued).ConfigureAwait(false);
-                await output.WriteLineAsync("current_app_owned_v3_review_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_app_owned_v3_review_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             if (command == "authorize-current-app-owned-v3-repair")
@@ -93,7 +93,7 @@ public static partial class MigrationConsole
                 CurrentAppOwnedV3RepairSignedClaim authorization = await CurrentAppOwnedV3RepairPermit.AuthorizeAsync(review!,
                     before, after, trust, pins, environment, signer, TimeProvider.System, cancellationToken).ConfigureAwait(false);
                 await WriteClaimAsync(configuration.AuthorizationOutputPath, authorization).ConfigureAwait(false);
-                await output.WriteLineAsync("current_app_owned_v3_authorization_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_app_owned_v3_authorization_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             CurrentAppOwnedV3RepairPermit permit = await CurrentAppOwnedV3RepairPermit.AdmitAsync(review!, permission!, before,
@@ -102,7 +102,7 @@ public static partial class MigrationConsole
             {
                 if (command == "verify-current-app-owned-v3-repair")
                 {
-                    await output.WriteLineAsync("current_app_owned_v3_verify_complete_no_ddl").ConfigureAwait(false);
+                    await output.WriteLineUncancelledAsync("current_app_owned_v3_verify_complete_no_ddl").ConfigureAwait(false);
                     return 0;
                 }
                 IReadOnlyList<V3AdditiveObservation> preimages = await environment.GetRepairPreimagesAsync(cancellationToken).ConfigureAwait(false);
@@ -113,7 +113,7 @@ public static partial class MigrationConsole
                 if (receipts.Count != 3 || !receipts.Select(x => x.Database).SequenceEqual(V3RepairDatabases) ||
                     receipts.Any(x => x.Classification != CurrentAppOwnedCommitClassification.CommittedAndReadback))
                 { throw CurrentAppOwnedV3RepairPermit.Invalid(); }
-                await output.WriteLineAsync("current_app_owned_v3_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_app_owned_v3_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
                 return 0;
             }
             finally { permit.Stop(); }
@@ -141,7 +141,7 @@ public static partial class MigrationConsole
             JsonException or IOException or UnauthorizedAccessException or Npgsql.NpgsqlException or
             Exact25FullBackupException or System.Security.Cryptography.CryptographicException or FormatException or ArgumentException)
         {
-            await error.WriteLineAsync("current_app_owned_v3_boundary_failed_no_success_claim").ConfigureAwait(false);
+            await error.WriteLineUncancelledAsync("current_app_owned_v3_boundary_failed_no_success_claim").ConfigureAwait(false);
             return 1;
         }
     }

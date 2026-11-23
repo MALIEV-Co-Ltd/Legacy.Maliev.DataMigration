@@ -61,7 +61,7 @@ internal static class CnpgExecTunnel
         try
         {
             listener.Start(32);
-            await output.WriteLineAsync("cnpg_exec_tunnel_ready").ConfigureAwait(false);
+            await output.WriteLineUncancelledAsync("cnpg_exec_tunnel_ready").ConfigureAwait(false);
             while (!stop.IsCancellationRequested)
             {
                 TcpClient client;

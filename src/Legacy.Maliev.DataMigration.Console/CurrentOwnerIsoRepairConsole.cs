@@ -116,7 +116,7 @@ public static partial class MigrationConsole
                     source, owners, baseline, trust, pins, environment, signer, configuration.ReviewExpiresAtUtc.Value,
                     TimeProvider.System, cancellationToken).ConfigureAwait(false);
                 await WriteClaimAsync(configuration.ReviewOutputPath, issued).ConfigureAwait(false);
-                await output.WriteLineAsync("current_owner_iso_review_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_owner_iso_review_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             if (command == "authorize-current-owner-iso-repair")
@@ -128,7 +128,7 @@ public static partial class MigrationConsole
                 CurrentOwnerIsoRepairSignedClaim authorization = await CurrentOwnerIsoRepairPermit.AuthorizeAsync(review!,
                     source, owners, trust, pins, environment, signer, TimeProvider.System, cancellationToken).ConfigureAwait(false);
                 await WriteClaimAsync(configuration.AuthorizationOutputPath, authorization).ConfigureAwait(false);
-                await output.WriteLineAsync("current_owner_iso_authorization_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_owner_iso_authorization_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             CurrentOwnerIsoRepairPermit permit = await CurrentOwnerIsoRepairPermit.AdmitAsync(review!, permission!, source, owners, trust, pins, environment, TimeProvider.System, cancellationToken).ConfigureAwait(false);
@@ -136,7 +136,7 @@ public static partial class MigrationConsole
             {
                 if (command == "verify-current-owner-iso-repair")
                 {
-                    await output.WriteLineAsync("current_owner_iso_verify_complete_no_ddl").ConfigureAwait(false);
+                    await output.WriteLineUncancelledAsync("current_owner_iso_verify_complete_no_ddl").ConfigureAwait(false);
                     return 0;
                 }
                 using var signer = new P256MigrationEvidenceSigner(pins.ReceiptKeyId,
@@ -149,7 +149,7 @@ public static partial class MigrationConsole
                 if (!receipts.Select(x => x.Database).SequenceEqual(PostgreSqlCurrentOwnerIsoRepair.Databases(), StringComparer.Ordinal) ||
                     receipts.Any(x => x.Classification != CurrentAppOwnedCommitClassification.CommittedAndReadback))
                 { throw CurrentOwnerIsoRepairPermit.Invalid(); }
-                await output.WriteLineAsync("current_owner_iso_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_owner_iso_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
                 return 0;
             }
             finally { permit.Stop(); }
@@ -193,7 +193,7 @@ public static partial class MigrationConsole
                         observedAtUtc = DateTimeOffset.UtcNow
                     }), CancellationToken.None).ConfigureAwait(false);
             }
-            await error.WriteLineAsync("current_owner_iso_boundary_failed_no_success_claim").ConfigureAwait(false);
+            await error.WriteLineUncancelledAsync("current_owner_iso_boundary_failed_no_success_claim").ConfigureAwait(false);
             return 1;
         }
     }

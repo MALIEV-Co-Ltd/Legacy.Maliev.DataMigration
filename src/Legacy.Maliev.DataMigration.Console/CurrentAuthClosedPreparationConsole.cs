@@ -36,7 +36,7 @@ public static partial class MigrationConsole
                 config.CaseId is "host-unprobed-sdk" or "local-ordinary-trust", lease.Token).ConfigureAwait(false);
             string path = await CurrentAuthClosedConfiguration.WriteAsync(files, binding, capture, source, config.CaseId,
                 config.CompletedComponents, config.PrecursorReviewPrivateKeyPath, config.TestAssemblyPath, lease.Token).ConfigureAwait(false);
-            await output.WriteLineAsync(JsonSerializer.Serialize(new
+            await output.WriteLineUncancelledAsync(JsonSerializer.Serialize(new
             {
                 kind = "current-auth-named-disposable-preparation-v1",
                 path,
@@ -49,7 +49,7 @@ public static partial class MigrationConsole
         catch (Exception failure) when (failure is MigrationExecutionException or MigrationConsoleException or IOException or
             UnauthorizedAccessException or JsonException or FormatException or InvalidOperationException or System.Security.Cryptography.CryptographicException or Npgsql.NpgsqlException)
         {
-            await error.WriteLineAsync("current_auth_named_closed_preparation_failed").ConfigureAwait(false); return 1;
+            await error.WriteLineUncancelledAsync("current_auth_named_closed_preparation_failed").ConfigureAwait(false); return 1;
         }
     }
 }

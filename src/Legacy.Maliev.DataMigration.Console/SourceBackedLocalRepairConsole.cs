@@ -39,7 +39,7 @@ public static partial class MigrationConsole
                     StringComparison.OrdinalIgnoreCase)) { throw DeltaInvalid("delta_source_repair_binding_output_invalid"); }
                 using WindowsLocalRunAuthority fresh = WindowsLocalRunAuthority.AcquireFresh(artifactRoot);
                 await WriteNewJsonAsync(prepare.BindingOutputPath, fresh.Binding, cancellationToken).ConfigureAwait(false);
-                await output.WriteLineAsync("prepare_source_backed_local_repair_authority_complete").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("prepare_source_backed_local_repair_authority_complete").ConfigureAwait(false);
                 return 0;
             }
             SourceBackedLocalRepairCommandConfiguration request = root.SourceBackedLocalRepair
@@ -95,7 +95,7 @@ public static partial class MigrationConsole
                     connection, plans, proof, schema, trust, observe, maintenance, sourceAcceptance,
                     TimeProvider.System, request.ExpiresAtUtc, authorizationSigner, cancellationToken).ConfigureAwait(false);
                 await WriteNewJsonAsync(request.OutputPath, signed, cancellationToken).ConfigureAwait(false);
-                await output.WriteLineAsync("authorize_source_backed_local_repair_complete").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("authorize_source_backed_local_repair_complete").ConfigureAwait(false);
                 return 0;
             }
             PairedLocalTransitionAuthorization authorization = await ReadProtectedJsonAsync<PairedLocalTransitionAuthorization>(
@@ -171,7 +171,7 @@ public static partial class MigrationConsole
                 else { throw DeltaInvalid("delta_source_repair_command_invalid"); }
             }
             await WriteNewJsonAsync(request.OutputPath, result, cancellationToken).ConfigureAwait(false);
-            await output.WriteLineAsync(command.Replace('-', '_') + "_complete").ConfigureAwait(false);
+            await output.WriteLineUncancelledAsync(command.Replace('-', '_') + "_complete").ConfigureAwait(false);
             return 0;
         }
         catch (Exception failure)
@@ -180,7 +180,7 @@ public static partial class MigrationConsole
             string code = ClassifyDeltaFailure(failure);
             if (code.Length > 100 || code.Any(value => value is not (>= 'a' and <= 'z') and not '_'))
             { code = "delta_source_repair_failed"; }
-            await error.WriteLineAsync(code).ConfigureAwait(false);
+            await error.WriteLineUncancelledAsync(code).ConfigureAwait(false);
             return failure is OperationCanceledException ? 130 : 70;
         }
     }

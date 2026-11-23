@@ -81,7 +81,7 @@ public static partial class MigrationConsole
                     before, after, baseline, trust, pins, environment, signer, configuration.ReviewExpiresAtUtc.Value,
                     TimeProvider.System, cancellationToken).ConfigureAwait(false);
                 await WriteClaimAsync(configuration.ReviewOutputPath, issued).ConfigureAwait(false);
-                await output.WriteLineAsync("current_app_owned_retained31_review_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_app_owned_retained31_review_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             if (command == "authorize-current-app-owned-retained31-repair")
@@ -93,7 +93,7 @@ public static partial class MigrationConsole
                 CurrentAppOwnedRetained31SignedClaim authorization = await CurrentAppOwnedRetained31Permit.AuthorizeAsync(review!,
                     before, after, trust, pins, environment, signer, TimeProvider.System, cancellationToken).ConfigureAwait(false);
                 await WriteClaimAsync(configuration.AuthorizationOutputPath, authorization).ConfigureAwait(false);
-                await output.WriteLineAsync("current_app_owned_retained31_authorization_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_app_owned_retained31_authorization_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             CurrentAppOwnedRetained31Permit permit = await CurrentAppOwnedRetained31Permit.AdmitAsync(review!, permission!, before,
@@ -102,7 +102,7 @@ public static partial class MigrationConsole
             { throw CurrentAppOwnedRetained31Permit.Invalid(); }
             if (command == "verify-current-app-owned-retained31-repair")
             {
-                await output.WriteLineAsync("current_app_owned_retained31_verify_complete_no_ddl").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_app_owned_retained31_verify_complete_no_ddl").ConfigureAwait(false);
                 return 0;
             }
             using var receiptSigner = new P256MigrationEvidenceSigner(pins.ReceiptKeyId,
@@ -122,7 +122,7 @@ public static partial class MigrationConsole
                 await permit.RequireAsync(cancellationToken).ConfigureAwait(false);
                 if (await environment.InspectGlobalPreservationAsync(cancellationToken).ConfigureAwait(false) != scope.GlobalPreservationSha256)
                 { throw CurrentAppOwnedRetained31Permit.Invalid(); }
-                await output.WriteLineAsync("current_app_owned_retained31_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_app_owned_retained31_apply_complete_readback_verified_no_row_refresh").ConfigureAwait(false);
                 return 0;
             }
             finally { permit.Stop(); }
@@ -151,7 +151,7 @@ public static partial class MigrationConsole
             JsonException or IOException or UnauthorizedAccessException or Npgsql.NpgsqlException or
             Exact25FullBackupException or System.Security.Cryptography.CryptographicException or FormatException or ArgumentException)
         {
-            await error.WriteLineAsync("current_app_owned_retained31_boundary_failed_no_success_claim").ConfigureAwait(false);
+            await error.WriteLineUncancelledAsync("current_app_owned_retained31_boundary_failed_no_success_claim").ConfigureAwait(false);
             return 1;
         }
     }

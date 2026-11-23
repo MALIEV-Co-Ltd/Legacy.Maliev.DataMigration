@@ -105,7 +105,7 @@ public static partial class MigrationConsole
                 CurrentAuthRepairSignedClaim issued = await CurrentAuthRepairPermit.IssueReviewAsync(scope, source, baseline,
                     trust, pins, executionEnvironment, signer, config.ReviewExpiresAtUtc.Value, TimeProvider.System, ct).ConfigureAwait(false);
                 await WriteClaimAsync(config.ReviewOutputPath, issued).ConfigureAwait(false);
-                await output.WriteLineAsync("current_auth_review_complete_no_ddl").ConfigureAwait(false); return 0;
+                await output.WriteLineUncancelledAsync("current_auth_review_complete_no_ddl").ConfigureAwait(false); return 0;
             }
             if (command == "authorize-current-auth-repair")
             {
@@ -114,14 +114,14 @@ public static partial class MigrationConsole
                 CurrentAuthRepairSignedClaim issued = await CurrentAuthRepairPermit.AuthorizeAsync(review!, source, trust,
                     pins, executionEnvironment, signer, TimeProvider.System, ct).ConfigureAwait(false);
                 await WriteClaimAsync(config.AuthorizationOutputPath, issued).ConfigureAwait(false);
-                await output.WriteLineAsync("current_auth_authorization_complete_no_ddl").ConfigureAwait(false); return 0;
+                await output.WriteLineUncancelledAsync("current_auth_authorization_complete_no_ddl").ConfigureAwait(false); return 0;
             }
             CurrentAuthRepairPermit permit = await CurrentAuthRepairPermit.AdmitAsync(review!, permission!, source, trust,
                 pins, executionEnvironment, TimeProvider.System, ct).ConfigureAwait(false);
             try
             {
                 if (command == "verify-current-auth-repair")
-                { await output.WriteLineAsync("current_auth_verify_complete_no_ddl").ConfigureAwait(false); return 0; }
+                { await output.WriteLineUncancelledAsync("current_auth_verify_complete_no_ddl").ConfigureAwait(false); return 0; }
                 CurrentAuthNativeObservation preimage = await environment.GetAuthPreimageAsync(ct).ConfigureAwait(false);
                 await using CurrentAuthClosedCommitProxy? commitProxy = namedBootstrap && scope.ClosedBootstrapSubject!.CaseId == "lost-commit-ack"
                     ? await CurrentAuthClosedCommitProxy.CreateAsync(permit, connection, files, binding.ArtifactRootCanonicalPath, ct).ConfigureAwait(false)
@@ -131,7 +131,7 @@ public static partial class MigrationConsole
                 CurrentAuthRepairReceipt receipt = await PostgreSqlCurrentAuthRepair.ExecuteAsync(commitProxy?.ConnectionString ?? connection, preimage,
                     permit, signer, trust, pins, ct).ConfigureAwait(false);
                 environment.RequireTerminal(receipt);
-                await output.WriteLineAsync("current_auth_apply_complete_readback_verified_sessions_and_history_retained").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("current_auth_apply_complete_readback_verified_sessions_and_history_retained").ConfigureAwait(false);
                 return 0;
             }
             finally { permit.Stop(); }
@@ -153,7 +153,7 @@ public static partial class MigrationConsole
         catch (Exception failure) when (failure is MigrationExecutionException or MigrationConsoleException or JsonException or
             IOException or UnauthorizedAccessException or Npgsql.NpgsqlException or Exact25FullBackupException or
             System.Security.Cryptography.CryptographicException or FormatException or ArgumentException or InvalidOperationException)
-        { await error.WriteLineAsync("current_auth_boundary_failed_no_success_claim").ConfigureAwait(false); return 1; }
+        { await error.WriteLineUncancelledAsync("current_auth_boundary_failed_no_success_claim").ConfigureAwait(false); return 1; }
     }
 
     internal static T DecodeAuthRepair<T>(byte[] bytes)

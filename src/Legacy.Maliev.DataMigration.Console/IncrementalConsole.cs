@@ -28,7 +28,7 @@ public static partial class MigrationConsole
                 _ => "incremental_execution_failed",
             };
             if (code.Length > 100 || code.Any(value => value is not (>= 'a' and <= 'z') and not '_')) { code = "incremental_execution_failed"; }
-            await error.WriteLineAsync(code).ConfigureAwait(false);
+            await error.WriteLineUncancelledAsync(code).ConfigureAwait(false);
             if (failure is MigrationExecutionException { Reconciliation: { } diagnostic })
             {
                 await WriteSafeReconciliationDiagnosticAsync(error, diagnostic).ConfigureAwait(false);
@@ -172,7 +172,7 @@ public static partial class MigrationConsole
                 localCredentialAuthentication = "not_probed_readonly",
                 initialAdmission = "requires_explicit_execution_held_binding"
             }, token).ConfigureAwait(false);
-            await output.WriteLineAsync("readonly_preflight_complete").ConfigureAwait(false);
+            await output.WriteLineUncancelledAsync("readonly_preflight_complete").ConfigureAwait(false);
             return;
         }
         RecoveryJournalSnapshot? snapshot = null;
@@ -186,7 +186,7 @@ public static partial class MigrationConsole
                 // Completed evidence is deliberately exportable without a new execution lease or signer.
                 if (snapshot.Baseline.Status != "completed") { _ = verifier.GetPermittedOperations(admission, snapshot.Baseline, DateTimeOffset.UtcNow); }
                 await WriteNewJsonAsync(command.OutputPath, CompletedSnapshotDocument.FromSnapshot(snapshot), token).ConfigureAwait(false);
-                await output.WriteLineAsync("readonly_recovery_snapshot_complete").ConfigureAwait(false);
+                await output.WriteLineUncancelledAsync("readonly_recovery_snapshot_complete").ConfigureAwait(false);
                 return;
             }
             continuity = SourceContinuityAttestation.Parse(await ReadProtectedTextAsync(Required(command.ContinuityPath), "incremental_continuity_unprotected", token).ConfigureAwait(false));
@@ -203,7 +203,7 @@ public static partial class MigrationConsole
                 : verifier.PrepareResume(admission, continuity!, snapshot!.Baseline, observed.Source, held.Binding,
                     observed.Runner, observed.Target, Guid.NewGuid(), now, command.ResumeExpiresAtUtc ?? throw Invalid("incremental_resume_expiry_required"), authorizer, now);
             await WriteExactRecoveryAsync(command.OutputPath, signed.ExactJson, token).ConfigureAwait(false);
-            await output.WriteLineAsync("authorize_resume_complete").ConfigureAwait(false);
+            await output.WriteLineUncancelledAsync("authorize_resume_complete").ConfigureAwait(false);
             return;
         }
 
@@ -348,7 +348,7 @@ public static partial class MigrationConsole
         }
         else { await WriteNewJsonAsync(command.OutputPath, compatible, token).ConfigureAwait(false); }
         await WriteProgressAsync(output, result.Progress).ConfigureAwait(false);
-        await output.WriteLineAsync("incremental_local_complete; remote_shadows_preserved; final_evidence_not_produced").ConfigureAwait(false);
+        await output.WriteLineUncancelledAsync("incremental_local_complete; remote_shadows_preserved; final_evidence_not_produced").ConfigureAwait(false);
     }
 
     private static Task WriteProgressAsync(TextWriter output, IncrementalMigrationProgress progress)

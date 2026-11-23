@@ -204,7 +204,7 @@ public static partial class MigrationConsole
                     token => runtime.ObserveAsync(request, connectionString, plan, token), inspector,
                     TimeProvider.System, cancellationToken).ConfigureAwait(false);
             await WriteNewJsonAsync(request.OutputPath, review, cancellationToken).ConfigureAwait(false);
-            await output.WriteLineAsync("review_historical_local_target_complete").ConfigureAwait(false);
+            await output.WriteLineUncancelledAsync("review_historical_local_target_complete").ConfigureAwait(false);
             return 0;
         }
         catch (Exception failure)
@@ -216,7 +216,7 @@ public static partial class MigrationConsole
             {
                 code = "delta_execution_failed";
             }
-            await error.WriteLineAsync(code).ConfigureAwait(false);
+            await error.WriteLineUncancelledAsync(code).ConfigureAwait(false);
             if (failure is MigrationExecutionException { Reconciliation: { } diagnostic })
             {
                 await WriteSafeHistoricalLocalDiagnosticAsync(error, diagnostic).ConfigureAwait(false);

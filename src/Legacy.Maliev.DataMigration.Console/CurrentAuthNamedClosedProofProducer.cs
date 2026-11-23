@@ -109,10 +109,10 @@ public static partial class MigrationConsole
             await files.WriteNewAsync(config.OutputPath, JsonSerializer.SerializeToUtf8Bytes(report), ct).ConfigureAwait(false);
             var readback = Read<CurrentAuthNamedClosedReport>(config.OutputPath);
             await CurrentAuthNamedClosedProofReadback.RequireAsync(files, binding, readback, intended, source, pins, trust, requireSignature: true, null, ct).ConfigureAwait(false);
-            await output.WriteLineAsync(JsonSerializer.Serialize(new { config.OutputPath, sha256 = CurrentAuthRepairPermit.Hash(files.Read(config.OutputPath, sharedReader: true, maximumBytes: 32 * 1024 * 1024)), persistentAuthority = false })).ConfigureAwait(false);
+            await output.WriteLineUncancelledAsync(JsonSerializer.Serialize(new { config.OutputPath, sha256 = CurrentAuthRepairPermit.Hash(files.Read(config.OutputPath, sharedReader: true, maximumBytes: 32 * 1024 * 1024)), persistentAuthority = false })).ConfigureAwait(false);
             return 0;
         }
         catch (Exception failure) when (failure is MigrationExecutionException or MigrationConsoleException or IOException or UnauthorizedAccessException or JsonException or CryptographicException or FormatException or InvalidOperationException or OperationCanceledException)
-        { await error.WriteLineAsync("current_auth_named_closed_assembly_failed").ConfigureAwait(false); return 1; }
+        { await error.WriteLineUncancelledAsync("current_auth_named_closed_assembly_failed").ConfigureAwait(false); return 1; }
     }
 }
