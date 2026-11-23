@@ -16,6 +16,8 @@ public enum ConsumerOverlaySelection
     CurrentConsumerSchemaV3Iso = 4,
     /// <summary>Appends the reviewed Customer Company source storage contract to V3 ISO.</summary>
     CurrentConsumerSchemaV3CompanyStorage = 5,
+    /// <summary>Uses the truthful ID-first SQL Country preimage with V3 Company storage and ISO widths.</summary>
+    CurrentConsumerSchemaV3CompanyStorageSourceOrder = 6,
 }
 
 internal static class ApprovedConsumerOverlaySelection
@@ -24,6 +26,8 @@ internal static class ApprovedConsumerOverlaySelection
     {
         return selection switch
         {
+            ConsumerOverlaySelection.CurrentConsumerSchemaV3CompanyStorageSourceOrder => database == "Country"
+                ? CurrentConsumerSchemaV3SourceOrderIsoManifest.Country : ProfileForDatabase(database, ConsumerOverlaySelection.CurrentConsumerSchemaV3CompanyStorage),
             ConsumerOverlaySelection.CurrentConsumerSchemaV3CompanyStorage => database == "Customer"
                 ? CustomerCompanyStorageManifest.Profile : CurrentConsumerSchemaV3IsoManifest.ProfileForDatabase(database),
             ConsumerOverlaySelection.HistoricalDefaults => ApprovedTargetExtensionManifest.ProfileForDatabase(database),
@@ -48,12 +52,15 @@ internal static class ApprovedConsumerOverlaySelection
             ApprovedCurrentConsumerSchemaManifest.IsProfile(database.TargetExtensionProfile) ||
             CurrentConsumerSchemaV3Manifest.IsProfile(database.TargetExtensionProfile) ||
             CurrentConsumerSchemaV3IsoManifest.IsProfile(database.TargetExtensionProfile) ||
+            CurrentConsumerSchemaV3SourceOrderIsoManifest.IsProfile(database.TargetExtensionProfile) ||
             CustomerCompanyStorageManifest.IsProfile(database.TargetExtensionProfile));
     }
 
     internal static bool IsApproved(FreshSchemaPlan schema)
     {
         ConsumerOverlaySelection selection = schema.Databases.Any(database =>
+            CurrentConsumerSchemaV3SourceOrderIsoManifest.IsProfile(database.TargetExtensionProfile))
+            ? ConsumerOverlaySelection.CurrentConsumerSchemaV3CompanyStorageSourceOrder : schema.Databases.Any(database =>
             CustomerCompanyStorageManifest.IsProfile(database.TargetExtensionProfile))
             ? ConsumerOverlaySelection.CurrentConsumerSchemaV3CompanyStorage : schema.Databases.Any(database =>
             CurrentConsumerSchemaV3IsoManifest.IsProfile(database.TargetExtensionProfile))
