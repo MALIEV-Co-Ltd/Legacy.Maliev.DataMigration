@@ -134,7 +134,7 @@ public sealed class CurrentOwnerIsoClosedConsoleExecutionTests(ITestOutputHelper
         }
         if (caseId == "local-trust")
         {
-            string observed = await CurrentAppOwnedRepairDockerProcess.RunDockerAsync(["--host", "npipe:////./pipe/docker_engine", "exec", fixture.ContainerId, "env", "LC_ALL=C", "psql", "-X", "-w", "-h", "/var/run/postgresql", "-U", "postgres", "-d", "postgres", "-At", "-c", "SELECT current_user;"], fixture.Token, value => fixture.RecordAsync("docker-local-probe", value, CancellationToken.None)).ConfigureAwait(false);
+            string observed = await CurrentAppOwnedRepairDockerProcess.RunDockerAsync(["exec", fixture.ContainerId, "env", "LC_ALL=C", "psql", "-X", "-w", "-h", "/var/run/postgresql", "-U", "postgres", "-d", "postgres", "-At", "-c", "SELECT current_user;"], fixture.Token, value => fixture.RecordAsync("docker-local-probe", value, CancellationToken.None)).ConfigureAwait(false);
             Assert.Equal("postgres", observed.Trim()); await fixture.RecordAsync("local-client-allowed", new { role = "postgres", transport = "unix", observedAtUtc = DateTimeOffset.UtcNow }, fixture.Token).ConfigureAwait(false);
         }
         var calls = new List<IsoNamedClosedInvocation>(); bool rejectReview = caseId is "wrong-owner" or "unsafe-host" or "local-trust";

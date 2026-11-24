@@ -46,7 +46,7 @@ internal static class CurrentOwnerIsoNamedClosedConfiguration
         var projected = System.Text.Json.Nodes.JsonNode.Parse(container.GetRawText())!.AsObject();
         var config = projected["Config"]!.AsObject(); _ = config.Remove("PgData"); config["Env"] = new System.Text.Json.Nodes.JsonArray("PGDATA=" + pgData);
         var observed = DockerLocalTargetObservation.Parse("[" + projected.ToJsonString() + "]", "[" + volume.GetRawText() + "]", id, fixture.VolumeName, fixture.LoopbackPort, false);
-        string stat = await CurrentAppOwnedRepairDockerProcess.RunDockerAsync(["--host", "npipe:////./pipe/docker_engine", "exec", id, "env", "TZ=UTC", "LC_ALL=C", "stat", "--printf=%d|%i|%f|%u|%g|%h|%s|%y|%z", "--", policy.Pin.HbaPath], ct,
+        string stat = await CurrentAppOwnedRepairDockerProcess.RunDockerAsync(["exec", id, "env", "TZ=UTC", "LC_ALL=C", "stat", "--printf=%d|%i|%f|%u|%g|%h|%s|%y|%z", "--", policy.Pin.HbaPath], ct,
             value => files.WriteNewAsync(Path.Combine(fixture.Root, $"iso-closed-stat-{value.RunId:N}.json"), JsonSerializer.SerializeToUtf8Bytes(value), CancellationToken.None)).ConfigureAwait(false);
         var target = new CurrentAppOwnedRepairTargetPins(id, fixture.VolumeName, container.GetProperty("Image").GetString(), CurrentOwnerIsoNamedClosedFixture.Image,
             policy.Pin.HbaPath, CurrentAppOwnedRepairPermit.Hash(Encoding.UTF8.GetBytes(stat)), null, null);

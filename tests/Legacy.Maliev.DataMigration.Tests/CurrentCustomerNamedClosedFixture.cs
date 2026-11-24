@@ -198,7 +198,7 @@ internal sealed class CurrentCustomerNamedClosedFixture : IAsyncDisposable
 
     private async Task RecordTargetAsync(CancellationToken ct)
     {
-        string raw = await CurrentAppOwnedRepairDockerProcess.RunDockerAsync(["--host", "npipe:////./pipe/docker_engine", "inspect", "--type", "container", ContainerId], ct,
+        string raw = await CurrentAppOwnedRepairDockerProcess.RunDockerAsync(["inspect", "--type", "container", ContainerId], ct,
             value => RecordAsync("docker", value, CancellationToken.None)).ConfigureAwait(false);
         JsonArray array = JsonNode.Parse(raw)!.AsArray(); JsonObject item = array.Single()!.AsObject(), config = item["Config"]!.AsObject();
         string[] pgData = config["Env"]!.AsArray().Select(x => x!.GetValue<string>()).Where(x => x.StartsWith("PGDATA=", StringComparison.Ordinal)).ToArray();

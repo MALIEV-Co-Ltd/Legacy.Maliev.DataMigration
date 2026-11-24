@@ -107,7 +107,9 @@ internal sealed class CurrentAuthLocalSessionArchiveRecoveryStorage : ICurrentAu
     {
         CurrentAuthArchiveCapacity.Require(admission: false);
         ObjectDisposedException.ThrowIf(_disposed, this); ct.ThrowIfCancellationRequested(); _first.Require(); _second.Require();
-        CurrentAuthArchiveDeviceProof actual = await CurrentAuthLocalSessionArchiveDeviceProcess.ObserveAsync(_scope, _firstRoot, _secondRoot, _first, _second, ct).ConfigureAwait(false);
+        CurrentAuthArchiveDeviceProof actual = _scope.ProofAdmission is (CurrentAuthArchiveProofAdmission)3 or (CurrentAuthArchiveProofAdmission)4
+            ? await CurrentAuthLocalSessionArchiveDeviceProcess.ObserveVersionedContextAsync(_scope, _firstRoot, _secondRoot, _first, _second, ct).ConfigureAwait(false)
+            : await CurrentAuthLocalSessionArchiveDeviceProcess.ObserveAsync(_scope, _firstRoot, _secondRoot, _first, _second, ct).ConfigureAwait(false);
         CurrentAuthLocalSessionArchiveRecoveryDevices.RequireProof(_devices, _scope, actual, DateTimeOffset.UtcNow);
         foreach (var (path, held) in _held)
         {

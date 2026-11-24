@@ -116,6 +116,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
         _ = await JsonAsync("local-target", native.LocalTarget); _ = await JsonAsync("comparison-target", native.ComparisonTarget);
         _ = await JsonAsync("local-container", native.LocalContainer); _ = await JsonAsync("local-volume", native.LocalVolume);
         _ = await JsonAsync("comparison-container", native.ComparisonContainer); _ = await JsonAsync("comparison-volume", native.ComparisonVolume);
+        _ = await JsonAsync("native-ownership-v2", new { native.LocalVolumeConsumers, native.ComparisonVolumeConsumers, native.ObservedAtUtc });
         var localHba = await CopyAsync("local-hba", _firstFiles, _firstPolicy.HbaFile); var localRules = await CopyAsync("local-hba-rules", _firstFiles, _firstPolicy.RawRules);
         var comparisonHba = await CopyAsync("comparison-hba", _secondFiles, _secondPolicy.HbaFile); var comparisonRules = await CopyAsync("comparison-hba-rules", _secondFiles, _secondPolicy.RawRules);
         _ = await JsonAsync("local-policy", native.LocalPolicy with { HbaFile = new(localHba.Path, localHba.Sha256), RawRules = new(localRules.Path, localRules.Sha256) });
@@ -168,10 +169,20 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
         return new(stage, failure.BeganAtUtc, ended);
 
         async Task FleetAsync(string name, CurrentAuthArchiveFleet fleet)
-        { _ = await JsonAsync(name, fleet.Databases); _ = await JsonAsync(name + "-catalogs", fleet.Catalogs); _ = await JsonAsync(name + "-sessions", fleet.Auth.Sessions); }
+        {
+            _ = await JsonAsync(name, fleet.Databases); _ = await JsonAsync(name + "-catalogs", fleet.Catalogs); _ = await JsonAsync(name + "-sessions", fleet.Auth.Sessions);
+            _ = await JsonAsync(name + "-native-v2", CurrentAuthArchiveNativeCommitmentV2.Capture(fleet.Auth.Native));
+        }
         Task<CurrentAuthArchiveGenuineArtifact> JsonAsync<T>(string name, T value)
         {
-            return WriteAsync(name, JsonSerializer.SerializeToUtf8Bytes(value));
+            return value is IReadOnlyList<CurrentAppOwnedDatabaseSnapshot> snapshots
+                ? BaselineAsync(name, snapshots)
+                : WriteAsync(name, JsonSerializer.SerializeToUtf8Bytes(value));
+        }
+        async Task<CurrentAuthArchiveGenuineArtifact> BaselineAsync(string name, IReadOnlyList<CurrentAppOwnedDatabaseSnapshot> snapshots)
+        {
+            var artifact = await CurrentAuthArchiveStreamedBaselineV2.RetainAsync(_inputs.ParentFiles, Path.Combine(root, prefix + "-" + name + ".json"), snapshots, ct);
+            artifacts.Add(name, artifact); return artifact;
         }
 
         async Task<CurrentAuthArchiveGenuineArtifact> WriteAsync(string name, byte[] bytes)

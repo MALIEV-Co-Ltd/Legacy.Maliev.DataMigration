@@ -34,10 +34,17 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
         _ = await JsonAsync("local-target", native.LocalTarget); _ = await JsonAsync("comparison-target", native.ComparisonTarget);
         _ = await JsonAsync("local-container", native.LocalContainer); _ = await JsonAsync("local-volume", native.LocalVolume);
         _ = await JsonAsync("comparison-container", native.ComparisonContainer); _ = await JsonAsync("comparison-volume", native.ComparisonVolume);
+        _ = await JsonAsync("native-ownership-v2", new { native.LocalVolumeConsumers, native.ComparisonVolumeConsumers, native.ObservedAtUtc });
         _ = await JsonAsync("local-before", facts.LocalBefore.Databases); _ = await JsonAsync("local-after", facts.LocalAfter.Databases);
         _ = await JsonAsync("comparison-before", facts.ComparisonBefore.Databases); _ = await JsonAsync("comparison-after", facts.ComparisonAfter.Databases);
         _ = await JsonAsync("local-before-catalogs", facts.LocalBefore.Catalogs); _ = await JsonAsync("local-after-catalogs", facts.LocalAfter.Catalogs);
         _ = await JsonAsync("comparison-before-catalogs", facts.ComparisonBefore.Catalogs); _ = await JsonAsync("comparison-after-catalogs", facts.ComparisonAfter.Catalogs);
+        _ = await JsonAsync("local-before-native-v2", CurrentAuthArchiveNativeCommitmentV2.Capture(facts.LocalBefore.Auth.Native));
+        _ = await JsonAsync("local-after-native-v2", CurrentAuthArchiveNativeCommitmentV2.Capture(facts.LocalAfter.Auth.Native));
+        _ = await JsonAsync("comparison-before-native-v2", CurrentAuthArchiveNativeCommitmentV2.Capture(facts.ComparisonBefore.Auth.Native));
+        _ = await JsonAsync("comparison-after-native-v2", CurrentAuthArchiveNativeCommitmentV2.Capture(facts.ComparisonAfter.Auth.Native));
+        _ = await JsonAsync("local-before-sessions", facts.LocalBefore.Auth.Sessions); _ = await JsonAsync("local-after-sessions", facts.LocalAfter.Auth.Sessions);
+        _ = await JsonAsync("comparison-before-sessions", facts.ComparisonBefore.Auth.Sessions); _ = await JsonAsync("comparison-after-sessions", facts.ComparisonAfter.Auth.Sessions);
         _ = await JsonAsync("rows", facts.LocalBefore.Auth.Sessions);
         var firstHba = await CopyAsync("local-hba", _firstFiles, _firstPolicy.HbaFile);
         var firstRules = await CopyAsync("local-hba-rules", _firstFiles, _firstPolicy.RawRules);
@@ -92,7 +99,15 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
 
         Task<CurrentAuthArchiveGenuineArtifact> JsonAsync<T>(string name, T value)
         {
-            return WriteAsync(name, JsonSerializer.SerializeToUtf8Bytes(value));
+            return value is IReadOnlyList<CurrentAppOwnedDatabaseSnapshot> snapshots
+                ? BaselineAsync(name, snapshots)
+                : WriteAsync(name, JsonSerializer.SerializeToUtf8Bytes(value));
+        }
+        async Task<CurrentAuthArchiveGenuineArtifact> BaselineAsync(string name, IReadOnlyList<CurrentAppOwnedDatabaseSnapshot> snapshots)
+        {
+            string path = Path.Combine(_inputs.ParentAuthority.Binding.ArtifactRootCanonicalPath, $"{prefix}-{Scope.OperationId:N}-{name}.json");
+            var artifact = await CurrentAuthArchiveStreamedBaselineV2.RetainAsync(_inputs.ParentFiles, path, snapshots, ct);
+            artifacts.Add(name, artifact); return artifact;
         }
 
         async Task<CurrentAuthArchiveGenuineArtifact> CopyAsync(string name, CurrentAppOwnedRepairCustody files, CurrentAuthArchiveProofArtifact artifact)

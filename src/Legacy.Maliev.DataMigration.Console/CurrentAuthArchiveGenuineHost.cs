@@ -72,12 +72,10 @@ internal static class CurrentAuthArchiveGenuineHost
             attribute.AttributeType.FullName == "Legacy.Maliev.DataMigration.Tests." + name)];
         if (attributes.Length != 1) { return false; }
         var attribute = attributes[0];
-        return attribute.AttributeType.Assembly != method.DeclaringType!.Assembly || !attribute.AttributeType.IsSealed ||
-            attribute.AttributeType.BaseType?.FullName != "Xunit.FactAttribute" || attribute.NamedArguments.Count != 0
-            ? false
-            : name == "CurrentAuthArchiveGenuineDualHelperFactAttribute"
+        return attribute.AttributeType.Assembly == method.DeclaringType!.Assembly && attribute.AttributeType.IsSealed &&
+            (attribute.AttributeType.BaseType?.FullName) == "Xunit.FactAttribute" && attribute.NamedArguments.Count == 0 && (name == "CurrentAuthArchiveGenuineDualHelperFactAttribute"
             ? attribute.ConstructorArguments.Count == 0
-            : attribute.ConstructorArguments.Count == 1 && attribute.ConstructorArguments[0].Value is string id && id == item.CaseId;
+            : attribute.ConstructorArguments.Count == 1 && attribute.ConstructorArguments[0].Value is string id && id == item.CaseId);
     }
     internal static async Task AuthenticateAsync(CurrentAuthArchiveGenuineHostConfiguration request, CancellationToken ct)
     {

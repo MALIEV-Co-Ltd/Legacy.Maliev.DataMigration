@@ -263,6 +263,8 @@ public static partial class MigrationConsole
                 Kind = "current-auth-archive-execution-host-exit-v1",
                 run.OperationId,
                 run.SourceCommitSha,
+                run.Nonce,
+                RunSha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(files.Read(runPath, sharedReader: true, maximumBytes: 65536)),
                 run.BeganAtUtc,
                 run.ExpiresAtUtc,
                 ProcessId = started ? process.Id : 0,

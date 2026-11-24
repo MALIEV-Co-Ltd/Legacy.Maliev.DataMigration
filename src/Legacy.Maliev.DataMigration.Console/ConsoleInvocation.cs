@@ -70,6 +70,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "provider-current-auth-archive-proof",
         "run-current-auth-archive-genuine-testhost",
         "produce-current-auth-archive-helper-host",
+        "produce-current-auth-archive-proof-v2",
         "run-current-auth-archive-helper-sdk",
         "execute-current-auth-archive-helper-provider",
         "produce-current-auth-archive-recovery-host",

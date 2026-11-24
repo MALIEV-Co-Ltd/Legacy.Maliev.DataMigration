@@ -8,7 +8,8 @@ namespace Legacy.Maliev.DataMigration.Console;
 internal sealed record CurrentAuthArchiveGenuineDualNativeEvidence(CurrentAppOwnedRepairTargetPins LocalTarget,
     CurrentAppOwnedRepairTargetPins ComparisonTarget, JsonElement LocalContainer, JsonElement LocalVolume,
     JsonElement ComparisonContainer, JsonElement ComparisonVolume, int LocalPort, int ComparisonPort,
-    CurrentAuthArchiveProofPolicy LocalPolicy, CurrentAuthArchiveProofPolicy ComparisonPolicy, DateTimeOffset ObservedAtUtc);
+    CurrentAuthArchiveProofPolicy LocalPolicy, CurrentAuthArchiveProofPolicy ComparisonPolicy, DateTimeOffset ObservedAtUtc,
+    IReadOnlyList<string>? LocalVolumeConsumers = null, IReadOnlyList<string>? ComparisonVolumeConsumers = null);
 
 internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment
 {
@@ -33,7 +34,8 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment
             var secondPolicy = await PolicyAsync(false, comparisonHba, comparisonRules);
             return new(_localTarget, _productionTarget, Container(targets.Local), Volume(targets.Local),
                 Container(comparison), Volume(comparison), RequireEndpoint(_localConnection, scope.LocalObservationPolicy).Port,
-                RequireEndpoint(_productionConnection, scope.ProductionObservationPolicy).Port, firstPolicy, secondPolicy, DateTimeOffset.UtcNow);
+                RequireEndpoint(_productionConnection, scope.ProductionObservationPolicy).Port, firstPolicy, secondPolicy, DateTimeOffset.UtcNow,
+                targets.Local.VolumeConsumers ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid(), comparison.VolumeConsumers ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid());
         }
         finally { _ = _gate.Release(); }
 

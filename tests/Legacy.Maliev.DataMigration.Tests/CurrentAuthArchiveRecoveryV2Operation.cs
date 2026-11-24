@@ -10,7 +10,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
 
     async Task<CurrentAuthArchiveGenuineDualArtifacts> ICurrentAuthArchiveRecoveryV2Lease.CompleteRecoveryAsync(CurrentAuthArchiveGenuineExecutionFacts setup, CancellationToken ct)
     {
-        if (Interlocked.CompareExchange(ref _restoreStarted, 1, 0) != 0 || _recoveryV2Case is not { } selected || _recoveryAudience is null ||
+        if (!OperatingSystem.IsWindows() || Interlocked.CompareExchange(ref _restoreStarted, 1, 0) != 0 || _recoveryV2Case is not { } selected || _recoveryAudience is null ||
             _recoveryAudienceClaim is null || _recoveryCaseClaim is null || _recoverySourceConnection is null || _recoveryV2Input is null || _executionClaims != setup.Claims ||
             setup.Case != CurrentAuthArchiveRecoveryV2.SetupCase(selected) || _environment is null || _firstFiles is null || _secondFiles is null ||
             _firstAuthority is null || _secondAuthority is null || _first is null || _second is null || _firstPolicy is null || _secondPolicy is null || _dualDeviceProof is null) { throw Invalid(); }
@@ -44,6 +44,11 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
             string path = Path.Combine(_first.Root, journalPrefix + "Auth-session-archive-" + slot + ".json");
             byte[] bytes = _firstFiles.Read(path, sharedReader: true, maximumBytes: 65536); journals.Add(slot, bytes);
             _ = await RecoveryBytesAsync("setup-" + slot, bytes, ct);
+            using var held = SecureLocalFile.OpenReadShared(path);
+            if (!SecureLocalFile.HandleResolvesToApprovedPath(held, path) || held.Length != bytes.Length ||
+                Convert.ToHexStringLower(SHA256.HashData(held)) != CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes)) { throw Invalid(); }
+            await RecoveryValueAsync("setup-" + slot + "-native-file", new
+            { OriginalPath = path, Identity = WindowsRunFileIdentity.Observe(held.SafeFileHandle), Sha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes) }, ct);
         }
         _ = RequireExecutionJournal(journals, Scope, setup.Claims, setup.Terminal, setup.LocalBefore.Auth.Native.Snapshot.Sha256,
             localEmpty.Auth.Native.Snapshot.Sha256, setup.BeganAtUtc, setup.ReturnedAtUtc, _inputs.Pins, _inputs.TrustStore);
@@ -128,7 +133,12 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
     }
     private async Task RecoveryValueAsync<T>(string name, T value, CancellationToken ct)
     {
-        _ = await RecoveryBytesAsync(name, JsonSerializer.SerializeToUtf8Bytes(value), ct);
+        if (value is IReadOnlyList<CurrentAppOwnedDatabaseSnapshot> snapshots)
+        {
+            string path = Path.Combine(_inputs.ParentAuthority.Binding.ArtifactRootCanonicalPath, $"genuine-recovery-v2-{Scope.OperationId:N}-{name}");
+            _recoveryArtifacts.Add(name, await CurrentAuthArchiveStreamedBaselineV2.RetainAsync(_inputs.ParentFiles, path, snapshots, ct));
+        }
+        else { _ = await RecoveryBytesAsync(name, JsonSerializer.SerializeToUtf8Bytes(value), ct); }
     }
 
     private async Task RecoveryFleetAsync(string name, CurrentAuthArchiveFleet fleet, CancellationToken ct)

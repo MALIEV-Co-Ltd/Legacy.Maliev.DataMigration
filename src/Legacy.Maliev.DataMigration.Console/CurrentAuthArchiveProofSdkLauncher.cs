@@ -286,6 +286,8 @@ public static partial class MigrationConsole
             {
                 Kind = "current-auth-archive-helper-host-exit-v1",
                 run.OperationId,
+                run.Nonce,
+                RunSha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(files.Read(runPath, sharedReader: true, maximumBytes: 65536)),
                 run.SourceCommitSha,
                 run.BeganAtUtc,
                 run.ExpiresAtUtc,
@@ -381,6 +383,8 @@ internal sealed class CurrentAuthArchiveHelperResources
         {
             run.OperationId,
             ObservedAtUtc = DateTimeOffset.UtcNow,
+            run.SourceCommitSha,
+            RunSha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(files.Read(runPath, sharedReader: true, maximumBytes: 65536)),
             run.ExpiresAtUtc,
             Containers = containers,
             Volumes = volumes,

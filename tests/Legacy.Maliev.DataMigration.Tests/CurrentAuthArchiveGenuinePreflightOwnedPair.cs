@@ -139,7 +139,15 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
                 Expressions = fleet.Auth.Native.CopyExpressions(),
             });
         }
-        async Task RetainAsync<T>(string name, T value) { artifacts.Add(name, await WriteAsync(name, JsonSerializer.SerializeToUtf8Bytes(value))); }
+        async Task RetainAsync<T>(string name, T value)
+        {
+            if (value is IReadOnlyList<CurrentAppOwnedDatabaseSnapshot> snapshots)
+            {
+                string path = Path.Combine(_inputs.ParentAuthority.Binding.ArtifactRootCanonicalPath, $"genuine-preflight-{Scope.OperationId:N}-{name}.json");
+                artifacts.Add(name, await CurrentAuthArchiveStreamedBaselineV2.RetainAsync(_inputs.ParentFiles, path, snapshots, ct));
+            }
+            else { artifacts.Add(name, await WriteAsync(name, JsonSerializer.SerializeToUtf8Bytes(value))); }
+        }
         async Task<CurrentAuthArchiveGenuineArtifact> WriteAsync(string name, byte[] bytes)
         {
             string path = Path.Combine(_inputs.ParentAuthority.Binding.ArtifactRootCanonicalPath, $"genuine-preflight-{Scope.OperationId:N}-{name}.json");

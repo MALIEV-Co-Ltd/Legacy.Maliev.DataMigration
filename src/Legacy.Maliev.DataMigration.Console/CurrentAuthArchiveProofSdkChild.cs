@@ -17,6 +17,7 @@ internal static class CurrentAuthArchiveGenuineHelperSdkHarness
             Assembly.GetEntryAssembly()?.GetName().Name != "testhost" ||
             !StringComparer.OrdinalIgnoreCase.Equals(Assembly.GetEntryAssembly()?.Location, Path.Combine(run.InputRoot, "testhost.dll"))) { throw CurrentAuthArchiveHelperHost.Invalid(); }
         CurrentAuthTypedHostJob.RequireWaitingChildMembership(run.Nonce);
+        using var harnessProcess = Process.GetCurrentProcess();
         var request = CurrentAuthArchiveHelperHost.Request(run.Configuration);
         using var acceptedConsole = await CurrentAuthArchiveAcceptedConsoleBundle.HoldAsync(run.ConsoleImage, ct);
         using var bundle = await CurrentAuthTypedHostProducer.HoldFixedTestBundleAsync(run.InputRoot, ct);
@@ -75,6 +76,13 @@ internal static class CurrentAuthArchiveGenuineHelperSdkHarness
                 {
                     Kind = "current-auth-archive-helper-actual-provider-process-v1",
                     run.OperationId,
+                    run.Nonce,
+                    run.SourceCommitSha,
+                    CaseInputSha256 = run.Configuration.CaseInput.Sha256,
+                    RunSha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(CurrentAuthArchiveHelperHost.Read(runPath, 65536)),
+                    HarnessProcessId = Environment.ProcessId,
+                    HarnessProcessStartTimeUtc = new DateTimeOffset(harnessProcess.StartTime.ToUniversalTime(), TimeSpan.Zero),
+                    RequiredJobNonce = run.Nonce,
                     run.Configuration.ExpectedCase,
                     Command = CurrentAuthArchiveHelperHost.ProviderCommand,
                     Executable = CurrentAuthArchiveHelperHost.Tool("dotnet"),
@@ -187,6 +195,14 @@ public static partial class MigrationConsole
             await CurrentAuthArchiveHelperHost.WriteAsync(CurrentAuthArchiveHelperHost.Prefix(configPath) + "-vstest-process.json", JsonSerializer.SerializeToUtf8Bytes(new
             {
                 Kind = "current-auth-archive-helper-actual-vstest-process-v1",
+                run.OperationId,
+                run.Nonce,
+                run.SourceCommitSha,
+                CaseInputSha256 = run.Configuration.CaseInput.Sha256,
+                RunSha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(CurrentAuthArchiveHelperHost.Read(configPath, 65536)),
+                SdkProcessId = self.Id,
+                SdkProcessStartTimeUtc = new DateTimeOffset(self.StartTime.ToUniversalTime(), TimeSpan.Zero),
+                RequiredJobNonce = run.Nonce,
                 ProcessId = process.Id,
                 ProcessStartTimeUtc = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero),
                 ExitedAtUtc = new DateTimeOffset(process.ExitTime.ToUniversalTime(), TimeSpan.Zero),

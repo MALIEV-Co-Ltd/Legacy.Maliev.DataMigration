@@ -17,6 +17,7 @@ internal static class CurrentAuthArchiveRecoveryV2SdkHarness
             Assembly.GetEntryAssembly()?.GetName().Name != "testhost" ||
             !StringComparer.OrdinalIgnoreCase.Equals(Assembly.GetEntryAssembly()?.Location, Path.Combine(run.InputRoot, "testhost.dll"))) { throw CurrentAuthArchiveRecoveryV2Host.Invalid(); }
         CurrentAuthTypedHostJob.RequireWaitingChildMembership(run.Nonce);
+        using var harnessProcess = Process.GetCurrentProcess();
         var request = CurrentAuthArchiveRecoveryV2Host.Request(run.Configuration);
         using var acceptedConsole = await CurrentAuthArchiveAcceptedConsoleBundle.HoldAsync(run.ConsoleImage, ct);
         using var bundle = await CurrentAuthTypedHostProducer.HoldFixedTestBundleAsync(run.InputRoot, ct);
@@ -77,6 +78,13 @@ internal static class CurrentAuthArchiveRecoveryV2SdkHarness
                 {
                     Kind = "current-auth-archive-recovery-actual-provider-process-v2",
                     run.OperationId,
+                    run.Nonce,
+                    run.SourceCommitSha,
+                    CaseInputSha256 = run.Configuration.CaseInput.Sha256,
+                    RunSha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(CurrentAuthArchiveHelperHost.Read(runPath, 65536)),
+                    HarnessProcessId = Environment.ProcessId,
+                    HarnessProcessStartTimeUtc = new DateTimeOffset(harnessProcess.StartTime.ToUniversalTime(), TimeSpan.Zero),
+                    RequiredJobNonce = run.Nonce,
                     run.Configuration.ExpectedCase,
                     Command = CurrentAuthArchiveRecoveryV2Host.ProviderCommand,
                     Executable = CurrentAuthArchiveRecoveryV2Host.Tool("dotnet"),
@@ -190,6 +198,14 @@ public static partial class MigrationConsole
             await CurrentAuthArchiveRecoveryV2Host.WriteAsync(CurrentAuthArchiveRecoveryV2Host.Prefix(configPath) + "-vstest-process.json", JsonSerializer.SerializeToUtf8Bytes(new
             {
                 Kind = "current-auth-archive-recovery-actual-vstest-process-v2",
+                run.OperationId,
+                run.Nonce,
+                run.SourceCommitSha,
+                CaseInputSha256 = run.Configuration.CaseInput.Sha256,
+                RunSha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(CurrentAuthArchiveHelperHost.Read(configPath, 65536)),
+                SdkProcessId = self.Id,
+                SdkProcessStartTimeUtc = new DateTimeOffset(self.StartTime.ToUniversalTime(), TimeSpan.Zero),
+                RequiredJobNonce = run.Nonce,
                 ProcessId = process.Id,
                 ProcessStartTimeUtc = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero),
                 ExitedAtUtc = new DateTimeOffset(process.ExitTime.ToUniversalTime(), TimeSpan.Zero),
