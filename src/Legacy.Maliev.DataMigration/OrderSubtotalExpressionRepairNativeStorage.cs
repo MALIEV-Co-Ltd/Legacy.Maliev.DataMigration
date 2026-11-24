@@ -3,7 +3,7 @@ namespace Legacy.Maliev.DataMigration;
 internal static partial class OrderSubtotalExpressionRepairNativePreservation
 {
     private static void RequireStorage(OrderSubtotalExpressionRepairNativeObservation before,
-        OrderSubtotalExpressionRepairNativeObservation after, Binding left, Binding right)
+        OrderSubtotalExpressionRepairNativeObservation after, Binding left, Binding right, OrderSubtotalStorageProfile? profile, bool characterize)
     {
         string[] oldIds = [.. before.Native.Read("pg_class").Where(x => V(x, "relkind") is "r" or "i" or "t").Select(x => V(x, "oid")).Order(StringComparer.Ordinal)];
         string[] newIds = [.. after.Native.Read("pg_class").Where(x => V(x, "relkind") is "r" or "i" or "t").Select(x => V(x, "oid")).Order(StringComparer.Ordinal)];
@@ -19,7 +19,9 @@ internal static partial class OrderSubtotalExpressionRepairNativePreservation
             {
                 if (oldStorage.FileNode == 0 || newStorage.FileNode == 0 || newStorage.FileNode == oldStorage.FileNode ||
                     before.Storage.Values.Any(x => x.FileNode == newStorage.FileNode)) { throw Invalid("rewritten_file_identity"); }
-                RequireCharacterizedStorage(role, oldStorage.Blocks, newStorage.Blocks, before.ProviderVersion, left.Alphabetical);
+                if (characterize) { if (oldStorage.Blocks < 0 || newStorage.Blocks < 0) { throw Invalid("negative_characterization"); } }
+                else if (profile is null) { RequireCharacterizedStorage(role, oldStorage.Blocks, newStorage.Blocks, before.ProviderVersion, left.Alphabetical); }
+                else { profile.RequireStorage(role, oldStorage.Blocks, newStorage.Blocks, before.ProviderVersion, left.Alphabetical); }
             }
             else if (id is "1249" or "2658")
             {
@@ -30,7 +32,11 @@ internal static partial class OrderSubtotalExpressionRepairNativePreservation
                     oldStorage.FileNode.ToString(System.Globalization.CultureInfo.InvariantCulture) != id || newStorage.FileNode != oldStorage.FileNode)
                 { throw Invalid("catalog_storage_identity"); }
                 if (oldStorage.Blocks != newStorage.Blocks)
-                { RequireCharacterizedStorage(id, oldStorage.Blocks, newStorage.Blocks, before.ProviderVersion, left.Alphabetical); }
+                {
+                    if (characterize) { if (oldStorage.Blocks < 0 || newStorage.Blocks < 0) { throw Invalid("negative_characterization"); } }
+                    else if (profile is null) { RequireCharacterizedStorage(id, oldStorage.Blocks, newStorage.Blocks, before.ProviderVersion, left.Alphabetical); }
+                    else { profile.RequireStorage(id, oldStorage.Blocks, newStorage.Blocks, before.ProviderVersion, left.Alphabetical); }
+                }
             }
             else if (oldStorage != newStorage) { throw Invalid("unrelated_storage"); }
             var oldClass = One(before.Native.Read("pg_class"), x => V(x, "oid") == id);

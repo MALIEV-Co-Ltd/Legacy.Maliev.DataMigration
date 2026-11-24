@@ -14,8 +14,8 @@ internal sealed record OrderSubtotalExpressionRepairNativeObservation(
 
 /// <summary>
 /// Preservation observation only: no permit, executor, fleet coverage or persistent admission.
-/// Physical storage transitions are limited to the retained full-model scale witnesses.
-/// Other actual target storage preimages require further characterization, never a restamp.
+/// The historical entry keeps its retained exact scale witnesses. The distinct operational
+/// entry requires an opaque accepted-Console actual-clone characterization; neither grants execution authority.
 /// </summary>
 internal static partial class OrderSubtotalExpressionRepairNativePreservation
 {
@@ -78,6 +78,68 @@ internal static partial class OrderSubtotalExpressionRepairNativePreservation
     internal static void RequirePreserved(OrderSubtotalExpressionRepairNativeObservation before,
         OrderSubtotalExpressionRepairNativeObservation after, OrderSubtotalExpressionRepairContract contract)
     {
+        RequirePreservedCore(before, after, contract, null, false);
+    }
+
+    internal static void RequireOperationalPreserved(OrderSubtotalExpressionRepairNativeObservation before,
+        OrderSubtotalExpressionRepairNativeObservation after, OrderSubtotalExpressionRepairContract contract, OrderSubtotalStorageProfile profile)
+    {
+        profile.RequireBound(before, contract);
+        RequirePreservedCore(before, after, contract, profile, false);
+    }
+
+    // Measurement only. The returned data cannot construct an opaque operational profile or permit.
+    internal static IReadOnlyDictionary<string, OrderSubtotalStorageTransition> CharacterizeOwnedTransition(
+        OrderSubtotalExpressionRepairNativeObservation before, OrderSubtotalExpressionRepairNativeObservation after, OrderSubtotalExpressionRepairContract contract)
+    {
+        RequirePreservedCore(before, after, contract, null, true);
+        Binding left = Bind(before, contract), right = Bind(after, contract);
+        var result = new Dictionary<string, OrderSubtotalStorageTransition>(StringComparer.Ordinal);
+        foreach (var pair in left.Roles.Where(x => before.Storage.ContainsKey(x.Key)))
+        {
+            string next = right.Roles.Single(x => x.Value == pair.Value).Key;
+            result.Add(pair.Value, new(before.Storage[pair.Key].Blocks, after.Storage[next].Blocks));
+        }
+        foreach (string id in new[] { "1249", "2658" }) { result.Add(id, new(before.Storage[id].Blocks, after.Storage[id].Blocks)); }
+        return result;
+    }
+
+    internal static void RequireMatchingCharacterizationPreimage(OrderSubtotalExpressionRepairNativeObservation target,
+        OrderSubtotalExpressionRepairNativeObservation clone, OrderSubtotalExpressionRepairContract contract)
+    {
+        Binding left = Bind(target, contract), right = Bind(clone, contract);
+        if (target.After || clone.After || target.ProviderVersion != clone.ProviderVersion || target.CompositeDefense != clone.CompositeDefense ||
+            target.ContractSha256 != clone.ContractSha256 || target.OriginalRows != clone.OriginalRows || target.CorrectedRows != clone.CorrectedRows ||
+            !left.Roles.Values.Order(StringComparer.Ordinal).SequenceEqual(right.Roles.Values.Order(StringComparer.Ordinal), StringComparer.Ordinal))
+        { throw Invalid("actual_clone_preimage"); }
+        foreach (var pair in left.Roles.Where(x => target.Storage.ContainsKey(x.Key)))
+        {
+            string next = right.Roles.Single(x => x.Value == pair.Value).Key;
+            if (target.Storage[pair.Key].Blocks != clone.Storage[next].Blocks) { throw Invalid("actual_clone_storage_preimage_" + pair.Value); }
+        }
+        foreach (string id in new[] { "1249", "2658" })
+        { if (target.Storage[id].Blocks != clone.Storage[id].Blocks) { throw Invalid("actual_clone_storage_preimage_" + id); } }
+    }
+
+    internal static void RequireOwnedRollback(OrderSubtotalExpressionRepairNativeObservation before,
+        OrderSubtotalExpressionRepairNativeObservation rolled, OrderSubtotalExpressionRepairNativeObservation candidate)
+    {
+        if (rolled.After || before.Native.Snapshot.Sha256 != rolled.Native.Snapshot.Sha256 || before.Expression != rolled.Expression ||
+            before.ExpressionTree != rolled.ExpressionTree || before.ContractSha256 != rolled.ContractSha256 || before.OriginalRows != rolled.OriginalRows || before.CorrectedRows != rolled.CorrectedRows ||
+            !before.Storage.Keys.Order(StringComparer.Ordinal).SequenceEqual(rolled.Storage.Keys.Order(StringComparer.Ordinal), StringComparer.Ordinal)) { throw Invalid("rollback"); }
+        foreach (string catalog in CatalogNames)
+        { if (!before.Native.Read(catalog).Select(Canonical).Order(StringComparer.Ordinal).SequenceEqual(rolled.Native.Read(catalog).Select(Canonical).Order(StringComparer.Ordinal), StringComparer.Ordinal)) { throw Invalid("rollback_catalog_" + catalog); } }
+        foreach (var pair in before.Storage)
+        {
+            if (pair.Value == rolled.Storage[pair.Key]) { continue; }
+            if (pair.Key is not ("1249" or "2658") || !candidate.Storage.TryGetValue(pair.Key, out var observed) || rolled.Storage[pair.Key] != observed ||
+                observed.FileNode != pair.Value.FileNode || observed.Blocks < pair.Value.Blocks) { throw Invalid("rollback_storage"); }
+        }
+    }
+
+    private static void RequirePreservedCore(OrderSubtotalExpressionRepairNativeObservation before,
+        OrderSubtotalExpressionRepairNativeObservation after, OrderSubtotalExpressionRepairContract contract, OrderSubtotalStorageProfile? profile, bool characterize)
+    {
         RequireProvider(before.ProviderVersion, before.CompositeDefense); RequireProvider(after.ProviderVersion, after.CompositeDefense);
         if (before.After || !after.After || before.ContractSha256 != contract.ComputeSha256() || before.ContractSha256 != after.ContractSha256 ||
             before.Native.Snapshot.Database != after.Native.Snapshot.Database || before.ProviderVersion != after.ProviderVersion ||
@@ -98,7 +160,7 @@ internal static partial class OrderSubtotalExpressionRepairNativePreservation
             bool recreated = role is "toast" or "toast_index" or "subtotal_default" || role.StartsWith("dependent_", StringComparison.Ordinal);
             if (recreated ? oldId == newId || left.Roles.ContainsKey(newId) : oldId != newId) { throw Invalid("graph_rebinding"); }
         }
-        RequireStorage(before, after, left, right);
+        RequireStorage(before, after, left, right, profile, characterize);
         RequireFrozenXids(
             U(One(before.Native.Read("pg_class"), x => V(x, "oid") == left.Table), "relfrozenxid"),
             U(One(before.Native.Read("pg_class"), x => V(x, "oid") == left.Toast), "relfrozenxid"),

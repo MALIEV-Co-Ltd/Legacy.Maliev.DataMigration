@@ -197,6 +197,12 @@ public static partial class MigrationConsole
                         output, error, cancellationToken).ConfigureAwait(false);
                 case "run-dual-target-captured-relay":
                     return await DualTargetCapturedDeltaRelay.RunChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "observe-current-order-subtotal":
+                case "verify-current-order-subtotal":
+                case "apply-current-order-subtotal":
+                case "characterize-current-order-subtotal-faults":
+                    return await RunOrderSubtotalOperationalAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
                 case "plan-delta":
                 case "project-paired-local-template":
                 case "plan-paired-delta":
