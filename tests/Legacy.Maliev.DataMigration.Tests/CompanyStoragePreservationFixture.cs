@@ -11,7 +11,7 @@ public sealed class CompanyStoragePreservationTestGroup : ICollectionFixture<Com
 // Only this disposable collection opts out of automatic maintenance; explicit ANALYZE probes remain enabled.
 public sealed class CompanyStoragePreservationFixture : PostgreSqlAdapterFixture, IAsyncLifetime
 {
-    public CompanyStoragePreservationFixture() : base(384, quiescent: true)
+    public CompanyStoragePreservationFixture() : base(384, quiescent: true, CompanyPg187Image)
     {
     }
 
@@ -25,6 +25,8 @@ public sealed class CompanyStoragePreservationFixture : PostgreSqlAdapterFixture
             await connection.OpenAsync(deadline.Token);
             await using var command = new NpgsqlCommand("SHOW autovacuum;", connection) { CommandTimeout = 30 };
             Assert.Equal("off", await command.ExecuteScalarAsync(deadline.Token));
+            await using var version = new NpgsqlCommand("SELECT current_setting('server_version_num')='180007' AND current_setting('composite_type_mismatch')='error';", connection) { CommandTimeout = 30 };
+            Assert.Equal(true, await version.ExecuteScalarAsync(deadline.Token));
         }
         catch (Exception primary)
         {
