@@ -1,4 +1,6 @@
 using System.Data;
+using System.Security.Cryptography;
+using System.Text.Json;
 using Npgsql;
 using Xunit.Abstractions;
 
@@ -8,6 +10,8 @@ namespace Legacy.Maliev.DataMigration.Tests;
 [Collection(CompanyStoragePreservationTestGroup.Name)]
 public sealed class CustomerCompanyStorageRepairNativeTests(CompanyStoragePreservationFixture fixture, ITestOutputHelper output)
 {
+    private static readonly string[] DiagnosticFieldCatalogs = ["pg_class", "pg_database", "pg_attribute", "pg_authid"];
+
     [Fact]
     public async Task Fixed_candidate_preserves_rows_allocations_and_unrelated_objects_with_rollback_and_independent_readback()
     {
@@ -41,7 +45,8 @@ public sealed class CustomerCompanyStorageRepairNativeTests(CompanyStoragePreser
             }
             // The unrelated table is deliberately outside the signed application inventory, so the
             // ordinary full fingerprint is compared before adding it, then with the explicit full fixture inventory.
-            CurrentAppOwnedDatabaseSnapshot before = await CaptureAsync(connection);
+            SnapshotDiagnostic baseline = await CaptureDiagnosticAsync(connection, "before");
+            CurrentAppOwnedDatabaseSnapshot before = baseline.Snapshot;
             string unrelatedBefore = await UnrelatedCatalogAsync(connection);
             await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable))
             {
@@ -53,7 +58,11 @@ public sealed class CustomerCompanyStorageRepairNativeTests(CompanyStoragePreser
                 ReportCatalogChanges(before, prepared);
                 await transaction.RollbackAsync();
             }
-            Assert.Equal(before.Sha256, (await CaptureAsync(connection)).Sha256);
+            SnapshotDiagnostic rolled = await CaptureDiagnosticAsync(connection, "after-rollback");
+            CurrentAppOwnedDatabaseSnapshot afterRollback = rolled.Snapshot;
+            ReportRollbackChanges(before, afterRollback);
+            ReportRollbackFieldChanges(baseline.Fields, rolled.Fields);
+            Assert.Equal(before.Sha256, afterRollback.Sha256);
             Assert.Equal(unrelatedBefore, await UnrelatedCatalogAsync(connection));
             await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable))
             {
@@ -142,9 +151,100 @@ public sealed class CustomerCompanyStorageRepairNativeTests(CompanyStoragePreser
         {
             int removed = before.Catalog.Where(x => x.Catalog == catalog).Except(after.Catalog).Count();
             int added = after.Catalog.Where(x => x.Catalog == catalog).Except(before.Catalog).Count();
-            if (removed != 0 || added != 0) { output.WriteLine($"{catalog}: removed={removed}; added={added}"); }
+            if (removed != 0 || added != 0) { output.WriteLine($"PREPARED-CATALOG catalog={catalog}; removed={removed}; added={added}"); }
         }
     }
+
+    private void ReportRollbackChanges(CurrentAppOwnedDatabaseSnapshot before, CurrentAppOwnedDatabaseSnapshot rolled)
+    {
+        output.WriteLine($"ROLLBACK-SNAPSHOT beforeHash={before.Sha256}; afterHash={rolled.Sha256}");
+        foreach (string catalog in before.Catalog.Concat(rolled.Catalog).Select(x => x.Catalog).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+        {
+            var expected = before.Catalog.Where(x => x.Catalog == catalog).ToArray();
+            var actual = rolled.Catalog.Where(x => x.Catalog == catalog).ToArray();
+            int removed = expected.Except(actual).Count(), added = actual.Except(expected).Count();
+            if (removed != 0 || added != 0)
+            {
+                output.WriteLine($"ROLLBACK-CATALOG catalog={catalog}; removed={removed}; added={added}; beforeCount={expected.Length}; afterCount={actual.Length}; beforeHash={Digest(expected)}; afterHash={Digest(actual)}");
+            }
+        }
+        foreach (var (Schema, Name) in before.Relations.Concat(rolled.Relations).Select(x => (x.Schema, x.Name)).Distinct().OrderBy(x => x.Schema, StringComparer.Ordinal).ThenBy(x => x.Name, StringComparer.Ordinal))
+        {
+            var expected = before.Relations.SingleOrDefault(x => x.Schema == Schema && x.Name == Name);
+            var actual = rolled.Relations.SingleOrDefault(x => x.Schema == Schema && x.Name == Name);
+            if (expected != actual)
+            {
+                output.WriteLine($"ROLLBACK-RELATION synthetic={Schema}.{Name}; beforeRows={expected?.Rows}; afterRows={actual?.Rows}; beforeHash={expected?.RowSha256}; afterHash={actual?.RowSha256}");
+            }
+        }
+        foreach (var (Schema, Name) in before.Sequences.Concat(rolled.Sequences).Select(x => (x.Schema, x.Name)).Distinct().OrderBy(x => x.Schema, StringComparer.Ordinal).ThenBy(x => x.Name, StringComparer.Ordinal))
+        {
+            var expected = before.Sequences.SingleOrDefault(x => x.Schema == Schema && x.Name == Name);
+            var actual = rolled.Sequences.SingleOrDefault(x => x.Schema == Schema && x.Name == Name);
+            if (expected != actual)
+            {
+                output.WriteLine($"ROLLBACK-SEQUENCE synthetic={Schema}.{Name}; beforeHash={expected?.TupleSha256}; afterHash={actual?.TupleSha256}; ownerChanged={expected?.Owner != actual?.Owner}");
+            }
+        }
+
+        static string Digest(CurrentAppOwnedCatalogFact[] facts)
+        {
+            return Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(facts)));
+        }
+    }
+
+    private void ReportRollbackFieldChanges(IReadOnlyList<CatalogFieldDigest> before, IReadOnlyList<CatalogFieldDigest> rolled)
+    {
+        foreach (string catalog in DiagnosticFieldCatalogs)
+        {
+            var expected = before.Where(x => x.Catalog == catalog).ToDictionary(x => (x.ObjectKey, x.Field), x => x.Digest);
+            var actual = rolled.Where(x => x.Catalog == catalog).ToDictionary(x => (x.ObjectKey, x.Field), x => x.Digest);
+            var changed = expected.Keys.Concat(actual.Keys).Distinct().Where(key =>
+                !expected.TryGetValue(key, out string? left) || !actual.TryGetValue(key, out string? right) || left != right).ToArray();
+            if (changed.Length != 0)
+            {
+                // Never emit object keys, field values, or field digests, including for pg_authid.
+                string fields = string.Join(',', changed.Select(x => x.Field).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
+                output.WriteLine($"ROLLBACK-FIELDS catalog={catalog}; changedObjects={changed.Select(x => x.ObjectKey).Distinct(StringComparer.Ordinal).Count()}; fields={fields}");
+            }
+        }
+    }
+
+    private async Task<SnapshotDiagnostic> CaptureDiagnosticAsync(NpgsqlConnection connection, string phase)
+    {
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead);
+        CurrentAppOwnedDatabaseSnapshot snapshot = await CurrentAppOwnedRepairPreservation.CaptureAsync(connection, transaction, default);
+        var fields = new List<CatalogFieldDigest>();
+        foreach (string catalog in DiagnosticFieldCatalogs)
+        {
+            string objectKey = catalog == "pg_attribute" ? "x.attrelid::text||'/'||x.attnum::text" : "x.oid::text";
+            // Hash each json field on the server. No raw field value crosses the reader boundary.
+            await using var command = new NpgsqlCommand(
+                $"SELECT {objectKey},f.key,encode(sha256(convert_to(f.value::text,'UTF8')),'hex') " +
+                $"FROM pg_catalog.{catalog} x CROSS JOIN LATERAL jsonb_each(to_jsonb(x)) f;",
+                connection, transaction);
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync()) { fields.Add(new(catalog, reader.GetString(0), reader.GetString(1), reader.GetString(2))); }
+        }
+        await using (var command = new NpgsqlCommand("""
+            SELECT current_setting('server_version_num'),current_setting('autovacuum'),
+                extract(epoch FROM (clock_timestamp()-pg_postmaster_start_time()))::bigint,
+                (SELECT coalesce(jsonb_object_agg(backend_type,n ORDER BY backend_type),'{}'::jsonb)::text
+                 FROM (SELECT backend_type,count(*) n FROM pg_stat_activity
+                       WHERE backend_type IN ('autovacuum launcher','autovacuum worker','background writer','checkpointer','walwriter')
+                       GROUP BY backend_type) workers);
+            """, connection, transaction))
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            if (!await reader.ReadAsync()) { throw new InvalidOperationException("Missing diagnostic server context."); }
+            output.WriteLine($"ROLLBACK-CONTEXT phase={phase}; serverVersionNum={reader.GetString(0)}; autovacuum={reader.GetString(1)}; postmasterAgeSeconds={reader.GetInt64(2)}; maintenanceBackendCounts={reader.GetString(3)}");
+        }
+        await transaction.RollbackAsync();
+        return new(snapshot, fields.AsReadOnly());
+    }
+
+    private sealed record CatalogFieldDigest(string Catalog, string ObjectKey, string Field, string Digest);
+    private sealed record SnapshotDiagnostic(CurrentAppOwnedDatabaseSnapshot Snapshot, IReadOnlyList<CatalogFieldDigest> Fields);
 
     private static async Task<CurrentAppOwnedDatabaseSnapshot> CaptureAsync(NpgsqlConnection connection)
     {
