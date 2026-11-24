@@ -4,6 +4,9 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
 {
     private static readonly HashSet<string> Commands =
     [
+        "characterize-consumer-column-bootstrap-native-faults",
+        "rehearse-consumer-column-bootstrap",
+        "run-consumer-column-bootstrap-reviewed",
         "owner-iso-bootstrap-host-child",
         "owner-iso-named-closed-host-child",
         "plan",
