@@ -6,7 +6,6 @@ public sealed class CurrentAuthArchiveGenuineExecutionHostTests
 {
     [Theory]
     [InlineData(0)]
-    [InlineData(3)]
     [InlineData(5)]
     [InlineData(6)]
     [InlineData(12)]
@@ -25,6 +24,7 @@ public sealed class CurrentAuthArchiveGenuineExecutionHostTests
     [InlineData(7, "MALIEV_AUTH_ARCHIVE_GENUINE_EXACT_DELETE_INPUT", "delete", "exact-reviewed-delete", 0)]
     [InlineData(2, "MALIEV_AUTH_ARCHIVE_GENUINE_PREPARED_PUBLICATION_INPUT", "native", "prepared-publication", 1)]
     [InlineData(4, "MALIEV_AUTH_ARCHIVE_GENUINE_TERMINAL_PUBLICATION_INPUT", "native", "terminal-publication", 1)]
+    [InlineData(3, "MALIEV_AUTH_ARCHIVE_GENUINE_COMMIT_ACK_INPUT", "native", "commit-ack-lost", 1)]
     [InlineData(8, "MALIEV_AUTH_ARCHIVE_GENUINE_CAS_DRIFT_INPUT", "delete", "CAS-field-drift", 1)]
     [InlineData(9, "MALIEV_AUTH_ARCHIVE_GENUINE_PRIVATE_JOURNAL_DRIFT_INPUT", "delete", "private-journal-drift", 1)]
     [InlineData(10, "MALIEV_AUTH_ARCHIVE_GENUINE_SEQUENCE_DRIFT_INPUT", "delete", "sequence-drift", 1)]

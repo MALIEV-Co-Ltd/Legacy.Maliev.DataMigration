@@ -26,7 +26,7 @@ public sealed class CurrentAuthArchiveComparisonPreservationTests
     {
         var snapshot = new CurrentAppOwnedDatabaseSnapshot("Auth", [], [], []);
         var tuples = new Dictionary<string, string[]>(StringComparer.Ordinal)
-        { ["pg_class"] = [fault == "tuple" ? "{\"oid\":1,\"relpages\":2}" : "{\"oid\":1,\"relpages\":1}"] };
+        { ["pg_class"] = [fault == "tuple" ? /*lang=json,strict*/ "{\"oid\":1,\"relpages\":2}" : /*lang=json,strict*/ "{\"oid\":1,\"relpages\":1}"] };
         var storage = new Dictionary<string, (uint FileNode, long Blocks)>(StringComparer.Ordinal)
         { ["1"] = (fault == "file-node" ? 101u : 100u, fault == "blocks" ? 4L : 3L) };
         var expressions = new Dictionary<string, string>(StringComparer.Ordinal)

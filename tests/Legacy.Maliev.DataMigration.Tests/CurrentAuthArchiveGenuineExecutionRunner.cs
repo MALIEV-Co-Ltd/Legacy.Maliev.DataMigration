@@ -42,7 +42,7 @@ internal static class CurrentAuthArchiveGenuineExecutionRunner
         LocalExecutionBinding binding, CurrentAuthArchiveGenuineExecutionCase expectedCase, CurrentAuthArchiveGenuineExecutionMethodResult method, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        var identity = CurrentAuthArchiveGenuineExecutionCases.Identity(expectedCase);
+        var (Phase, CaseId) = CurrentAuthArchiveGenuineExecutionCases.Identity(expectedCase);
         string root = Path.GetDirectoryName(request.Inputs.ParentBinding.Path)!;
         using var authority = WindowsLocalRunAuthority.AcquireResume(root, binding);
         using var files = new CurrentAppOwnedRepairCustody(authority);
@@ -56,24 +56,51 @@ internal static class CurrentAuthArchiveGenuineExecutionRunner
         byte[] scopeBytes = files.Read(scopeRef.GetProperty("Path").GetString()!, maximumBytes: 1024 * 1024);
         if (CurrentAuthLocalSessionArchivePolicy.HashBytes(scopeBytes) != scopeRef.GetProperty("Sha256").GetString()) { throw Invalid(); }
         var scope = MigrationConsole.DecodeAuthRepair<CurrentAuthArchiveScope>(scopeBytes);
-        if (scope.OperationId != operation || scope.ComponentSubject?.Seed.CaseId != identity.CaseId) { throw Invalid(); }
+        if (scope.OperationId != operation || scope.ComponentSubject?.Seed.CaseId != CaseId) { throw Invalid(); }
+        CurrentAuthArchiveGenuineArtifact? proxyCleanup = null;
+        if (expectedCase == CurrentAuthArchiveGenuineExecutionCase.CommitAcknowledgmentLost)
+        {
+            var reference = value.GetProperty("Artifacts").GetProperty("proxy-disposed");
+            string path = reference.GetProperty("Path").GetString()!;
+            byte[] bytes = files.Read(path, maximumBytes: 65536);
+            if (CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes) != reference.GetProperty("Sha256").GetString()) { throw Invalid(); }
+            var proxy = MigrationConsole.DecodeAuthRepair<CurrentAuthArchiveGenuineCommitProxyInfo>(bytes);
+            var auth = value.GetProperty("Artifacts").GetProperty("authorization").GetProperty("Sha256").GetString()!;
+            CurrentAuthArchiveGenuineCommitFacts.RequireSettled(proxy, scope, auth);
+            if (proxy.Port != value.GetProperty("ProxyPort").GetInt32() || proxy.ClosedAtUtc > method.ReturnedAtUtc || proxy.OwnerPid != Environment.ProcessId ||
+                System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(endpoint => endpoint.Port == proxy.Port) ||
+                System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections().Any(connection =>
+                    (connection.LocalEndPoint.Port == proxy.Port || connection.RemoteEndPoint.Port == proxy.Port) && connection.State is not
+                        (System.Net.NetworkInformation.TcpState.Closed or System.Net.NetworkInformation.TcpState.TimeWait or System.Net.NetworkInformation.TcpState.DeleteTcb))) { throw Invalid(); }
+            proxyCleanup = new(path, CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes));
+        }
         var local = await RetainCleanupAsync(request.FirstFixtureParent, false, scope.ComponentSubject.Local, value.GetProperty("LocalPort").GetInt32());
         var comparison = await RetainCleanupAsync(request.SecondFixtureParent, true, scope.ComponentSubject.Comparison, value.GetProperty("ComparisonPort").GetInt32());
         var methodArtifact = await WriteAsync("provider-method", JsonSerializer.SerializeToUtf8Bytes(method));
         return await WriteAsync("candidate", JsonSerializer.SerializeToUtf8Bytes(new
         {
-            Kind = "current-auth-genuine-execution-candidate-v1", identity.Phase, identity.CaseId, OperationId = operation,
-            IncompletePreCleanupStage = result.IncompletePreCleanupStage, ProviderMethod = methodArtifact,
-            LocalCleanup = local, ComparisonCleanup = comparison, PublishedAtUtc = DateTimeOffset.UtcNow,
-            CleanupVerified = true, PhaseProofComplete = false, ProviderProcessExitCode = (int?)null,
+            Kind = "current-auth-genuine-execution-candidate-v1",
+            Phase,
+            CaseId,
+            OperationId = operation,
+            result.IncompletePreCleanupStage,
+            ProviderMethod = methodArtifact,
+            LocalCleanup = local,
+            ComparisonCleanup = comparison,
+            PublishedAtUtc = DateTimeOffset.UtcNow,
+            ProxyCleanup = proxyCleanup,
+            CleanupVerified = true,
+            PhaseProofComplete = false,
+            ProviderProcessExitCode = (int?)null,
         }));
 
         async Task<CurrentAuthArchiveGenuineArtifact> WriteAsync(string name, byte[] bytes)
         {
             string path = Path.Combine(root, $"genuine-execution-{operation:N}-{name}.json");
             await files.WriteNewAsync(path, bytes, ct);
-            if (!files.Read(path, sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(bytes)) { throw Invalid(); }
-            return new(path, CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes));
+            return !files.Read(path, sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(bytes)
+                ? throw Invalid()
+                : new(path, CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes));
         }
         async Task<CurrentAuthArchiveGenuineCleanupArtifacts> RetainCleanupAsync(string parent, bool isComparison,
             CurrentAuthArchiveComponentTargetSubject target, int port)
@@ -99,12 +126,13 @@ internal static class CurrentAuthArchiveGenuineExecutionRunner
         CurrentAuthArchiveGenuineExecutionMethodResult method)
     {
         CurrentAuthArchiveGenuineExecutionCases.RequireImplemented(expectedCase);
-        var identity = CurrentAuthArchiveGenuineExecutionCases.Identity(expectedCase);
+        var (Phase, CaseId) = CurrentAuthArchiveGenuineExecutionCases.Identity(expectedCase);
         if (stage.GetProperty("Kind").GetString() != "current-auth-genuine-execution-incomplete-precleanup-v1" ||
-            stage.GetProperty("Phase").GetString() != identity.Phase || stage.GetProperty("CaseId").GetString() != identity.CaseId ||
+            stage.GetProperty("Phase").GetString() != Phase || stage.GetProperty("CaseId").GetString() != CaseId ||
             stage.GetProperty("CleanupVerified").GetBoolean() || stage.GetProperty("PhaseProofComplete").GetBoolean() ||
             stage.GetProperty("ProviderExitCode").ValueKind != JsonValueKind.Null ||
-            method.ReturnCode != (CurrentAuthArchiveGenuinePublicationFault.IsCase(expectedCase) || CurrentAuthArchiveGenuineDrift.IsCase(expectedCase) ? 1 : 0) ||
+            method.ReturnCode != (CurrentAuthArchiveGenuinePublicationFault.IsCase(expectedCase) || CurrentAuthArchiveGenuineDrift.IsCase(expectedCase) ||
+                expectedCase == CurrentAuthArchiveGenuineExecutionCase.CommitAcknowledgmentLost ? 1 : 0) ||
             method.StartedAtUtc != method.Artifacts.BeganAtUtc || method.Artifacts.EndedAtUtc < method.StartedAtUtc ||
             method.ReturnedAtUtc < method.Artifacts.EndedAtUtc || method.ReturnedAtUtc > DateTimeOffset.UtcNow ||
             method.StartedAtUtc.Offset != TimeSpan.Zero || method.ReturnedAtUtc.Offset != TimeSpan.Zero ||
@@ -118,5 +146,8 @@ internal static class CurrentAuthArchiveGenuineExecutionRunner
         if (held.Length is < 1 or > 65536 || !SecureLocalFile.HandleResolvesToApprovedPath(held, path)) { throw Invalid(); }
         byte[] bytes = new byte[checked((int)held.Length)]; held.ReadExactly(bytes); return bytes;
     }
-    private static MigrationExecutionException Invalid() => CurrentAuthArchiveGenuineExecutionCases.Invalid();
+    private static MigrationExecutionException Invalid()
+    {
+        return CurrentAuthArchiveGenuineExecutionCases.Invalid();
+    }
 }

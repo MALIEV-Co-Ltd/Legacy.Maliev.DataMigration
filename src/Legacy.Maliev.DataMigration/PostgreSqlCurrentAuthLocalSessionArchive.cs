@@ -7,8 +7,22 @@ namespace Legacy.Maliev.DataMigration;
 /// <summary>Unrouted guarded fixed CAS preparation. No restore, replacement or historical adoption.</summary>
 internal static class PostgreSqlCurrentAuthLocalSessionArchive
 {
-    internal static async Task<CurrentAuthArchiveReceipt> ExecuteAsync(string localOperatorConnection,
+    internal static Task<CurrentAuthArchiveReceipt> ExecuteAsync(string localOperatorConnection,
         CurrentAuthLocalSessionArchivePermit permit, P256MigrationEvidenceSigner signer, CancellationToken ct)
+    {
+        return ExecuteCoreAsync(localOperatorConnection, permit, signer, null, ct);
+    }
+
+    internal static Task<CurrentAuthArchiveReceipt> ExecuteGenuineCommitAckAsync(string directOperatorConnection,
+        CurrentAuthLocalSessionArchivePermit permit, P256MigrationEvidenceSigner signer,
+        CurrentAuthLocalSessionArchivePermit.GenuineExecutionCapability.CommitWriterLease transport, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(transport);
+        return ExecuteCoreAsync(directOperatorConnection, permit, signer, transport, ct);
+    }
+    private static async Task<CurrentAuthArchiveReceipt> ExecuteCoreAsync(string localOperatorConnection,
+        CurrentAuthLocalSessionArchivePermit permit, P256MigrationEvidenceSigner signer,
+        CurrentAuthLocalSessionArchivePermit.GenuineExecutionCapability.CommitWriterLease? transport, CancellationToken ct)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromMinutes(8)); ct = deadline.Token;
@@ -30,7 +44,9 @@ internal static class PostgreSqlCurrentAuthLocalSessionArchive
             await permit.ReserveAsync(ct).ConfigureAwait(false); reserved = true;
             // Fresh post-reservation complete target captures close review-to-reserve drift.
             before = await permit.RequireOriginalFleetsAsync(ct).ConfigureAwait(false);
-            connection = new NpgsqlConnection(endpoint.ConnectionString); await connection.OpenAsync(ct).ConfigureAwait(false);
+            string writerConnection = transport is null ? endpoint.ConnectionString : await transport.RequireWriterConnectionAsync(endpoint.ConnectionString, permit, ct);
+            connection = new NpgsqlConnection(writerConnection); await connection.OpenAsync(ct).ConfigureAwait(false);
+            if (transport is not null) { await transport.RequireBackendAsync(connection, permit, ct); }
             transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
             await PolicyAsync(ct).ConfigureAwait(false);
             await using (var locks = new NpgsqlCommand("""
@@ -66,6 +82,7 @@ internal static class PostgreSqlCurrentAuthLocalSessionArchive
             await CurrentAuthLocalSessionArchiveCrypto.VerifyAsync(permit.Environment.RecoveryStorage, scope, recovery, locked.Sessions, ct).ConfigureAwait(false);
             previous = await permit.RetainAsync(Receipt(CurrentAppOwnedCommitClassification.Prepared), signer, ct).ConfigureAwait(false);
             await PolicyAsync(ct).ConfigureAwait(false); await permit.RequireAsync(ct).ConfigureAwait(false); await PolicyAsync(ct).ConfigureAwait(false);
+            if (transport is not null) { await transport.ArmAsync(connection, permit, previous, ct); }
             commitStarted = true; await transaction.CommitAsync(ct).ConfigureAwait(false); committed = true;
             await transaction.DisposeAsync().ConfigureAwait(false); transaction = null;
             await connection.DisposeAsync().ConfigureAwait(false); connection = null;

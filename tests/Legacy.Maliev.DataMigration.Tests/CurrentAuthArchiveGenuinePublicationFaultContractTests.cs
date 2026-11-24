@@ -9,6 +9,26 @@ public sealed class CurrentAuthArchiveGenuinePublicationFaultContractTests
 {
     private static readonly bool[] JournalModes = [true, false];
     [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(5)]
+    [InlineData(6)]
+    [InlineData(7)]
+    [InlineData(8)]
+    [InlineData(9)]
+    [InlineData(10)]
+    [InlineData(11)]
+    [InlineData(12)]
+    [InlineData(13)]
+    [InlineData(14)]
+    public void Unsupported_publication_slots_return_the_guarded_error(int value)
+    {
+        var error = Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveGenuinePublicationFault.Slot((CurrentAuthArchiveGenuineExecutionCase)value));
+        Assert.Equal("current_auth_archive_genuine_execution_invalid", error.Code);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public void Exact_native_slot_witness_keeps_the_two_fixed_cases_distinct(bool prepared)

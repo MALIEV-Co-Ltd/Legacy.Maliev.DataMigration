@@ -38,7 +38,8 @@ internal static class CurrentAuthArchiveGenuineExecutionCases
         if (value is not (CurrentAuthArchiveGenuineExecutionCase.NativeComplete or CurrentAuthArchiveGenuineExecutionCase.ExactReviewedDelete or
             CurrentAuthArchiveGenuineExecutionCase.PreparedPublication or CurrentAuthArchiveGenuineExecutionCase.TerminalPublication or
             CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift or CurrentAuthArchiveGenuineExecutionCase.PrivateJournalDrift or
-            CurrentAuthArchiveGenuineExecutionCase.SequenceDrift or CurrentAuthArchiveGenuineExecutionCase.ProductionDrift))
+            CurrentAuthArchiveGenuineExecutionCase.SequenceDrift or CurrentAuthArchiveGenuineExecutionCase.ProductionDrift or
+            CurrentAuthArchiveGenuineExecutionCase.CommitAcknowledgmentLost))
         { throw Invalid(); }
     }
 

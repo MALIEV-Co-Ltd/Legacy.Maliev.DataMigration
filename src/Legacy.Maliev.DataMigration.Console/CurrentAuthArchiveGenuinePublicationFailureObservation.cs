@@ -34,13 +34,21 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment
     }
 
     // This token parameter is private and never supplied by any ordinary execution method.
-    private void RequireObservationCustody(CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation)
+    private void RequireObservationCustody(CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, OwnedCommitProxy? proxy)
     {
-        if (observation is null) { RequireHealthy(); return; }
+        if (observation is null && proxy is null) { RequireHealthy(); return; }
+        if (observation is not null && proxy is not null) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
+        if (proxy is not null)
+        {
+            if (!_failed || !_reserved || _genuineDenial is not null || !ReferenceEquals(_ownedCommitProxy, proxy) ||
+                !_publication.IsAcknowledged($"{_scope.OperationId:D}-Auth-session-archive-failed-or-uncertain.json")) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
+            _ = proxy.RequirePostFailure();
+            CurrentAuthArchiveCapacity.Require(admission: false); _localFiles.Require(); _productionFiles.Require(); RequireInventory(); return;
+        }
         if (!_failed || !_reserved || !ReferenceEquals(_genuineDenial, observation) ||
             !_publication.IsAcknowledged($"{_scope.OperationId:D}-Auth-session-archive-failed-or-uncertain.json"))
         { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
-        _ = observation.RequirePostFailure(this, _scope, _authorization, _localAuthority, _productionAuthority);
+        _ = observation!.RequirePostFailure(this, _scope, _authorization, _localAuthority, _productionAuthority);
         CurrentAuthArchiveCapacity.Require(admission: false); _localFiles.Require(); _productionFiles.Require(); RequireInventory();
     }
 
@@ -49,12 +57,12 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment
         CurrentAuthArchiveProofArtifact localRules, CurrentAuthArchiveProofArtifact comparisonHba, CurrentAuthArchiveProofArtifact comparisonRules,
         CancellationToken ct)
     {
-        RequireObservationCustody(observation);
-        await RequireAcceptedCoreAsync(_scope, observation, ct);
-        var local = await CaptureCoreAsync(_scope, true, observation, ct);
-        var comparison = await CaptureCoreAsync(_scope, false, observation, ct);
-        var native = await CaptureNativeCoreAsync(_scope, localHba, localRules, comparisonHba, comparisonRules, observation, ct);
-        RequireObservationCustody(observation);
+        RequireObservationCustody(observation, null);
+        await RequireAcceptedCoreAsync(_scope, observation, null, ct);
+        var local = await CaptureCoreAsync(_scope, true, observation, null, ct);
+        var comparison = await CaptureCoreAsync(_scope, false, observation, null, ct);
+        var native = await CaptureNativeCoreAsync(_scope, localHba, localRules, comparisonHba, comparisonRules, observation, null, ct);
+        RequireObservationCustody(observation, null);
         return new(local, comparison, native, observation.RequirePostFailure(this, _scope, _authorization, _localAuthority, _productionAuthority));
     }
 }

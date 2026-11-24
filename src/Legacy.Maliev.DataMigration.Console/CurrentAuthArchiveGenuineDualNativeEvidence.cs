@@ -16,17 +16,17 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment
         CurrentAuthArchiveScope scope, CurrentAuthArchiveProofArtifact localHba, CurrentAuthArchiveProofArtifact localRules,
         CurrentAuthArchiveProofArtifact comparisonHba, CurrentAuthArchiveProofArtifact comparisonRules, CancellationToken ct)
     {
-        return CaptureNativeCoreAsync(scope, localHba, localRules, comparisonHba, comparisonRules, null, ct);
+        return CaptureNativeCoreAsync(scope, localHba, localRules, comparisonHba, comparisonRules, null, null, ct);
     }
 
     private async Task<CurrentAuthArchiveGenuineDualNativeEvidence> CaptureNativeCoreAsync(
         CurrentAuthArchiveScope scope, CurrentAuthArchiveProofArtifact localHba, CurrentAuthArchiveProofArtifact localRules,
-        CurrentAuthArchiveProofArtifact comparisonHba, CurrentAuthArchiveProofArtifact comparisonRules, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, CancellationToken ct)
+        CurrentAuthArchiveProofArtifact comparisonHba, CurrentAuthArchiveProofArtifact comparisonRules, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, OwnedCommitProxy? proxy, CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
         try
         {
-            RequireObservationCustody(observation); Match(scope);
+            RequireObservationCustody(observation, proxy); Match(scope);
             var targets = await RequireTargetsAsync(ct);
             var comparison = targets.Comparison ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid();
             var firstPolicy = await PolicyAsync(true, localHba, localRules);

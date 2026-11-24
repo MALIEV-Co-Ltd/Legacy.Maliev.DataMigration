@@ -185,6 +185,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
         {
             try { resource?.Dispose(); } catch (Exception cleanup) { failure ??= cleanup; }
         }
+        try { if (_commitProxy is not null) { await _commitProxy.DisposeAsync(); } } catch (Exception cleanup) { failure ??= cleanup; }
         Release(_recoveryHelpersStorage); Release(_environment);
         Release(_secondFiles); Release(_firstFiles); Release(_secondAuthority); Release(_firstAuthority);
         Release(_secondPolicy); Release(_firstPolicy);

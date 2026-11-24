@@ -93,7 +93,7 @@ internal static class CurrentAuthArchiveExecutionHost
             CurrentAuthArchiveGenuineExecutionCase.ExactReviewedDelete => "MALIEV_AUTH_ARCHIVE_GENUINE_EXACT_DELETE_INPUT",
             CurrentAuthArchiveGenuineExecutionCase.PreparedPublication => "MALIEV_AUTH_ARCHIVE_GENUINE_PREPARED_PUBLICATION_INPUT",
             CurrentAuthArchiveGenuineExecutionCase.TerminalPublication => "MALIEV_AUTH_ARCHIVE_GENUINE_TERMINAL_PUBLICATION_INPUT",
-            CurrentAuthArchiveGenuineExecutionCase.CommitAcknowledgmentLost => throw Invalid(),
+            CurrentAuthArchiveGenuineExecutionCase.CommitAcknowledgmentLost => "MALIEV_AUTH_ARCHIVE_GENUINE_COMMIT_ACK_INPUT",
             CurrentAuthArchiveGenuineExecutionCase.HostUnprobedSdk => throw Invalid(),
             CurrentAuthArchiveGenuineExecutionCase.LocalTrust => throw Invalid(),
             CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift => "MALIEV_AUTH_ARCHIVE_GENUINE_CAS_DRIFT_INPUT",
@@ -112,7 +112,7 @@ internal static class CurrentAuthArchiveExecutionHost
         {
             CurrentAuthArchiveGenuineExecutionCase.NativeComplete or CurrentAuthArchiveGenuineExecutionCase.ExactReviewedDelete => 0,
             CurrentAuthArchiveGenuineExecutionCase.PreparedPublication or CurrentAuthArchiveGenuineExecutionCase.TerminalPublication => 1,
-            CurrentAuthArchiveGenuineExecutionCase.CommitAcknowledgmentLost => throw Invalid(),
+            CurrentAuthArchiveGenuineExecutionCase.CommitAcknowledgmentLost => 1,
             CurrentAuthArchiveGenuineExecutionCase.HostUnprobedSdk => throw Invalid(),
             CurrentAuthArchiveGenuineExecutionCase.LocalTrust => throw Invalid(),
             CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift => 1,

@@ -79,7 +79,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
             await using var reader = await command.ExecuteReaderAsync(token);
             if (!await reader.ReadAsync(token)) { throw Invalid(); }
             var result = (reader.GetInt64(0), reader.GetBoolean(1));
-            if (await reader.ReadAsync(token)) { throw Invalid(); } return result;
+            return await reader.ReadAsync(token) ? throw Invalid() : result;
         }
     }
 
@@ -108,62 +108,84 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
         RequireNoDriftArchiveArtifacts();
         string root = _inputs.ParentAuthority.Binding.ArtifactRootCanonicalPath, prefix = $"genuine-drift-{Scope.OperationId:N}";
         var artifacts = new Dictionary<string, CurrentAuthArchiveGenuineArtifact>(StringComparer.Ordinal);
-        await JsonAsync("scope", Scope); await JsonAsync("source", _inputs.Source); await JsonAsync("review", failure.Claims.Review);
-        await JsonAsync("authorization", failure.Claims.Authorization); await JsonAsync("device-proof", _dualDeviceProof);
-        await JsonAsync("failure", failure); await JsonAsync("mutation", failure.Applied.Mutation);
+        _ = await JsonAsync("scope", Scope); _ = await JsonAsync("source", _inputs.Source); _ = await JsonAsync("review", failure.Claims.Review);
+        _ = await JsonAsync("authorization", failure.Claims.Authorization); _ = await JsonAsync("device-proof", _dualDeviceProof);
+        _ = await JsonAsync("failure", failure); _ = await JsonAsync("mutation", failure.Applied.Mutation);
         await FleetAsync("local-before", failure.Applied.LocalBefore); await FleetAsync("local-fault", failure.Applied.LocalFault); await FleetAsync("local-after", localAfter);
         await FleetAsync("comparison-before", failure.Applied.ComparisonBefore); await FleetAsync("comparison-fault", failure.Applied.ComparisonFault); await FleetAsync("comparison-after", comparisonAfter);
-        await JsonAsync("local-target", native.LocalTarget); await JsonAsync("comparison-target", native.ComparisonTarget);
-        await JsonAsync("local-container", native.LocalContainer); await JsonAsync("local-volume", native.LocalVolume);
-        await JsonAsync("comparison-container", native.ComparisonContainer); await JsonAsync("comparison-volume", native.ComparisonVolume);
+        _ = await JsonAsync("local-target", native.LocalTarget); _ = await JsonAsync("comparison-target", native.ComparisonTarget);
+        _ = await JsonAsync("local-container", native.LocalContainer); _ = await JsonAsync("local-volume", native.LocalVolume);
+        _ = await JsonAsync("comparison-container", native.ComparisonContainer); _ = await JsonAsync("comparison-volume", native.ComparisonVolume);
         var localHba = await CopyAsync("local-hba", _firstFiles, _firstPolicy.HbaFile); var localRules = await CopyAsync("local-hba-rules", _firstFiles, _firstPolicy.RawRules);
         var comparisonHba = await CopyAsync("comparison-hba", _secondFiles, _secondPolicy.HbaFile); var comparisonRules = await CopyAsync("comparison-hba-rules", _secondFiles, _secondPolicy.RawRules);
-        await JsonAsync("local-policy", native.LocalPolicy with { HbaFile = new(localHba.Path, localHba.Sha256), RawRules = new(localRules.Path, localRules.Sha256) });
-        await JsonAsync("comparison-policy", native.ComparisonPolicy with { HbaFile = new(comparisonHba.Path, comparisonHba.Sha256), RawRules = new(comparisonRules.Path, comparisonRules.Sha256) });
-        await JsonAsync("archive-slot-absence", new
+        _ = await JsonAsync("local-policy", native.LocalPolicy with { HbaFile = new(localHba.Path, localHba.Sha256), RawRules = new(localRules.Path, localRules.Sha256) });
+        _ = await JsonAsync("comparison-policy", native.ComparisonPolicy with { HbaFile = new(comparisonHba.Path, comparisonHba.Sha256), RawRules = new(comparisonRules.Path, comparisonRules.Sha256) });
+        _ = await JsonAsync("archive-slot-absence", new
         {
-            Scope.OperationId, ObservedAtUtc = DateTimeOffset.UtcNow, LocalBinding = _firstAuthority!.Binding.ComputeSha256(),
-            ComparisonBinding = _secondAuthority!.Binding.ComputeSha256(), LocalOriginalNames = Array.Empty<string>(), ComparisonOriginalNames = Array.Empty<string>(),
-            ReservationAbsent = true, ReceiptsAbsent = true, RecoveryFilesAbsent = true,
+            Scope.OperationId,
+            ObservedAtUtc = DateTimeOffset.UtcNow,
+            LocalBinding = _firstAuthority!.Binding.ComputeSha256(),
+            ComparisonBinding = _secondAuthority!.Binding.ComputeSha256(),
+            LocalOriginalNames = Array.Empty<string>(),
+            ComparisonOriginalNames = Array.Empty<string>(),
+            ReservationAbsent = true,
+            ReceiptsAbsent = true,
+            RecoveryFilesAbsent = true,
         });
         // Compatibility effect checks compare engine input AFTER the controlled fault with actual post-rejection observations.
-        var identity = CurrentAuthArchiveGenuineExecutionCases.Identity(failure.Case);
+        var (Phase, CaseId) = CurrentAuthArchiveGenuineExecutionCases.Identity(failure.Case);
         var targetBefore = CurrentAuthArchiveGenuineDrift.Comparison(failure.Case) ? failure.Applied.ComparisonBefore : failure.Applied.LocalBefore;
         var targetFault = CurrentAuthArchiveGenuineDrift.Comparison(failure.Case) ? failure.Applied.ComparisonFault : failure.Applied.LocalFault;
-        CurrentAuthArchiveProofReader.RequireFault(identity.CaseId, targetBefore.Auth.Native.Snapshot, targetFault.Auth.Native.Snapshot);
+        CurrentAuthArchiveProofReader.RequireFault(CaseId, targetBefore.Auth.Native.Snapshot, targetFault.Auth.Native.Snapshot);
         if (failure.Case == CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift) { CurrentAuthArchiveProofReader.RequireCasFaultRows(targetBefore.Auth.Sessions, targetFault.Auth.Sessions); }
         var effectBefore = CurrentAuthArchiveGenuineDrift.Comparison(failure.Case) ? failure.Applied.LocalBefore.Auth.Native.Snapshot : failure.Applied.LocalFault.Auth.Native.Snapshot;
         var scenario = new CurrentAuthArchiveProofScenario(failure.Case == CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift ? "cas-preflight" : "fleet-preflight",
             failure.ActualCode, false, false, false, false, DateTimeOffset.UtcNow, []);
-        CurrentAuthArchiveProofReader.RequireEffects(identity.CaseId, scenario, [], effectBefore, localAfter.Auth.Native.Snapshot);
-        await JsonAsync("scenario", scenario);
+        CurrentAuthArchiveProofReader.RequireEffects(CaseId, scenario, [], effectBefore, localAfter.Auth.Native.Snapshot);
+        _ = await JsonAsync("scenario", scenario);
         if (!StringComparer.OrdinalIgnoreCase.Equals(Path.GetDirectoryName(typeof(CurrentAuthArchiveGenuineOwnedPair).Assembly.Location), root)) { throw Invalid(); }
         artifacts.Add("test-assembly", new(typeof(CurrentAuthArchiveGenuineOwnedPair).Assembly.Location, _seed.TestAssemblySha256));
         RequireNoDriftArchiveArtifacts(); await _inputs.RequireAsync(ct); _bundle.Require();
         DateTimeOffset ended = DateTimeOffset.UtcNow;
         var stage = await WriteAsync("incomplete-precleanup-stage", JsonSerializer.SerializeToUtf8Bytes(new
         {
-            Kind = "current-auth-genuine-execution-incomplete-precleanup-v1", identity.Phase, identity.CaseId, Scope.OperationId,
-            BeganAtUtc = failure.BeganAtUtc, EndedAtUtc = ended, NativeObservedAtUtc = native.ObservedAtUtc, native.LocalPort, native.ComparisonPort,
-            Artifacts = artifacts, Receipts = Array.Empty<CurrentAuthArchiveGenuineArtifact>(), ActualBoundary = "before-reservation",
-            CleanupVerified = false, PhaseProofComplete = false, ProviderExitCode = (int?)null,
+            Kind = "current-auth-genuine-execution-incomplete-precleanup-v1",
+            Phase,
+            CaseId,
+            Scope.OperationId,
+            failure.BeganAtUtc,
+            EndedAtUtc = ended,
+            NativeObservedAtUtc = native.ObservedAtUtc,
+            native.LocalPort,
+            native.ComparisonPort,
+            Artifacts = artifacts,
+            Receipts = Array.Empty<CurrentAuthArchiveGenuineArtifact>(),
+            ActualBoundary = "before-reservation",
+            CleanupVerified = false,
+            PhaseProofComplete = false,
+            ProviderExitCode = (int?)null,
         }));
         return new(stage, failure.BeganAtUtc, ended);
 
         async Task FleetAsync(string name, CurrentAuthArchiveFleet fleet)
-        { await JsonAsync(name, fleet.Databases); await JsonAsync(name + "-catalogs", fleet.Catalogs); await JsonAsync(name + "-sessions", fleet.Auth.Sessions); }
-        Task<CurrentAuthArchiveGenuineArtifact> JsonAsync<T>(string name, T value) => WriteAsync(name, JsonSerializer.SerializeToUtf8Bytes(value));
+        { _ = await JsonAsync(name, fleet.Databases); _ = await JsonAsync(name + "-catalogs", fleet.Catalogs); _ = await JsonAsync(name + "-sessions", fleet.Auth.Sessions); }
+        Task<CurrentAuthArchiveGenuineArtifact> JsonAsync<T>(string name, T value)
+        {
+            return WriteAsync(name, JsonSerializer.SerializeToUtf8Bytes(value));
+        }
+
         async Task<CurrentAuthArchiveGenuineArtifact> WriteAsync(string name, byte[] bytes)
         {
             string path = Path.Combine(root, prefix + "-" + name + ".json"); await _inputs.ParentFiles.WriteNewAsync(path, bytes, ct);
             if (!_inputs.ParentFiles.Read(path, sharedReader: true, maximumBytes: 12 * 1024 * 1024).AsSpan().SequenceEqual(bytes)) { throw Invalid(); }
             var result = new CurrentAuthArchiveGenuineArtifact(path, CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes));
-            if (name != "incomplete-precleanup-stage") { artifacts.Add(name, result); } return result;
+            if (name != "incomplete-precleanup-stage") { artifacts.Add(name, result); }
+            return result;
         }
         async Task<CurrentAuthArchiveGenuineArtifact> CopyAsync(string name, CurrentAppOwnedRepairCustody files, CurrentAuthArchiveProofArtifact artifact)
         {
             byte[] bytes = files.Read(artifact.Path, sharedReader: true, maximumBytes: 65536);
-            if (CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes) != artifact.Sha256) { throw Invalid(); } return await WriteAsync(name, bytes);
+            return CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes) != artifact.Sha256 ? throw Invalid() : await WriteAsync(name, bytes);
         }
     }
 

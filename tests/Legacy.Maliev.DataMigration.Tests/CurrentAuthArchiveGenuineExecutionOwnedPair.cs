@@ -122,19 +122,22 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
     Task<CurrentAuthArchiveGenuineDualArtifacts> ICurrentAuthArchiveGenuineExecutionLease.RetainExecutionAsync(
         CurrentAuthArchiveGenuineExecutionFacts facts, CancellationToken ct)
     {
-        return RetainExecutionCoreAsync(facts, null, null, ct);
+        return RetainExecutionCoreAsync(facts, null, null, null, null, ct);
     }
 
     private async Task<CurrentAuthArchiveGenuineDualArtifacts> RetainExecutionCoreAsync(CurrentAuthArchiveGenuineExecutionFacts facts,
-        CurrentAuthArchiveGenuinePublicationFailureFacts? failure, CurrentAuthArchiveGenuineFailureObservation? failureObservation, CancellationToken ct)
+        CurrentAuthArchiveGenuinePublicationFailureFacts? failure, CurrentAuthArchiveGenuineFailureObservation? failureObservation,
+        CurrentAuthArchiveGenuineCommitFailureFacts? commitFailure, CurrentAuthArchiveGenuineCommitFailureObservation? commitObservation, CancellationToken ct)
     {
         if (!OperatingSystem.IsWindows()) { throw Invalid(); }
-        if (failure is null) { await RequireExecutionLiveAsync(false, ct); }
+        bool failed = failure is not null || commitFailure is not null;
+        if (failure is not null && commitFailure is not null) { throw Invalid(); }
+        if (!failed) { await RequireExecutionLiveAsync(false, ct); }
         if (_environment is null || _firstFiles is null || _secondFiles is null || _firstPolicy is null || _secondPolicy is null ||
             _dualDeviceProof is null || facts.Case != _executionCase || facts.Claims != _executionClaims || facts.BeganAtUtc > facts.ReturnedAtUtc ||
             facts.ReturnedAtUtc > DateTimeOffset.UtcNow) { throw Invalid(); }
-        if (failure is null) { _environment.RequireTerminal(facts.Terminal ?? throw Invalid()); }
-        var native = failureObservation?.Native ?? await _environment.CaptureDualHelperNativeEvidenceAsync(Scope, _firstPolicy.HbaFile, _firstPolicy.RawRules,
+        if (!failed) { _environment.RequireTerminal(facts.Terminal ?? throw Invalid()); }
+        var native = failureObservation?.Native ?? commitObservation?.Native ?? await _environment.CaptureDualHelperNativeEvidenceAsync(Scope, _firstPolicy.HbaFile, _firstPolicy.RawRules,
             _secondPolicy.HbaFile, _secondPolicy.RawRules, ct);
         if (facts.Case == CurrentAuthArchiveGenuineExecutionCase.PreparedPublication)
         { CurrentAuthLocalSessionArchiveObservation.RequireExactPreimage(facts.LocalAfter.Auth, facts.LocalBefore.Auth); }
@@ -168,7 +171,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
         await RecoveryAsync("second-ciphertext", false, Scope.Paths.SecondCiphertext, 12 * 1024 * 1024);
         await RecoveryAsync("first-recovery-key", true, Scope.Paths.RecoveryPrivateKey, 65536);
         await RecoveryAsync("second-recovery-key", false, Scope.Paths.SecondRecoveryPrivateKey, 65536);
-        string[] expectedNames = failure is null ? ["operation-start", "recovery-manifest", "prepared", "committed-readback"] :
+        string[] expectedNames = !failed ? ["operation-start", "recovery-manifest", "prepared", "committed-readback"] :
             facts.Case == CurrentAuthArchiveGenuineExecutionCase.PreparedPublication ? ["operation-start", "recovery-manifest", "failed-or-uncertain"] :
             ["operation-start", "recovery-manifest", "prepared", "failed-or-uncertain"];
         string[] expectedFiles = expectedNames.Select(name => $"{Scope.OperationId:D}-Auth-session-archive-{name}.json").Order(StringComparer.Ordinal).ToArray();
@@ -191,6 +194,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
             journals.Add(name, bytes); _ = await WriteAsync(name, bytes); _ = await JsonAsync(name + "-native-file", new { OriginalPath = original, Identity = identity, Sha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes) });
         }
         var receipts = failure is not null ? RequireFailureJournal(journals, Scope, facts, failure, failureObservation?.Witness ?? throw Invalid(), _inputs.Pins, _inputs.TrustStore) :
+            commitFailure is not null ? RequireCommitFailureJournal(journals, Scope, facts, commitFailure, _inputs.Pins, _inputs.TrustStore) :
             RequireExecutionJournal(journals, Scope, facts.Claims, facts.Terminal ?? throw Invalid(),
             facts.LocalBefore.Auth.Native.Snapshot.Sha256, facts.LocalAfter.Auth.Native.Snapshot.Sha256,
             facts.BeganAtUtc, facts.ReturnedAtUtc, _inputs.Pins, _inputs.TrustStore);
@@ -200,9 +204,16 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
         await CurrentAuthLocalSessionArchiveCrypto.VerifyAsync(new ExecutionProofCopyStorage(_inputs.ParentFiles, Scope.Paths, artifacts),
             Scope, retainedManifest, facts.LocalBefore.Auth.Sessions, ct);
         if (failure is not null) { _ = await JsonAsync("publication-failure", failure); _ = await JsonAsync("slot-witness", failureObservation!.Witness); }
-        var scenario = new CurrentAuthArchiveProofScenario(failure is null ? "complete" :
+        if (commitFailure is not null)
+        {
+            if (commitObservation is null) { throw Invalid(); }
+            _ = await JsonAsync("commit-failure", commitFailure);
+            _ = await WriteAsync("proxy-created", commitObservation.Created); _ = await WriteAsync("proxy-disposed", commitObservation.Disposed);
+        }
+        var scenario = new CurrentAuthArchiveProofScenario(commitFailure is not null ? "commit-ack-lost" : failure is null ? "complete" :
             facts.Case == CurrentAuthArchiveGenuineExecutionCase.PreparedPublication ? "prepared-publication-before-ack" : "terminal-publication",
-            failure?.ActualExceptionType, facts.Case != CurrentAuthArchiveGenuineExecutionCase.PreparedPublication,
+            failure?.ActualExceptionType ?? commitFailure?.ActualExceptionType,
+            facts.Case is not (CurrentAuthArchiveGenuineExecutionCase.PreparedPublication or CurrentAuthArchiveGenuineExecutionCase.CommitAcknowledgmentLost),
             true, false, false, DateTimeOffset.UtcNow,
             expectedNames.Where(name => name is "prepared" or "committed-readback" or "failed-or-uncertain")
                 .Select(name => new CurrentAuthArchiveProofSlot(AsProof(artifacts[name]), true)).ToArray());
@@ -224,6 +235,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
             NativeObservedAtUtc = native.ObservedAtUtc,
             native.LocalPort,
             native.ComparisonPort,
+            ProxyPort = commitObservation?.Proxy.Port,
             Artifacts = artifacts,
             Receipts = expectedNames.Where(name => name is "prepared" or "committed-readback" or "failed-or-uncertain").Select(name => artifacts[name]).ToArray(),
             CleanupVerified = false,

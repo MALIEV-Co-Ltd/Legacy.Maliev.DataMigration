@@ -53,7 +53,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
         _bundle.Require();
         var facts = new CurrentAuthArchiveGenuineExecutionFacts(failure.Case, failure.Claims, null,
             failure.LocalBefore, observation.Local, failure.ComparisonBefore, observation.Comparison, failure.BeganAtUtc, DateTimeOffset.UtcNow);
-        return await RetainExecutionCoreAsync(facts, failure, observation, lease.Token);
+        return await RetainExecutionCoreAsync(facts, failure, observation, null, null, lease.Token);
     }
 
     internal static CurrentAuthArchiveReceipt[] RequireFailureJournal(IReadOnlyDictionary<string, byte[]> journal,

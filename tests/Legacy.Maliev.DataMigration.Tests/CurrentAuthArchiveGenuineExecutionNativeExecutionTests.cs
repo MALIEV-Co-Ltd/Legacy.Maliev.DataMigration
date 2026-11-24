@@ -12,6 +12,7 @@ public sealed class CurrentAuthArchiveGenuineExecutionFactAttribute : FactAttrib
             "exact-reviewed-delete" => CurrentAuthArchiveGenuineExecutionCase.ExactReviewedDelete,
             "prepared-publication" => CurrentAuthArchiveGenuineExecutionCase.PreparedPublication,
             "terminal-publication" => CurrentAuthArchiveGenuineExecutionCase.TerminalPublication,
+            "commit-ack-lost" => CurrentAuthArchiveGenuineExecutionCase.CommitAcknowledgmentLost,
             "CAS-field-drift" => CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift,
             "private-journal-drift" => CurrentAuthArchiveGenuineExecutionCase.PrivateJournalDrift,
             "sequence-drift" => CurrentAuthArchiveGenuineExecutionCase.SequenceDrift,
@@ -49,17 +50,35 @@ public sealed partial class CurrentAuthArchiveGuardedExecutionTests
         return RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.TerminalPublication);
     }
 
+    [CurrentAuthArchiveGenuineExecutionFact("commit-ack-lost")]
+    public Task Archive_native_commit_ack_lost()
+    {
+        return RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.CommitAcknowledgmentLost);
+    }
+
     [CurrentAuthArchiveGenuineExecutionFact("CAS-field-drift")]
-    public Task Archive_delete_CAS_field_drift() => RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift);
+    public Task Archive_delete_CAS_field_drift()
+    {
+        return RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift);
+    }
 
     [CurrentAuthArchiveGenuineExecutionFact("private-journal-drift")]
-    public Task Archive_delete_private_journal_drift() => RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.PrivateJournalDrift);
+    public Task Archive_delete_private_journal_drift()
+    {
+        return RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.PrivateJournalDrift);
+    }
 
     [CurrentAuthArchiveGenuineExecutionFact("sequence-drift")]
-    public Task Archive_delete_sequence_drift() => RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.SequenceDrift);
+    public Task Archive_delete_sequence_drift()
+    {
+        return RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.SequenceDrift);
+    }
 
     [CurrentAuthArchiveGenuineExecutionFact("production-drift")]
-    public Task Archive_delete_production_drift() => RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.ProductionDrift);
+    public Task Archive_delete_production_drift()
+    {
+        return RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.ProductionDrift);
+    }
 
     private static async Task RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase executionCase)
     {

@@ -27,4 +27,9 @@ internal interface ICurrentAuthArchiveGenuineExecutionLease : IAsyncDisposable
     Task<CurrentAuthArchiveGenuineDualArtifacts> RetainPublicationFailureAsync(CurrentAuthArchiveGenuinePublicationFailureFacts facts, CancellationToken ct);
     Task<CurrentAuthArchiveGenuineDriftApplied> ApplyDriftAsync(CancellationToken ct);
     Task<CurrentAuthArchiveGenuineDualArtifacts> RetainDriftFailureAsync(CurrentAuthArchiveGenuineDriftFailure facts, CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineCommitProxyInfo> OpenCommitProxyAsync(CurrentAuthArchiveGenuineExecutionIssuer.CommitProxyFactory factory, CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineCommitProxyInfo> ReadCommitProxyAsync(CancellationToken ct);
+    Task ArmCommitProxyAsync(int backendPid, CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineCommitProxyInfo> CloseCommitProxyAsync(CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineDualArtifacts> RetainCommitFailureAsync(CurrentAuthArchiveGenuineCommitFailureFacts facts, CancellationToken ct);
 }

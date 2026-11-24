@@ -248,6 +248,12 @@ public static partial class MigrationConsole
                     return await RunCurrentAuthArchiveExecutionProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "run-current-auth-archive-genuine-testhost":
                     return await RunCurrentAuthArchiveGenuineTestHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-preflight-host":
+                    return await RunCurrentAuthArchivePreflightHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-archive-preflight-sdk":
+                    return await RunCurrentAuthArchivePreflightSdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "execute-current-auth-archive-preflight-provider":
+                    return await RunCurrentAuthArchivePreflightProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "review-current-auth-local-session-archive":
                 case "authorize-current-auth-local-session-archive":
                 case "verify-current-auth-local-session-archive":

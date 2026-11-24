@@ -31,6 +31,7 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
     private int _scopeAttachmentStarted;
     private readonly CurrentAuthArchiveGenuineRecoveryHelperCase? _genuineHelperCase;
     private readonly CurrentAuthArchiveGenuineExecutionCase? _genuineExecutionCase;
+    private readonly CurrentAuthArchiveGenuinePreflightCase? _genuinePreflightCase;
 
     internal string AcceptedSourceCommitSha => _seed.AcceptedSourceCommitSha;
     internal string SourceSchemaPlanSha256 => _seed.SourceSchemaPlanSha256;
@@ -91,11 +92,13 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         WindowsLocalRunAuthority parent, CurrentAppOwnedRepairCustody parentFiles,
         WindowsLocalRunAuthority precursor, CurrentAppOwnedRepairCustody precursorFiles,
         CurrentAuthArchiveGenuineRecoveryHelperCase? genuineHelperCase = null,
-        CurrentAuthArchiveGenuineExecutionCase? genuineExecutionCase = null)
+        CurrentAuthArchiveGenuineExecutionCase? genuineExecutionCase = null,
+        CurrentAuthArchiveGenuinePreflightCase? genuinePreflightCase = null)
     {
         _input = input; ParentAuthority = parent; ParentFiles = parentFiles; _precursor = precursor; _precursorFiles = precursorFiles;
         _genuineHelperCase = genuineHelperCase;
         _genuineExecutionCase = genuineExecutionCase;
+        _genuinePreflightCase = genuinePreflightCase;
         _scope = input.Scope is null ? null : Decode<CurrentAuthArchiveScope>(Read(parentFiles, input.Scope));
         _seed = Decode<CurrentAuthArchiveComponentBootstrapSeed>(Read(parentFiles, input.ParentSeed));
         Pins = Decode<CurrentAuthArchivePins>(Read(parentFiles, input.SigningPins));
@@ -135,9 +138,17 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         return input is null || input.Scope is not null ? throw Invalid() : OpenCoreAsync(input, initial: true, ct, genuineExecutionCase: expectedCase);
     }
 
+    internal static Task<CurrentAuthArchiveComponentReadback> OpenGenuinePreflightInitialAsync(CurrentAuthArchiveComponentReadbackInput input,
+        CurrentAuthArchiveGenuinePreflightCase expected, CancellationToken ct)
+    {
+        _ = CurrentAuthArchiveGenuinePreflight.CaseId(expected);
+        return input is null || input.Scope is not null ? throw Invalid() : OpenCoreAsync(input, initial: true, ct, genuinePreflightCase: expected);
+    }
+
     private static async Task<CurrentAuthArchiveComponentReadback> OpenCoreAsync(CurrentAuthArchiveComponentReadbackInput input, bool initial, CancellationToken ct,
         CurrentAuthArchiveGenuineRecoveryHelperCase? genuineHelperCase = null,
-        CurrentAuthArchiveGenuineExecutionCase? genuineExecutionCase = null)
+        CurrentAuthArchiveGenuineExecutionCase? genuineExecutionCase = null,
+        CurrentAuthArchiveGenuinePreflightCase? genuinePreflightCase = null)
     {
         ct.ThrowIfCancellationRequested();
         RequireInput(input, initial);
@@ -151,7 +162,7 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
             (precursor, precursorFiles) = Resume(input.PrecursorBinding);
             if (parent.Binding.ComputeSha256() == precursor.Binding.ComputeSha256() ||
                 string.Equals(parent.Binding.ArtifactRootCanonicalPath, precursor.Binding.ArtifactRootCanonicalPath, StringComparison.OrdinalIgnoreCase)) { throw Invalid(); }
-            result = new(input, parent, parentFiles, precursor, precursorFiles, genuineHelperCase, genuineExecutionCase);
+            result = new(input, parent, parentFiles, precursor, precursorFiles, genuineHelperCase, genuineExecutionCase, genuinePreflightCase);
             result.HoldImage(input.ConsoleImage, typeof(MigrationConsole).Assembly);
             result.HoldImage(input.CoreImage, typeof(CurrentAuthLocalSessionArchivePermit).Assembly);
             Assembly[] tests = AppDomain.CurrentDomain.GetAssemblies().Where(x => x.GetName().Name == "Legacy.Maliev.DataMigration.Tests").ToArray();
@@ -212,7 +223,9 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
 
     private void RequireHeldClaims()
     {
-        if (_scope is null && _genuineExecutionCase is { } execution)
+        if (_scope is null && _genuinePreflightCase is { } preflight)
+        { CurrentAuthArchiveGenuinePreflight.RequireSeed(_seed, Pins, TrustStore, preflight, DateTimeOffset.UtcNow); }
+        else if (_scope is null && _genuineExecutionCase is { } execution)
         { CurrentAuthArchiveGenuineExecutionSeed.RequireInitial(_seed, Pins, TrustStore, execution, DateTimeOffset.UtcNow); }
         else if (_scope is null && _genuineHelperCase is { } expected)
         { CurrentAuthArchiveGenuineRecoveryHelpers.RequireInitialSeed(_seed, Pins, TrustStore, expected, DateTimeOffset.UtcNow); }
