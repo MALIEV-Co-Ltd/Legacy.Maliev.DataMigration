@@ -100,14 +100,19 @@ public abstract class OrderSubtotalExpressionRepairScaleWitnessBase(OrderSubtota
                 await transaction.CommitAsync(ct);
             }
             Observation baseline;
+            OrderSubtotalExpressionRepairNativeObservation guardBaseline;
             await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct))
             {
                 baseline = await CaptureAsync(connection, transaction, ct);
+                guardBaseline = await OrderSubtotalExpressionRepairNativePreservation.CaptureAsync(connection, transaction, contract, after: false, ct);
                 Assert.Equal(fixture.ExpectedVersion, baseline.ProviderVersion);
                 Assert.Equal(13008L, baseline.Native.Snapshot.Relations.Single(x => x.Schema == "public" && x.Name == "Order").Rows);
                 await ExecuteAsync(connection, transaction, OrderSubtotalExpressionRepairContract.CandidateSql(), ct);
                 Observation changed = await CaptureAsync(connection, transaction, ct);
                 RequirePreserved(baseline, changed);
+                var guardChanged = await OrderSubtotalExpressionRepairNativePreservation.CaptureAsync(connection, transaction, contract, after: true, ct);
+                OrderSubtotalExpressionRepairNativePreservation.RequirePreserved(guardBaseline, guardChanged, contract);
+                OrderSubtotalExpressionRepairNativeMutationTests.RequireRejectedMutations(guardBaseline, guardChanged, contract);
                 Report(baseline, changed, "scale-rollback-preparation");
                 await RequireExpressionAsync(connection, transaction, OrderSubtotalExpressionRepairContract.CorrectedExpression, ct);
                 await transaction.RollbackAsync(ct);
@@ -126,6 +131,9 @@ public abstract class OrderSubtotalExpressionRepairScaleWitnessBase(OrderSubtota
                 await ExecuteAsync(connection, transaction, OrderSubtotalExpressionRepairContract.CandidateSql(), ct);
                 Observation changed = await CaptureAsync(connection, transaction, ct);
                 RequirePreserved(baseline, changed);
+                var guardChanged = await OrderSubtotalExpressionRepairNativePreservation.CaptureAsync(connection, transaction, contract, after: true, ct);
+                OrderSubtotalExpressionRepairNativePreservation.RequirePreserved(guardBaseline, guardChanged, contract);
+                OrderSubtotalExpressionRepairNativeMutationTests.RequireRejectedMutations(guardBaseline, guardChanged, contract);
                 Report(baseline, changed, "scale-prepared-commit");
                 await transaction.CommitAsync(ct);
             }
@@ -136,6 +144,8 @@ public abstract class OrderSubtotalExpressionRepairScaleWitnessBase(OrderSubtota
             {
                 Observation committed = await CaptureAsync(independent, transaction, ct);
                 RequirePreserved(baseline, committed);
+                var guardCommitted = await OrderSubtotalExpressionRepairNativePreservation.CaptureAsync(independent, transaction, contract, after: true, ct);
+                OrderSubtotalExpressionRepairNativePreservation.RequirePreserved(guardBaseline, guardCommitted, contract);
                 Report(baseline, committed, "scale-independent-commit-readback");
                 await RequireExpressionAsync(independent, transaction, OrderSubtotalExpressionRepairContract.CorrectedExpression, ct);
                 await transaction.RollbackAsync(ct);
