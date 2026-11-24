@@ -90,9 +90,10 @@ internal static class CurrentAuthArchiveGenuineDualInputReader
             await finalFiles.WriteNewAsync(cleanupPrefix + "-binding.json", bindingBytes, ct);
             await finalFiles.WriteNewAsync(cleanupPrefix + "-disposed.json", disposal, ct);
             await finalFiles.WriteNewAsync(cleanupPrefix + "-absent.json", absence, ct);
-            if (!finalFiles.Read(cleanupPrefix + "-disposed.json", sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(disposal) ||
-                !finalFiles.Read(cleanupPrefix + "-absent.json", sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(absence)) { throw Invalid(); }
-            return !finalFiles.Read(cleanupPrefix + "-binding.json", sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(bindingBytes)
+            return !finalFiles.Read(cleanupPrefix + "-disposed.json", sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(disposal) ||
+                !finalFiles.Read(cleanupPrefix + "-absent.json", sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(absence)
+                ? throw Invalid()
+                : !finalFiles.Read(cleanupPrefix + "-binding.json", sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(bindingBytes)
                 ? throw Invalid()
                 : new(new(cleanupPrefix + "-binding.json", CurrentAuthLocalSessionArchivePolicy.HashBytes(bindingBytes)),
                 new(cleanupPrefix + "-disposed.json", CurrentAuthLocalSessionArchivePolicy.HashBytes(disposal)),

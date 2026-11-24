@@ -18,9 +18,9 @@ internal static class CurrentAuthArchiveGenuineHelperSdkHarness
             !StringComparer.OrdinalIgnoreCase.Equals(Assembly.GetEntryAssembly()?.Location, Path.Combine(run.InputRoot, "testhost.dll"))) { throw CurrentAuthArchiveHelperHost.Invalid(); }
         CurrentAuthTypedHostJob.RequireWaitingChildMembership(run.Nonce);
         var request = CurrentAuthArchiveHelperHost.Request(run.Configuration);
+        using var acceptedConsole = await CurrentAuthArchiveAcceptedConsoleBundle.HoldAsync(run.ConsoleImage, ct);
         using var bundle = await CurrentAuthTypedHostProducer.HoldFixedTestBundleAsync(run.InputRoot, ct);
         if (CurrentAuthTypedHostProducer.ImageHash(run.ConsoleImage) != request.Inputs.ConsoleImage.Sha256) { throw CurrentAuthArchiveHelperHost.Invalid(); }
-        using var image = new FileStream(CurrentAuthArchiveHelperHost.Tool("dotnet"), FileMode.Open, FileAccess.Read, FileShare.Read);
         ProcessStartInfo start = CurrentAuthArchiveHelperHost.Start(Path.GetDirectoryName(runPath)!);
         start.ArgumentList.Add(run.ConsoleImage); start.ArgumentList.Add(CurrentAuthArchiveHelperHost.ProviderCommand);
         start.ArgumentList.Add("--config"); start.ArgumentList.Add(runPath);
@@ -32,12 +32,13 @@ internal static class CurrentAuthArchiveGenuineHelperSdkHarness
         CurrentAuthArchiveGenuineProviderCaseResult? completed = null;
         try
         {
+            acceptedConsole.Require();
             if (!process.Start()) { throw CurrentAuthArchiveHelperHost.Invalid(); }
             started = true; processStart = new(process.StartTime.ToUniversalTime(), TimeSpan.Zero); process.StandardInput.Close();
             stdout = CurrentAuthTypedHostProducer.DrainAsync(process.StandardOutput, expiry.Token);
             stderr = CurrentAuthTypedHostProducer.DrainAsync(process.StandardError, expiry.Token);
             await process.WaitForExitAsync(expiry.Token); await Task.WhenAll(stdout, stderr); settled = true;
-            bundle.Require();
+            bundle.Require(); acceptedConsole.Require();
             byte[] resultBytes = CurrentAuthArchiveHelperHost.Read(CurrentAuthArchiveHelperHost.Prefix(runPath) + "-provider-result.json", 65536);
             var result = CurrentAuthArchiveHelperHost.Decode<CurrentAuthArchiveHelperProviderResult>(resultBytes);
             if (result.SourceCommitSha != run.SourceCommitSha || result.InputSha256 != run.Configuration.CaseInput.Sha256 ||

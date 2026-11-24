@@ -22,7 +22,7 @@ public sealed class CurrentAuthArchiveProofSdkLauncherNativeTests
     [InlineData("Legacy.Maliev.DataMigration.Console.exe")]
     public async Task Driver_rejects_another_entry_image_before_bundle_access_or_process_start(string name)
     {
-        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => HoldConsoleBundleAsync(Path.Combine(Path.GetTempPath(), name), CancellationToken.None));
+        _ = await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAuthArchiveAcceptedConsoleBundle.HoldAsync(Path.Combine(Path.GetTempPath(), name), CancellationToken.None));
     }
 
     [CurrentAuthArchiveHelperLauncherFact]
@@ -36,14 +36,13 @@ public sealed class CurrentAuthArchiveProofSdkLauncherNativeTests
         CurrentAuthArchiveHelperHost.RequireConfiguration(config, path);
         var request = CurrentAuthArchiveHelperHost.Request(config);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
-        using var bundle = await HoldConsoleBundleAsync(console, timeout.Token);
-        using var dotnet = new FileStream(CurrentAuthArchiveHelperHost.Tool("dotnet"), FileMode.Open, FileAccess.Read, FileShare.Read);
-        Assert.True(SecureLocalFile.HandleResolvesToApprovedPath(dotnet, CurrentAuthArchiveHelperHost.Tool("dotnet")));
+        using var bundle = await CurrentAuthArchiveAcceptedConsoleBundle.HoldAsync(console, timeout.Token);
         Assert.Equal(request.Inputs.ConsoleImage.Sha256, CurrentAuthTypedHostProducer.ImageHash(console));
         ProcessStartInfo start = CurrentAuthArchiveHelperHost.Start(Path.GetDirectoryName(path)!);
         start.ArgumentList.Add(console); start.ArgumentList.Add(CurrentAuthArchiveHelperHost.ParentCommand);
         start.ArgumentList.Add("--config"); start.ArgumentList.Add(path);
         using var process = new Process { StartInfo = start };
+        bundle.Require();
         Assert.True(process.Start());
         _ = process.SafeHandle;
         DateTimeOffset began = new(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
@@ -82,48 +81,4 @@ public sealed class CurrentAuthArchiveProofSdkLauncherNativeTests
         }
     }
 
-    private static async Task<HeldConsoleBundle> HoldConsoleBundleAsync(string image, CancellationToken ct)
-    {
-        const string accepted = @"B:\maliev-legacy\Legacy.Maliev.DataMigration\src\Legacy.Maliev.DataMigration.Console\bin\Release\net10.0";
-        if (!Path.IsPathFullyQualified(image) || Path.GetFileName(image) != "Legacy.Maliev.DataMigration.Console.dll")
-        { throw new InvalidOperationException("archive_helper_console_image_unaccepted"); }
-        string running = Path.GetDirectoryName(image)!;
-        var held = new HeldConsoleBundle();
-        try
-        {
-            foreach (string path in Directory.GetFiles(accepted, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
-            {
-                ct.ThrowIfCancellationRequested();
-                held.Add(path, requireOwner: false);
-                held.Add(Path.Combine(running, Path.GetRelativePath(accepted, path)), requireOwner: true);
-            }
-            // Compare against the fixed independent canonical bundle while all code/dependency bytes are held.
-            await SourceBackedLocalRepairSourceAcceptance.RequireBundleForPathsAsync(accepted, running, ct);
-            held.Require(); return held;
-        }
-        catch { held.Dispose(); throw; }
-    }
-
-    private sealed class HeldConsoleBundle : IDisposable
-    {
-        private readonly List<(FileStream Stream, string Path)> _files = [];
-        internal void Add(string path, bool requireOwner)
-        {
-            FileStream stream = requireOwner ? SecureLocalFile.OpenReadShared(path) : new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            try
-            {
-                if (!SecureLocalFile.HandleResolvesToApprovedPath(stream, path)) { throw new InvalidOperationException("archive_helper_console_bundle_unprotected"); }
-                _files.Add((stream, path));
-            }
-            catch { stream.Dispose(); throw; }
-        }
-        internal void Require()
-        {
-            foreach (var file in _files)
-            {
-                if (!SecureLocalFile.HandleResolvesToApprovedPath(file.Stream, file.Path)) { throw new InvalidOperationException("archive_helper_console_bundle_changed"); }
-            }
-        }
-        public void Dispose() { foreach (var file in _files) { file.Stream.Dispose(); } }
-    }
 }
