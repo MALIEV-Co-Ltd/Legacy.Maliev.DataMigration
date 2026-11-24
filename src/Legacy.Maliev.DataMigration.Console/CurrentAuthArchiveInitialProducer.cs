@@ -87,7 +87,7 @@ internal static class CurrentAuthArchiveInitialProducer
     }
 
     // Preserve cross-ALC API type identity only with verified origins and equal held bytes.
-    private sealed class FixedNativeBundle : AssemblyLoadContext, IDisposable
+    internal sealed class FixedNativeBundle : AssemblyLoadContext, IDisposable
     {
         private readonly AssemblyDependencyResolver _resolver;
         private readonly string _testRoot;
