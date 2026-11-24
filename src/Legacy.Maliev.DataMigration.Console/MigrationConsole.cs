@@ -203,6 +203,14 @@ public static partial class MigrationConsole
                 case "characterize-current-order-subtotal-faults":
                     return await RunOrderSubtotalOperationalAsync(invocation.Command, invocation.ConfigPath,
                         output, error, cancellationToken).ConfigureAwait(false);
+                case "observe-current-source-order-owner-iso":
+                    return await RunSourceOrderOwnerIsoAsync("observe", invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "verify-current-source-order-owner-iso":
+                    return await RunSourceOrderOwnerIsoAsync("verify", invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "apply-current-source-order-owner-iso":
+                    return await RunSourceOrderOwnerIsoAsync("apply", invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "characterize-current-source-order-owner-iso-native-faults":
+                    return await RunSourceOrderOwnerIsoAsync("native-faults", invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "plan-delta":
                 case "project-paired-local-template":
                 case "plan-paired-delta":
