@@ -229,7 +229,7 @@ internal static class CurrentAuthLocalSessionArchivePolicy
 }
 
 /// <summary>Unrouted preparation guard. Genuine closed environment/storage is a prerequisite.</summary>
-internal sealed class CurrentAuthLocalSessionArchivePermit
+internal sealed partial class CurrentAuthLocalSessionArchivePermit
 {
     private readonly CurrentAuthArchiveClaim _review, _authorization;
     private readonly IReceiptAttestationTrustStore _trust;

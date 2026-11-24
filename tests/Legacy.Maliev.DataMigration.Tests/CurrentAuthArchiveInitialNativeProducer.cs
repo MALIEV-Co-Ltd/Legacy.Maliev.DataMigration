@@ -106,7 +106,7 @@ internal static class CurrentAuthArchiveInitialNativeProducer
         return await environment.ObserveComponentSubjectAsync(inputs, ct);
     }
 
-    private static CurrentAuthRepairScope ObservationPolicy(CurrentAuthArchiveComponentBootstrapSeed seed,
+    internal static CurrentAuthRepairScope ObservationPolicy(CurrentAuthArchiveComponentBootstrapSeed seed,
         CurrentAuthArchiveFixtureTarget fixture, CurrentAuthArchiveFixtureInstalledPolicy policy,
         CurrentAppOwnedRepairTargetPins pins, DockerLocalTargetObservation target)
     {
@@ -121,7 +121,7 @@ internal static class CurrentAuthArchiveInitialNativeProducer
             string.Empty, string.Empty, string.Empty, policy.Maintenance, CurrentAuthProofAdmission.DisposableNativeBootstrap);
     }
 
-    private static CurrentAuthArchiveFleet Fleet(CurrentAuthArchiveFixtureSeedCapture capture, CurrentAuthRepairScope policy)
+    internal static CurrentAuthArchiveFleet Fleet(CurrentAuthArchiveFixtureSeedCapture capture, CurrentAuthRepairScope policy)
     {
         CurrentAuthArchiveCatalogObservation Catalog(CurrentAuthArchiveFixtureSeedCatalog x)
         {
@@ -133,7 +133,7 @@ internal static class CurrentAuthArchiveInitialNativeProducer
         return new(capture.Auth, capture.Databases, catalogs.CaptureBeganAtUtc, catalogs.CaptureEndedAtUtc, catalogs);
     }
 
-    private static async Task<(CurrentAppOwnedRepairTargetPins Pins, CurrentAuthLocalSessionArchiveEnvironment.ObservedDocker Docker)> CaptureTargetAsync(
+    internal static async Task<(CurrentAppOwnedRepairTargetPins Pins, CurrentAuthLocalSessionArchiveEnvironment.ObservedDocker Docker)> CaptureTargetAsync(
         CurrentAuthArchiveFixtureTarget fixture, CurrentAuthArchiveFixtureInstalledPolicy policy, CancellationToken ct)
     {
         await fixture.RequireHealthyAsync(ct);
