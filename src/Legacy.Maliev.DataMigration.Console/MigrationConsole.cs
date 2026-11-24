@@ -187,6 +187,16 @@ public static partial class MigrationConsole
                 case "finalize-local":
                     return await RunIncrementalBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable, output, error,
                         incrementalRuntime ?? new DefaultIncrementalConsoleRuntime(), cancellationToken).ConfigureAwait(false);
+                case "prepare-dual-target-native-proof":
+                    return await PrepareDualTargetNativeProofAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "plan-dual-target-captured-delta":
+                case "prove-dual-target-captured-delta":
+                case "review-dual-target-captured-delta":
+                case "apply-dual-target-captured-delta":
+                    return await RunDualTargetCapturedDeltaAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "run-dual-target-captured-relay":
+                    return await DualTargetCapturedDeltaRelay.RunChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
                 case "plan-delta":
                 case "project-paired-local-template":
                 case "plan-paired-delta":
