@@ -8,7 +8,7 @@ namespace Legacy.Maliev.DataMigration.Console;
 // Preserve the immutable original scope. Change no subject operand: the genuine helper's signed Subject excludes proof digests.
 internal sealed record CurrentAuthArchiveComponentReadbackInput(
     CurrentAuthArchiveProofArtifact ParentBinding, CurrentAuthArchiveProofArtifact ParentSeed,
-    CurrentAuthArchiveProofArtifact Scope, CurrentAuthArchiveProofArtifact Source,
+    CurrentAuthArchiveProofArtifact? Scope, CurrentAuthArchiveProofArtifact Source,
     CurrentAuthArchiveProofArtifact SigningPins, IReadOnlyList<DeltaTrustedKeyReference> TrustedKeys,
     CurrentAuthArchiveProofArtifact TestImage, CurrentAuthArchiveProofArtifact ConsoleImage, CurrentAuthArchiveProofArtifact CoreImage,
     CurrentAuthArchiveProofArtifact PrecursorBinding, CurrentAuthArchiveProofArtifact PrecursorScope,
@@ -18,26 +18,40 @@ internal sealed record CurrentAuthArchiveComponentReadbackInput(
 // Holds authenticated inputs only. No paired target, policy or physical-device observation is supplied by this reader.
 internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
 {
-    private readonly CurrentAuthArchiveComponentReadbackInput _input;
-    private readonly WindowsLocalRunAuthority _parent, _precursor;
-    private readonly CurrentAppOwnedRepairCustody _parentFiles, _precursorFiles;
+    private CurrentAuthArchiveComponentReadbackInput _input;
+    private readonly WindowsLocalRunAuthority _precursor;
+    private readonly CurrentAppOwnedRepairCustody _precursorFiles;
     private readonly List<(FileStream Stream, string Path, string Identity, string Hash)> _images = [];
-    private readonly CurrentAuthArchiveScope _scope;
+    private CurrentAuthArchiveScope? _scope;
     private readonly CurrentAuthArchiveComponentBootstrapSeed _seed;
-    private readonly CurrentAuthArchivePins _pins;
-    private readonly IReceiptAttestationTrustStore _trust;
-    private readonly FreshSchemaPlan _source;
     private readonly CurrentAuthRepairScope _precursorScope;
     private readonly CurrentAuthRepairSigningPins _precursorPins;
     private readonly IReceiptAttestationTrustStore _precursorTrust;
     private bool _disposed;
+    private int _scopeAttachmentStarted;
 
     internal string AcceptedSourceCommitSha => _seed.AcceptedSourceCommitSha;
     internal string SourceSchemaPlanSha256 => _seed.SourceSchemaPlanSha256;
-    internal string ParentRunBindingSha256 => _parent.Binding.ComputeSha256();
+    internal string ParentRunBindingSha256 => ParentAuthority.Binding.ComputeSha256();
     internal string TestAssemblySha256 => _seed.TestAssemblySha256;
     internal string ConsoleAssemblySha256 => _seed.ConsoleAssemblySha256;
     internal string CoreAssemblySha256 => _seed.CoreAssemblySha256;
+    internal FreshSchemaPlan Source { get; }
+    internal CurrentAuthArchivePins Pins { get; }
+    internal IReceiptAttestationTrustStore TrustStore { get; }
+    internal CurrentAppOwnedRepairCustody ParentFiles { get; }
+    internal WindowsLocalRunAuthority ParentAuthority { get; }
+    internal CurrentAuthArchiveProofArtifact SourceArtifact => _input.Source;
+
+    internal async Task AttachObservedScopeAsync(CurrentAuthArchiveProofArtifact artifact, CancellationToken ct)
+    {
+        if (Interlocked.CompareExchange(ref _scopeAttachmentStarted, 1, 0) != 0 || _scope is not null) { throw Invalid(); }
+        await RequireAsync(ct).ConfigureAwait(false);
+        var scope = Decode<CurrentAuthArchiveScope>(Read(ParentFiles, artifact));
+        RequireAuthenticatedClaims(scope, _seed, Pins, TrustStore, DateTimeOffset.UtcNow);
+        _input = _input with { Scope = artifact }; _scope = scope;
+        await RequireAsync(ct).ConfigureAwait(false);
+    }
 
     internal async Task<CurrentAuthArchiveComponentBootstrapSeed> ReadSeedAsync(CancellationToken ct)
     {
@@ -49,7 +63,7 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
     {
         ct.ThrowIfCancellationRequested();
         await RequireAsync(ct).ConfigureAwait(false);
-        RequireSameEnvironment(_scope, _source, scope, source);
+        RequireSameEnvironment(_scope ?? throw Invalid(), Source, scope, source);
         return _seed;
     }
 
@@ -57,7 +71,7 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         CurrentAuthArchiveComponentBootstrapSubject observed, CancellationToken ct)
     {
         _ = await RequireEnvironmentAsync(scope, source, ct).ConfigureAwait(false);
-        CurrentAuthArchiveComponentBootstrap.RequireScope(scope, observed, _trust, _pins, AcceptedSourceCommitSha,
+        CurrentAuthArchiveComponentBootstrap.RequireScope(scope, observed, TrustStore, Pins, AcceptedSourceCommitSha,
             SourceSchemaPlanSha256, ParentRunBindingSha256, TestAssemblySha256, ConsoleAssemblySha256,
             CoreAssemblySha256, DateTimeOffset.UtcNow);
     }
@@ -75,13 +89,13 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         WindowsLocalRunAuthority parent, CurrentAppOwnedRepairCustody parentFiles,
         WindowsLocalRunAuthority precursor, CurrentAppOwnedRepairCustody precursorFiles)
     {
-        _input = input; _parent = parent; _parentFiles = parentFiles; _precursor = precursor; _precursorFiles = precursorFiles;
-        _scope = Decode<CurrentAuthArchiveScope>(Read(parentFiles, input.Scope));
+        _input = input; ParentAuthority = parent; ParentFiles = parentFiles; _precursor = precursor; _precursorFiles = precursorFiles;
+        _scope = input.Scope is null ? null : Decode<CurrentAuthArchiveScope>(Read(parentFiles, input.Scope));
         _seed = Decode<CurrentAuthArchiveComponentBootstrapSeed>(Read(parentFiles, input.ParentSeed));
-        _pins = Decode<CurrentAuthArchivePins>(Read(parentFiles, input.SigningPins));
-        _trust = Trust(parentFiles, input.TrustedKeys);
-        RequireAuthenticatedClaims(_scope, _seed, _pins, _trust, DateTimeOffset.UtcNow);
-        _source = Decode<FreshSchemaPlan>(Read(parentFiles, input.Source));
+        Pins = Decode<CurrentAuthArchivePins>(Read(parentFiles, input.SigningPins));
+        TrustStore = Trust(parentFiles, input.TrustedKeys);
+        RequireHeldClaims();
+        Source = Decode<FreshSchemaPlan>(Read(parentFiles, input.Source));
         _precursorScope = Decode<CurrentAuthRepairScope>(Read(precursorFiles, input.PrecursorScope));
         _precursorPins = Decode<CurrentAuthRepairSigningPins>(Read(precursorFiles, input.PrecursorSigningPins));
         _precursorTrust = Trust(precursorFiles, input.PrecursorTrustedKeys);
@@ -92,7 +106,19 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
 
     internal static async Task<CurrentAuthArchiveComponentReadback> OpenAsync(CurrentAuthArchiveComponentReadbackInput input, CancellationToken ct)
     {
-        RequireInput(input);
+        return input is null || input.Scope is null ? throw Invalid() : await OpenCoreAsync(input, initial: false, ct).ConfigureAwait(false);
+    }
+
+    // Internal initial producer only: no completed scope is imported or asserted.
+    internal static Task<CurrentAuthArchiveComponentReadback> OpenInitialAsync(CurrentAuthArchiveComponentReadbackInput input, CancellationToken ct)
+    {
+        return input is null || input.Scope is not null ? throw Invalid() : OpenCoreAsync(input, initial: true, ct);
+    }
+
+    private static async Task<CurrentAuthArchiveComponentReadback> OpenCoreAsync(CurrentAuthArchiveComponentReadbackInput input, bool initial, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        RequireInput(input, initial);
         CurrentAuthArchiveCapacity.Require(admission: true);
         WindowsLocalRunAuthority? parent = null, precursor = null;
         CurrentAppOwnedRepairCustody? parentFiles = null, precursorFiles = null;
@@ -124,10 +150,10 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         CurrentAuthArchiveCapacity.Require(admission: false);
-        _parentFiles.Require(); _precursorFiles.Require();
-        RequireAuthenticatedClaims(_scope, _seed, _pins, _trust, DateTimeOffset.UtcNow);
+        ParentFiles.Require(); _precursorFiles.Require();
+        RequireHeldClaims();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        TimeSpan remaining = _scope.ExpiresAtUtc - DateTimeOffset.UtcNow;
+        TimeSpan remaining = (_scope?.ExpiresAtUtc ?? _seed.ExpiresAtUtc) - DateTimeOffset.UtcNow;
         if (remaining <= TimeSpan.Zero) { throw Invalid(); }
         deadline.CancelAfter(remaining); ct = deadline.Token;
         foreach (var image in _images)
@@ -136,15 +162,15 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
                 !SecureLocalFile.HandleResolvesToApprovedPath(image.Stream, image.Path) || HashImage(image.Stream) != image.Hash) { throw Invalid(); }
         }
         if (_images.Count != 3 || await SourceBackedLocalRepairSourceAcceptance.RequireAsync(ct).ConfigureAwait(false) != _seed.AcceptedSourceCommitSha ||
-            _parent.Binding.ComputeSha256() != _seed.ParentRunBindingSha256) { throw Invalid(); }
-        ProductionSchemaCatalogInspector.ValidatePlan(_source, DateTimeOffset.UtcNow);
-        if (_source.SourceCommitSha != _seed.AcceptedSourceCommitSha || SchemaPlanCanonicalizer.ComputeSha256(_source) != _seed.SourceSchemaPlanSha256 ||
-            !ApprovedConsumerOverlaySelection.IsApproved(_source) || _source.Databases.Sum(x => x.Tables.Count) != 100 ||
-            !_source.Databases.Select(x => x.Database).Order(StringComparer.Ordinal).SequenceEqual(DatabaseInventory.ActiveDatabases.Order(StringComparer.Ordinal)) ||
-            _source.Databases.Any(x => x.TargetExtensionProfile != ApprovedConsumerOverlaySelection.ProfileForDatabase(x.Database, ConsumerOverlaySelection.CurrentConsumerSchemaV3)) ||
-            _source.Databases.Single(x => x.Database == "Quotation").SourceDispositionProfile != ApprovedSourceDispositionManifest.QuotationOutboxesV1 ||
-            _source.CapturedAtUtc.Offset != TimeSpan.Zero || _source.CapturedAtUtc > _scope.CapturedAtUtc ||
-            DateTimeOffset.UtcNow - _source.CapturedAtUtc > TimeSpan.FromMinutes(5)) { throw Invalid(); }
+            ParentAuthority.Binding.ComputeSha256() != _seed.ParentRunBindingSha256) { throw Invalid(); }
+        ProductionSchemaCatalogInspector.ValidatePlan(Source, DateTimeOffset.UtcNow);
+        if (Source.SourceCommitSha != _seed.AcceptedSourceCommitSha || SchemaPlanCanonicalizer.ComputeSha256(Source) != _seed.SourceSchemaPlanSha256 ||
+            !ApprovedConsumerOverlaySelection.IsApproved(Source) || Source.Databases.Sum(x => x.Tables.Count) != 100 ||
+            !Source.Databases.Select(x => x.Database).Order(StringComparer.Ordinal).SequenceEqual(DatabaseInventory.ActiveDatabases.Order(StringComparer.Ordinal)) ||
+            Source.Databases.Any(x => x.TargetExtensionProfile != ApprovedConsumerOverlaySelection.ProfileForDatabase(x.Database, ConsumerOverlaySelection.CurrentConsumerSchemaV3)) ||
+            Source.Databases.Single(x => x.Database == "Quotation").SourceDispositionProfile != ApprovedSourceDispositionManifest.QuotationOutboxesV1 ||
+            Source.CapturedAtUtc.Offset != TimeSpan.Zero || Source.CapturedAtUtc > (_scope?.CapturedAtUtc ?? DateTimeOffset.UtcNow) ||
+            DateTimeOffset.UtcNow - Source.CapturedAtUtc > TimeSpan.FromMinutes(5)) { throw Invalid(); }
         var precursorSource = Decode<FreshSchemaPlan>(Read(_precursorFiles, _input.PrecursorSource));
         RequirePrecursorBinding(_precursorScope, _seed, _precursor.Binding.ComputeSha256(), SchemaPlanCanonicalizer.ComputeSha256(precursorSource), _input.DefinitionPrecursor.Sha256);
         await CurrentAuthOwnerSourceReader.RequireAsync(ObserveOwnerAsync, ct).ConfigureAwait(false);
@@ -156,10 +182,16 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         await CurrentAuthOwnerSourceReader.RequireAsync(ObserveOwnerAsync, ct).ConfigureAwait(false);
         // Reclose accepted-main/bundle and source/lease freshness after the independent precursor readback.
         if (await SourceBackedLocalRepairSourceAcceptance.RequireAsync(ct).ConfigureAwait(false) != _seed.AcceptedSourceCommitSha) { throw Invalid(); }
-        RequireAuthenticatedClaims(_scope, _seed, _pins, _trust, DateTimeOffset.UtcNow);
-        if (DateTimeOffset.UtcNow - _source.CapturedAtUtc > TimeSpan.FromMinutes(5)) { throw Invalid(); }
-        _parentFiles.Require(); _precursorFiles.Require();
+        RequireHeldClaims();
+        if (DateTimeOffset.UtcNow - Source.CapturedAtUtc > TimeSpan.FromMinutes(5)) { throw Invalid(); }
+        ParentFiles.Require(); _precursorFiles.Require();
         ct.ThrowIfCancellationRequested();
+    }
+
+    private void RequireHeldClaims()
+    {
+        if (_scope is null) { CurrentAuthArchiveComponentBootstrap.RequireInitialSeed(_seed, Pins, TrustStore, DateTimeOffset.UtcNow); }
+        else { RequireAuthenticatedClaims(_scope, _seed, Pins, TrustStore, DateTimeOffset.UtcNow); }
     }
 
     internal static void RequireAuthenticatedClaims(CurrentAuthArchiveScope scope, CurrentAuthArchiveComponentBootstrapSeed heldSeed,
@@ -173,10 +205,10 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
     {
         // Cleanup frames must still be retained when the calling operation has expired or cancelled.
         using var retention = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        string path = Path.Combine(_parent.Binding.ArtifactRootCanonicalPath, $"archive-component-readback-owner-{Guid.NewGuid():N}.json");
+        string path = Path.Combine(ParentAuthority.Binding.ArtifactRootCanonicalPath, $"archive-component-readback-owner-{Guid.NewGuid():N}.json");
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(resource);
-        await _parentFiles.WriteNewAsync(path, bytes, retention.Token).ConfigureAwait(false);
-        if (!_parentFiles.Read(path, sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(bytes)) { throw Invalid(); }
+        await ParentFiles.WriteNewAsync(path, bytes, retention.Token).ConfigureAwait(false);
+        if (!ParentFiles.Read(path, sharedReader: true, maximumBytes: 65536).AsSpan().SequenceEqual(bytes)) { throw Invalid(); }
     }
 
     internal static void RequirePrecursorBinding(CurrentAuthRepairScope precursor, CurrentAuthArchiveComponentBootstrapSeed seed,
@@ -196,12 +228,14 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
             CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes) != expectedHash) { throw Invalid(); }
     }
 
-    internal static void RequireInput(CurrentAuthArchiveComponentReadbackInput input)
+    internal static void RequireInput(CurrentAuthArchiveComponentReadbackInput input, bool allowInitialScope = false)
     {
-        if (input is null || input.TrustedKeys is null || input.PrecursorTrustedKeys is null) { throw Invalid(); }
-        CurrentAuthArchiveProofArtifact[] artifacts = [input.ParentBinding, input.ParentSeed, input.Scope, input.Source, input.SigningPins,
+        if (input is null || input.TrustedKeys is null || input.PrecursorTrustedKeys is null ||
+            (input.Scope is null && !allowInitialScope)) { throw Invalid(); }
+        CurrentAuthArchiveProofArtifact[] artifacts = [input.ParentBinding, input.ParentSeed, input.Source, input.SigningPins,
             input.TestImage, input.ConsoleImage, input.CoreImage, input.PrecursorBinding, input.PrecursorScope, input.PrecursorSource,
             input.PrecursorSigningPins, input.DefinitionPrecursor];
+        if (input.Scope is not null) { artifacts = [.. artifacts, input.Scope]; }
         if (artifacts.Any(x => x is null || !Canonical(x.Path) || !HashShape(x.Sha256)) ||
             artifacts.Select(x => x.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != artifacts.Length ||
             new[] { input.TrustedKeys, input.PrecursorTrustedKeys }.Any(keys => keys.Count != 3 ||
@@ -237,7 +271,7 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         {
             string hash = HashImage(stream);
             if (!SecureLocalFile.HandleResolvesToApprovedPath(stream, path) ||
-                HashImage(_parentFiles.BorrowReadStream(artifact.Path, 128 * 1024 * 1024)) != artifact.Sha256 || hash != artifact.Sha256 ||
+                HashImage(ParentFiles.BorrowReadStream(artifact.Path, 128 * 1024 * 1024)) != artifact.Sha256 || hash != artifact.Sha256 ||
                 hash != (assembly == typeof(MigrationConsole).Assembly ? _seed.ConsoleAssemblySha256 :
                     assembly == typeof(CurrentAuthLocalSessionArchivePermit).Assembly ? _seed.CoreAssemblySha256 : _seed.TestAssemblySha256)) { throw Invalid(); }
             _images.Add((stream, path, SecureLocalFile.GetHandleIdentity(stream), hash));
@@ -277,7 +311,7 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         if (_disposed) { return; }
         _disposed = true;
         try { DisposeImages(0); }
-        finally { DisposeRoots(_parent, _parentFiles, _precursor, _precursorFiles); }
+        finally { DisposeRoots(ParentAuthority, ParentFiles, _precursor, _precursorFiles); }
     }
     private void DisposeImages(int index)
     {

@@ -230,6 +230,8 @@ public static partial class MigrationConsole
                     return await RunCurrentAuthTypedHostProducerAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "run-current-auth-typed-testhost":
                     return await RunCurrentAuthTypedTestHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "observe-current-auth-archive-initial-pair":
+                    return await RunCurrentAuthArchiveInitialProducerAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "review-current-auth-local-session-archive":
                 case "authorize-current-auth-local-session-archive":
                 case "verify-current-auth-local-session-archive":

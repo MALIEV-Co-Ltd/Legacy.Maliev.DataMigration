@@ -10,21 +10,38 @@ public sealed class PostgreSqlAdapterTestGroup : ICollectionFixture<PostgreSqlAd
 {
     public const string Name = "PostgreSQL adapter";
 }
-public sealed class PostgreSqlAdapterFixture : IAsyncLifetime
+public class PostgreSqlAdapterFixture : IAsyncLifetime
 {
+    internal const string CompanyPg187Image = "postgres@sha256:68e33adb18d9962952f00d5e3b8644305e10e375f98dd652bf6ee6a1836314ba";
     private readonly PostgreSqlContainer _container;
 
     public PostgreSqlAdapterFixture() : this(384)
     {
     }
 
-    internal PostgreSqlAdapterFixture(int memoryLimitMiB)
+    internal PostgreSqlAdapterFixture(int memoryLimitMiB) : this(memoryLimitMiB, quiescent: false)
     {
+    }
+
+    internal PostgreSqlAdapterFixture(int memoryLimitMiB, bool quiescent) : this(memoryLimitMiB, quiescent, "postgres:18-alpine")
+    {
+    }
+
+    internal PostgreSqlAdapterFixture(int memoryLimitMiB, bool quiescent, string image)
+    {
+        if (image != "postgres:18-alpine" && (image != CompanyPg187Image || !quiescent))
+        { throw new ArgumentOutOfRangeException(nameof(image), "Only the existing fixture image or the fixed quiescent Company PG18.7 image is supported."); }
         if (memoryLimitMiB is not (256 or 384))
         {
             throw new ArgumentOutOfRangeException(nameof(memoryLimitMiB), "Only the reviewed PostgreSQL fixture budgets are permitted.");
         }
-        _container = new PostgreSqlBuilder("postgres:18-alpine")
+        var builder = new PostgreSqlBuilder(image);
+        if (quiescent)
+        {
+            builder = builder.WithCommand("-c", "autovacuum=off")
+                .WithLabel("legacy.maliev.fixture", "company-storage-native-preservation");
+        }
+        _container = builder
             .WithCreateParameterModifier(parameters =>
             {
                 parameters.HostConfig!.Memory = (long)memoryLimitMiB * 1024 * 1024;

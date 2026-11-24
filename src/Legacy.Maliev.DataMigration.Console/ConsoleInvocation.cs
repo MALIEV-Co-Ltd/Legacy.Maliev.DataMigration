@@ -66,6 +66,7 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
         "assemble-current-auth-named-closed-proof",
         "produce-current-auth-typed-host",
         "run-current-auth-typed-testhost",
+        "observe-current-auth-archive-initial-pair",
         "review-current-auth-repair",
         "review-current-auth-local-session-archive",
         "authorize-current-auth-local-session-archive",

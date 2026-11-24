@@ -28,6 +28,10 @@ internal static class ApprovedTargetExtensionManifest
     internal static IReadOnlyList<TableCopyPlan> TablesFor(DatabaseSchemaPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        if (CurrentConsumerSchemaV3SourceOrderIsoManifest.IsProfile(plan.TargetExtensionProfile))
+        {
+            return TablesFor(CurrentConsumerSchemaV3SourceOrderIsoManifest.BasePlan(plan));
+        }
         if (CustomerCompanyStorageManifest.IsProfile(plan.TargetExtensionProfile))
         {
             return TablesFor(CustomerCompanyStorageManifest.BasePlan(plan));

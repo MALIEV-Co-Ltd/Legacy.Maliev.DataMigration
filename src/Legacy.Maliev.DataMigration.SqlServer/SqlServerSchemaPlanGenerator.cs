@@ -389,11 +389,14 @@ public sealed partial class SqlServerMigrationSource
             NumericTerm price = NumericOperand(discounted.Groups["price"].Value, targetColumnTypes);
             NumericTerm quantity = NumericOperand(discounted.Groups["quantity"].Value, targetColumnTypes);
             NumericTerm discount = NumericOperand(discounted.Groups["discount"].Value, targetColumnTypes);
-            var integerLiteral = new NumericTerm("(100)::numeric", new(10, 0));
             DecimalShape grossShape = Multiply(price.Shape, quantity.Shape);
             string gross = CastNumeric($"({price.Expression} * {quantity.Expression})", grossShape);
             DecimalShape discountAmountShape = Multiply(grossShape, discount.Shape);
             string discountAmount = CastNumeric($"({gross} * {discount.Expression})", discountAmountShape);
+            // Dividing a scale-k decimal by this fixed 100 terminates at scale k+2.
+            // Pad the PG divisor to that scale so division cannot round before the SQL result cast.
+            int quotientScale = discountAmountShape.Scale + 2;
+            var integerLiteral = new NumericTerm(CastNumeric("100", new(3 + quotientScale, quotientScale)), new(3, 0));
             DecimalShape discountedShape = Divide(discountAmountShape, integerLiteral.Shape);
             string discountedAmount = CastNumeric($"({discountAmount} / {integerLiteral.Expression})", discountedShape);
             DecimalShape subtotalShape = AddOrSubtract(grossShape, discountedShape);
@@ -448,8 +451,8 @@ public sealed partial class SqlServerMigrationSource
     private static DecimalShape AddOrSubtract(DecimalShape left, DecimalShape right)
     {
         int scale = Math.Max(left.Scale, right.Scale);
-        int integral = Math.Max(left.Precision - left.Scale, right.Precision - right.Scale) + 1;
-        int precision = integral + scale;
+        int integral = Math.Max(left.Precision - left.Scale, right.Precision - right.Scale);
+        int precision = integral + scale + 1;
         return precision <= 38
             ? new(precision, scale)
             : new(38, Math.Min(scale, 38 - integral));

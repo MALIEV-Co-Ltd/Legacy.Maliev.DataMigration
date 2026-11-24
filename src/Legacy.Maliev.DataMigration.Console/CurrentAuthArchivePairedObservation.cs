@@ -6,7 +6,7 @@ namespace Legacy.Maliev.DataMigration.Console;
 
 internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment
 {
-    private sealed record ObservedDocker(string Container, string Volume, DockerLocalTargetObservation Target);
+    internal sealed record ObservedDocker(string Container, string Volume, DockerLocalTargetObservation Target);
 
     // Fixed read-only observer only. Permit admission and the public bootstrap route remain closed.
     internal async Task<CurrentAuthArchiveComponentBootstrapSubject> ObserveComponentSubjectAsync(
@@ -56,7 +56,7 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment
         return observed;
     }
 
-    private static CurrentAuthArchiveComponentTargetSubject ObservedTarget(ObservedDocker docker,
+    internal static CurrentAuthArchiveComponentTargetSubject ObservedTarget(ObservedDocker docker,
         CurrentAppOwnedRepairTargetPins pins, WindowsLocalRunAuthority authority, CurrentAuthRepairScope policy,
         CurrentAuthArchiveFleet fleet)
     {

@@ -6,7 +6,7 @@ public sealed class SqlServerMigrationSourceContractTests
 {
     [Theory]
     [InlineData(-1)]
-    [InlineData(6)]
+    [InlineData(7)]
     public void Constructor_RejectsUnknownConsumerOverlaySelectionBeforeOpeningSource(int selection)
     {
         Assert.False(Enum.IsDefined((ConsumerOverlaySelection)selection));
@@ -23,6 +23,7 @@ public sealed class SqlServerMigrationSourceContractTests
     [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV3)]
     [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV3Iso)]
     [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV3CompanyStorage)]
+    [InlineData(ConsumerOverlaySelection.CurrentConsumerSchemaV3CompanyStorageSourceOrder)]
     public void Constructor_AcceptsApprovedConsumerOverlayWithoutOpeningSource(ConsumerOverlaySelection selection)
     {
         _ = new SqlServerMigrationSource(new SqlServerMigrationSourceOptions(
@@ -337,7 +338,7 @@ public sealed class SqlServerMigrationSourceContractTests
         "(((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2))::numeric(18,2)")]
     [InlineData(
         "(CONVERT([decimal](18,2),[UnitPrice]*[Quantity]-(([UnitPrice]*[Quantity])*[DiscountPercent])/(100)))",
-        "(((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) - ((((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) * \"DiscountPercent\"))::numeric(35,4) / (100)::numeric))::numeric(38,7)))::numeric(38,6))::numeric(18,2)")]
+        "(((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) - ((((((\"UnitPrice\" * (\"Quantity\")::numeric))::numeric(29,2) * \"DiscountPercent\"))::numeric(35,4) / (100)::numeric(9,6)))::numeric(38,7)))::numeric(38,7))::numeric(18,2)")]
     [InlineData(
         "(CONVERT([decimal](18,2),[Total]-[WithholdingTax]))",
         "(((\"Total\" - \"WithholdingTax\"))::numeric(19,2))::numeric(18,2)")]
@@ -386,6 +387,38 @@ public sealed class SqlServerMigrationSourceContractTests
         Assert.DoesNotContain("CONVERT", translated, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("datediff", translated, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("concat", translated, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("numeric(18,2)", "numeric(5,2)", "numeric(9,6)", "numeric(38,7)", "numeric(38,7)")]
+    [InlineData("numeric(2,0)", "numeric(2,0)", "numeric(5,2)", "numeric(22,6)", "numeric(23,6)")]
+    [InlineData("numeric(8,4)", "numeric(5,3)", "numeric(12,9)", "numeric(29,11)", "numeric(30,11)")]
+    [InlineData("numeric(18,8)", "numeric(5,2)", "numeric(15,12)", "numeric(38,13)", "numeric(38,13)")]
+    public void TranslateGeneratedExpressionForPostgreSql_FixedHundredDivision_PreservesExactQuotientAndSqlShapes(
+        string priceType, string discountType, string divisorType, string divisionType, string netType)
+    {
+        var target = new Dictionary<string, string>(StringComparer.Ordinal)
+        { ["UnitPrice"] = priceType, ["Quantity"] = "integer", ["DiscountPercent"] = discountType };
+        var source = target.ToDictionary(x => x.Key, x => x.Key == "Quantity" ? "int" :
+            x.Value.Replace("numeric", "decimal", StringComparison.Ordinal), StringComparer.Ordinal);
+        string translated = SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(
+            "(CONVERT([decimal](18,2),[UnitPrice]*[Quantity]-(([UnitPrice]*[Quantity])*[DiscountPercent])/(100)))", source, target);
+
+        Assert.Contains(" / (100)::" + divisorType, translated, StringComparison.Ordinal);
+        Assert.Contains("))::" + divisionType, translated, StringComparison.Ordinal);
+        Assert.EndsWith("::" + netType + ")::numeric(18,2)", translated, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TranslateGeneratedExpressionForPostgreSql_CappedSubtraction_RetainsOperandScaleWithoutCarryDigitReduction()
+    {
+        var source = new Dictionary<string, string>(StringComparer.Ordinal)
+        { ["Total"] = "decimal(38,7)", ["WithholdingTax"] = "decimal(38,7)" };
+        var target = new Dictionary<string, string>(StringComparer.Ordinal)
+        { ["Total"] = "numeric(38,7)", ["WithholdingTax"] = "numeric(38,7)" };
+        Assert.Equal("(((\"Total\" - \"WithholdingTax\"))::numeric(38,7))::numeric(38,7)",
+            SqlServerMigrationSource.TranslateGeneratedExpressionForPostgreSql(
+                "(CONVERT([decimal](38,7),[Total]-[WithholdingTax]))", source, target));
     }
 
     [Fact]
