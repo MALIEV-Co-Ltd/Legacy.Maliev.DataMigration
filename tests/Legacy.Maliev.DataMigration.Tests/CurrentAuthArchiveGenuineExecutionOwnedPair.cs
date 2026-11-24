@@ -144,6 +144,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
             allowEmptyLocalSessions: facts.Case != CurrentAuthArchiveGenuineExecutionCase.PreparedPublication);
         CurrentAuthLocalSessionArchivePolicy.RequireFleet(facts.ComparisonBefore, Scope.ProductionObservationPolicy, DateTimeOffset.UtcNow, comparison: true);
         CurrentAuthLocalSessionArchivePolicy.RequireFleet(facts.ComparisonAfter, Scope.ProductionObservationPolicy, DateTimeOffset.UtcNow, comparison: true);
+        CurrentAuthLocalSessionArchiveObservation.RequireExactPreimage(facts.ComparisonAfter.Auth, facts.ComparisonBefore.Auth);
         var artifacts = new Dictionary<string, CurrentAuthArchiveGenuineArtifact>(StringComparer.Ordinal);
         string root = _inputs.ParentAuthority.Binding.ArtifactRootCanonicalPath;
         string prefix = $"genuine-execution-{Scope.OperationId:N}";

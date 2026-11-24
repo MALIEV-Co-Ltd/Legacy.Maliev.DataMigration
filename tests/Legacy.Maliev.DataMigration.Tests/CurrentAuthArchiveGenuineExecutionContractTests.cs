@@ -8,19 +8,8 @@ namespace Legacy.Maliev.DataMigration.Tests;
 public sealed class CurrentAuthArchiveGenuineExecutionContractTests
 {
     [Theory]
-    [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(3)]
-    [InlineData(4)]
-    [InlineData(5)]
-    [InlineData(6)]
-    [InlineData(7)]
-    [InlineData(8)]
-    [InlineData(9)]
-    [InlineData(10)]
-    [InlineData(11)]
-    [InlineData(12)]
-    [InlineData(13)]
+    [InlineData(1)] [InlineData(2)] [InlineData(3)] [InlineData(4)] [InlineData(5)] [InlineData(6)] [InlineData(7)]
+    [InlineData(8)] [InlineData(9)] [InlineData(10)] [InlineData(11)] [InlineData(12)] [InlineData(13)]
     public void Execution_seed_binds_original_signed_bytes_to_one_exact_case(int value)
     {
         var expected = (CurrentAuthArchiveGenuineExecutionCase)value;
@@ -28,11 +17,7 @@ public sealed class CurrentAuthArchiveGenuineExecutionContractTests
         using var authorizationKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         using var evidenceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         using var reviewer = new P256MigrationEvidenceSigner("unit-execution-review", reviewKey.ExportPkcs8PrivateKeyPem());
-        static string Fingerprint(ECDsa key)
-        {
-            return Convert.ToHexStringLower(SHA256.HashData(key.ExportSubjectPublicKeyInfo()));
-        }
-
+        static string Fingerprint(ECDsa key) => Convert.ToHexStringLower(SHA256.HashData(key.ExportSubjectPublicKeyInfo()));
         var pins = new CurrentAuthArchivePins(reviewer.KeyId, reviewer.PublicKeyFingerprintSha256,
             "unit-execution-authorization", Fingerprint(authorizationKey), "unit-execution-evidence", Fingerprint(evidenceKey));
         var trust = new ReceiptAttestationTrustStore([
@@ -59,17 +44,8 @@ public sealed class CurrentAuthArchiveGenuineExecutionContractTests
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(3)]
-    [InlineData(5)]
-    [InlineData(6)]
-    [InlineData(8)]
-    [InlineData(9)]
-    [InlineData(10)]
-    [InlineData(11)]
-    [InlineData(12)]
-    [InlineData(13)]
-    [InlineData(14)]
+    [InlineData(0)] [InlineData(3)] [InlineData(5)] [InlineData(6)]
+    [InlineData(12)] [InlineData(13)] [InlineData(14)]
     public async Task Missing_execution_bodies_refuse_before_file_or_target_access(int value)
     {
         var error = await Assert.ThrowsAsync<MigrationExecutionException>(() => CurrentAuthArchiveGenuineExecutionRunner.ExecuteAsync(
@@ -105,13 +81,8 @@ public sealed class CurrentAuthArchiveGenuineExecutionContractTests
     }
 
     [Theory]
-    [InlineData("none")]
-    [InlineData("phase")]
-    [InlineData("case")]
-    [InlineData("published-early")]
-    [InlineData("phase-proof")]
-    [InlineData("fabricated-os-exit")]
-    [InlineData("actual-return")]
+    [InlineData("none")] [InlineData("phase")] [InlineData("case")] [InlineData("published-early")]
+    [InlineData("phase-proof")] [InlineData("fabricated-os-exit")] [InlineData("actual-return")]
     [InlineData("backwards-clock")]
     public void Final_candidate_requires_actual_completed_method_and_incomplete_live_stage(string fault)
     {
@@ -120,14 +91,8 @@ public sealed class CurrentAuthArchiveGenuineExecutionContractTests
         var method = new CurrentAuthArchiveGenuineExecutionMethodResult(0, began, ended.AddSeconds(1), new(artifact, began, ended));
         JsonObject stage = JsonSerializer.SerializeToNode(new
         {
-            Kind = "current-auth-genuine-execution-incomplete-precleanup-v1",
-            Phase = "native",
-            CaseId = "complete",
-            BeganAtUtc = began,
-            EndedAtUtc = ended,
-            CleanupVerified = false,
-            PhaseProofComplete = false,
-            ProviderExitCode = (int?)null,
+            Kind = "current-auth-genuine-execution-incomplete-precleanup-v1", Phase = "native", CaseId = "complete",
+            BeganAtUtc = began, EndedAtUtc = ended, CleanupVerified = false, PhaseProofComplete = false, ProviderExitCode = (int?)null,
         })!.AsObject();
         switch (fault)
         {
@@ -139,8 +104,6 @@ public sealed class CurrentAuthArchiveGenuineExecutionContractTests
             case "fabricated-os-exit": stage["ProviderExitCode"] = 0; break;
             case "actual-return": method = method with { ReturnCode = 1 }; break;
             case "backwards-clock": method = method with { ReturnedAtUtc = began }; break;
-            default:
-                break;
         }
         JsonElement value = JsonSerializer.SerializeToElement(stage);
         if (fault == "none") { CurrentAuthArchiveGenuineExecutionRunner.RequireCompletedMethod(value, CurrentAuthArchiveGenuineExecutionCase.NativeComplete, method); }
@@ -148,15 +111,9 @@ public sealed class CurrentAuthArchiveGenuineExecutionContractTests
     }
 
     [Theory]
-    [InlineData("none")]
-    [InlineData("reservation-auth")]
-    [InlineData("manifest-scope")]
-    [InlineData("prepared-previous")]
-    [InlineData("prepared-preimage")]
-    [InlineData("terminal-previous")]
-    [InlineData("receipt-signature")]
-    [InlineData("missing-slot")]
-    [InlineData("extra-slot")]
+    [InlineData("none")] [InlineData("reservation-auth")] [InlineData("manifest-scope")]
+    [InlineData("prepared-previous")] [InlineData("prepared-preimage")] [InlineData("terminal-previous")]
+    [InlineData("receipt-signature")] [InlineData("missing-slot")] [InlineData("extra-slot")]
     public void Original_journal_bytes_must_have_exact_signatures_preimages_and_receipt_chain(string fault)
     {
         using var reviewKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -183,25 +140,19 @@ public sealed class CurrentAuthArchiveGenuineExecutionContractTests
         var prepared = new CurrentAuthArchiveReceipt(scope.OperationId, auth, new string('0', 64), before, after,
             CurrentAuthLocalSessionArchivePolicy.Hash(manifest), CurrentAppOwnedCommitClassification.Prepared, began.AddSeconds(1));
         var preparedClaim = Receipt(prepared);
-        var terminal = prepared with
-        {
-            PreviousSha256 = CurrentAuthLocalSessionArchivePolicy.Hash(preparedClaim),
-            Classification = CurrentAppOwnedCommitClassification.CommittedAndReadback,
-            ObservedAtUtc = began.AddSeconds(2)
-        };
+        var terminal = prepared with { PreviousSha256 = CurrentAuthLocalSessionArchivePolicy.Hash(preparedClaim),
+            Classification = CurrentAppOwnedCommitClassification.CommittedAndReadback, ObservedAtUtc = began.AddSeconds(2) };
         var terminalClaim = Receipt(terminal);
         var journal = new Dictionary<string, byte[]>(StringComparer.Ordinal)
         {
             ["operation-start"] = JsonSerializer.SerializeToUtf8Bytes(new { Domain = "current-auth-session-archive-reservation-v1", scope.OperationId, AuthorizationSha256 = auth }),
-            ["recovery-manifest"] = Manifest(manifest),
-            ["prepared"] = JsonSerializer.SerializeToUtf8Bytes(preparedClaim),
+            ["recovery-manifest"] = Manifest(manifest), ["prepared"] = JsonSerializer.SerializeToUtf8Bytes(preparedClaim),
             ["committed-readback"] = JsonSerializer.SerializeToUtf8Bytes(terminalClaim),
         };
         switch (fault)
         {
             case "none": break;
-            case "reservation-auth":
-                journal["operation-start"] = JsonSerializer.SerializeToUtf8Bytes(new
+            case "reservation-auth": journal["operation-start"] = JsonSerializer.SerializeToUtf8Bytes(new
                 { Domain = "current-auth-session-archive-reservation-v1", scope.OperationId, AuthorizationSha256 = new string('f', 64) }); break;
             case "manifest-scope": journal["recovery-manifest"] = Manifest(manifest with { ScopeSha256 = new string('f', 64) }); break;
             case "prepared-previous": journal["prepared"] = JsonSerializer.SerializeToUtf8Bytes(Receipt(prepared with { PreviousSha256 = new string('f', 64) })); break;
@@ -210,8 +161,6 @@ public sealed class CurrentAuthArchiveGenuineExecutionContractTests
             case "receipt-signature": journal["committed-readback"] = JsonSerializer.SerializeToUtf8Bytes(terminalClaim with { SignatureBase64 = Convert.ToBase64String(new byte[64]) }); break;
             case "missing-slot": _ = journal.Remove("prepared"); break;
             case "extra-slot": journal.Add("failed-or-uncertain", journal["prepared"]); break;
-            default:
-                break;
         }
         if (fault == "none")
         {
@@ -224,15 +173,8 @@ public sealed class CurrentAuthArchiveGenuineExecutionContractTests
             _ = Assert.Throws<MigrationExecutionException>(() => CurrentAuthArchiveGenuineOwnedPair.RequireExecutionJournal(journal, scope, claims,
                 terminal, before, after, began, began.AddSeconds(3), pins, trust));
         }
-        CurrentAuthArchiveClaim Receipt(CurrentAuthArchiveReceipt value)
-        {
-            return CurrentAuthLocalSessionArchivePolicy.Sign(CurrentAuthLocalSessionArchivePolicy.ReceiptDomain, value, evidence);
-        }
-
-        byte[] Manifest(CurrentAuthArchiveRecoveryManifest value)
-        {
-            return JsonSerializer.SerializeToUtf8Bytes(CurrentAuthLocalSessionArchivePolicy.Sign(CurrentAuthLocalSessionArchivePolicy.RecoveryDomain, value, evidence));
-        }
+        CurrentAuthArchiveClaim Receipt(CurrentAuthArchiveReceipt value) => CurrentAuthLocalSessionArchivePolicy.Sign(CurrentAuthLocalSessionArchivePolicy.ReceiptDomain, value, evidence);
+        byte[] Manifest(CurrentAuthArchiveRecoveryManifest value) => JsonSerializer.SerializeToUtf8Bytes(CurrentAuthLocalSessionArchivePolicy.Sign(CurrentAuthLocalSessionArchivePolicy.RecoveryDomain, value, evidence));
     }
 
     private sealed class CallerOwnedIssuer

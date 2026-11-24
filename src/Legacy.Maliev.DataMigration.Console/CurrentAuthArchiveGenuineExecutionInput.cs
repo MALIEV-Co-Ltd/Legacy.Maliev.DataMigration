@@ -25,4 +25,6 @@ internal interface ICurrentAuthArchiveGenuineExecutionLease : IAsyncDisposable
     Task<CurrentAuthArchiveGenuineDualArtifacts> RetainExecutionAsync(CurrentAuthArchiveGenuineExecutionFacts facts, CancellationToken ct);
     Task BindPublicationDenialAsync(CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial denial, CancellationToken ct);
     Task<CurrentAuthArchiveGenuineDualArtifacts> RetainPublicationFailureAsync(CurrentAuthArchiveGenuinePublicationFailureFacts facts, CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineDriftApplied> ApplyDriftAsync(CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineDualArtifacts> RetainDriftFailureAsync(CurrentAuthArchiveGenuineDriftFailure facts, CancellationToken ct);
 }

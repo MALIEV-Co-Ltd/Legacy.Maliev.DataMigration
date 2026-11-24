@@ -53,6 +53,7 @@ internal sealed partial class CurrentAuthLocalSessionArchivePermit
 
         internal async Task<CurrentAuthArchiveGenuineExecutionMethodResult> ExecuteAsync(CancellationToken ct)
         {
+            if (CurrentAuthArchiveGenuineDrift.IsCase(_binding.Case)) { return await ExecuteDriftAsync(ct); }
             if (CurrentAuthArchiveGenuinePublicationFault.IsCase(_binding.Case)) { return await ExecutePublicationFailureAsync(ct); }
             CurrentAuthLocalSessionArchivePermit? permit = null;
             try

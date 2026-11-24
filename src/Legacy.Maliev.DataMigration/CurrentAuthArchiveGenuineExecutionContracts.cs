@@ -36,7 +36,9 @@ internal static class CurrentAuthArchiveGenuineExecutionCases
     {
         _ = Identity(value);
         if (value is not (CurrentAuthArchiveGenuineExecutionCase.NativeComplete or CurrentAuthArchiveGenuineExecutionCase.ExactReviewedDelete or
-            CurrentAuthArchiveGenuineExecutionCase.PreparedPublication or CurrentAuthArchiveGenuineExecutionCase.TerminalPublication))
+            CurrentAuthArchiveGenuineExecutionCase.PreparedPublication or CurrentAuthArchiveGenuineExecutionCase.TerminalPublication or
+            CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift or CurrentAuthArchiveGenuineExecutionCase.PrivateJournalDrift or
+            CurrentAuthArchiveGenuineExecutionCase.SequenceDrift or CurrentAuthArchiveGenuineExecutionCase.ProductionDrift))
         { throw Invalid(); }
     }
 

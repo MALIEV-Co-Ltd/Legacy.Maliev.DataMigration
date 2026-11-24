@@ -9,10 +9,6 @@ public sealed class CurrentAuthArchiveGenuineExecutionHostTests
     [InlineData(3)]
     [InlineData(5)]
     [InlineData(6)]
-    [InlineData(8)]
-    [InlineData(9)]
-    [InlineData(10)]
-    [InlineData(11)]
     [InlineData(12)]
     [InlineData(13)]
     [InlineData(14)]
@@ -29,6 +25,10 @@ public sealed class CurrentAuthArchiveGenuineExecutionHostTests
     [InlineData(7, "MALIEV_AUTH_ARCHIVE_GENUINE_EXACT_DELETE_INPUT", "delete", "exact-reviewed-delete", 0)]
     [InlineData(2, "MALIEV_AUTH_ARCHIVE_GENUINE_PREPARED_PUBLICATION_INPUT", "native", "prepared-publication", 1)]
     [InlineData(4, "MALIEV_AUTH_ARCHIVE_GENUINE_TERMINAL_PUBLICATION_INPUT", "native", "terminal-publication", 1)]
+    [InlineData(8, "MALIEV_AUTH_ARCHIVE_GENUINE_CAS_DRIFT_INPUT", "delete", "CAS-field-drift", 1)]
+    [InlineData(9, "MALIEV_AUTH_ARCHIVE_GENUINE_PRIVATE_JOURNAL_DRIFT_INPUT", "delete", "private-journal-drift", 1)]
+    [InlineData(10, "MALIEV_AUTH_ARCHIVE_GENUINE_SEQUENCE_DRIFT_INPUT", "delete", "sequence-drift", 1)]
+    [InlineData(11, "MALIEV_AUTH_ARCHIVE_GENUINE_COMPARISON_DRIFT_INPUT", "delete", "production-drift", 1)]
     public void Only_implemented_execution_cases_select_their_exact_gated_test(int value, string variable, string phase, string id, int expectedCode)
     {
         var config = Configuration((CurrentAuthArchiveGenuineExecutionCase)value);

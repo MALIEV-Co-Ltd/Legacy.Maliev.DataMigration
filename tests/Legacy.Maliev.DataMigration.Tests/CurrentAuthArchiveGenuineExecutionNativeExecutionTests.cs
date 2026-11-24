@@ -12,6 +12,10 @@ public sealed class CurrentAuthArchiveGenuineExecutionFactAttribute : FactAttrib
             "exact-reviewed-delete" => CurrentAuthArchiveGenuineExecutionCase.ExactReviewedDelete,
             "prepared-publication" => CurrentAuthArchiveGenuineExecutionCase.PreparedPublication,
             "terminal-publication" => CurrentAuthArchiveGenuineExecutionCase.TerminalPublication,
+            "CAS-field-drift" => CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift,
+            "private-journal-drift" => CurrentAuthArchiveGenuineExecutionCase.PrivateJournalDrift,
+            "sequence-drift" => CurrentAuthArchiveGenuineExecutionCase.SequenceDrift,
+            "production-drift" => CurrentAuthArchiveGenuineExecutionCase.ProductionDrift,
             _ => throw CurrentAuthArchiveGenuineExecutionCases.Invalid(),
         };
         if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(CurrentAuthArchiveExecutionHost.InputVariable(executionCase))))
@@ -44,6 +48,18 @@ public sealed partial class CurrentAuthArchiveGuardedExecutionTests
     {
         return RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.TerminalPublication);
     }
+
+    [CurrentAuthArchiveGenuineExecutionFact("CAS-field-drift")]
+    public Task Archive_delete_CAS_field_drift() => RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.CasFieldDrift);
+
+    [CurrentAuthArchiveGenuineExecutionFact("private-journal-drift")]
+    public Task Archive_delete_private_journal_drift() => RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.PrivateJournalDrift);
+
+    [CurrentAuthArchiveGenuineExecutionFact("sequence-drift")]
+    public Task Archive_delete_sequence_drift() => RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.SequenceDrift);
+
+    [CurrentAuthArchiveGenuineExecutionFact("production-drift")]
+    public Task Archive_delete_production_drift() => RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase.ProductionDrift);
 
     private static async Task RunGenuineExecutionAsync(CurrentAuthArchiveGenuineExecutionCase executionCase)
     {
