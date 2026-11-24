@@ -302,6 +302,35 @@ internal sealed class CurrentAuthArchiveFixtureTarget : IAsyncDisposable
         _ = config.Remove("Env"); config["PgData"] = pgData[0][7..]; await RecordAsync("target", item, ct).ConfigureAwait(false);
     }
 
+    // Re-observe an already minted fixture while its exclusive Windows root lock
+    // is held by the pair. Recording helpers acquire that lock and cannot be used.
+    internal async Task RequireHealthyHeldAsync(WindowsLocalRunAuthority authority, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(authority);
+        authority.ValidateHeld();
+        if (authority.Binding != Binding || !StringComparer.OrdinalIgnoreCase.Equals(authority.Binding.ArtifactRootCanonicalPath, Root) ||
+            _disposed || DateTimeOffset.UtcNow >= _expires || _volumeCreated is null)
+        { throw CurrentAuthRepairPermit.Invalid(); }
+        using var lease = CancellationTokenSource.CreateLinkedTokenSource(ct, Token);
+        lease.Token.ThrowIfCancellationRequested();
+        var container = await _docker.Containers.InspectContainerAsync(ContainerId, lease.Token).ConfigureAwait(false);
+        if (container.State is null || !container.State.Running) { throw CurrentAuthRepairPermit.Invalid(); }
+        RequireContainer(container);
+        var volume = await _docker.Volumes.InspectAsync(Name, lease.Token).ConfigureAwait(false);
+        if (_previousVolumes.Contains(Name) || volume.Name != Name || volume.Driver != "local" || volume.Scope != "local" || volume.Options is { Count: > 0 } ||
+            volume.Labels.Count != 3 || volume.Labels["codex.repair.purpose"] != "current-auth-local-session-archive-proof" ||
+            volume.Labels["codex.repair.operation"] != Operation.ToString("D") || volume.Labels["codex.repair.run-binding"] != Binding.ComputeSha256() ||
+            !DateTimeOffset.TryParse(volume.CreatedAt, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None, out var created) || created < _began.AddSeconds(-1) || created > _expires ||
+            _volumeCreated != volume.CreatedAt)
+        { throw CurrentAuthRepairPermit.Invalid(); }
+        var consumers = await _docker.Containers.ListContainersAsync(new ContainersListParameters
+        { All = true, Filters = new Dictionary<string, IDictionary<string, bool>> { ["volume"] = new Dictionary<string, bool> { [Name] = true } } }, lease.Token).ConfigureAwait(false);
+        if (consumers.Count != 1 || consumers[0].ID != _id) { throw CurrentAuthRepairPermit.Invalid(); }
+        authority.ValidateHeld();
+        lease.Token.ThrowIfCancellationRequested();
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed) { return; }

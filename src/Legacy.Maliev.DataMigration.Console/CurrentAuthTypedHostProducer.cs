@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.NetworkInformation;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -29,6 +30,12 @@ internal static class CurrentAuthTypedHostProducer
             "closed" => "FullyQualifiedName~CurrentAuthClosedConsoleExecutionTests.Genuine_named_closed_auth_console_preserves_or_stops",
             _ => throw CurrentAuthRepairPermit.Invalid()
         };
+    }
+
+    internal static string ArchiveFilter(string phase, string caseId)
+    {
+        CurrentAuthArchiveGenuineCase item = CurrentAuthArchiveGenuineCases.Require(phase, caseId);
+        return "FullyQualifiedName=Legacy.Maliev.DataMigration.Tests.CurrentAuthArchiveGuardedExecutionTests." + item.MethodName;
     }
 
     internal static ProcessStartInfo FixedStart(string root)
@@ -402,6 +409,40 @@ public static partial class MigrationConsole
         catch (Exception failure) when (failure is MigrationExecutionException or MigrationConsoleException or IOException or
             UnauthorizedAccessException or System.ComponentModel.Win32Exception or JsonException or InvalidOperationException or TimeoutException or OperationCanceledException)
         { await error.WriteLineAsync("current_auth_typed_host_failed_no_proof").ConfigureAwait(false); return 1; }
+    }
+
+    private static async Task<int> RunCurrentAuthArchiveGenuineTestHostAsync(string configPath, TextWriter output, TextWriter error, CancellationToken ct)
+    {
+        _ = output;
+        try
+        {
+            var child = await ReadProtectedJsonAsync<CurrentAuthArchiveGenuineChildConfiguration>(configPath,
+                "current_auth_archive_genuine_child_unprotected", ct).ConfigureAwait(false);
+            CurrentAuthArchiveGenuineHost.RequireChildInput(child, DateTimeOffset.UtcNow);
+            if (!OperatingSystem.IsWindows() || !StringComparer.OrdinalIgnoreCase.Equals(Path.GetDirectoryName(configPath), child.Root))
+            { throw CurrentAuthArchiveGenuineHost.Invalid("child_origin"); }
+            using var gateTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            gateTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+            while (!File.Exists(child.GatePath)) { await Task.Delay(TimeSpan.FromMilliseconds(100), gateTimeout.Token).ConfigureAwait(false); }
+            var gate = await ReadProtectedJsonAsync<CurrentAuthTypedHostGate>(child.GatePath,
+                "current_auth_archive_genuine_gate_unprotected", gateTimeout.Token).ConfigureAwait(false);
+            using Process self = Process.GetCurrentProcess();
+            if (gate.Nonce != child.GateNonce || gate.BindingSha256 != child.RunBindingSha256 || gate.ProcessId != self.Id ||
+                gate.ProcessStartTimeUtc != new DateTimeOffset(self.StartTime.ToUniversalTime(), TimeSpan.Zero))
+            { throw CurrentAuthArchiveGenuineHost.Invalid("child_gate"); }
+            CurrentAuthTypedHostJob.RequireWaitingChildMembership(child.GateNonce);
+            _ = CurrentAuthTypedHostProducer.ArchiveFilter(child.Request.Phase, child.Request.CaseId);
+            await CurrentAuthArchiveGenuineHost.AuthenticateChildAsync(child, ct).ConfigureAwait(false);
+            // No VSTest process is launched until the separately reviewed nonserializable owned-pair producer exists.
+            CurrentAuthArchiveGenuineHost.RequireOwnedPairProducer();
+        }
+        catch (Exception failure) when (failure is MigrationExecutionException or IOException or UnauthorizedAccessException or
+            JsonException or ArgumentException or InvalidOperationException or TargetInvocationException or OperationCanceledException)
+        {
+            await error.WriteLineAsync("current_auth_archive_genuine_child_refused_no_proof").ConfigureAwait(false);
+            return 1;
+        }
+        return 1;
     }
 
     private static async Task<int> RunCurrentAuthTypedTestHostAsync(string configPath, TextWriter output, TextWriter error, CancellationToken ct)
