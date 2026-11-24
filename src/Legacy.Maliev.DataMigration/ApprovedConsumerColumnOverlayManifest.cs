@@ -33,6 +33,11 @@ internal static class ApprovedConsumerColumnOverlayManifest
 
     internal static IReadOnlyList<TableCopyPlan> ComposePhysical(DatabaseSchemaPlan schema, bool mapSourceDispositions = true)
     {
+        if (CurrentConsumerSchemaV3SourceOrderIsoManifest.IsProfile(schema.TargetExtensionProfile))
+        {
+            return CurrentConsumerSchemaV3SourceOrderIsoManifest.Apply(ComposePhysical(
+                CurrentConsumerSchemaV3SourceOrderIsoManifest.BasePlan(schema), mapSourceDispositions));
+        }
         if (CustomerCompanyStorageManifest.IsProfile(schema.TargetExtensionProfile))
         {
             return CustomerCompanyStorageManifest.Apply(ComposePhysical(CustomerCompanyStorageManifest.BasePlan(schema), mapSourceDispositions));
