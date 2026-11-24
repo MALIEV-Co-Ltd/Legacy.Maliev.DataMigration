@@ -51,13 +51,16 @@ internal static class CurrentAuthArchiveInitialNativeProducer
         var secondSeed = await CurrentAuthArchiveFixtureSeed.SeedAndCaptureAsync(comparison, inputs.ParentFiles, inputs.SourceArtifact, seed.AcceptedSourceCommitSha, ct);
         using var firstPolicy = await CurrentAuthArchiveFixturePolicy.InstallAndObserveAsync(local, firstSeed, inputs.ParentFiles, inputs.SourceArtifact, seed.AcceptedSourceCommitSha, ct);
         using var secondPolicy = await CurrentAuthArchiveFixturePolicy.InstallAndObserveAsync(comparison, secondSeed, inputs.ParentFiles, inputs.SourceArtifact, seed.AcceptedSourceCommitSha, ct);
+        await inputs.RequireAsync(ct);
+        // Health/evidence recording acquires its own target run authority. Finish it before
+        // holding either exclusive authority for the device and independent paired observation.
+        var first = await CaptureTargetAsync(local, firstPolicy, ct);
+        var second = await CaptureTargetAsync(comparison, secondPolicy, ct);
         using var firstAuthority = WindowsLocalRunAuthority.AcquireResume(local.Root, local.Binding);
         using var secondAuthority = WindowsLocalRunAuthority.AcquireResume(comparison.Root, comparison.Binding);
         using var firstFiles = new CurrentAppOwnedRepairCustody(firstAuthority);
         using var secondFiles = new CurrentAppOwnedRepairCustody(secondAuthority);
         await inputs.RequireAsync(ct);
-        var first = await CaptureTargetAsync(local, firstPolicy, ct);
-        var second = await CaptureTargetAsync(comparison, secondPolicy, ct);
         CurrentAuthRepairScope localPolicy = ObservationPolicy(seed, local, firstPolicy, first.Pins, first.Docker.Target);
         CurrentAuthRepairScope comparisonPolicy = ObservationPolicy(seed, comparison, secondPolicy, second.Pins, second.Docker.Target);
         var paths = new CurrentAuthArchivePaths(Path.Combine(local.Root, "archive-first.ciphertext"),
