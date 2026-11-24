@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace Legacy.Maliev.DataMigration.Tests;
 
 // Input-contract regressions only. These methods produce no archive execution proof.
-public sealed class CurrentAuthArchiveGuardedExecutionTests
+public sealed partial class CurrentAuthArchiveGuardedExecutionTests
 {
     private static readonly DateTimeOffset Now = new(2031, 1, 1, 1, 0, 0, TimeSpan.Zero);
 
