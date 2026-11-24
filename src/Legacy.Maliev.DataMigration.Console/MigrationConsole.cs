@@ -254,6 +254,19 @@ public static partial class MigrationConsole
                 case "apply-current-auth-repair":
                     return await RunCurrentAuthRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
                         output, error, cancellationToken).ConfigureAwait(false);
+                case "characterize-consumer-column-bootstrap-native-faults":
+                case "rehearse-consumer-column-bootstrap":
+                case "run-consumer-column-bootstrap-reviewed":
+                    if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.Ordinal))
+                    {
+                        throw new MigrationConsoleException("consumer_bootstrap_deploy_gate_invalid", "Deployment must remain disabled.");
+                    }
+                    return invocation.Command switch
+                    {
+                        "characterize-consumer-column-bootstrap-native-faults" => await RunConsumerColumnBootstrapNativeFaultsAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false),
+                        "rehearse-consumer-column-bootstrap" => await RunConsumerColumnBootstrapRehearsalAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false),
+                        _ => await RunConsumerColumnBootstrapReviewedAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false),
+                    };
                 case "review-current-app-owned-v3-repair":
                 case "authorize-current-app-owned-v3-repair":
                 case "verify-current-app-owned-v3-repair":
