@@ -53,9 +53,14 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
         try { if (!bootstrap) { _cloud = CloudNativePgTargetObserver.CreateForCurrentAppOwnedRepair(productionTarget.CloudOptions!); } RequireHealthy(); }
         catch { _publication.Dispose(); _storage.Dispose(); _cloud?.Dispose(); _gate.Dispose(); throw; }
     }
-    public async Task RequireAcceptedSourceOwnerCustodyAndTargetsAsync(CurrentAuthArchiveScope scope, CancellationToken ct)
+    public Task RequireAcceptedSourceOwnerCustodyAndTargetsAsync(CurrentAuthArchiveScope scope, CancellationToken ct)
     {
-        RequireHealthy(); Match(scope);
+        return RequireAcceptedCoreAsync(scope, null, ct);
+    }
+
+    private async Task RequireAcceptedCoreAsync(CurrentAuthArchiveScope scope, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, CancellationToken ct)
+    {
+        RequireObservationCustody(observation); Match(scope);
         CurrentAuthLocalSessionArchivePolicy.RequireScope(scope, DateTimeOffset.UtcNow);
         RequireObservationPolicies(scope, DateTimeOffset.UtcNow);
         ProductionSchemaCatalogInspector.ValidatePlan(_source, DateTimeOffset.UtcNow);
@@ -88,7 +93,7 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
             }
         }
 
-        RequireHealthy();
+        RequireObservationCustody(observation);
     }
     public Task<CurrentAuthArchiveFleet> CaptureLocalFleetAsync(CurrentAuthArchiveScope scope, CancellationToken ct)
     {
@@ -100,11 +105,16 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
         return CaptureAsync(scope, false, ct);
     }
 
-    private async Task<CurrentAuthArchiveFleet> CaptureAsync(CurrentAuthArchiveScope scope, bool local, CancellationToken ct)
+    private Task<CurrentAuthArchiveFleet> CaptureAsync(CurrentAuthArchiveScope scope, bool local, CancellationToken ct)
     {
-        RequireHealthy(); Match(scope);
+        return CaptureCoreAsync(scope, local, null, ct);
+    }
+
+    private async Task<CurrentAuthArchiveFleet> CaptureCoreAsync(CurrentAuthArchiveScope scope, bool local, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, CancellationToken ct)
+    {
+        RequireObservationCustody(observation); Match(scope);
         CurrentAuthRepairScope policy = local ? scope.LocalObservationPolicy : scope.ProductionObservationPolicy;
-        CurrentAuthArchiveCatalogObservation before = await CaptureCatalogAsync(local, policy, ct).ConfigureAwait(false);
+        CurrentAuthArchiveCatalogObservation before = await CaptureCatalogCoreAsync(local, policy, observation, ct).ConfigureAwait(false);
         DateTimeOffset began = DateTimeOffset.UtcNow;
         var results = new List<CurrentAppOwnedDatabaseSnapshot>();
         CurrentAuthLocalSessionArchiveObservation? auth = null;
@@ -124,14 +134,14 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
             await tx.RollbackAsync(ct).ConfigureAwait(false); results.Add(_pool.Intern(raw));
         }
         DateTimeOffset ended = DateTimeOffset.UtcNow;
-        CurrentAuthArchiveCatalogObservation after = await CaptureCatalogAsync(local, policy, ct).ConfigureAwait(false);
+        CurrentAuthArchiveCatalogObservation after = await CaptureCatalogCoreAsync(local, policy, observation, ct).ConfigureAwait(false);
         var catalogs = new CurrentAuthArchiveFleetCatalogs(before, after, began, ended);
         CurrentAuthLocalSessionArchivePolicy.RequireCatalogs(catalogs, policy, !local, results.Select(x => x.Database), before.BeganAtUtc, DateTimeOffset.UtcNow);
-        RequireHealthy(); return new(auth ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid(), results.AsReadOnly(), began, ended, catalogs);
+        RequireObservationCustody(observation); return new(auth ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid(), results.AsReadOnly(), began, ended, catalogs);
     }
-    private async Task<CurrentAuthArchiveCatalogObservation> CaptureCatalogAsync(bool local, CurrentAuthRepairScope policy, CancellationToken ct)
+    private async Task<CurrentAuthArchiveCatalogObservation> CaptureCatalogCoreAsync(bool local, CurrentAuthRepairScope policy, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, CancellationToken ct)
     {
-        RequireHealthy();
+        RequireObservationCustody(observation);
         await _storage.RequireCustodyAsync(ct).ConfigureAwait(false);
         _ = await RequireTargetsAsync(ct).ConfigureAwait(false);
         await using var connection = Connection(local, "postgres"); await connection.OpenAsync(ct).ConfigureAwait(false);
@@ -163,7 +173,7 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
         var result = new CurrentAuthArchiveCatalogObservation(policy.RunBindingSha256, policy.TargetObservationSha256,
             system ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid(), readOnly, flags.AsReadOnly(), began, DateTimeOffset.UtcNow);
         await tx.RollbackAsync(ct).ConfigureAwait(false);
-        RequireHealthy(); return result;
+        RequireObservationCustody(observation); return result;
     }
     public async Task ReserveCreateNewAsync(Guid operationId, string authorizationSha256, CancellationToken ct)
     {
