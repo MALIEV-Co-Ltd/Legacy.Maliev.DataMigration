@@ -4,6 +4,10 @@ public sealed record ConsoleInvocation(string Command, string ConfigPath)
 {
     private static readonly HashSet<string> Commands =
     [
+        "verify-current-company-storage",
+        "apply-current-company-storage",
+        "observe-current-company-storage",
+        "characterize-current-company-storage-native-faults",
         "characterize-consumer-column-bootstrap-native-faults",
         "rehearse-consumer-column-bootstrap",
         "run-consumer-column-bootstrap-reviewed",

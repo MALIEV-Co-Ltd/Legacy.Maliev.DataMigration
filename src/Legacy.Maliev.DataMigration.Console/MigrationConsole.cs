@@ -302,6 +302,13 @@ public static partial class MigrationConsole
                 case "apply-current-owner-iso-repair":
                     return await RunCurrentOwnerIsoRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
                         output, error, cancellationToken).ConfigureAwait(false);
+                case "characterize-current-company-storage-native-faults":
+                    return await RunCompanyStorageNativeFaultsAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "observe-current-company-storage":
+                case "verify-current-company-storage":
+                case "apply-current-company-storage":
+                    return await RunCompanyStorageRepairAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
                 case "review-current-customer-sequence-repair":
                 case "authorize-current-customer-sequence-repair":
                 case "verify-current-customer-sequence-repair":

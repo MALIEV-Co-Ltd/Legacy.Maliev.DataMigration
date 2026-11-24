@@ -209,11 +209,22 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
         _ = config.Remove("Env"); config["PgData"] = pgData[0][7..]; await RecordAsync("target", item, ct).ConfigureAwait(false);
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
+    {
+        return DisposeCoreAsync(null);
+    }
+
+    internal ValueTask DisposeForCompanyAsync(CompanyStorageFixtureSecretOwnership ownership)
+    {
+        return DisposeCoreAsync(ownership);
+    }
+
+    private async ValueTask DisposeCoreAsync(CompanyStorageFixtureSecretOwnership? ownership)
     {
         if (_disposed) { return; }
         _disposed = true;
         using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(55)); bool removed = false, sdkDisposed = false, verifiedAbsence = false; DateTimeOffset? removedAtUtc = null;
+        Exception? primary = null;
         try
         {
             if (_containerAttempted)
@@ -246,7 +257,8 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
                 if (!absent) { throw CurrentAuthRepairPermit.Invalid(); }
             }
             removed = true; removedAtUtc = DateTimeOffset.UtcNow;
-            CurrentAuthClosedSecretCleanup.RequireRemoved(Root, Binding, Operation);
+            if (ownership is null) { CurrentAuthClosedSecretCleanup.RequireRemoved(Root, Binding, Operation); }
+            else { CurrentAuthClosedSecretCleanup.RequireRemovedForCompany(Root, Binding, Operation, ownership); }
             await _container.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false); sdkDisposed = true;
             var containers = await _docker.Containers.ListContainersAsync(new ContainersListParameters { All = true }, cleanup.Token).ConfigureAwait(false);
             var volumes = await _docker.Volumes.ListAsync(cleanup.Token).ConfigureAwait(false);
@@ -270,26 +282,34 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
             }, cleanup.Token).ConfigureAwait(false);
             verifiedAbsence = true;
         }
-        finally
+        catch (Exception failure) { primary = failure; }
+        Exception? cleanupFailure = null;
+        try
         {
-            try
+            if (ownership is not null && removed && !sdkDisposed)
             {
-                await RecordAsync("disposed", new
-                {
-                    Operation,
-                    _id,
-                    volume = Name,
-                    removed,
-                    sdkDisposed,
-                    removedAtUtc,
-                    verifiedAbsence,
-                    cleanupFailed = !removed || !sdkDisposed || !verifiedAbsence,
-                    expiresAtUtc = _expires,
-                    completedAtUtc = DateTimeOffset.UtcNow
-                }, CancellationToken.None).ConfigureAwait(false);
+                await _container.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false);
+                sdkDisposed = true;
             }
-            finally { _lease.Dispose(); _docker.Dispose(); }
+            await RecordAsync("disposed", new
+            {
+                Operation,
+                _id,
+                volume = Name,
+                removed,
+                sdkDisposed,
+                removedAtUtc,
+                verifiedAbsence,
+                cleanupFailed = !removed || !sdkDisposed || !verifiedAbsence,
+                expiresAtUtc = _expires,
+                completedAtUtc = DateTimeOffset.UtcNow
+            }, CancellationToken.None).ConfigureAwait(false);
         }
+        catch (Exception failure) { cleanupFailure = failure; }
+        finally { _lease.Dispose(); _docker.Dispose(); }
+        if (ownership is not null && primary is not null && cleanupFailure is not null) { throw new AggregateException(primary, cleanupFailure); }
+        if (cleanupFailure is not null) { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanupFailure).Throw(); }
+        if (primary is not null) { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primary).Throw(); }
     }
 
     private async Task RequireContainerAbsentAsync(string name, CancellationToken ct)
