@@ -146,7 +146,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
             string.Empty, string.Empty, string.Empty, string.Empty, now, expires,
             CurrentAuthArchiveProofAdmission.DisposableNativeBootstrap, subject);
         CurrentAuthArchiveComponentBootstrap.RequireClaims(_scope, _inputs.TrustStore, _inputs.Pins, now);
-        string scopePath = Path.Combine(_inputs.ParentAuthority.Binding.ArtifactRootCanonicalPath, "genuine-owned-pair-scope.json");
+        string scopePath = Path.Combine(_inputs.ParentAuthority.Binding.ArtifactRootCanonicalPath, $"genuine-owned-pair-{_seed.OperationId:N}-scope.json");
         byte[] scopeBytes = JsonSerializer.SerializeToUtf8Bytes(_scope);
         await _inputs.ParentFiles.WriteNewAsync(scopePath, scopeBytes, ct);
         if (!_inputs.ParentFiles.Read(scopePath, sharedReader: true, maximumBytes: 1024 * 1024).AsSpan().SequenceEqual(scopeBytes)) { throw Invalid(); }
