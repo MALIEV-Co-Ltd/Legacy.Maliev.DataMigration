@@ -35,7 +35,7 @@ public sealed class ConsumerColumnBootstrapPreservationTests
     [InlineData("")]
     public void Creation_version_cannot_disable_the_security_defense(string defense)
     {
-        Assert.Throws<MigrationExecutionException>(() => ConsumerColumnBootstrapNativePreservation.RequireNewAttributeOptions(new JsonArray("pg_attver=210"), 180007, defense, 200, 300));
+        _ = Assert.Throws<MigrationExecutionException>(() => ConsumerColumnBootstrapNativePreservation.RequireNewAttributeOptions(new JsonArray("pg_attver=210"), 180007, defense, 200, 300));
     }
 
     [Fact]

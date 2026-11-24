@@ -5,8 +5,8 @@ using Xunit.Abstractions;
 namespace Legacy.Maliev.DataMigration.Tests;
 
 /// <summary>Disposable characterization only; no operational catalog-transition verifier or persistent authority.</summary>
-[Collection(PostgreSqlAdapterTestGroup.Name)]
-public sealed class CustomerCompanyStorageRepairNativeTests(PostgreSqlAdapterFixture fixture, ITestOutputHelper output)
+[Collection(CompanyStoragePreservationTestGroup.Name)]
+public sealed class CustomerCompanyStorageRepairNativeTests(CompanyStoragePreservationFixture fixture, ITestOutputHelper output)
 {
     [Fact]
     public async Task Fixed_candidate_preserves_rows_allocations_and_unrelated_objects_with_rollback_and_independent_readback()

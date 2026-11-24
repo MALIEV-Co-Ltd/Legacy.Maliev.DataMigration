@@ -14,8 +14,17 @@ public sealed class OrderSubtotalExpressionRepairNativeTests(ConsumerColumnBoots
 {
     private sealed record Observation(CurrentAppOwnedRetained31Observation Native, string OriginalProjection,
         string ExpectedCorrectedRows, string ActualRows, string ObjectDefinitions, uint TableOid,
-        IReadOnlyDictionary<string, StorageFact> Storage);
+        IReadOnlyDictionary<string, StorageFact> Storage)
+    {
+        internal int ProviderVersion { get; init; }
+        internal string CompositeDefense { get; init; } = string.Empty;
+        internal ulong WalLower { get; init; }
+        internal ulong WalUpper { get; init; }
+        internal IReadOnlyDictionary<string, StorageFact> AllStorage { get; init; } = new Dictionary<string, StorageFact>(StringComparer.Ordinal);
+    }
     private sealed record StorageFact(string Relation, uint FileNode, long Blocks, bool OrderClosure);
+    private static readonly string[] StructuralWitnessCatalogs =
+        ["pg_class", "pg_attribute", "pg_attrdef", "pg_depend", "pg_type", "pg_index", "pg_constraint", "pg_statistic_ext", "pg_description", "pg_shdepend"];
 
     [Theory]
     [InlineData(false, false, false)]
@@ -177,6 +186,12 @@ public sealed class OrderSubtotalExpressionRepairNativeTests(ConsumerColumnBoots
 
     private static async Task<Observation> CaptureAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken ct)
     {
+        int version; string defense; ulong lower;
+        await using (var provider = new NpgsqlCommand("SELECT current_setting('server_version_num')::integer,coalesce(current_setting('composite_type_mismatch',true),''),pg_current_wal_insert_lsn()::text;", connection, transaction))
+        await using (var reader = await provider.ExecuteReaderAsync(ct))
+        {
+            Assert.True(await reader.ReadAsync(ct)); version = reader.GetInt32(0); defense = reader.GetString(1); lower = ParseWal(reader.GetString(2));
+        }
         CurrentAppOwnedRetained31Observation native = await CurrentAppOwnedRetained31Preservation.CaptureAsync(connection, transaction, ct);
         string projection = await RowsAsync(connection, transaction, "to_jsonb(x)-'Subtotal'", ct);
         string expected = await RowsAsync(connection, transaction, "(to_jsonb(x)-'Subtotal')||jsonb_build_object('Subtotal'," +
@@ -214,7 +229,33 @@ public sealed class OrderSubtotalExpressionRepairNativeTests(ConsumerColumnBoots
             while (await reader.ReadAsync(ct))
             { storage.Add(reader.GetString(0), new(reader.GetString(1), reader.GetFieldValue<uint>(2), reader.GetInt64(3), reader.GetBoolean(4))); }
         }
-        return new(native, projection, expected, actual, definitions, tableOid, storage);
+        var allStorage = new Dictionary<string, StorageFact>(StringComparer.Ordinal);
+        await using (var all = new NpgsqlCommand("""
+            WITH operand AS (SELECT oid,reltoastrelid FROM pg_class WHERE oid='public."Order"'::regclass)
+            SELECT c.oid::text,n.nspname||'.'||c.relname,coalesce(pg_relation_filenode(c.oid),0::oid),
+              pg_relation_size(c.oid)/current_setting('block_size')::bigint,
+              c.oid IN (SELECT oid FROM operand UNION ALL SELECT reltoastrelid FROM operand) OR
+                coalesce(i.indrelid IN (SELECT oid FROM operand UNION ALL SELECT reltoastrelid FROM operand),false)
+            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_index i ON i.indexrelid=c.oid
+            WHERE c.relkind IN ('r','i','t') ORDER BY c.oid;
+            """, connection, transaction) { CommandTimeout = 30 })
+        await using (var reader = await all.ExecuteReaderAsync(ct))
+        {
+            while (await reader.ReadAsync(ct))
+            { allStorage.Add(reader.GetString(0), new(reader.GetString(1), reader.GetFieldValue<uint>(2), reader.GetInt64(3), reader.GetBoolean(4))); }
+        }
+        await using var wal = new NpgsqlCommand("SELECT pg_current_wal_insert_lsn()::text;", connection, transaction);
+        ulong upper = ParseWal((string)(await wal.ExecuteScalarAsync(ct))!);
+        return new(native, projection, expected, actual, definitions, tableOid, storage)
+        { ProviderVersion = version, CompositeDefense = defense, WalLower = lower, WalUpper = upper, AllStorage = allStorage };
+    }
+
+    private static ulong ParseWal(string value)
+    {
+        string[] parts = value.Split('/');
+        Assert.Equal(2, parts.Length);
+        return ((ulong)uint.Parse(parts[0], System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture) << 32) |
+            uint.Parse(parts[1], System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static void RequirePreserved(Observation before, Observation after)
@@ -233,6 +274,49 @@ public sealed class OrderSubtotalExpressionRepairNativeTests(ConsumerColumnBoots
 
     private void Report(Observation before, Observation after, string phase)
     {
+        output.WriteLine("ORDER_REWRITE_WITNESS_PROVIDER " + JsonSerializer.Serialize(new
+        {
+            phase,
+            Before = new { before.ProviderVersion, before.CompositeDefense, before.WalLower, before.WalUpper, before.TableOid },
+            After = new { after.ProviderVersion, after.CompositeDefense, after.WalLower, after.WalUpper, after.TableOid }
+        }));
+        output.WriteLine("ORDER_REWRITE_WITNESS_STORAGE " + JsonSerializer.Serialize(new
+        {
+            phase,
+            Before = before.AllStorage.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => new { Oid = pair.Key, Fact = pair.Value }).ToArray(),
+            After = after.AllStorage.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => new { Oid = pair.Key, Fact = pair.Value }).ToArray()
+        }));
+        foreach (string catalog in StructuralWitnessCatalogs)
+        {
+            string[] oldTuples = before.Native.Read(catalog).Select(row => row.ToJsonString()).ToArray();
+            string[] newTuples = after.Native.Read(catalog).Select(row => row.ToJsonString()).ToArray();
+            foreach (string tuple in oldTuples.Concat(newTuples).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+            {
+                int oldCount = oldTuples.Count(value => value == tuple), newCount = newTuples.Count(value => value == tuple);
+                if (oldCount != newCount)
+                { output.WriteLine("ORDER_REWRITE_WITNESS_CATALOG " + JsonSerializer.Serialize(new { phase, Catalog = catalog, BeforeCount = oldCount, AfterCount = newCount, Tuple = tuple })); }
+            }
+        }
+        // Statistics may contain raw sampled table values. Retain only their safe structural
+        // locator/version fields here; complete before/after tuple hashes remain below.
+        foreach (var (Side, Value) in new[] { (Side: "before", Value: before), (Side: "after", Value: after) })
+        {
+            foreach (var row in Value.Native.Read("pg_statistic").Where(row => row["starelid"]?.ToString() == Value.TableOid.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            {
+                output.WriteLine("ORDER_REWRITE_WITNESS_STATISTIC_METADATA " + JsonSerializer.Serialize(new
+                {
+                    phase,
+                    Side,
+                    RelationOid = row["starelid"]?.ToString(),
+                    Attribute = row["staattnum"]?.ToString(),
+                    Inherited = row["stainherit"]?.ToString(),
+                    NullFraction = row["stanullfrac"]?.ToString(),
+                    Width = row["stawidth"]?.ToString(),
+                    Distinct = row["stadistinct"]?.ToString()
+                }));
+            }
+        }
+
         foreach (string oid in before.Storage.Keys.Concat(after.Storage.Keys).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
         {
             StorageFact? old = before.Storage.GetValueOrDefault(oid), current = after.Storage.GetValueOrDefault(oid);
