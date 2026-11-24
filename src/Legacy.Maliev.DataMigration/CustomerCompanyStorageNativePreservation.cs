@@ -18,18 +18,22 @@ internal static class CustomerCompanyStorageNativePreservation
         "pg_amop", "pg_amproc", "pg_range", "pg_transform", "pg_seclabel", "pg_shseclabel",
     ];
 
-    internal sealed record Observation(CurrentAppOwnedRetained31Observation Native, string ContractSha256, bool After);
+    internal sealed record Observation(CurrentAppOwnedRetained31Observation Native, string ContractSha256, bool After,
+        int ProviderVersion, string CompositeDefense, ulong WalUpper);
 
     internal static async Task<Observation> CaptureAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         ApprovedCustomerCompanyStorageRepair contract, bool after, CancellationToken ct)
     {
+        int providerVersion; string defense;
         await using (var settings = new NpgsqlCommand("""
-            SELECT current_setting('server_encoding')='UTF8'
-                AND current_setting('server_version_num')::integer BETWEEN 180000 AND 189999
-                AND (current_schemas(true))[1]='pg_catalog';
+            SELECT current_setting('server_encoding')='UTF8' AND (current_schemas(true))[1]='pg_catalog',
+                current_setting('server_version_num')::integer,coalesce(current_setting('composite_type_mismatch',true),'');
             """, connection, transaction))
+        await using (NpgsqlDataReader reader = await settings.ExecuteReaderAsync(ct).ConfigureAwait(false))
         {
-            if (await settings.ExecuteScalarAsync(ct).ConfigureAwait(false) is not true) { throw Invalid("provider"); }
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false) || !reader.GetBoolean(0)) { throw Invalid("provider"); }
+            providerVersion = reader.GetInt32(1); defense = reader.GetString(2);
+            if (providerVersion is < 180000 or > 189999 || (providerVersion >= 180007 && defense != "error")) { throw Invalid("provider"); }
         }
         DatabaseSchemaPlan plan = after ? contract.After() : contract.Before();
         await using (var inspector = new PostgreSqlWholeDatabaseTransaction(connection, transaction, ownsResources: false))
@@ -39,7 +43,12 @@ internal static class CustomerCompanyStorageNativePreservation
         }
         var native = await CurrentAppOwnedRetained31Preservation.CaptureAsync(connection, transaction, ct).ConfigureAwait(false);
         _ = Bind(native, after);
-        return new(native, contract.ComputeSha256(), after);
+        await using var wal = new NpgsqlCommand("SELECT pg_current_wal_insert_lsn()::text;", connection, transaction);
+        string[] parts = ((string)(await wal.ExecuteScalarAsync(ct).ConfigureAwait(false))!).Split('/');
+        return parts.Length != 2 || !uint.TryParse(parts[0], System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture, out uint high) ||
+            !uint.TryParse(parts[1], System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture, out uint low)
+            ? throw Invalid("wal")
+            : new(native, contract.ComputeSha256(), after, providerVersion, defense, ((ulong)high << 32) | low);
     }
 
     internal static void RequirePreserved(Observation before, Observation after, ApprovedCustomerCompanyStorageRepair contract)
@@ -55,6 +64,9 @@ internal static class CustomerCompanyStorageNativePreservation
             !old.Columns.OrderBy(x => x.Key, StringComparer.Ordinal).SequenceEqual(current.Columns.OrderBy(x => x.Key, StringComparer.Ordinal)) ||
             !old.Indexes.Keys.Order(StringComparer.Ordinal).SequenceEqual(current.Indexes.Keys.Order(StringComparer.Ordinal)))
         { throw Invalid("operand_identity"); }
+        if (before.ProviderVersion != after.ProviderVersion || before.CompositeDefense != after.CompositeDefense) { throw Invalid("provider_changed"); }
+        IReadOnlySet<int> versionedAttributes = RequireCompanyAttributeVersions(before.Native.Read("pg_attribute"), after.Native.Read("pg_attribute"),
+            old.Table, old.Columns.Values.Order().ToArray(), before.ProviderVersion, before.CompositeDefense, before.WalUpper, after.WalUpper);
         if (current.Checks.Values.Any(id => before.Native.Read("pg_constraint").Any(x => V(x, "oid") == id)) ||
             before.Native.Read("pg_proc").Any(x => V(x, "oid") == current.Function) ||
             before.Native.Read("pg_trigger").Any(x => V(x, "oid") == current.Trigger) ||
@@ -78,8 +90,8 @@ internal static class CustomerCompanyStorageNativePreservation
         }
         foreach (string catalog in Catalogs)
         {
-            string[] expected = Normalize(before.Native, old, catalog, false);
-            string[] observed = Normalize(after.Native, current, catalog, true);
+            string[] expected = Normalize(before.Native, old, catalog, false, versionedAttributes);
+            string[] observed = Normalize(after.Native, current, catalog, true, versionedAttributes);
             if (!expected.SequenceEqual(observed, StringComparer.Ordinal))
             { throw Invalid("catalog_" + catalog + "_" + DifferenceFacet(expected, observed)); }
         }
@@ -319,7 +331,8 @@ internal static class CustomerCompanyStorageNativePreservation
         Equal(trigger, One(native.Read("pg_trigger").Where(x => V(x, "oid") == binding.Trigger)), "new_trigger");
     }
 
-    private static string[] Normalize(CurrentAppOwnedRetained31Observation native, Binding binding, string catalog, bool after)
+    private static string[] Normalize(CurrentAppOwnedRetained31Observation native, Binding binding, string catalog, bool after,
+        IReadOnlySet<int> versionedAttributes)
     {
         var rows = new List<JsonObject>(native.Read(catalog));
         if (catalog == "pg_statistic" && !after)
@@ -338,6 +351,8 @@ internal static class CustomerCompanyStorageNativePreservation
         {
             foreach (JsonObject row in rows)
             {
+                if (V(row, "attrelid") == binding.Table && versionedAttributes.Contains(Number(row, "attnum")))
+                { row["attoptions"] = Options(row).Unreserved.DeepClone(); }
                 if ((V(row, "attrelid") == binding.Table && binding.Columns.ContainsValue(Number(row, "attnum"))) ||
                     (binding.Indexes.ContainsValue(V(row, "attrelid")) && Number(row, "attnum") == 1))
                 { row["atttypid"] = "@CompanyTextType"; row["atttypmod"] = "@CompanyTextTypmod"; }
@@ -391,6 +406,62 @@ internal static class CustomerCompanyStorageNativePreservation
             RemoveExact(rows, dependency, "function_owner_dependency");
         }
         return [.. rows.Select(Canonical).Order(StringComparer.Ordinal)];
+    }
+
+    // PG18.7 security backpatch stores WAL-derived attribute versions in one reserved option.
+    // Only the suffix touched by the fixed physical-ordinal-ordered ALTER TYPE commands may change it.
+    internal static IReadOnlySet<int> RequireCompanyAttributeVersions(JsonObject[] before, JsonObject[] after, string table,
+        IReadOnlyList<int> changedOrdinals, int providerVersion, string compositeDefense, ulong beforeWal, ulong afterWal)
+    {
+        if (providerVersion is < 180000 or > 189999 || afterWal < beforeWal) { throw Invalid("attribute_version_provider"); }
+        if (providerVersion < 180007) { return new HashSet<int>(); }
+        if (compositeDefense != "error" || changedOrdinals.Count != 3 || changedOrdinals.Any(x => x <= 0) ||
+            !changedOrdinals.SequenceEqual(changedOrdinals.Distinct().Order())) { throw Invalid("attribute_version_scope"); }
+        int first = changedOrdinals[0];
+        foreach (JsonObject untouched in before.Where(x => V(x, "attrelid") == table && Number(x, "attnum") < first))
+        {
+            JsonObject current = One(after.Where(x => V(x, "attrelid") == table && Number(x, "attnum") == Number(untouched, "attnum")));
+            if (!JsonNode.DeepEquals(untouched["attoptions"], current["attoptions"])) { throw Invalid("attribute_version_unaffected"); }
+        }
+        JsonObject[] suffix = [.. before.Where(x => V(x, "attrelid") == table && Number(x, "attnum") >= first).OrderBy(x => Number(x, "attnum"))];
+        var accepted = new HashSet<int>(); ulong priorOld = 0, groupVersion = 0;
+        foreach (JsonObject old in suffix)
+        {
+            int number = Number(old, "attnum");
+            JsonObject current = One(after.Where(x => V(x, "attrelid") == table && Number(x, "attnum") == number));
+            var oldOptions = Options(old); var newOptions = Options(current);
+            if (oldOptions.Version < priorOld || oldOptions.Version > beforeWal || newOptions.Version <= beforeWal || newOptions.Version > afterWal ||
+                !JsonNode.DeepEquals(oldOptions.Unreserved, newOptions.Unreserved)) { throw Invalid("attribute_version_options"); }
+            if (changedOrdinals.Contains(number))
+            {
+                if (newOptions.Version <= groupVersion) { throw Invalid("attribute_version_order"); }
+                groupVersion = newOptions.Version;
+            }
+            else if (newOptions.Version != groupVersion) { throw Invalid("attribute_version_suffix"); }
+            priorOld = oldOptions.Version;
+            if (!accepted.Add(number)) { throw Invalid("attribute_version_duplicate"); }
+        }
+        return !changedOrdinals.All(accepted.Contains) ? throw Invalid("attribute_version_missing") : (IReadOnlySet<int>)accepted;
+    }
+
+    private static (ulong Version, JsonArray Unreserved) Options(JsonObject attribute)
+    {
+        ulong version = 0; var options = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        JsonNode? node = attribute["attoptions"];
+        if (node is not null)
+        {
+            if (node is not JsonArray array) { throw Invalid("attribute_options_shape"); }
+            foreach (JsonNode? entry in array)
+            {
+                if (entry is not JsonValue value || !value.TryGetValue(out string? text) || text is null) { throw Invalid("attribute_options_value"); }
+                int equals = text.IndexOf('=');
+                if (equals <= 0 || !options.TryAdd(text[..equals], text[(equals + 1)..])) { throw Invalid("attribute_options_duplicate"); }
+            }
+            if (options.Remove("pg_attver", out string? raw) &&
+                (!ulong.TryParse(raw, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out version) || version == 0 ||
+                 version.ToString(System.Globalization.CultureInfo.InvariantCulture) != raw)) { throw Invalid("attribute_version_value"); }
+        }
+        return (version, new JsonArray([.. options.Select(x => (JsonNode?)JsonValue.Create(x.Key + "=" + x.Value))]));
     }
 
     internal static void RequireOperandStatistics(JsonObject[] rows, string table, IReadOnlySet<int> columns, bool after)

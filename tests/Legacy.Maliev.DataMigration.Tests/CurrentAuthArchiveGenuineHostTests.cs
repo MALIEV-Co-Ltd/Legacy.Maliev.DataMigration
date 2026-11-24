@@ -50,8 +50,9 @@ public sealed class CurrentAuthArchiveGenuineHostTests
         MigrationExecutionException failure = Assert.Throws<MigrationExecutionException>(() =>
             CurrentAuthArchiveGenuineHost.RequireCompleteCaseInventory(typeof(CurrentAuthArchiveGuardedExecutionTests).Assembly));
         Assert.Equal("current_auth_archive_genuine_cases_missing", failure.Code);
-        Assert.DoesNotContain(typeof(CurrentAuthArchiveGuardedExecutionTests).GetMethods(),
-            x => x.Name.StartsWith("Archive_", StringComparison.Ordinal));
+        Assert.Equal(CurrentAuthArchiveGenuineCases.Inventory().Where(x => x.Phase == "helper").Select(x => x.MethodName).Order(StringComparer.Ordinal),
+            typeof(CurrentAuthArchiveGuardedExecutionTests).GetMethods().Where(x => x.Name.StartsWith("Archive_", StringComparison.Ordinal))
+                .Select(x => x.Name).Order(StringComparer.Ordinal));
     }
 
     [Fact]

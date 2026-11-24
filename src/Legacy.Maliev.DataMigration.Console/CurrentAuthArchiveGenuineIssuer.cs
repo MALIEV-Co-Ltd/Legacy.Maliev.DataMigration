@@ -4,7 +4,7 @@ namespace Legacy.Maliev.DataMigration.Console;
 
 // No route activates this issuer. It owns its exact fixed-factory pair until
 // explicit disposal, independently of every serialized configuration object.
-internal sealed class CurrentAuthArchiveGenuineIssuer : IAsyncDisposable
+internal sealed partial class CurrentAuthArchiveGenuineIssuer : IAsyncDisposable
 {
     private const string LeaseType = "Legacy.Maliev.DataMigration.Tests.CurrentAuthArchiveGenuineOwnedPair";
     private readonly CurrentAuthTypedHostProducer.HeldTestBundle _bundle;
@@ -19,10 +19,25 @@ internal sealed class CurrentAuthArchiveGenuineIssuer : IAsyncDisposable
         CurrentAuthArchiveInitialProducer.FixedNativeBundle? loader, ICurrentAuthArchiveGenuineOwnedLease lease)
     { _bundle = bundle; _loader = loader; _lease = lease; }
 
-    internal static async Task<CurrentAuthArchiveGenuineIssuer> CreateAsync(CurrentAuthArchiveGenuineHostConfiguration request, CancellationToken ct)
+    internal static Task<CurrentAuthArchiveGenuineIssuer> CreateAsync(CurrentAuthArchiveGenuineHostConfiguration request, CancellationToken ct)
+    {
+        return CreateHelperCoreAsync(request, CurrentAuthArchiveGenuineRecoveryHelperCase.DualDurableReadback, ct);
+    }
+
+    internal static Task<CurrentAuthArchiveGenuineIssuer> CreateRecoveryHelperAsync(CurrentAuthArchiveGenuineHostConfiguration request,
+        CurrentAuthArchiveGenuineRecoveryHelperCase helperCase, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return helperCase == CurrentAuthArchiveGenuineRecoveryHelperCase.DualDurableReadback
+            ? throw Invalid()
+            : CreateHelperCoreAsync(request, helperCase, ct);
+    }
+
+    private static async Task<CurrentAuthArchiveGenuineIssuer> CreateHelperCoreAsync(CurrentAuthArchiveGenuineHostConfiguration request,
+        CurrentAuthArchiveGenuineRecoveryHelperCase helperCase, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested(); CurrentAuthArchiveGenuineHost.RequireInput(request);
-        if (request.Phase != "helper" || request.CaseId != "dual-durable-readback") { throw Invalid(); }
+        if (request.Phase != "helper" || request.CaseId != CurrentAuthArchiveGenuineRecoveryHelpers.CaseId(helperCase)) { throw Invalid(); }
         var bundle = await CurrentAuthTypedHostProducer.HoldFixedTestBundleAsync(Path.GetDirectoryName(request.Inputs.TestImage.Path) ?? throw Invalid(), ct);
         CurrentAuthArchiveInitialProducer.FixedNativeBundle? loader = null;
         ICurrentAuthArchiveGenuineOwnedLease? lease = null;
@@ -47,10 +62,13 @@ internal sealed class CurrentAuthArchiveGenuineIssuer : IAsyncDisposable
             }
             Type type = tests.GetType(LeaseType, throwOnError: true)!;
             if (!type.IsSealed || type.GetConstructors(BindingFlags.Instance | BindingFlags.Public).Length != 0) { throw Invalid(); }
-            MethodInfo method = type.GetMethod("OpenLeaseAsync", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.DeclaredOnly,
-                binder: null, types: [typeof(CurrentAuthArchiveGenuineHostConfiguration), typeof(CancellationToken)], modifiers: null) ?? throw Invalid();
+            MethodInfo method = helperCase == CurrentAuthArchiveGenuineRecoveryHelperCase.DualDurableReadback ?
+                type.GetMethod("OpenLeaseAsync", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.DeclaredOnly,
+                    binder: null, types: [typeof(CurrentAuthArchiveGenuineHostConfiguration), typeof(CancellationToken)], modifiers: null) ?? throw Invalid() :
+                type.GetMethod("OpenRecoveryHelperLeaseAsync", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.DeclaredOnly,
+                    binder: null, types: [typeof(CurrentAuthArchiveGenuineHostConfiguration), typeof(CurrentAuthArchiveGenuineRecoveryHelperCase), typeof(CancellationToken)], modifiers: null) ?? throw Invalid();
             if (method.ReturnType != typeof(Task<ICurrentAuthArchiveGenuineOwnedLease>)) { throw Invalid(); }
-            var pending = method.Invoke(null, [request, ct]) as Task<ICurrentAuthArchiveGenuineOwnedLease> ?? throw Invalid();
+            var pending = method.Invoke(null, helperCase == CurrentAuthArchiveGenuineRecoveryHelperCase.DualDurableReadback ? [request, ct] : [request, helperCase, ct]) as Task<ICurrentAuthArchiveGenuineOwnedLease> ?? throw Invalid();
             lease = await pending.ConfigureAwait(false);
             if (lease.GetType() != type) { throw Invalid(); }
             var issuer = new CurrentAuthArchiveGenuineIssuer(bundle, loader, lease);

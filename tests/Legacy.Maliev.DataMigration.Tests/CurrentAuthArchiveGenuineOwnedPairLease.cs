@@ -27,7 +27,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
         }
         return _environment is null
             ? throw Invalid()
-            : new("helper", "dual-durable-readback", Scope, Subject, _inputs.Source,
+            : new("helper", _seed.CaseId, Scope, Subject, _inputs.Source,
             typeof(CurrentAuthArchiveGenuineOwnedPair).Assembly.Location, typeof(MigrationConsole).Assembly.Location,
             typeof(CurrentAuthLocalSessionArchivePermit).Assembly.Location, _inputs.Pins, _inputs.TrustStore, _environment);
     }

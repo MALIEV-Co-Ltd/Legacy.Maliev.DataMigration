@@ -35,11 +35,28 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
     internal CurrentAuthArchiveScope Scope => !_disposed && _scope is not null ? _scope : throw Invalid();
     internal CurrentAuthArchiveComponentBootstrapSubject Subject => !_disposed && _subject is not null ? _subject : throw Invalid();
 
-    internal static async Task<CurrentAuthArchiveGenuineOwnedPair> CreateAsync(
+    internal static Task<CurrentAuthArchiveGenuineOwnedPair> CreateAsync(
         CurrentAuthArchiveGenuineHostConfiguration request, CancellationToken ct)
+    {
+        return CreateHelperCoreAsync(request, CurrentAuthArchiveGenuineRecoveryHelperCase.DualDurableReadback, ct);
+    }
+
+    internal static Task<CurrentAuthArchiveGenuineOwnedPair> CreateRecoveryHelperAsync(CurrentAuthArchiveGenuineHostConfiguration request,
+        CurrentAuthArchiveGenuineRecoveryHelperCase helperCase, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return helperCase == CurrentAuthArchiveGenuineRecoveryHelperCase.DualDurableReadback
+            ? throw Invalid()
+            : CreateHelperCoreAsync(request, helperCase, ct);
+    }
+
+    private static async Task<CurrentAuthArchiveGenuineOwnedPair> CreateHelperCoreAsync(
+        CurrentAuthArchiveGenuineHostConfiguration request,
+        CurrentAuthArchiveGenuineRecoveryHelperCase helperCase, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         CurrentAuthArchiveGenuineHost.RequireInput(request);
+        if (request.Phase != "helper" || request.CaseId != CurrentAuthArchiveGenuineRecoveryHelpers.CaseId(helperCase)) { throw Invalid(); }
         // Called only from the held qualified Tests bundle. All signatures, owner,
         // precursor, source age and input file identities precede target creation.
         var bundle = await CurrentAuthTypedHostProducer.HoldFixedTestBundleAsync(
@@ -49,7 +66,9 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
         try
         {
             bundle.Require();
-            inputs = await CurrentAuthArchiveComponentReadback.OpenInitialAsync(request.Inputs, ct);
+            inputs = helperCase == CurrentAuthArchiveGenuineRecoveryHelperCase.DualDurableReadback ?
+                await CurrentAuthArchiveComponentReadback.OpenInitialAsync(request.Inputs, ct) :
+                await CurrentAuthArchiveComponentReadback.OpenGenuineHelperInitialAsync(request.Inputs, helperCase, ct);
             var seed = await inputs.ReadSeedAsync(ct);
             pair = new(inputs, bundle, seed, ct);
             await pair.CreateOwnedAsync(request, pair._lease.Token);
@@ -105,6 +124,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
             _seed.OperationId, _seed.AcceptedSourceCommitSha, firstPolicy.RunBindingSha256, secondPolicy.RunBindingSha256,
             firstPolicy.TargetObservationSha256, secondPolicy.TargetObservationSha256, paths, _first.Root, _second.Root, began, began.AddMinutes(1));
         var devices = await CurrentAuthLocalSessionArchiveDeviceProcess.ObservePreflightAsync(deviceRequest, _firstFiles, _secondFiles, ct);
+        _dualDeviceProof = devices;
         var firstFleet = CurrentAuthArchiveInitialNativeProducer.Fleet(_firstPolicy.Baseline, firstPolicy);
         var secondFleet = CurrentAuthArchiveInitialNativeProducer.Fleet(_secondPolicy.Baseline, secondPolicy);
         byte[] rows = CurrentAuthLocalSessionArchivePolicy.EncodeRows(firstFleet.Auth.Sessions);
@@ -165,7 +185,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
         {
             try { resource?.Dispose(); } catch (Exception cleanup) { failure ??= cleanup; }
         }
-        Release(_environment);
+        Release(_recoveryHelpersStorage); Release(_environment);
         Release(_secondFiles); Release(_firstFiles); Release(_secondAuthority); Release(_firstAuthority);
         Release(_secondPolicy); Release(_firstPolicy);
         try { if (_second is not null) { await _second.DisposeAsync(); } } catch (Exception cleanup) { failure ??= cleanup; }

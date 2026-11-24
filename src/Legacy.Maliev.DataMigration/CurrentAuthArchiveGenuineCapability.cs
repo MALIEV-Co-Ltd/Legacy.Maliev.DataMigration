@@ -5,7 +5,7 @@ using System.Security.Cryptography;
 namespace Legacy.Maliev.DataMigration;
 
 // Unactivated prerequisite only. No permit or persistent entrypoint calls this.
-internal sealed class CurrentAuthArchiveGenuineCapability
+internal sealed partial class CurrentAuthArchiveGenuineCapability
 {
     private const string IssuerType = "Legacy.Maliev.DataMigration.Console.CurrentAuthArchiveGenuineIssuer";
     private const string EnvironmentType = "Legacy.Maliev.DataMigration.Console.CurrentAuthLocalSessionArchiveEnvironment";
@@ -74,7 +74,7 @@ internal sealed class CurrentAuthArchiveGenuineCapability
 
     internal void Stop()
     {
-        Interlocked.Exchange(ref _state, 2);
+        _ = Interlocked.Exchange(ref _state, 2);
     }
 
     private static MethodInfo FixedMethod(Type type, string name, Type result, Type[] parameters)
@@ -95,7 +95,7 @@ internal sealed class CurrentAuthArchiveGenuineCapability
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         if (binding is null || binding.Scope is null || binding.Subject is null || binding.Source is null || binding.Environment is null ||
-            binding.Phase != "helper" || binding.CaseId != "dual-durable-readback" || binding.Subject.Seed.CaseId != binding.CaseId ||
+            binding.Phase != "helper" || CurrentAuthArchiveGenuineRecoveryHelpers.CaseId(CurrentAuthArchiveGenuineRecoveryHelpers.Parse(binding.CaseId)) != binding.Subject.Seed.CaseId ||
             binding.Subject != binding.Scope.ComponentSubject) { throw Invalid(); }
         CurrentAuthArchiveComponentBootstrap.RequireClaims(binding.Scope, binding.Trust, binding.Pins, now);
         var seed = binding.Subject.Seed;

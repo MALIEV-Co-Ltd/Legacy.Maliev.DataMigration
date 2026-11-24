@@ -12,6 +12,7 @@ public sealed class PostgreSqlAdapterTestGroup : ICollectionFixture<PostgreSqlAd
 }
 public class PostgreSqlAdapterFixture : IAsyncLifetime
 {
+    internal const string CompanyPg187Image = "postgres@sha256:68e33adb18d9962952f00d5e3b8644305e10e375f98dd652bf6ee6a1836314ba";
     private readonly PostgreSqlContainer _container;
 
     public PostgreSqlAdapterFixture() : this(384)
@@ -22,13 +23,19 @@ public class PostgreSqlAdapterFixture : IAsyncLifetime
     {
     }
 
-    internal PostgreSqlAdapterFixture(int memoryLimitMiB, bool quiescent)
+    internal PostgreSqlAdapterFixture(int memoryLimitMiB, bool quiescent) : this(memoryLimitMiB, quiescent, "postgres:18-alpine")
     {
+    }
+
+    internal PostgreSqlAdapterFixture(int memoryLimitMiB, bool quiescent, string image)
+    {
+        if (image != "postgres:18-alpine" && (image != CompanyPg187Image || !quiescent))
+        { throw new ArgumentOutOfRangeException(nameof(image), "Only the existing fixture image or the fixed quiescent Company PG18.7 image is supported."); }
         if (memoryLimitMiB is not (256 or 384))
         {
             throw new ArgumentOutOfRangeException(nameof(memoryLimitMiB), "Only the reviewed PostgreSQL fixture budgets are permitted.");
         }
-        var builder = new PostgreSqlBuilder("postgres:18-alpine");
+        var builder = new PostgreSqlBuilder(image);
         if (quiescent)
         {
             builder = builder.WithCommand("-c", "autovacuum=off")

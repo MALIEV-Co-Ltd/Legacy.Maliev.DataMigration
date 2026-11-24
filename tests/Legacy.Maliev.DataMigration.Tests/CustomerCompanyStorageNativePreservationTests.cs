@@ -52,6 +52,7 @@ public sealed class CustomerCompanyStorageNativePreservationTests(CompanyStorage
                     INSERT INTO public."Company" ("ID","Name","TaxNumber","Registrar") VALUES
                         (100,'synthetic name  ','synthetic tax  ',NULL),(101,repeat('😀',128),NULL,'synthetic registrar');
                     INSERT INTO public."Unrelated" VALUES (1,'synthetic unrelated  ');
+                    ALTER TABLE public."Company" ALTER COLUMN "Name" SET (n_distinct=-0.25);
                     CREATE SCHEMA legacy_migration_internal;
                     CREATE TABLE legacy_migration_internal."Journal" ("ID" integer PRIMARY KEY,"Payload" text);
                     INSERT INTO legacy_migration_internal."Journal" VALUES (1,'synthetic private  ');

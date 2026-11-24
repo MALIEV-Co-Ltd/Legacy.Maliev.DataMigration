@@ -5,4 +5,9 @@ namespace Legacy.Maliev.DataMigration.Console;
 internal interface ICurrentAuthArchiveGenuineOwnedLease : IAsyncDisposable
 {
     Task<CurrentAuthArchiveGenuineAttestation> AttestAsync(bool requireBaseline, CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineHelperClaims> PrepareDualHelperClaimsAsync(CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineDualArtifacts> RetainDualHelperFactsAsync(CurrentAuthArchiveGenuineDualFacts facts, CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineHelperClaims> PrepareRecoveryHelperClaimsAsync(CurrentAuthArchiveGenuineRecoveryHelperCase helperCase, CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineRecoveryHelpersOutcome> ExecuteRecoveryHelperFaultAsync(CurrentAuthArchiveGenuineRecoveryHelpersRequest request, CancellationToken ct);
+    Task<CurrentAuthArchiveGenuineDualArtifacts> RetainRecoveryHelperFactsAsync(CurrentAuthArchiveGenuineRecoveryHelpersFacts facts, CancellationToken ct);
 }
