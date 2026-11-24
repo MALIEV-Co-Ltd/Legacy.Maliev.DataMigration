@@ -7,8 +7,8 @@ using Xunit.Abstractions;
 namespace Legacy.Maliev.DataMigration.Tests;
 
 /// <summary>Disposable characterization only; no operational catalog-transition verifier or persistent authority.</summary>
-[Collection(PostgreSqlAdapterTestGroup.Name)]
-public sealed class CustomerCompanyStorageRepairNativeTests(PostgreSqlAdapterFixture fixture, ITestOutputHelper output)
+[Collection(CompanyStoragePreservationTestGroup.Name)]
+public sealed class CustomerCompanyStorageRepairNativeTests(CompanyStoragePreservationFixture fixture, ITestOutputHelper output)
 {
     private static readonly string[] DiagnosticFieldCatalogs = ["pg_class", "pg_database", "pg_attribute", "pg_authid"];
 
