@@ -240,8 +240,26 @@ public static partial class MigrationConsole
                     return await RunCurrentAuthArchiveHelperSdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "execute-current-auth-archive-helper-provider":
                     return await RunCurrentAuthArchiveHelperProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-recovery-host":
+                    return await RunCurrentAuthArchiveRecoveryV2HostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-archive-recovery-sdk":
+                    return await RunCurrentAuthArchiveRecoveryV2SdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "execute-current-auth-archive-recovery-provider":
+                    return await RunCurrentAuthArchiveRecoveryV2ProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-execution-host":
+                    return await RunCurrentAuthArchiveExecutionHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-archive-execution-sdk":
+                    return await RunCurrentAuthArchiveExecutionSdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "execute-current-auth-archive-execution-provider":
+                    return await RunCurrentAuthArchiveExecutionProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "run-current-auth-archive-genuine-testhost":
                     return await RunCurrentAuthArchiveGenuineTestHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-preflight-host":
+                    return await RunCurrentAuthArchivePreflightHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-archive-preflight-sdk":
+                    return await RunCurrentAuthArchivePreflightSdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "execute-current-auth-archive-preflight-provider":
+                    return await RunCurrentAuthArchivePreflightProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "review-current-auth-local-session-archive":
                 case "authorize-current-auth-local-session-archive":
                 case "verify-current-auth-local-session-archive":

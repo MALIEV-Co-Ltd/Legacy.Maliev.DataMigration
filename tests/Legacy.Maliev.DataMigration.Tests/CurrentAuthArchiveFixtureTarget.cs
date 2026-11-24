@@ -15,7 +15,7 @@ namespace Legacy.Maliev.DataMigration.Tests;
 // No schema, archive provider, permission or execution proof is produced here.
 // Fixed named disposable fixture only. It does not accept a database endpoint, arbitrary
 // container image/name/mount, cleanup selector, SQL callback or persistent volume.
-internal sealed class CurrentAuthArchiveFixtureTarget : IAsyncDisposable
+internal sealed partial class CurrentAuthArchiveFixtureTarget : IAsyncDisposable
 {
     internal const string Image = "postgres:18.4-bookworm@sha256:882236b897e39051d2368c5ccc6cda944904723506b2dfc97f2a8f5bc9afa382";
     private readonly DockerClient _docker;

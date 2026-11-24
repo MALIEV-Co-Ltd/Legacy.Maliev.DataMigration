@@ -53,11 +53,32 @@ internal static class CurrentAuthArchiveGenuineHost
             .Where(x => x.Name.StartsWith("Archive_", StringComparison.Ordinal))];
         if (!methods.Select(x => x.Name).Order(StringComparer.Ordinal).SequenceEqual(expected, StringComparer.Ordinal) ||
             methods.Any(method => method.ReturnType != typeof(Task) || method.GetParameters().Length != 0 ||
-                !method.CustomAttributes.Any(attribute => attribute.AttributeType.FullName is
-                    "Xunit.FactAttribute" or "Legacy.Maliev.DataMigration.Tests.WindowsLocalRunFactAttribute")))
+                !HasFixedCaseAttribute(method, CurrentAuthArchiveGenuineCases.Inventory().Single(item => item.MethodName == method.Name))))
         { throw Invalid("cases_missing"); }
     }
 
+    private static bool HasFixedCaseAttribute(MethodInfo method, CurrentAuthArchiveGenuineCase item)
+    {
+        string name = (item.Phase, item.CaseId) switch
+        {
+            ("helper", "dual-durable-readback") => "CurrentAuthArchiveGenuineDualHelperFactAttribute",
+            ("helper", _) => "CurrentAuthArchiveGenuineRecoveryHelperFactAttribute",
+            ("recovery", _) => "CurrentAuthArchiveRecoveryV2FactAttribute",
+            ("native", "host-unprobed-sdk" or "local-trust") => "CurrentAuthArchiveGenuinePreflightFactAttribute",
+            ("native" or "delete", _) => "CurrentAuthArchiveGenuineExecutionFactAttribute",
+            _ => throw Invalid("cases_missing"),
+        };
+        CustomAttributeData[] attributes = [.. method.CustomAttributes.Where(attribute =>
+            attribute.AttributeType.FullName == "Legacy.Maliev.DataMigration.Tests." + name)];
+        if (attributes.Length != 1) { return false; }
+        var attribute = attributes[0];
+        return attribute.AttributeType.Assembly != method.DeclaringType!.Assembly || !attribute.AttributeType.IsSealed ||
+            attribute.AttributeType.BaseType?.FullName != "Xunit.FactAttribute" || attribute.NamedArguments.Count != 0
+            ? false
+            : name == "CurrentAuthArchiveGenuineDualHelperFactAttribute"
+            ? attribute.ConstructorArguments.Count == 0
+            : attribute.ConstructorArguments.Count == 1 && attribute.ConstructorArguments[0].Value is string id && id == item.CaseId;
+    }
     internal static async Task AuthenticateAsync(CurrentAuthArchiveGenuineHostConfiguration request, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();

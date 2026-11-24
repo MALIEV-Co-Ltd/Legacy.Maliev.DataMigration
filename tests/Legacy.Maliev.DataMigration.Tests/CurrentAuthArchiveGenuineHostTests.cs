@@ -45,16 +45,13 @@ public sealed class CurrentAuthArchiveGenuineHostTests
     }
 
     [Fact]
-    public void Missing_real_cases_are_a_refusal_and_never_an_empty_successful_suite()
+    public void Actual_eighteen_method_inventory_is_distinct_from_semantic_proof_acceptance()
     {
-        MigrationExecutionException failure = Assert.Throws<MigrationExecutionException>(() =>
-            CurrentAuthArchiveGenuineHost.RequireCompleteCaseInventory(typeof(CurrentAuthArchiveGuardedExecutionTests).Assembly));
-        Assert.Equal("current_auth_archive_genuine_cases_missing", failure.Code);
-        Assert.Equal(CurrentAuthArchiveGenuineCases.Inventory().Where(x => x.Phase == "helper").Select(x => x.MethodName).Order(StringComparer.Ordinal),
+        CurrentAuthArchiveGenuineHost.RequireCompleteCaseInventory(typeof(CurrentAuthArchiveGuardedExecutionTests).Assembly);
+        Assert.Equal(CurrentAuthArchiveGenuineCases.Inventory().Select(x => x.MethodName).Order(StringComparer.Ordinal),
             typeof(CurrentAuthArchiveGuardedExecutionTests).GetMethods().Where(x => x.Name.StartsWith("Archive_", StringComparison.Ordinal))
                 .Select(x => x.Name).Order(StringComparer.Ordinal));
     }
-
     [Fact]
     public async Task Cancelled_provider_stops_before_images_inputs_or_targets()
     {

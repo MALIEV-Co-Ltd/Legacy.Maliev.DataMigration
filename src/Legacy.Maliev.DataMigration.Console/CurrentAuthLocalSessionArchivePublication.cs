@@ -21,6 +21,11 @@ internal sealed class CurrentAuthLocalSessionArchivePublication(CurrentAppOwnedR
     private readonly Dictionary<string, Attempt> _attempted = new(StringComparer.Ordinal);
     private CurrentAuthArchivePublicationFault _fault = fault;
     private bool _disposed;
+    private readonly CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? _genuineDenial;
+
+    internal CurrentAuthLocalSessionArchivePublication(CurrentAppOwnedRepairCustody files, WindowsLocalRunAuthority local,
+        WindowsLocalRunAuthority production, Guid operationId, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial denial)
+        : this(files, local, production, operationId, CurrentAuthArchivePublicationFault.None) { _genuineDenial = denial; }
 
     internal bool IsAcknowledged(string name)
     {
@@ -36,8 +41,25 @@ internal sealed class CurrentAuthLocalSessionArchivePublication(CurrentAppOwnedR
             !suffixes.Any(suffix => name == prefix + suffix) || _attempted.ContainsKey(name))
         { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
         string path = Path.Combine(local.Binding.ArtifactRootCanonicalPath, name);
-        var stream = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 4096,
-            FileOptions.Asynchronous | FileOptions.WriteThrough);
+        var collision = _genuineDenial?.BeginSlot(name, operationId, files, local, production);
+        FileStream stream;
+        Exception? createFailure = null;
+        try
+        {
+            // The original writer call executes against the actual held collision.
+            stream = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 4096,
+                FileOptions.Asynchronous | FileOptions.WriteThrough);
+            if (collision is not null) { stream.Dispose(); throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
+        }
+        catch (Exception failure) when (collision is not null && (failure is IOException or UnauthorizedAccessException))
+        {
+            createFailure = failure; collision.RecordOriginalCreateFailure(failure); throw;
+        }
+        finally
+        {
+            try { collision?.Dispose(); }
+            catch (Exception cleanup) when (createFailure is not null) { createFailure.Data["slot_collision_cleanup_failure"] = cleanup.GetType().Name; }
+        }
         // Retain the create-new handle even if identity validation or publication fails.
         var attempt = new Attempt(stream, path);
         _attempted.Add(name, attempt);
