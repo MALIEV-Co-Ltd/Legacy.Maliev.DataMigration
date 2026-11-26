@@ -7,7 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Google.Cloud.Storage.V1" Version="5.0.0" />
-    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="Npgsql" Version="11.0.0" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../Legacy.Maliev.DataMigration.SqlServer/VerifiedBackupRestorer.cs" Link="VerifiedBackupRestorer.cs" />
