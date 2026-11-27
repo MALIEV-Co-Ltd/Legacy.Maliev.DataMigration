@@ -13,8 +13,20 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
     private CurrentAuthArchiveGenuinePreflightCase? _preflightCase;
     private int _preflightStarted;
 
-    internal static async Task<CurrentAuthArchiveGenuineOwnedPair> CreatePreflightAsync(CurrentAuthArchiveGenuineHostConfiguration request,
+    internal static Task<CurrentAuthArchiveGenuineOwnedPair> CreatePreflightAsync(CurrentAuthArchiveGenuineHostConfiguration request,
         CurrentAuthArchiveGenuinePreflightCase expected, CancellationToken ct)
+    { return CreatePreflightCoreAsync(request, expected, null, ct); }
+
+    internal static Task<CurrentAuthArchiveGenuineOwnedPair> CreateFinal6PreflightAsync(CurrentAuthArchiveFinal6CaseContext context,
+        CurrentAuthArchiveGenuinePreflightCase expected, CancellationToken ct)
+    {
+        return CurrentAuthArchiveGeneratedCasesV2.Preflight(context.Case) != expected
+            ? throw CurrentAuthArchiveFinal6Source.Invalid()
+            : CreatePreflightCoreAsync(context.Request, expected, context, ct);
+    }
+
+    private static async Task<CurrentAuthArchiveGenuineOwnedPair> CreatePreflightCoreAsync(CurrentAuthArchiveGenuineHostConfiguration request,
+        CurrentAuthArchiveGenuinePreflightCase expected, CurrentAuthArchiveFinal6CaseContext? final6Case, CancellationToken ct)
     {
         CurrentAuthArchiveGenuinePreflightInputContract.Require(new(CurrentAuthArchiveGenuinePreflightInputContract.Kind, request), expected);
         var bundle = await CurrentAuthTypedHostProducer.HoldFixedTestBundleAsync(Path.GetDirectoryName(request.Inputs.TestImage.Path)!, ct);
@@ -22,7 +34,8 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
         try
         {
             bundle.Require();
-            inputs = await CurrentAuthArchiveComponentReadback.OpenGenuinePreflightInitialAsync(request.Inputs, expected, ct);
+            inputs = final6Case is not null ? await CurrentAuthArchiveComponentReadback.OpenFinal6InitialAsync(request.Inputs, final6Case, ct) :
+                await CurrentAuthArchiveComponentReadback.OpenGenuinePreflightInitialAsync(request.Inputs, expected, ct);
             var seed = await inputs.ReadSeedAsync(ct);
             CurrentAuthArchiveGenuinePreflight.RequireSeed(seed, inputs.Pins, inputs.TrustStore, expected, DateTimeOffset.UtcNow);
             pair = new(inputs, bundle, seed, ct) { _preflightCase = expected };

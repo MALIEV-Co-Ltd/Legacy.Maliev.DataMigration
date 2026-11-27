@@ -80,6 +80,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
             Connection(_firstFiles, _firstPolicy.OperatorConnectionPath), Connection(_secondFiles, _secondPolicy.OperatorConnectionPath),
             Connection(_firstFiles, _firstPolicy.OrdinaryConnectionPath), Connection(_secondFiles, _secondPolicy.OrdinaryConnectionPath),
             _dualDeviceProof, _inputs.TrustStore, _inputs.Pins, CurrentAuthLocalSessionArchivePolicy.Hash(auth));
+        _inputs.BindFinal6Environment(_environment);
         _executionClaims = new(review, auth); await RequireAsync(ct);
         static string Connection(CurrentAppOwnedRepairCustody files, string path)
         {
@@ -88,8 +89,9 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
     }
     private async Task RequireRecoveryLiveAsync(bool baseline, CancellationToken ct)
     {
-        if (_recoveryV2Case is not { } selected || _recoveryAudience is null || _executionClaims is null || _disposed || DateTimeOffset.UtcNow >= Scope.ExpiresAtUtc) { throw Invalid(); }
-        CurrentAuthArchiveRecoveryV2.RequireAudience(_recoveryAudience, _seed, _inputs.Pins, DateTimeOffset.UtcNow);
+        if (_recoveryV2Case is not { } selected || (_recoveryAudience is null && _inputs.Final6Case is null) || _executionClaims is null || _disposed || DateTimeOffset.UtcNow >= Scope.ExpiresAtUtc) { throw Invalid(); }
+        if (_inputs.Final6Case is { } final6) { await final6.RequireFactoryAsync(ct); }
+        else { CurrentAuthArchiveRecoveryV2.RequireAudience(_recoveryAudience ?? throw Invalid(), _seed, _inputs.Pins, DateTimeOffset.UtcNow); }
         if (baseline) { await RequireAsync(ct); return; }
         await RequireRecoveryCustodyAsync(ct);
         if (_environment is not null) { await _environment.RequireAcceptedSourceOwnerCustodyAndTargetsAsync(Scope, ct); }

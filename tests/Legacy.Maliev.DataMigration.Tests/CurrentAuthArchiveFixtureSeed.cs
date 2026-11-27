@@ -36,6 +36,14 @@ internal static class CurrentAuthArchiveFixtureSeed
         { throw CurrentAuthRepairPermit.Invalid(); }
     }
 
+    private static async Task RequireRuntimeInputAsync(CurrentAuthArchiveFixtureTarget fixture, FreshSchemaPlan source, CancellationToken ct)
+    {
+        if (fixture.Final6Case is null)
+        { RequireInput(fixture.Source, source, fixture.Comparison, fixture.Configuration.Databases, DateTimeOffset.UtcNow); return; }
+        if (SchemaPlanCanonicalizer.ComputeSha256(fixture.Source) != SchemaPlanCanonicalizer.ComputeSha256(source)) { throw CurrentAuthArchiveFinal6Source.Invalid(); }
+        await fixture.Final6Case.RequireFixtureAsync(source, fixture.Operation, fixture.Comparison, fixture.Configuration.Databases, ct);
+    }
+
     internal static async Task<CurrentAuthArchiveFixtureSeedCapture> SeedAndCaptureAsync(CurrentAuthArchiveFixtureTarget fixture,
         CurrentAppOwnedRepairCustody hostFiles, CurrentAuthArchiveProofArtifact sourceArtifact, string acceptedCommit, CancellationToken ct)
     {
@@ -44,7 +52,7 @@ internal static class CurrentAuthArchiveFixtureSeed
         try
         {
             FreshSchemaPlan source = CurrentAuthArchiveFixtureSource.Read(hostFiles, sourceArtifact, acceptedCommit, DateTimeOffset.UtcNow);
-            RequireInput(fixture.Source, source, fixture.Comparison, fixture.Configuration.Databases, DateTimeOffset.UtcNow);
+            await RequireRuntimeInputAsync(fixture, source, ct);
             await fixture.RequireHealthyAsync(ct);
             // Create-new, before effects: a partial attempt cannot be resumed or seeded twice.
             using (var authority = WindowsLocalRunAuthority.AcquireResume(fixture.Root, fixture.Binding))
@@ -84,6 +92,12 @@ internal static class CurrentAuthArchiveFixtureSeed
                 };
                 await using var writer = new PostgreSqlWholeDatabaseTransaction(connection, tx, ownsResources: false);
                 await writer.ApplySchemaAsync(physical, ct); await writer.FinalizeSchemaAsync(physical, ct);
+                if (fixture.Final6Case is not null && CustomerCompanyStorageManifest.IsProfile(plan.TargetExtensionProfile))
+                {
+                    await using var normalizer = new NpgsqlCommand(CustomerCompanyStorageManifest.CreateNormalizerSql, connection, tx);
+                    _ = await normalizer.ExecuteNonQueryAsync(ct);
+                    await CustomerCompanyStorageManifest.RequireNormalizerAsync(plan, connection, tx, ct);
+                }
                 await tx.CommitAsync(ct);
             }
             await CreateAuthAsync(new NpgsqlConnectionStringBuilder(fixture.AdminConnection) { Database = "Auth" }.ConnectionString, fixture.Comparison, ct);
@@ -126,7 +140,7 @@ internal static class CurrentAuthArchiveFixtureSeed
     {
         using var lease = CancellationTokenSource.CreateLinkedTokenSource(ct, fixture.Token); ct = lease.Token;
         FreshSchemaPlan source = CurrentAuthArchiveFixtureSource.Read(hostFiles, sourceArtifact, acceptedCommit, DateTimeOffset.UtcNow);
-        RequireInput(fixture.Source, source, fixture.Comparison, fixture.Configuration.Databases, DateTimeOffset.UtcNow);
+        await RequireRuntimeInputAsync(fixture, source, ct);
         if (operatorArtifact.Path != Path.Combine(fixture.Root, "archive-policy-operator.txt") ||
             maintenance.Role != "archive_policy_" + fixture.Operation.ToString("N")) { throw CurrentAuthRepairPermit.Invalid(); }
         byte[] bytes;

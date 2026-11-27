@@ -38,7 +38,7 @@ internal static class CurrentAuthArchiveGenuineExecutionRunner
         return new(method, candidate);
     }
 
-    private static async Task<CurrentAuthArchiveGenuineArtifact> PublishCompletedAsync(CurrentAuthArchiveGenuineHostConfiguration request,
+    internal static async Task<CurrentAuthArchiveGenuineArtifact> PublishCompletedAsync(CurrentAuthArchiveGenuineHostConfiguration request,
         LocalExecutionBinding binding, CurrentAuthArchiveGenuineExecutionCase expectedCase, CurrentAuthArchiveGenuineExecutionMethodResult method, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();

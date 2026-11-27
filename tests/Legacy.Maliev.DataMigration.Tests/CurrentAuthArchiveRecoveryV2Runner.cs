@@ -38,7 +38,7 @@ internal static class CurrentAuthArchiveRecoveryV2Runner
         return new(new(method.ReturnCode, method.StartedAtUtc, method.ReturnedAtUtc, method.Artifacts), candidate);
     }
 
-    private static async Task<CurrentAuthArchiveGenuineArtifact> PublishCompletedAsync(CurrentAuthArchiveGenuineHostConfiguration request,
+    internal static async Task<CurrentAuthArchiveGenuineArtifact> PublishCompletedAsync(CurrentAuthArchiveGenuineHostConfiguration request,
         LocalExecutionBinding binding, CurrentAuthArchiveRecoveryV2Case expectedCase, CurrentAuthArchiveGenuineExecutionMethodResult method, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();

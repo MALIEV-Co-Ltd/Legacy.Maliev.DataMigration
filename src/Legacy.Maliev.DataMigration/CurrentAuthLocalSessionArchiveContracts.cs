@@ -135,14 +135,27 @@ internal static class CurrentAuthLocalSessionArchivePolicy
 
     internal static void RequireScope(CurrentAuthArchiveScope scope, DateTimeOffset now)
     {
+        if (!Enum.IsDefined(scope.ProofAdmission)) { throw Invalid(); }
+        RequireCommonScopeShape(scope, now);
+        var local = scope.LocalObservationPolicy; var production = scope.ProductionObservationPolicy;
+        if (scope.ProofAdmission == CurrentAuthArchiveProofAdmission.PersistentWithClosedConsoleProof ?
+            !DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(local.Target) || production.Target.Kind != DeltaTargetAuthorityKind.ProductionCloudNativePg :
+            !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(local.Target) || production.Target.Kind != DeltaTargetAuthorityKind.LocalAspire ||
+            !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(production.Target)) { throw Invalid(); }
+        string[] reports = [scope.ArchiveHelperProofSha256, scope.ArchiveNativeProofSha256, scope.ExactDeleteReviewSha256, scope.RecoveryReviewSha256];
+        if (scope.ProofAdmission == CurrentAuthArchiveProofAdmission.DisposableNativeBootstrap)
+        {
+            if (reports.Any(value => value != string.Empty)) { throw Invalid(); }
+            CurrentAuthArchiveComponentBootstrap.RequireStructure(scope, now);
+        }
+        else if (scope.ComponentSubject is not null || reports.Any(value => value is null || !CurrentAuthRepairPermit.HashShape(value))) { throw Invalid(); }
+    }
+    internal static void RequireCommonScopeShape(CurrentAuthArchiveScope scope, DateTimeOffset now)
+    {
         if (scope.LocalObservationPolicy is null || scope.ProductionObservationPolicy is null || scope.Paths is null) { throw Invalid(); }
         CurrentAuthRepairScope local = scope.LocalObservationPolicy, production = scope.ProductionObservationPolicy;
         if (scope.OperationId == Guid.Empty || local.OperationId != scope.OperationId || production.OperationId != scope.OperationId ||
-            local.Target.Kind != DeltaTargetAuthorityKind.LocalAspire || !Enum.IsDefined(scope.ProofAdmission) ||
-            (scope.ProofAdmission == CurrentAuthArchiveProofAdmission.PersistentWithClosedConsoleProof ?
-                !DeltaSynchronizationPlanProducer.IsPersistentLocalAuthority(local.Target) || production.Target.Kind != DeltaTargetAuthorityKind.ProductionCloudNativePg :
-                !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(local.Target) || production.Target.Kind != DeltaTargetAuthorityKind.LocalAspire ||
-                !DeltaSynchronizationPlanProducer.IsDisposableLocalAuthority(production.Target)) ||
+            local.Target.Kind != DeltaTargetAuthorityKind.LocalAspire ||
             local.Target.SystemIdentifierSha256 == production.Target.SystemIdentifierSha256 || local.RunBindingSha256 == production.RunBindingSha256 ||
             local.SourceCommitSha != production.SourceCommitSha || local.AuthOwnerCommitSha != ApprovedCurrentAuthSchema.AuthServiceCommit ||
             local.SourceCommitSha.Length != 40 || local.SourceCommitSha.Any(c => c is not (>= '0' and <= '9') and not (>= 'a' and <= 'f')) ||
@@ -156,13 +169,6 @@ internal static class CurrentAuthLocalSessionArchivePolicy
             scope.CapturedAtUtc.Offset != TimeSpan.Zero || scope.ExpiresAtUtc.Offset != TimeSpan.Zero || scope.CapturedAtUtc > now ||
             now - scope.CapturedAtUtc > TimeSpan.FromMinutes(5) || scope.ExpiresAtUtc <= now || scope.ExpiresAtUtc - scope.CapturedAtUtc > TimeSpan.FromMinutes(5)) { throw Invalid(); }
         RequireFleetMap(local, false); RequireFleetMap(production, true);
-        string[] reports = [scope.ArchiveHelperProofSha256, scope.ArchiveNativeProofSha256, scope.ExactDeleteReviewSha256, scope.RecoveryReviewSha256];
-        if (scope.ProofAdmission == CurrentAuthArchiveProofAdmission.DisposableNativeBootstrap)
-        {
-            if (reports.Any(x => x != string.Empty)) { throw Invalid(); }
-            CurrentAuthArchiveComponentBootstrap.RequireStructure(scope, now);
-        }
-        else if (scope.ComponentSubject is not null || reports.Any(x => x is null || !CurrentAuthRepairPermit.HashShape(x))) { throw Invalid(); }
         string[] paths = [scope.Paths.FirstCiphertext, scope.Paths.SecondCiphertext, scope.Paths.RecoveryPrivateKey, scope.Paths.SecondRecoveryPrivateKey];
         if (paths.Any(string.IsNullOrWhiteSpace) || paths.Distinct(StringComparer.OrdinalIgnoreCase).Count() != 4 ||
             string.Equals(Path.GetDirectoryName(paths[0]), Path.GetDirectoryName(paths[1]), StringComparison.OrdinalIgnoreCase)) { throw Invalid(); }
@@ -279,7 +285,10 @@ internal sealed partial class CurrentAuthLocalSessionArchivePermit
         if (Volatile.Read(ref _state) == 3) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
         try
         {
-            if (CurrentAuthLocalSessionArchivePolicy.Hash(Claims(_review, _authorization, _trust, _pins, _clock.GetUtcNow())) != CurrentAuthLocalSessionArchivePolicy.Hash(Scope))
+            if (_final6Persistent is not null && _persistentV2 is not null) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
+            if (_final6Persistent is not null) { await _final6Persistent.RequirePermitAsync(this, ct).ConfigureAwait(false); }
+            else if (_persistentV2 is not null) { await _persistentV2.RequirePermitAsync(this, ct).ConfigureAwait(false); }
+            else if (CurrentAuthLocalSessionArchivePolicy.Hash(Claims(_review, _authorization, _trust, _pins, _clock.GetUtcNow())) != CurrentAuthLocalSessionArchivePolicy.Hash(Scope))
             { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
             await Environment.RequireAcceptedSourceOwnerCustodyAndTargetsAsync(Scope, ct).ConfigureAwait(false);
             if (Volatile.Read(ref _state) == 3) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
@@ -291,6 +300,8 @@ internal sealed partial class CurrentAuthLocalSessionArchivePermit
         await RequireAsync(ct).ConfigureAwait(false);
         CurrentAuthArchiveFleet local = await Environment.CaptureLocalFleetAsync(Scope, ct).ConfigureAwait(false);
         CurrentAuthArchiveFleet production = await Environment.CaptureProductionFleetAsync(Scope, ct).ConfigureAwait(false);
+        _persistentV2?.RequireFleets(local, production);
+        _final6Persistent?.RequireFleets(local, production);
         DateTimeOffset now = _clock.GetUtcNow();
         CurrentAuthLocalSessionArchivePolicy.RequireFleet(local, Scope.LocalObservationPolicy, now);
         CurrentAuthLocalSessionArchivePolicy.RequireFleet(production, Scope.ProductionObservationPolicy, now, comparison: true);

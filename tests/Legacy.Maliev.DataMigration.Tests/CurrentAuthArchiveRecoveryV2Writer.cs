@@ -27,7 +27,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
             CurrentAuthArchiveClaim review, CurrentAuthArchiveClaim authorization, CurrentAuthArchiveFleet empty,
             CurrentAuthArchiveFleet comparison, CurrentAuthArchiveRecoveryV2Storage storage, byte[] recovered)
         {
-            return pair._restoreStarted != 1 || !pair._executionEnvironmentClosed || pair._environment is not null || pair._recoveryCapture is null ||
+            return pair._restoreStarted != 1 || !pair._executionEnvironmentClosed || pair._environment is not null || (pair._recoveryCapture is null && pair._recoveryFinal6Capture is null) ||
                 pair._recoveryV2Case is null || pair._recoveryAudienceClaim is null || pair._disposed || empty.Auth.Sessions.Count != 0 ||
                 scope.FirstDomain != (pair._recoveryV2Case == CurrentAuthArchiveRecoveryV2Case.FirstOnly) ||
                 scope.AudienceSha256 != CurrentAuthLocalSessionArchivePolicy.Hash(pair._recoveryAudienceClaim) ||
@@ -42,7 +42,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
         {
             CurrentAuthArchiveRecoveryV2Preservation.RequireScope(_scope, _pair.Scope, DateTimeOffset.UtcNow);
             await _pair.RequireRecoveryCustodyAsync(ct); await _storage.RequireCustodyAsync(ct);
-            var capture = _pair._recoveryCapture?.Evidence ?? throw Invalid();
+            var capture = _pair.RecoveryActualSource;
             if (_scope.SourceFullSha256 != capture.FullPlanSha256 || _scope.SourceDefinitionSha256 != capture.DefinitionSha256 || _scope.SourceIdentitySha256 != capture.SourceIdentitySha256) { throw Invalid(); }
             var reviewed = CurrentAuthLocalSessionArchivePolicy.Verify<CurrentAuthArchiveRestoreScopeV2>(_review, CurrentAuthArchiveRecoveryV2.ReviewDomain,
                 _pair._inputs.Pins.ReviewKeyId, _pair._inputs.Pins.ReviewFingerprint, _pair._inputs.TrustStore);

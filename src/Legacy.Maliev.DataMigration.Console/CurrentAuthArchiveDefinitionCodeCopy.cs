@@ -17,11 +17,17 @@ internal static class CurrentAuthArchiveDefinitionCodeCopy
             normalized.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase) || FixedAssets.Contains(normalized, StringComparer.Ordinal));
     }
 
-    internal static async Task CopyAsync(string qualifiedRoot, CurrentAuthArchiveDefinitionAnchorSession anchor, CancellationToken ct)
+    internal static Task CopyAsync(string qualifiedRoot, CurrentAuthArchiveDefinitionAnchorSession anchor, CancellationToken ct)
+    { return CopyCoreAsync(qualifiedRoot, anchor.Binding, ct); }
+
+    internal static Task CopyFinal6Async(string qualifiedRoot, CurrentAuthArchiveFinal6DefinitionAnchorSession anchor, CancellationToken ct)
+    { return CopyCoreAsync(qualifiedRoot, anchor.Binding, ct); }
+
+    private static async Task CopyCoreAsync(string qualifiedRoot, LocalExecutionBinding binding, CancellationToken ct)
     {
         string[] inventory = Inventory(qualifiedRoot, ct);
         using var sourceBundle = await CurrentAuthTypedHostProducer.HoldFixedTestBundleAsync(qualifiedRoot, ct);
-        using var authority = WindowsLocalRunAuthority.AcquireResume(anchor.Binding.ArtifactRootCanonicalPath, anchor.Binding);
+        using var authority = WindowsLocalRunAuthority.AcquireResume(binding.ArtifactRootCanonicalPath, binding);
         using var files = new CurrentAppOwnedRepairCustody(authority);
         const string canonical = @"B:\maliev-legacy\Legacy.Maliev.DataMigration\tests\Legacy.Maliev.DataMigration.Tests\bin\Release\net10.0";
         var approved = Inventory(canonical, ct).Select(path => Path.GetRelativePath(canonical, path)).ToHashSet(StringComparer.Ordinal);
@@ -34,13 +40,13 @@ internal static class CurrentAuthArchiveDefinitionCodeCopy
                 ct.ThrowIfCancellationRequested(); sourceBundle.Require();
                 string relative = Path.GetRelativePath(qualifiedRoot, path);
                 if (!ApprovedAsset(relative) || !approved.Contains(relative)) { continue; } // Retained case evidence is not a build asset and is never copied.
-                string destination = Path.Combine(anchor.Binding.ArtifactRootCanonicalPath, relative);
+                string destination = Path.Combine(binding.ArtifactRootCanonicalPath, relative);
                 string directory = Path.GetDirectoryName(destination)!;
                 if (!Directory.Exists(directory)) { SecureSnapshotFileCreation.CreateRestrictedDirectory(directory); }
                 using var source = SecureLocalFile.OpenReadShared(path);
                 if (!SecureLocalFile.HandleResolvesToApprovedPath(source, path) || source.Length is < 1 or > 128 * 1024 * 1024) { throw CurrentAuthArchiveRecoveryV2.Invalid(); }
                 byte[] bytes = new byte[checked((int)source.Length)]; await source.ReadExactlyAsync(bytes, ct);
-                if (Path.GetDirectoryName(destination) == anchor.Binding.ArtifactRootCanonicalPath) { await files.WriteNewAsync(destination, bytes, ct); }
+                if (Path.GetDirectoryName(destination) == binding.ArtifactRootCanonicalPath) { await files.WriteNewAsync(destination, bytes, ct); }
                 else
                 {
                     // Only a directory from the authenticated canonical asset inventory can become a child authority.

@@ -18,6 +18,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
             JsonSerializer.SerializeToUtf8Bytes(resource), CancellationToken.None), ct);
         _firstFiles.Require(); _secondFiles.Require(); _bundle.Require();
         if (_recoveryCapture is not null) { await _recoveryCapture.RequireAsync(ct); }
+        if (_recoveryFinal6Capture is not null) { await _recoveryFinal6Capture.RequireAsync(ct); }
     }
 
     private async Task<CurrentAuthArchiveFleet> CaptureRecoveryFleetAsync(bool comparison, CancellationToken ct)

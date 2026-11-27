@@ -10,8 +10,9 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
 
     async Task<CurrentAuthArchiveGenuineDualArtifacts> ICurrentAuthArchiveRecoveryV2Lease.CompleteRecoveryAsync(CurrentAuthArchiveGenuineExecutionFacts setup, CancellationToken ct)
     {
-        if (!OperatingSystem.IsWindows() || Interlocked.CompareExchange(ref _restoreStarted, 1, 0) != 0 || _recoveryV2Case is not { } selected || _recoveryAudience is null ||
-            _recoveryAudienceClaim is null || _recoveryCaseClaim is null || _recoverySourceConnection is null || _recoveryV2Input is null || _executionClaims != setup.Claims ||
+        if (!OperatingSystem.IsWindows() || Interlocked.CompareExchange(ref _restoreStarted, 1, 0) != 0 || _recoveryV2Case is not { } selected || (_recoveryAudience is null && _inputs.Final6Case is null) ||
+            _recoveryAudienceClaim is null || _recoveryCaseClaim is null || (_recoverySourceConnection is null && _inputs.Final6Case is null) ||
+            (_recoveryV2Input is null && _inputs.Final6Case is null) || _executionClaims != setup.Claims ||
             setup.Case != CurrentAuthArchiveRecoveryV2.SetupCase(selected) || _environment is null || _firstFiles is null || _secondFiles is null ||
             _firstAuthority is null || _secondAuthority is null || _first is null || _second is null || _firstPolicy is null || _secondPolicy is null || _dualDeviceProof is null) { throw Invalid(); }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, _lease.Token, _first.Token, _second.Token); ct = deadline.Token;
@@ -67,7 +68,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
                 if (!SecureLocalFile.HandleResolvesToApprovedPath(held, path) || held.Length != bytes.Length) { throw Invalid(); }
                 string hash = CurrentAuthLocalSessionArchivePolicy.HashBytes(bytes);
                 if (Convert.ToHexStringLower(SHA256.HashData(held)) != hash) { throw Invalid(); }
-                originals.Add(new(path, SecureLocalFile.GetHandleIdentity(held), hash, bytes.Length));
+                originals.Add(CurrentAuthArchiveRecoveryV2Storage.ObserveOriginalHandle(held, path, hash, bytes.Length));
                 // Retain identity/hash/length only; never copy either recovery domain into control custody.
             }
             finally { CryptographicOperations.ZeroMemory(bytes); }
@@ -76,8 +77,10 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
         // Release every old read handle, including custody's retained reads. Root authorities remain held throughout.
         _executionEnvironmentClosed = true; var old = _environment; _environment = null; old.Dispose();
         _firstFiles.Dispose(); _secondFiles.Dispose(); _firstFiles = new(_firstAuthority); _secondFiles = new(_secondAuthority);
-        _recoveryCapture = await CurrentReviewedCapture.CaptureAsync(_recoverySourceConnection, _recoveryAudience, ct);
-        await RecoveryValueAsync("current-source-capture", _recoveryCapture.Evidence, ct);
+        if (_inputs.Final6Case is { } final6) { _recoveryFinal6Capture = await final6.CaptureRestoreSourceAsync(Scope, ct); }
+        else { _recoveryCapture = await CurrentReviewedCapture.CaptureAsync(_recoverySourceConnection ?? throw Invalid(), _recoveryAudience ?? throw Invalid(), ct); }
+        await RecoveryValueAsync("current-source-capture", RecoveryActualSource, ct);
+        if (_recoveryFinal6Capture is not null) { await RecoveryValueAsync("final6-current-source-capture", _recoveryFinal6Capture.Evidence, ct); }
         using var storage = new CurrentAuthArchiveRecoveryV2Storage(_firstAuthority, _secondAuthority, Scope, _dualDeviceProof, selected, originals);
         await storage.RequireCustodyAsync(ct); await RecoveryValueAsync("other-domain-unavailable-before", storage.Unavailable, ct);
         byte[] recovered = await CurrentAuthLocalSessionArchiveCrypto.RecoverDomainAsync(storage, Scope, manifest, selected == CurrentAuthArchiveRecoveryV2Case.FirstOnly, ct);
@@ -93,7 +96,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair
             var restore = new CurrentAuthArchiveRestoreScopeV2("current-auth-owned-disposable-restore-scope-v2", Guid.NewGuid(), Scope.OperationId,
                 CurrentAuthLocalSessionArchivePolicy.Hash(_recoveryAudienceClaim), CurrentAuthLocalSessionArchivePolicy.Hash(Scope), CurrentAuthLocalSessionArchivePolicy.Hash(manifest),
                 CurrentAuthLocalSessionArchivePolicy.Hash(journals.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => new { pair.Key, Sha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(pair.Value) })),
-                _recoveryCapture.Evidence.FullPlanSha256, _recoveryCapture.Evidence.SourceIdentitySha256, _recoveryCapture.Evidence.DefinitionSha256,
+                RecoveryActualSource.FullPlanSha256, RecoveryActualSource.SourceIdentitySha256, RecoveryActualSource.DefinitionSha256,
                 Scope.LocalObservationPolicy.RunBindingSha256, Scope.ProductionObservationPolicy.RunBindingSha256, Scope.LocalObservationPolicy.TargetObservationSha256, Scope.ProductionObservationPolicy.TargetObservationSha256,
                 CurrentAuthLocalSessionArchivePolicy.Hash(currentEmpty.Databases), CurrentAuthLocalSessionArchivePolicy.Hash(currentComparison.Databases), currentEmpty.Auth.Native.Snapshot.Sha256,
                 CurrentAuthArchiveRecoveryV2Preservation.NativeSha(currentEmpty.Auth.Native), Scope.DeleteSetSha256, Scope.DeleteCount,

@@ -61,11 +61,15 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
     private async Task RequireAcceptedCoreAsync(CurrentAuthArchiveScope scope, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, OwnedCommitProxy? proxy, CancellationToken ct)
     {
         RequireObservationCustody(observation, proxy); Match(scope);
-        CurrentAuthLocalSessionArchivePolicy.RequireScope(scope, DateTimeOffset.UtcNow);
+        if (_final6PersistentBaselines is not null)
+        { _final6PersistentBaselines.RequireScope(scope, DateTimeOffset.UtcNow); CurrentAuthArchiveFinal6Source.RequireProfiles(_source, DateTimeOffset.UtcNow); }
+        else if (_persistentV2Baselines is not null) { _persistentV2Baselines.RequireScope(scope, DateTimeOffset.UtcNow); }
+        else { CurrentAuthLocalSessionArchivePolicy.RequireScope(scope, DateTimeOffset.UtcNow); }
         RequireObservationPolicies(scope, DateTimeOffset.UtcNow);
         ProductionSchemaCatalogInspector.ValidatePlan(_source, DateTimeOffset.UtcNow);
+        if (_final6Case is not null) { await _final6Case.RequireAsync(_source, scope.ComponentSubject?.Seed ?? throw CurrentAuthArchiveFinal6Source.Invalid(), _pins, _trust, ct).ConfigureAwait(false); }
         if (!ApprovedConsumerOverlaySelection.IsApproved(_source) ||
-            _source.Databases.Any(x => x.TargetExtensionProfile != ApprovedConsumerOverlaySelection.ProfileForDatabase(x.Database, ConsumerOverlaySelection.CurrentConsumerSchemaV3)) ||
+            (_final6Case is null && _final6PersistentBaselines is null && _source.Databases.Any(x => x.TargetExtensionProfile != ApprovedConsumerOverlaySelection.ProfileForDatabase(x.Database, ConsumerOverlaySelection.CurrentConsumerSchemaV3))) ||
             _source.Databases.Single(x => x.Database == "Quotation").SourceDispositionProfile != ApprovedSourceDispositionManifest.QuotationOutboxesV1)
         { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
         if (await SourceBackedLocalRepairSourceAcceptance.RequireAsync(ct).ConfigureAwait(false) != scope.LocalObservationPolicy.SourceCommitSha ||
@@ -139,7 +143,11 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
         var catalogs = new CurrentAuthArchiveFleetCatalogs(before, after, began, ended);
         CurrentAuthLocalSessionArchivePolicy.RequireCatalogs(catalogs, policy, !local, results.Select(x => x.Database), before.BeganAtUtc, DateTimeOffset.UtcNow);
         cohort.Complete();
-        RequireObservationCustody(observation, proxy); return new(auth ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid(), results.AsReadOnly(), began, ended, catalogs);
+        RequireObservationCustody(observation, proxy);
+        var fleet = new CurrentAuthArchiveFleet(auth ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid(), results.AsReadOnly(), began, ended, catalogs);
+        _persistentV2Baselines?.Require(fleet, local, _reserved && _prepared is not null);
+        _final6PersistentBaselines?.Require(fleet, local, _reserved && _prepared is not null);
+        return fleet;
     }
     private async Task<CurrentAuthArchiveCatalogObservation> CaptureCatalogCoreAsync(bool local, CurrentAuthRepairScope policy, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, OwnedCommitProxy? proxy, CancellationToken ct)
     {

@@ -262,6 +262,28 @@ public static partial class MigrationConsole
                     return await RunCurrentAuthArchiveHelperHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "produce-current-auth-archive-proof-v2":
                     return await RunCurrentAuthArchiveProofV2Async(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-auth-local-session-archive-v2":
+                case "authorize-current-auth-local-session-archive-v2":
+                case "verify-current-auth-local-session-archive-v2":
+                case "apply-current-auth-local-session-archive-v2":
+                    return await RunCurrentAuthArchivePersistentV2Async(invocation.Command, invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "capture-current-auth-archive-final6-source":
+                    return await RunCurrentAuthArchiveFinal6CaptureAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-final6-definition":
+                    return await RunCurrentAuthArchiveFinal6DefinitionAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-final6-host":
+                    return await RunCurrentAuthArchiveFinal6HostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-archive-final6-sdk":
+                    return await RunCurrentAuthArchiveFinal6SdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "execute-current-auth-archive-final6-provider":
+                    return await RunCurrentAuthArchiveFinal6ProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-final6-proof":
+                    return await RunCurrentAuthArchiveFinal6ProofAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-auth-local-session-archive-final6":
+                case "authorize-current-auth-local-session-archive-final6":
+                case "verify-current-auth-local-session-archive-final6":
+                case "apply-current-auth-local-session-archive-final6":
+                    return await RunCurrentAuthArchiveFinal6PersistentAsync(invocation.Command, invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "run-current-auth-archive-helper-sdk":
                     return await RunCurrentAuthArchiveHelperSdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "execute-current-auth-archive-helper-provider":

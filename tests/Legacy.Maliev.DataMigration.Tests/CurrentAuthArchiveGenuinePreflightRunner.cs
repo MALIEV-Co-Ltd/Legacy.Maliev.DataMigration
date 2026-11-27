@@ -32,7 +32,7 @@ internal static class CurrentAuthArchiveGenuinePreflightRunner
         return new(method, await PublishAsync(request, binding, expected, method, ct));
     }
 
-    private static async Task<CurrentAuthArchiveGenuineArtifact> PublishAsync(CurrentAuthArchiveGenuineHostConfiguration request,
+    internal static async Task<CurrentAuthArchiveGenuineArtifact> PublishAsync(CurrentAuthArchiveGenuineHostConfiguration request,
         LocalExecutionBinding binding, CurrentAuthArchiveGenuinePreflightCase expected,
         CurrentAuthArchiveGenuinePreflightMethodResult method, CancellationToken ct)
     {

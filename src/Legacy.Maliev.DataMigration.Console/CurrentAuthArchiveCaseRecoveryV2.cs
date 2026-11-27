@@ -56,7 +56,7 @@ internal sealed partial class CurrentAuthArchiveCaseReadbackV2
         if (originals.Length != 4 || !originals.Select(file => file.Path).Order(StringComparer.Ordinal).SequenceEqual(paths.Order(StringComparer.Ordinal), StringComparer.Ordinal)) { throw Invalid(); }
         // Only original-file identities and commitments survive cleanup. Retaining alternate readable
         // copies of either recovery domain would invalidate the runtime unavailability experiment.
-        if (originals.Any(file => file.Length <= 0 || file.Sha256.Length != 64 || file.Sha256.Any(character => !Uri.IsHexDigit(character))) ||
+        if (originals.Any(file => !CurrentAuthArchiveRecoveryNativeIdentity.IsValid(file.Identity) || file.Length <= 0 || file.Sha256.Length != 64 || file.Sha256.Any(character => !Uri.IsHexDigit(character))) ||
             originals.Single(file => file.Path == Scope.Paths.FirstCiphertext).Sha256 != manifest.FirstCiphertextSha256 ||
             originals.Single(file => file.Path == Scope.Paths.SecondCiphertext).Sha256 != manifest.SecondCiphertextSha256 ||
             _artifacts.Keys.Any(name => name.StartsWith("original-domain-file-", StringComparison.Ordinal))) { throw Invalid(); }

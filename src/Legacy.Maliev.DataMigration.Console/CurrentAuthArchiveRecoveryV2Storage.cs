@@ -89,18 +89,28 @@ internal sealed class CurrentAuthArchiveRecoveryV2Storage : ICurrentAuthLocalSes
     }
     private static void Verify(Held held)
     {
+        RequireOriginalHandle(held.Stream, held.Original);
+    }
+
+    // Shared by original observation and both selected/exclusively unavailable reopens; no execution authority.
+    internal static CurrentAuthArchiveRecoveryOriginalFile ObserveOriginalHandle(FileStream stream, string path, string sha256, long length)
+    {
+        return new(path, CurrentAuthArchiveRecoveryNativeIdentity.Observe(stream), sha256, length);
+    }
+
+    internal static void RequireOriginalHandle(FileStream stream, CurrentAuthArchiveRecoveryOriginalFile expected)
+    {
         if (!OperatingSystem.IsWindows()) { throw Invalid(); }
-        var expected = held.Original;
-        if (!SecureLocalFile.HandleResolvesToApprovedPath(held.Stream, expected.Path) ||
-            SecureLocalFile.GetHandleIdentity(held.Stream) != expected.Identity || held.Stream.Length != expected.Length) { throw Invalid(); }
-        FileSecurity acl = held.Stream.GetAccessControl(); SecurityIdentifier owner = WindowsIdentity.GetCurrent().User ?? throw Invalid();
+        if (!SecureLocalFile.HandleResolvesToApprovedPath(stream, expected.Path) ||
+            CurrentAuthArchiveRecoveryNativeIdentity.Observe(stream) != expected.Identity || stream.Length != expected.Length) { throw Invalid(); }
+        FileSecurity acl = stream.GetAccessControl(); SecurityIdentifier owner = WindowsIdentity.GetCurrent().User ?? throw Invalid();
         if (!owner.Equals(acl.GetOwner(typeof(SecurityIdentifier)))) { throw Invalid(); }
         foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, true, typeof(SecurityIdentifier)))
         {
             if (rule.AccessControlType != AccessControlType.Deny && !owner.Equals(rule.IdentityReference)) { throw Invalid(); }
         }
-        held.Stream.Position = 0;
-        if (Convert.ToHexStringLower(SHA256.HashData(held.Stream)) != expected.Sha256) { throw Invalid(); }
+        stream.Position = 0;
+        if (Convert.ToHexStringLower(SHA256.HashData(stream)) != expected.Sha256) { throw Invalid(); }
     }
     internal IReadOnlyList<CurrentAuthArchiveRecoveryUnavailableFile> ObserveUnavailable()
     {

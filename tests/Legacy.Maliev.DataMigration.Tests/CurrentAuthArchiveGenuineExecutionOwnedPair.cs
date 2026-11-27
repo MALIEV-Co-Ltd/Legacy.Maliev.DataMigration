@@ -12,8 +12,20 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
     private CurrentAuthArchiveGenuineHelperClaims? _executionClaims;
     private bool _executionEnvironmentClosed;
 
-    internal static async Task<ICurrentAuthArchiveGenuineExecutionLease> OpenExecutionLeaseAsync(
-        CurrentAuthArchiveGenuineHostConfiguration request, CurrentAuthArchiveGenuineExecutionCase expectedCase, CancellationToken ct)
+    internal static Task<ICurrentAuthArchiveGenuineExecutionLease> OpenExecutionLeaseAsync(CurrentAuthArchiveGenuineHostConfiguration request,
+        CurrentAuthArchiveGenuineExecutionCase expectedCase, CancellationToken ct)
+    { return OpenExecutionCoreAsync(request, expectedCase, null, ct); }
+
+    internal static Task<ICurrentAuthArchiveGenuineExecutionLease> OpenFinal6ExecutionLeaseAsync(CurrentAuthArchiveFinal6CaseContext context,
+        CurrentAuthArchiveGenuineExecutionCase expectedCase, CancellationToken ct)
+    {
+        return CurrentAuthArchiveGeneratedCasesV2.Execution(context.Case) != expectedCase
+            ? throw CurrentAuthArchiveFinal6Source.Invalid()
+            : OpenExecutionCoreAsync(context.Request, expectedCase, context, ct);
+    }
+
+    private static async Task<ICurrentAuthArchiveGenuineExecutionLease> OpenExecutionCoreAsync(CurrentAuthArchiveGenuineHostConfiguration request,
+        CurrentAuthArchiveGenuineExecutionCase expectedCase, CurrentAuthArchiveFinal6CaseContext? final6Case, CancellationToken ct)
     {
         CurrentAuthArchiveGenuineExecutionInputContract.Require(new(CurrentAuthArchiveGenuineExecutionInputContract.Kind, request), expectedCase);
         var bundle = await CurrentAuthTypedHostProducer.HoldFixedTestBundleAsync(Path.GetDirectoryName(request.Inputs.TestImage.Path)!, ct);
@@ -22,7 +34,8 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
         try
         {
             bundle.Require();
-            inputs = await CurrentAuthArchiveComponentReadback.OpenGenuineExecutionInitialAsync(request.Inputs, expectedCase, ct);
+            inputs = final6Case is not null ? await CurrentAuthArchiveComponentReadback.OpenFinal6InitialAsync(request.Inputs, final6Case, ct) :
+                await CurrentAuthArchiveComponentReadback.OpenGenuineExecutionInitialAsync(request.Inputs, expectedCase, ct);
             var seed = await inputs.ReadSeedAsync(ct);
             CurrentAuthArchiveGenuineExecutionSeed.RequireInitial(seed, inputs.Pins, inputs.TrustStore, expectedCase, DateTimeOffset.UtcNow);
             pair = new(inputs, bundle, seed, ct) { _executionCase = expectedCase };
@@ -67,6 +80,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : ICurrentAuthA
             Connection(_firstFiles, _firstPolicy.OperatorConnectionPath), Connection(_secondFiles, _secondPolicy.OperatorConnectionPath),
             Connection(_firstFiles, _firstPolicy.OrdinaryConnectionPath), Connection(_secondFiles, _secondPolicy.OrdinaryConnectionPath),
             _dualDeviceProof, _inputs.TrustStore, _inputs.Pins, CurrentAuthLocalSessionArchivePolicy.Hash(authorization));
+        _inputs.BindFinal6Environment(_environment);
         _executionClaims = new(review, authorization);
         await RequireAsync(ct);
 
