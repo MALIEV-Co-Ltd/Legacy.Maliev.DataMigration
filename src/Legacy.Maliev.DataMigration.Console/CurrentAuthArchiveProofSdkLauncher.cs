@@ -286,6 +286,8 @@ public static partial class MigrationConsole
             {
                 Kind = "current-auth-archive-helper-host-exit-v1",
                 run.OperationId,
+                run.Nonce,
+                RunSha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(files.Read(runPath, sharedReader: true, maximumBytes: 65536)),
                 run.SourceCommitSha,
                 run.BeganAtUtc,
                 run.ExpiresAtUtc,
@@ -306,8 +308,26 @@ public static partial class MigrationConsole
     }
 }
 
-internal sealed class CurrentAuthArchiveHelperResources(CurrentAuthArchiveHelperRun run, CurrentAuthArchiveGenuineHostConfiguration request)
+internal sealed class CurrentAuthArchiveHelperResources
 {
+    private sealed record OwnedResourceRun(Guid OperationId, DateTimeOffset BeganAtUtc, DateTimeOffset ExpiresAtUtc, string SourceCommitSha);
+    private readonly OwnedResourceRun run;
+    private readonly string _firstFixtureParent, _secondFixtureParent;
+    internal CurrentAuthArchiveHelperResources(CurrentAuthArchiveHelperRun run, CurrentAuthArchiveGenuineHostConfiguration request)
+        : this(run.OperationId, run.BeganAtUtc, run.ExpiresAtUtc, run.SourceCommitSha, request.FirstFixtureParent, request.SecondFixtureParent) { }
+
+    internal CurrentAuthArchiveHelperResources(Guid operationId, DateTimeOffset beganAtUtc, DateTimeOffset expiresAtUtc,
+        string sourceCommitSha, string firstFixtureParent, string secondFixtureParent)
+    {
+        if (operationId == Guid.Empty || beganAtUtc.Offset != TimeSpan.Zero || expiresAtUtc.Offset != TimeSpan.Zero ||
+            expiresAtUtc - beganAtUtc != TimeSpan.FromMinutes(8) || sourceCommitSha is not { Length: 40 } || !sourceCommitSha.All(char.IsAsciiHexDigitLower) ||
+            !Path.IsPathFullyQualified(firstFixtureParent) || !Path.IsPathFullyQualified(secondFixtureParent) ||
+            StringComparer.OrdinalIgnoreCase.Equals(Path.GetFullPath(firstFixtureParent), Path.GetFullPath(secondFixtureParent)))
+        { throw CurrentAuthArchiveHelperHost.Invalid(); }
+        run = new(operationId, beganAtUtc, expiresAtUtc, sourceCommitSha);
+        _firstFixtureParent = firstFixtureParent; _secondFixtureParent = secondFixtureParent;
+    }
+
     private static readonly bool[] PairMembers = [false, true];
     private string[] _beforeIds = [], _beforeVolumes = [];
     private readonly List<int> _ports = [];
@@ -318,7 +338,7 @@ internal sealed class CurrentAuthArchiveHelperResources(CurrentAuthArchiveHelper
 
     private string Root(bool comparison)
     {
-        return Path.Combine(comparison ? request.SecondFixtureParent : request.FirstFixtureParent,
+        return Path.Combine(comparison ? _secondFixtureParent : _firstFixtureParent,
             "auth-archive-target-" + run.OperationId.ToString("N") + (comparison ? "-comparison" : ""));
     }
 
@@ -363,6 +383,8 @@ internal sealed class CurrentAuthArchiveHelperResources(CurrentAuthArchiveHelper
         {
             run.OperationId,
             ObservedAtUtc = DateTimeOffset.UtcNow,
+            run.SourceCommitSha,
+            RunSha256 = CurrentAuthLocalSessionArchivePolicy.HashBytes(files.Read(runPath, sharedReader: true, maximumBytes: 65536)),
             run.ExpiresAtUtc,
             Containers = containers,
             Volumes = volumes,

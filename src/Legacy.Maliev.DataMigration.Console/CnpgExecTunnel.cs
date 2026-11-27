@@ -25,11 +25,27 @@ internal static class CnpgExecTunnel
         UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow,
     };
 
-    internal static async Task RunAsync(
+    internal static Task RunAsync(string configPath, Func<string, string?> environment, TextWriter output, TextWriter error, CancellationToken ct)
+    {
+        return RunCoreAsync(configPath, environment, output, error, null, ct);
+    }
+
+    internal static Task RunOwnedAsync(string configPath, TextWriter output, TextWriter error, DualTargetCapturedToolLease tools, CancellationToken ct)
+    {
+        return RunCoreAsync(configPath, Environment.GetEnvironmentVariable, output, error, tools, ct);
+    }
+
+    internal static Task VerifyTargetAsync(CnpgExecTunnelConfiguration config, CancellationToken ct)
+    {
+        return VerifyTargetCoreAsync(config, null, ct);
+    }
+
+    private static async Task RunCoreAsync(
         string configPath,
         Func<string, string?> environment,
         TextWriter output,
         TextWriter error,
+        DualTargetCapturedToolLease? tools,
         CancellationToken cancellationToken)
     {
         if (!string.Equals(environment("LEGACY_DEPLOY_ENABLED"), "false", StringComparison.Ordinal))
@@ -50,7 +66,7 @@ internal static class CnpgExecTunnel
         }
 
         Validate(config);
-        await VerifyTargetAsync(config, cancellationToken).ConfigureAwait(false);
+        await VerifyTargetCoreAsync(config, tools, cancellationToken).ConfigureAwait(false);
 
         using var listener = new TcpListener(IPAddress.Loopback, config.ListenPort);
         using var slots = new SemaphoreSlim(32);
@@ -81,7 +97,7 @@ internal static class CnpgExecTunnel
                 }
 
                 _ = active.RemoveAll(task => task.IsCompleted);
-                active.Add(HandleAsync(client, config, error, stop, slots));
+                active.Add(HandleAsync(client, config, tools, error, stop, slots));
             }
         }
         finally
@@ -109,6 +125,7 @@ internal static class CnpgExecTunnel
     private static async Task HandleAsync(
         TcpClient client,
         CnpgExecTunnelConfiguration config,
+        DualTargetCapturedToolLease? tools,
         TextWriter error,
         CancellationTokenSource stop,
         SemaphoreSlim slots)
@@ -118,9 +135,9 @@ internal static class CnpgExecTunnel
             try
             {
                 // Recheck immutable Kubernetes identity for every PostgreSQL connection.
-                await VerifyTargetAsync(config, stop.Token).ConfigureAwait(false);
+                await VerifyTargetCoreAsync(config, tools, stop.Token).ConfigureAwait(false);
                 using Process process = StartKubectl(
-                    ["-n", Namespace, "exec", "-i", config.PrimaryPod, "-c", Container, "--", "bash", "-c", Relay]);
+                    ["-n", Namespace, "exec", "-i", config.PrimaryPod, "-c", Container, "--", "bash", "-c", Relay], tools);
                 Task stderr = DrainAsync(process.StandardError, stop.Token);
                 using NetworkStream network = client.GetStream();
                 Task upstream = network.CopyToAsync(process.StandardInput.BaseStream, stop.Token);
@@ -200,9 +217,10 @@ internal static class CnpgExecTunnel
         }
     }
 
-    private static async Task VerifyTargetAsync(CnpgExecTunnelConfiguration config, CancellationToken cancellationToken)
+    private static async Task VerifyTargetCoreAsync(CnpgExecTunnelConfiguration config, DualTargetCapturedToolLease? tools, CancellationToken cancellationToken)
     {
-        string context = (await KubectlOutputAsync(["config", "current-context"], cancellationToken).ConfigureAwait(false)).Trim();
+        if (tools is not null) { await tools.RequireCredentialProtocolAsync(cancellationToken).ConfigureAwait(false); }
+        string context = (await KubectlOutputAsync(["config", "current-context"], tools, cancellationToken).ConfigureAwait(false)).Trim();
         if (!string.Equals(context, config.Context, StringComparison.Ordinal))
         {
             throw new MigrationConsoleException("cnpg_exec_tunnel_context_drift", "The Kubernetes context changed.");
@@ -211,9 +229,9 @@ internal static class CnpgExecTunnel
         try
         {
             using JsonDocument cluster = JsonDocument.Parse(await KubectlOutputAsync(
-                ["-n", Namespace, "get", "cluster", Cluster, "-o", "json"], cancellationToken).ConfigureAwait(false));
+                ["-n", Namespace, "get", "cluster", Cluster, "-o", "json"], tools, cancellationToken).ConfigureAwait(false));
             using JsonDocument pod = JsonDocument.Parse(await KubectlOutputAsync(
-                ["-n", Namespace, "get", "pod", config.PrimaryPod, "-o", "json"], cancellationToken).ConfigureAwait(false));
+                ["-n", Namespace, "get", "pod", config.PrimaryPod, "-o", "json"], tools, cancellationToken).ConfigureAwait(false));
             ValidateObservation(config, cluster.RootElement, pod.RootElement);
         }
         catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException)
@@ -246,9 +264,9 @@ internal static class CnpgExecTunnel
         }
     }
 
-    private static async Task<string> KubectlOutputAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    private static async Task<string> KubectlOutputAsync(IReadOnlyList<string> arguments, DualTargetCapturedToolLease? tools, CancellationToken cancellationToken)
     {
-        using Process process = StartKubectl(arguments);
+        using Process process = StartKubectl(arguments, tools);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         // Twenty-three held SQL Server snapshots can contend with the target's
         // Kubernetes admission query. Keep the identity check strict while
@@ -276,9 +294,9 @@ internal static class CnpgExecTunnel
         }
     }
 
-    private static Process StartKubectl(IReadOnlyList<string> arguments)
+    private static Process StartKubectl(IReadOnlyList<string> arguments, DualTargetCapturedToolLease? tools)
     {
-        var start = new ProcessStartInfo("kubectl")
+        var start = new ProcessStartInfo(tools?.KubectlPath ?? "kubectl")
         {
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -289,6 +307,11 @@ internal static class CnpgExecTunnel
         foreach (string argument in arguments)
         {
             start.ArgumentList.Add(argument);
+        }
+        if (tools is not null)
+        {
+            tools.Require();
+            start.Environment["PATH"] = Path.GetDirectoryName(DualTargetCapturedToolLease.CredentialPlugin) + Path.PathSeparator + Environment.SystemDirectory;
         }
 
         try

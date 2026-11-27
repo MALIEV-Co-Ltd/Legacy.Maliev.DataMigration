@@ -187,6 +187,30 @@ public static partial class MigrationConsole
                 case "finalize-local":
                     return await RunIncrementalBoundaryAsync(invocation.Command, invocation.ConfigPath, getEnvironmentVariable, output, error,
                         incrementalRuntime ?? new DefaultIncrementalConsoleRuntime(), cancellationToken).ConfigureAwait(false);
+                case "prepare-dual-target-native-proof":
+                    return await PrepareDualTargetNativeProofAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "plan-dual-target-captured-delta":
+                case "prove-dual-target-captured-delta":
+                case "review-dual-target-captured-delta":
+                case "apply-dual-target-captured-delta":
+                    return await RunDualTargetCapturedDeltaAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "run-dual-target-captured-relay":
+                    return await DualTargetCapturedDeltaRelay.RunChildAsync(invocation.ConfigPath, cancellationToken).ConfigureAwait(false);
+                case "observe-current-order-subtotal":
+                case "verify-current-order-subtotal":
+                case "apply-current-order-subtotal":
+                case "characterize-current-order-subtotal-faults":
+                    return await RunOrderSubtotalOperationalAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "observe-current-source-order-owner-iso":
+                    return await RunSourceOrderOwnerIsoAsync("observe", invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "verify-current-source-order-owner-iso":
+                    return await RunSourceOrderOwnerIsoAsync("verify", invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "apply-current-source-order-owner-iso":
+                    return await RunSourceOrderOwnerIsoAsync("apply", invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "characterize-current-source-order-owner-iso-native-faults":
+                    return await RunSourceOrderOwnerIsoAsync("native-faults", invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "plan-delta":
                 case "project-paired-local-template":
                 case "plan-paired-delta":
@@ -236,12 +260,54 @@ public static partial class MigrationConsole
                     return await RunCurrentAuthArchiveGenuineHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "produce-current-auth-archive-helper-host":
                     return await RunCurrentAuthArchiveHelperHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-proof-v2":
+                    return await RunCurrentAuthArchiveProofV2Async(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-auth-local-session-archive-v2":
+                case "authorize-current-auth-local-session-archive-v2":
+                case "verify-current-auth-local-session-archive-v2":
+                case "apply-current-auth-local-session-archive-v2":
+                    return await RunCurrentAuthArchivePersistentV2Async(invocation.Command, invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "capture-current-auth-archive-final6-source":
+                    return await RunCurrentAuthArchiveFinal6CaptureAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-final6-definition":
+                    return await RunCurrentAuthArchiveFinal6DefinitionAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-final6-host":
+                    return await RunCurrentAuthArchiveFinal6HostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-archive-final6-sdk":
+                    return await RunCurrentAuthArchiveFinal6SdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "execute-current-auth-archive-final6-provider":
+                    return await RunCurrentAuthArchiveFinal6ProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-final6-proof":
+                    return await RunCurrentAuthArchiveFinal6ProofAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "review-current-auth-local-session-archive-final6":
+                case "authorize-current-auth-local-session-archive-final6":
+                case "verify-current-auth-local-session-archive-final6":
+                case "apply-current-auth-local-session-archive-final6":
+                    return await RunCurrentAuthArchiveFinal6PersistentAsync(invocation.Command, invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "run-current-auth-archive-helper-sdk":
                     return await RunCurrentAuthArchiveHelperSdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "execute-current-auth-archive-helper-provider":
                     return await RunCurrentAuthArchiveHelperProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-recovery-host":
+                    return await RunCurrentAuthArchiveRecoveryV2HostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-archive-recovery-sdk":
+                    return await RunCurrentAuthArchiveRecoveryV2SdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "execute-current-auth-archive-recovery-provider":
+                    return await RunCurrentAuthArchiveRecoveryV2ProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-execution-host":
+                    return await RunCurrentAuthArchiveExecutionHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-archive-execution-sdk":
+                    return await RunCurrentAuthArchiveExecutionSdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "execute-current-auth-archive-execution-provider":
+                    return await RunCurrentAuthArchiveExecutionProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "run-current-auth-archive-genuine-testhost":
                     return await RunCurrentAuthArchiveGenuineTestHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "produce-current-auth-archive-preflight-host":
+                    return await RunCurrentAuthArchivePreflightHostAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "run-current-auth-archive-preflight-sdk":
+                    return await RunCurrentAuthArchivePreflightSdkAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "execute-current-auth-archive-preflight-provider":
+                    return await RunCurrentAuthArchivePreflightProviderAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
                 case "review-current-auth-local-session-archive":
                 case "authorize-current-auth-local-session-archive":
                 case "verify-current-auth-local-session-archive":
@@ -254,6 +320,19 @@ public static partial class MigrationConsole
                 case "apply-current-auth-repair":
                     return await RunCurrentAuthRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
                         output, error, cancellationToken).ConfigureAwait(false);
+                case "characterize-consumer-column-bootstrap-native-faults":
+                case "rehearse-consumer-column-bootstrap":
+                case "run-consumer-column-bootstrap-reviewed":
+                    if (!string.Equals(getEnvironmentVariable(DeployEnabledEnvironmentVariable), "false", StringComparison.Ordinal))
+                    {
+                        throw new MigrationConsoleException("consumer_bootstrap_deploy_gate_invalid", "Deployment must remain disabled.");
+                    }
+                    return invocation.Command switch
+                    {
+                        "characterize-consumer-column-bootstrap-native-faults" => await RunConsumerColumnBootstrapNativeFaultsAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false),
+                        "rehearse-consumer-column-bootstrap" => await RunConsumerColumnBootstrapRehearsalAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false),
+                        _ => await RunConsumerColumnBootstrapReviewedAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false),
+                    };
                 case "review-current-app-owned-v3-repair":
                 case "authorize-current-app-owned-v3-repair":
                 case "verify-current-app-owned-v3-repair":
@@ -268,6 +347,13 @@ public static partial class MigrationConsole
                 case "verify-current-owner-iso-repair":
                 case "apply-current-owner-iso-repair":
                     return await RunCurrentOwnerIsoRepairBoundaryAsync(invocation.Command, invocation.ConfigPath,
+                        output, error, cancellationToken).ConfigureAwait(false);
+                case "characterize-current-company-storage-native-faults":
+                    return await RunCompanyStorageNativeFaultsAsync(invocation.ConfigPath, output, error, cancellationToken).ConfigureAwait(false);
+                case "observe-current-company-storage":
+                case "verify-current-company-storage":
+                case "apply-current-company-storage":
+                    return await RunCompanyStorageRepairAsync(invocation.Command, invocation.ConfigPath,
                         output, error, cancellationToken).ConfigureAwait(false);
                 case "review-current-customer-sequence-repair":
                 case "authorize-current-customer-sequence-repair":

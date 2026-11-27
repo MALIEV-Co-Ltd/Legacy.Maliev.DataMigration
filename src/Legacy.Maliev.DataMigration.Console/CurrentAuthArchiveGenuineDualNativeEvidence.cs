@@ -8,25 +8,34 @@ namespace Legacy.Maliev.DataMigration.Console;
 internal sealed record CurrentAuthArchiveGenuineDualNativeEvidence(CurrentAppOwnedRepairTargetPins LocalTarget,
     CurrentAppOwnedRepairTargetPins ComparisonTarget, JsonElement LocalContainer, JsonElement LocalVolume,
     JsonElement ComparisonContainer, JsonElement ComparisonVolume, int LocalPort, int ComparisonPort,
-    CurrentAuthArchiveProofPolicy LocalPolicy, CurrentAuthArchiveProofPolicy ComparisonPolicy, DateTimeOffset ObservedAtUtc);
+    CurrentAuthArchiveProofPolicy LocalPolicy, CurrentAuthArchiveProofPolicy ComparisonPolicy, DateTimeOffset ObservedAtUtc,
+    IReadOnlyList<string>? LocalVolumeConsumers = null, IReadOnlyList<string>? ComparisonVolumeConsumers = null);
 
 internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment
 {
-    internal async Task<CurrentAuthArchiveGenuineDualNativeEvidence> CaptureDualHelperNativeEvidenceAsync(
+    internal Task<CurrentAuthArchiveGenuineDualNativeEvidence> CaptureDualHelperNativeEvidenceAsync(
         CurrentAuthArchiveScope scope, CurrentAuthArchiveProofArtifact localHba, CurrentAuthArchiveProofArtifact localRules,
         CurrentAuthArchiveProofArtifact comparisonHba, CurrentAuthArchiveProofArtifact comparisonRules, CancellationToken ct)
+    {
+        return CaptureNativeCoreAsync(scope, localHba, localRules, comparisonHba, comparisonRules, null, null, ct);
+    }
+
+    private async Task<CurrentAuthArchiveGenuineDualNativeEvidence> CaptureNativeCoreAsync(
+        CurrentAuthArchiveScope scope, CurrentAuthArchiveProofArtifact localHba, CurrentAuthArchiveProofArtifact localRules,
+        CurrentAuthArchiveProofArtifact comparisonHba, CurrentAuthArchiveProofArtifact comparisonRules, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, OwnedCommitProxy? proxy, CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
         try
         {
-            RequireHealthy(); Match(scope);
+            RequireObservationCustody(observation, proxy); Match(scope);
             var targets = await RequireTargetsAsync(ct);
             var comparison = targets.Comparison ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid();
             var firstPolicy = await PolicyAsync(true, localHba, localRules);
             var secondPolicy = await PolicyAsync(false, comparisonHba, comparisonRules);
             return new(_localTarget, _productionTarget, Container(targets.Local), Volume(targets.Local),
                 Container(comparison), Volume(comparison), RequireEndpoint(_localConnection, scope.LocalObservationPolicy).Port,
-                RequireEndpoint(_productionConnection, scope.ProductionObservationPolicy).Port, firstPolicy, secondPolicy, DateTimeOffset.UtcNow);
+                RequireEndpoint(_productionConnection, scope.ProductionObservationPolicy).Port, firstPolicy, secondPolicy, DateTimeOffset.UtcNow,
+                targets.Local.VolumeConsumers ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid(), comparison.VolumeConsumers ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid());
         }
         finally { _ = _gate.Release(); }
 

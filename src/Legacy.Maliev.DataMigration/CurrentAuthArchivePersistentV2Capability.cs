@@ -1,0 +1,110 @@
+using System.Reflection;
+using System.Runtime.Loader;
+
+namespace Legacy.Maliev.DataMigration;
+
+internal sealed partial class CurrentAuthArchiveGenuineCapability
+{
+    internal static void RequirePersistentArchiveCodeOrigin(Assembly assembly)
+    {
+        if (assembly.GetName().Name is not ("Legacy.Maliev.DataMigration" or "Legacy.Maliev.DataMigration.Console")) { throw Invalid(); }
+        RequireAcceptedCodeOrigin(assembly);
+    }
+}
+
+internal sealed partial class CurrentAuthLocalSessionArchivePermit
+{
+    private PersistentV2Capability? _persistentV2;
+    internal sealed class PersistentV2Capability
+    {
+        private const string Issuer = "Legacy.Maliev.DataMigration.Console.CurrentAuthArchivePersistentV2Issuer";
+        private readonly object _issuer;
+        private readonly Guid _id;
+        private readonly CurrentAuthArchivePersistentAttestationV2 _binding;
+        private readonly MethodInfo _require, _writer;
+        private readonly string _facts;
+        private int _state;
+        private PersistentV2Capability(object issuer, Guid id, CurrentAuthArchivePersistentAttestationV2 binding, MethodInfo require, MethodInfo writer)
+        { _issuer = issuer; _id = id; _binding = binding; _require = require; _writer = writer; _facts = Facts(binding); }
+        internal static async Task<PersistentV2Capability> AuthenticateAsync(object issuer, CancellationToken ct)
+        {
+            ArgumentNullException.ThrowIfNull(issuer); ct.ThrowIfCancellationRequested();
+            Type type = issuer.GetType();
+            if (!type.IsSealed || type.FullName != Issuer || type.Assembly.GetName().Name != "Legacy.Maliev.DataMigration.Console" ||
+                AssemblyLoadContext.GetLoadContext(type.Assembly) != AssemblyLoadContext.Default || type.GetConstructors(BindingFlags.Instance | BindingFlags.Public).Length != 0)
+            { throw CurrentAuthArchivePersistentV2Policy.Invalid(); }
+            CurrentAuthArchiveGenuineCapability.RequirePersistentArchiveCodeOrigin(type.Assembly);
+            CurrentAuthArchiveGenuineCapability.RequirePersistentArchiveCodeOrigin(typeof(PersistentV2Capability).Assembly);
+            var mint = Fixed(type, "MintPersistentV2Async", typeof(Task<CurrentAuthArchivePersistentAttestationV2>));
+            var require = Fixed(type, "RequirePersistentV2Async", typeof(Task<CurrentAuthArchivePersistentAttestationV2>));
+            var writer = Fixed(type, "GetPersistentV2WriterAsync", typeof(Task<string>));
+            Guid id = Guid.NewGuid();
+            var binding = await Invoke<CurrentAuthArchivePersistentAttestationV2>(issuer, mint, id, ct);
+            RequireBinding(issuer, binding);
+            return new(issuer, id, binding, require, writer);
+        }
+        internal async Task<CurrentAuthArchiveReceipt> ExecuteAsync(P256MigrationEvidenceSigner signer, CancellationToken ct)
+        {
+            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0) { throw CurrentAuthArchivePersistentV2Policy.Invalid(); }
+            CurrentAuthLocalSessionArchivePermit? permit = null;
+            try
+            {
+                permit = new(_binding.Review, _binding.Authorization, _binding.Intent.Scope, _binding.Trust, _binding.Pins, _binding.Environment, TimeProvider.System)
+                { _persistentV2 = this };
+                await permit.RequireAsync(ct); _ = await permit.RequireOriginalFleetsAsync(ct);
+                string writer = await Invoke<string>(_issuer, _writer, _id, ct);
+                return await PostgreSqlCurrentAuthLocalSessionArchive.ExecuteAsync(writer, permit, signer, ct);
+            }
+            finally { permit?.Stop(); _ = Interlocked.Exchange(ref _state, 2); }
+        }
+        internal async Task RequirePermitAsync(CurrentAuthLocalSessionArchivePermit permit, CancellationToken ct)
+        {
+            if (Volatile.Read(ref _state) != 1 || !ReferenceEquals(permit.Environment, _binding.Environment) ||
+                CurrentAuthLocalSessionArchivePolicy.Hash(permit.Scope) != CurrentAuthLocalSessionArchivePolicy.Hash(_binding.Intent.Scope)) { throw CurrentAuthArchivePersistentV2Policy.Invalid(); }
+            var actual = await Invoke<CurrentAuthArchivePersistentAttestationV2>(_issuer, _require, _id, ct);
+            RequireBinding(_issuer, actual);
+            if (!ReferenceEquals(actual.Environment, _binding.Environment) || !ReferenceEquals(actual.Trust, _binding.Trust) || Facts(actual) != _facts)
+            { throw CurrentAuthArchivePersistentV2Policy.Invalid(); }
+        }
+        internal void RequireFleets(CurrentAuthArchiveFleet local, CurrentAuthArchiveFleet comparison)
+        {
+            CurrentAuthArchivePersistentV2Policy.RequireFleets(_binding.Intent, local, comparison);
+        }
+
+        internal async Task VerifyAsync(CancellationToken ct)
+        {
+            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0) { throw CurrentAuthArchivePersistentV2Policy.Invalid(); }
+            var permit = new CurrentAuthLocalSessionArchivePermit(_binding.Review, _binding.Authorization, _binding.Intent.Scope,
+                _binding.Trust, _binding.Pins, _binding.Environment, TimeProvider.System)
+            { _persistentV2 = this };
+            try { await permit.RequireAsync(ct); _ = await permit.RequireOriginalFleetsAsync(ct); }
+            finally { permit.Stop(); _ = Interlocked.Exchange(ref _state, 2); }
+        }
+        private static void RequireBinding(object issuer, CurrentAuthArchivePersistentAttestationV2 binding)
+        {
+            var actual = CurrentAuthArchivePersistentV2Policy.Claims(binding.Review, binding.Authorization, binding.Pins, binding.Trust, DateTimeOffset.UtcNow);
+            Type environment = binding.Environment.GetType();
+            if (CurrentAuthLocalSessionArchivePolicy.Hash(actual) != CurrentAuthLocalSessionArchivePolicy.Hash(binding.Intent) ||
+                !environment.IsSealed || environment.Assembly != issuer.GetType().Assembly ||
+                environment.FullName != "Legacy.Maliev.DataMigration.Console.CurrentAuthLocalSessionArchiveEnvironment" ||
+                SchemaPlanCanonicalizer.ComputeSha256(binding.Source) != actual.Scope.LocalObservationPolicy.SourceSchemaPlanSha256)
+            { throw CurrentAuthArchivePersistentV2Policy.Invalid(); }
+        }
+        private static string Facts(CurrentAuthArchivePersistentAttestationV2 value)
+        {
+            return CurrentAuthLocalSessionArchivePolicy.Hash(new
+            { value.Intent, value.Review, value.Authorization, value.Pins, Source = SchemaPlanCanonicalizer.ComputeSha256(value.Source) });
+        }
+
+        private static MethodInfo Fixed(Type type, string name, Type result)
+        {
+            var method = type.GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly, null,
+                [typeof(Guid), typeof(CancellationToken)], null) ?? throw CurrentAuthArchivePersistentV2Policy.Invalid();
+            return method.ReturnType == result ? method : throw CurrentAuthArchivePersistentV2Policy.Invalid();
+        }
+        private static async Task<T> Invoke<T>(object issuer, MethodInfo method, Guid id, CancellationToken ct)
+        {
+            return await ((Task<T>?)method.Invoke(issuer, [id, ct]) ?? throw CurrentAuthArchivePersistentV2Policy.Invalid());
+        }
+    }
+}

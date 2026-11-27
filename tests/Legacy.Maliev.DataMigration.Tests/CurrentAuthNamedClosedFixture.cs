@@ -25,6 +25,8 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
     private int _port;
     private bool _volumeAttempted, _containerAttempted, _disposed;
     private int _frame;
+    private CurrentAuthArchiveDefinitionAnchorOwner? _definitionAnchor;
+    private string? DefinitionParent => _definitionAnchor?.ParentBindingSha256;
     internal Guid Operation { get; }
     internal string Root { get; }
     internal LocalExecutionBinding Binding { get; }
@@ -42,21 +44,34 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
         _lease = new CancellationTokenSource(_expires - DateTimeOffset.UtcNow);
     }
 
-    internal static async Task<CurrentAuthNamedClosedFixture> CreateAsync(string parentRoot, CancellationToken ct)
+    internal static Task<CurrentAuthNamedClosedFixture> CreateAsync(string parentRoot, CancellationToken ct)
+    {
+        return CreateCoreAsync(parentRoot, null, ct);
+    }
+
+    internal static Task<CurrentAuthNamedClosedFixture> CreateDefinitionAnchorAsync(CurrentAuthArchiveDefinitionAnchorOwner owner, CancellationToken ct)
+    {
+        owner.RequireForFixture();
+        return CreateCoreAsync(Path.GetDirectoryName(owner.Root)!, owner, ct);
+    }
+
+    private static async Task<CurrentAuthNamedClosedFixture> CreateCoreAsync(string parentRoot, CurrentAuthArchiveDefinitionAnchorOwner? owner, CancellationToken ct)
     {
         if (!OperatingSystem.IsWindows() || !Path.IsPathFullyQualified(parentRoot) || !Directory.Exists(parentRoot)) { throw CurrentAuthRepairPermit.Invalid(); }
         CurrentAuthRepairCapacity.Require(admission: true);
         _ = await SourceBackedLocalRepairSourceAcceptance.RequireAsync(ct).ConfigureAwait(false);
-        Guid operation = Guid.NewGuid(); string root = Path.Combine(parentRoot, "auth-closed-case-" + operation.ToString("N"));
-        if (Directory.Exists(root)) { throw CurrentAuthRepairPermit.Invalid(); }
-        SecureSnapshotFileCreation.CreateRestrictedDirectory(root); LocalExecutionBinding binding;
-        using (var authority = WindowsLocalRunAuthority.AcquireFresh(root))
+        Guid operation = owner?.Operation ?? Guid.NewGuid(); string root = owner?.Root ?? Path.Combine(parentRoot, "auth-closed-case-" + operation.ToString("N"));
+        LocalExecutionBinding binding;
+        if (owner is null)
         {
-            binding = authority.Binding;
+            if (Directory.Exists(root)) { throw CurrentAuthRepairPermit.Invalid(); }
+            SecureSnapshotFileCreation.CreateRestrictedDirectory(root);
+            using var authority = WindowsLocalRunAuthority.AcquireFresh(root); binding = authority.Binding;
             using var files = new CurrentAppOwnedRepairCustody(authority);
             await files.WriteNewAsync(Path.Combine(root, "fixture-binding.json"), JsonSerializer.SerializeToUtf8Bytes(binding), ct).ConfigureAwait(false);
         }
-        DateTimeOffset began = DateTimeOffset.UtcNow;
+        else { owner.RequireForFixture(); binding = owner.Binding; }
+        DateTimeOffset began = owner?.BeganAtUtc ?? DateTimeOffset.UtcNow;
         string name = "legacy-delta-proof-" + operation.ToString("N"), password = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
         var docker = new DockerClientBuilder().WithEndpoint(new Uri("npipe://./pipe/docker_engine")).Build();
         PostgreSqlContainer? container = null; CurrentAuthNamedClosedFixture? fixture = null;
@@ -77,11 +92,12 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
                 .WithLabel("codex.repair.run-binding", binding.ComputeSha256())
                 .WithCreateParameterModifier(parameters =>
                 {
+                    if (owner is not null) { parameters.Labels.Add(CurrentAuthArchiveDefinitionAnchorOwner.ParentLabel, owner.ParentBindingSha256); }
                     parameters.HostConfig!.Memory = 512L * 1024 * 1024; parameters.HostConfig.MemorySwap = 512L * 1024 * 1024;
                     parameters.HostConfig.NanoCPUs = 750_000_000;
                     foreach (var port in parameters.HostConfig.PortBindings!.Values) { foreach (var map in port) { map.HostIP = "127.0.0.1"; } }
                 }).Build();
-            fixture = new(root, operation, binding, docker, container, previous, password, began);
+            fixture = new(root, operation, binding, docker, container, previous, password, began) { _definitionAnchor = owner };
             await fixture.RecordAsync("attempt", new
             {
                 operation,
@@ -92,6 +108,7 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
                 previousVolumes = previous.Order(StringComparer.Ordinal).ToArray()
             }, ct).ConfigureAwait(false);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, fixture.Token);
+            owner?.RequireBeforeCreate();
             fixture._volumeAttempted = true;
             _ = await docker.Volumes.CreateAsync(new VolumesCreateParameters
             {
@@ -99,8 +116,11 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
                 Driver = "local",
                 Labels = new Dictionary<string, string>(StringComparer.Ordinal)
                 { ["codex.repair.purpose"] = "current-auth-repair-proof", ["codex.repair.operation"] = operation.ToString("D"), ["codex.repair.run-binding"] = binding.ComputeSha256() }
+                    .Concat(owner is null ? Enumerable.Empty<KeyValuePair<string, string>>() : new Dictionary<string, string> { [CurrentAuthArchiveDefinitionAnchorOwner.ParentLabel] = owner.ParentBindingSha256 })
+                    .ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal)
             }, linked.Token).ConfigureAwait(false);
             await fixture.RequireVolumeAsync(requireConsumer: false, linked.Token).ConfigureAwait(false);
+            if (owner is not null) { await owner.ObserveVolumeAsync(linked.Token).ConfigureAwait(false); }
             fixture._containerAttempted = true;
             await container.StartAsync(linked.Token).ConfigureAwait(false);
             var actual = await docker.Containers.InspectContainerAsync(name, linked.Token).ConfigureAwait(false);
@@ -114,12 +134,19 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
                 if (!await reader.ReadAsync(linked.Token).ConfigureAwait(false) || reader.GetString(0) != "180004" || reader.GetString(1) != "off" ||
                     await reader.ReadAsync(linked.Token).ConfigureAwait(false)) { throw CurrentAuthRepairPermit.Invalid(); }
             }
-            await fixture.RecordTargetAsync(linked.Token).ConfigureAwait(false); return fixture;
+            await fixture.RecordTargetAsync(linked.Token).ConfigureAwait(false);
+            if (owner is not null) { await owner.ObserveContainerAsync(linked.Token).ConfigureAwait(false); }
+            return fixture;
         }
-        catch
+        catch (Exception primary)
         {
-            if (fixture is not null) { await fixture.DisposeAsync().ConfigureAwait(false); }
-            else { if (container is not null) { await container.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false); } docker.Dispose(); }
+            try
+            {
+                if (fixture is not null) { await fixture.DisposeAsync().ConfigureAwait(false); }
+                else { if (container is not null) { await container.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false); } docker.Dispose(); }
+            }
+            catch (Exception cleanup) when (owner is not null)
+            { throw new AggregateException("The definition anchor creation failed and its exact cleanup also failed.", primary, cleanup); }
             throw;
         }
     }
@@ -137,7 +164,7 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
         var host = actual.HostConfig ?? throw CurrentAuthRepairPermit.Invalid(); var config = actual.Config ?? throw CurrentAuthRepairPermit.Invalid();
         DateTimeOffset created = JsonSerializer.SerializeToElement(actual).GetProperty("Created").GetDateTimeOffset();
         if (actual.ID.Length != 64 || (_id is not null && _id != actual.ID) || actual.Name != "/" + Name || created < _began.AddSeconds(-1) || created > _expires ||
-            config.Image != Image || config.Labels["codex.repair.purpose"] != "current-auth-repair-proof" || config.Labels["codex.repair.operation"] != Operation.ToString("D") ||
+            config.Image != Image || (DefinitionParent is not null && (config.Labels.Count != 4 || !config.Labels.TryGetValue(CurrentAuthArchiveDefinitionAnchorOwner.ParentLabel, out string? parent) || parent != DefinitionParent)) || config.Labels["codex.repair.purpose"] != "current-auth-repair-proof" || config.Labels["codex.repair.operation"] != Operation.ToString("D") ||
             config.Labels["codex.repair.run-binding"] != Binding.ComputeSha256() || host.Memory != 512L * 1024 * 1024 || host.MemorySwap != 512L * 1024 * 1024 || host.NanoCPUs != 750_000_000 ||
             host.Tmpfs is { Count: > 0 } || host.Binds is { Count: > 0 } || host.VolumesFrom is { Count: > 0 } ||
             actual.Mounts.Count != 1 || actual.Mounts.Single().Type != "volume" || actual.Mounts.Single().Name != Name || actual.Mounts.Single().Destination != "/var/lib/postgresql" || !actual.Mounts.Single().RW ||
@@ -151,7 +178,7 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
     {
         var actual = await _docker.Volumes.InspectAsync(Name, ct).ConfigureAwait(false);
         if (_previousVolumes.Contains(Name) || actual.Name != Name || actual.Driver != "local" || actual.Scope != "local" || actual.Options is { Count: > 0 } ||
-            actual.Labels.Count != 3 || actual.Labels["codex.repair.purpose"] != "current-auth-repair-proof" || actual.Labels["codex.repair.operation"] != Operation.ToString("D") ||
+            actual.Labels.Count != (DefinitionParent is null ? 3 : 4) || (DefinitionParent is not null && (!actual.Labels.TryGetValue(CurrentAuthArchiveDefinitionAnchorOwner.ParentLabel, out string? parent) || parent != DefinitionParent)) || actual.Labels["codex.repair.purpose"] != "current-auth-repair-proof" || actual.Labels["codex.repair.operation"] != Operation.ToString("D") ||
             actual.Labels["codex.repair.run-binding"] != Binding.ComputeSha256() || !DateTimeOffset.TryParse(actual.CreatedAt, System.Globalization.CultureInfo.InvariantCulture,
                 System.Globalization.DateTimeStyles.None, out var created) || created < _began.AddSeconds(-1) || created > _expires || (_volumeCreated is not null && _volumeCreated != actual.CreatedAt))
         { throw CurrentAuthRepairPermit.Invalid(); }
@@ -174,7 +201,7 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
 
     private async Task RecordTargetAsync(CancellationToken ct)
     {
-        string raw = await CurrentAppOwnedRepairDockerProcess.RunDockerAsync(["--host", "npipe:////./pipe/docker_engine", "inspect", "--type", "container", ContainerId], ct,
+        string raw = await CurrentAppOwnedRepairDockerProcess.RunDockerAsync(["inspect", "--type", "container", ContainerId], ct,
             value => RecordAsync("docker", value, CancellationToken.None)).ConfigureAwait(false);
         JsonArray array = JsonNode.Parse(raw)!.AsArray(); JsonObject item = array.Single()!.AsObject(), config = item["Config"]!.AsObject();
         string[] pgData = config["Env"]!.AsArray().Select(x => x!.GetValue<string>()).Where(x => x.StartsWith("PGDATA=", StringComparison.Ordinal)).ToArray();
@@ -182,11 +209,22 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
         _ = config.Remove("Env"); config["PgData"] = pgData[0][7..]; await RecordAsync("target", item, ct).ConfigureAwait(false);
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
+    {
+        return DisposeCoreAsync(null);
+    }
+
+    internal ValueTask DisposeForCompanyAsync(CompanyStorageFixtureSecretOwnership ownership)
+    {
+        return DisposeCoreAsync(ownership);
+    }
+
+    private async ValueTask DisposeCoreAsync(CompanyStorageFixtureSecretOwnership? ownership)
     {
         if (_disposed) { return; }
         _disposed = true;
         using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(55)); bool removed = false, sdkDisposed = false, verifiedAbsence = false; DateTimeOffset? removedAtUtc = null;
+        Exception? primary = null;
         try
         {
             if (_containerAttempted)
@@ -219,7 +257,8 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
                 if (!absent) { throw CurrentAuthRepairPermit.Invalid(); }
             }
             removed = true; removedAtUtc = DateTimeOffset.UtcNow;
-            CurrentAuthClosedSecretCleanup.RequireRemoved(Root, Binding, Operation);
+            if (ownership is null) { CurrentAuthClosedSecretCleanup.RequireRemoved(Root, Binding, Operation); }
+            else { CurrentAuthClosedSecretCleanup.RequireRemovedForCompany(Root, Binding, Operation, ownership); }
             await _container.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false); sdkDisposed = true;
             var containers = await _docker.Containers.ListContainersAsync(new ContainersListParameters { All = true }, cleanup.Token).ConfigureAwait(false);
             var volumes = await _docker.Volumes.ListAsync(cleanup.Token).ConfigureAwait(false);
@@ -243,26 +282,34 @@ internal sealed class CurrentAuthNamedClosedFixture : IAsyncDisposable
             }, cleanup.Token).ConfigureAwait(false);
             verifiedAbsence = true;
         }
-        finally
+        catch (Exception failure) { primary = failure; }
+        Exception? cleanupFailure = null;
+        try
         {
-            try
+            if (ownership is not null && removed && !sdkDisposed)
             {
-                await RecordAsync("disposed", new
-                {
-                    Operation,
-                    _id,
-                    volume = Name,
-                    removed,
-                    sdkDisposed,
-                    removedAtUtc,
-                    verifiedAbsence,
-                    cleanupFailed = !removed || !sdkDisposed || !verifiedAbsence,
-                    expiresAtUtc = _expires,
-                    completedAtUtc = DateTimeOffset.UtcNow
-                }, CancellationToken.None).ConfigureAwait(false);
+                await _container.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false);
+                sdkDisposed = true;
             }
-            finally { _lease.Dispose(); _docker.Dispose(); }
+            await RecordAsync("disposed", new
+            {
+                Operation,
+                _id,
+                volume = Name,
+                removed,
+                sdkDisposed,
+                removedAtUtc,
+                verifiedAbsence,
+                cleanupFailed = !removed || !sdkDisposed || !verifiedAbsence,
+                expiresAtUtc = _expires,
+                completedAtUtc = DateTimeOffset.UtcNow
+            }, CancellationToken.None).ConfigureAwait(false);
         }
+        catch (Exception failure) { cleanupFailure = failure; }
+        finally { _lease.Dispose(); _docker.Dispose(); }
+        if (ownership is not null && primary is not null && cleanupFailure is not null) { throw new AggregateException(primary, cleanupFailure); }
+        if (cleanupFailure is not null) { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanupFailure).Throw(); }
+        if (primary is not null) { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primary).Throw(); }
     }
 
     private async Task RequireContainerAbsentAsync(string name, CancellationToken ct)

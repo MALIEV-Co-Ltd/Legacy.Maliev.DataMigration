@@ -15,7 +15,7 @@ namespace Legacy.Maliev.DataMigration.Tests;
 // No schema, archive provider, permission or execution proof is produced here.
 // Fixed named disposable fixture only. It does not accept a database endpoint, arbitrary
 // container image/name/mount, cleanup selector, SQL callback or persistent volume.
-internal sealed class CurrentAuthArchiveFixtureTarget : IAsyncDisposable
+internal sealed partial class CurrentAuthArchiveFixtureTarget : IAsyncDisposable
 {
     internal const string Image = "postgres:18.4-bookworm@sha256:882236b897e39051d2368c5ccc6cda944904723506b2dfc97f2a8f5bc9afa382";
     private readonly DockerClient _docker;
@@ -33,6 +33,7 @@ internal sealed class CurrentAuthArchiveFixtureTarget : IAsyncDisposable
     internal LocalExecutionBinding Binding { get; }
     internal bool Comparison { get; }
     internal FreshSchemaPlan Source { get; }
+    internal CurrentAuthArchiveFinal6CaseContext? Final6Case { get; }
     internal CurrentAuthArchiveFixtureTargetSettings Configuration { get; }
     internal string Name => Configuration.Name;
     internal string ContainerId => _id ?? throw CurrentAuthRepairPermit.Invalid();
@@ -41,9 +42,9 @@ internal sealed class CurrentAuthArchiveFixtureTarget : IAsyncDisposable
     internal CancellationToken Token => _lease.Token;
 
     private CurrentAuthArchiveFixtureTarget(string root, Guid operation, LocalExecutionBinding binding,
-        DockerClient docker, PostgreSqlContainer container, HashSet<string> previous, string password, DateTimeOffset began, bool comparison, FreshSchemaPlan source)
+        DockerClient docker, PostgreSqlContainer container, HashSet<string> previous, string password, DateTimeOffset began, bool comparison, FreshSchemaPlan source, CurrentAuthArchiveFinal6CaseContext? final6Case)
     {
-        Root = root; Operation = operation; Binding = binding; Comparison = comparison; Source = source;
+        Root = root; Operation = operation; Binding = binding; Comparison = comparison; Source = source; Final6Case = final6Case;
         Configuration = Settings(operation, comparison, binding.ComputeSha256(), began); _docker = docker; _container = container;
         _previousVolumes = previous; AdminConnection = password; _began = began; _expires = began.AddMinutes(8);
         _lease = new CancellationTokenSource(_expires - DateTimeOffset.UtcNow);
@@ -63,12 +64,31 @@ internal sealed class CurrentAuthArchiveFixtureTarget : IAsyncDisposable
                 ["codex.repair.run-binding"] = binding,
             }), Array.AsReadOnly(databases), 512L * 1024 * 1024, 750_000_000, began.AddMinutes(8));
     }
-    internal static async Task<CurrentAuthArchiveFixtureTarget> CreateAsync(string parentRoot, CurrentAppOwnedRepairCustody hostFiles,
-        CurrentAuthArchiveProofArtifact sourceArtifact, string acceptedCommit, Guid operation, bool comparison, CancellationToken ct, CurrentAuthArchiveFixtureFault fault = CurrentAuthArchiveFixtureFault.None)
+    internal static Task<CurrentAuthArchiveFixtureTarget> CreateAsync(string parentRoot, CurrentAppOwnedRepairCustody hostFiles,
+        CurrentAuthArchiveProofArtifact sourceArtifact, string acceptedCommit, Guid operation, bool comparison, CancellationToken ct,
+        CurrentAuthArchiveFixtureFault fault = CurrentAuthArchiveFixtureFault.None)
+    { return CreateCoreAsync(parentRoot, hostFiles, sourceArtifact, acceptedCommit, operation, comparison, fault, null, ct); }
+
+    internal static Task<CurrentAuthArchiveFixtureTarget> CreateFinal6Async(string parentRoot, CurrentAppOwnedRepairCustody hostFiles,
+        CurrentAuthArchiveProofArtifact sourceArtifact, string acceptedCommit, Guid operation, bool comparison,
+        CurrentAuthArchiveFinal6CaseContext context, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return CreateCoreAsync(parentRoot, hostFiles, sourceArtifact, acceptedCommit, operation, comparison, CurrentAuthArchiveFixtureFault.None, context, ct);
+    }
+
+    private static async Task<CurrentAuthArchiveFixtureTarget> CreateCoreAsync(string parentRoot, CurrentAppOwnedRepairCustody hostFiles,
+        CurrentAuthArchiveProofArtifact sourceArtifact, string acceptedCommit, Guid operation, bool comparison, CurrentAuthArchiveFixtureFault fault, CurrentAuthArchiveFinal6CaseContext? final6Case, CancellationToken ct)
     {
         if (!OperatingSystem.IsWindows() || !Path.IsPathFullyQualified(parentRoot) || !Directory.Exists(parentRoot)) { throw CurrentAuthRepairPermit.Invalid(); }
         CurrentAuthArchiveCapacity.Require(admission: true);
         FreshSchemaPlan source = CurrentAuthArchiveFixtureSource.Read(hostFiles, sourceArtifact, acceptedCommit, DateTimeOffset.UtcNow);
+        if (final6Case is not null)
+        {
+            IEnumerable<string> databases = comparison ? ReviewedProductionRepairInventory.ExportProductionNames() :
+                DatabaseInventory.ActiveDatabases.Concat(["Auth", "postgres", "legacy_local"]);
+            await final6Case.RequireFixtureAsync(source, operation, comparison, databases, ct);
+        }
         ct.ThrowIfCancellationRequested();
         if (!Enum.IsDefined(fault)) { throw CurrentAuthRepairPermit.Invalid(); }
         if (operation == Guid.Empty) { throw CurrentAuthRepairPermit.Invalid(); }
@@ -110,7 +130,7 @@ internal sealed class CurrentAuthArchiveFixtureTarget : IAsyncDisposable
                     parameters.HostConfig.NanoCPUs = settings.NanoCpus;
                     foreach (var port in parameters.HostConfig.PortBindings!.Values) { foreach (var map in port) { map.HostIP = "127.0.0.1"; } }
                 }).Build();
-            fixture = new(root, operation, binding, docker, container, previous, password, began, comparison, source);
+            fixture = new(root, operation, binding, docker, container, previous, password, began, comparison, source, final6Case);
             await fixture.RecordAsync("attempt", new
             {
                 operation,

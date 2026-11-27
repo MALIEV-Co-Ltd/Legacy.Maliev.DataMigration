@@ -30,6 +30,11 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
     private bool _disposed;
     private int _scopeAttachmentStarted;
     private readonly CurrentAuthArchiveGenuineRecoveryHelperCase? _genuineHelperCase;
+    private readonly CurrentAuthArchiveGenuineExecutionCase? _genuineExecutionCase;
+    private readonly CurrentAuthArchiveGenuinePreflightCase? _genuinePreflightCase;
+    private readonly CurrentAuthArchiveRecoveryV2Case? _recoveryV2Case;
+
+    internal CurrentAuthArchiveFinal6CaseContext? Final6Case { get; }
 
     internal string AcceptedSourceCommitSha => _seed.AcceptedSourceCommitSha;
     internal string SourceSchemaPlanSha256 => _seed.SourceSchemaPlanSha256;
@@ -89,10 +94,15 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
     private CurrentAuthArchiveComponentReadback(CurrentAuthArchiveComponentReadbackInput input,
         WindowsLocalRunAuthority parent, CurrentAppOwnedRepairCustody parentFiles,
         WindowsLocalRunAuthority precursor, CurrentAppOwnedRepairCustody precursorFiles,
-        CurrentAuthArchiveGenuineRecoveryHelperCase? genuineHelperCase = null)
+        CurrentAuthArchiveGenuineRecoveryHelperCase? genuineHelperCase = null,
+        CurrentAuthArchiveGenuineExecutionCase? genuineExecutionCase = null,
+        CurrentAuthArchiveGenuinePreflightCase? genuinePreflightCase = null,
+        CurrentAuthArchiveRecoveryV2Case? recoveryV2Case = null, CurrentAuthArchiveFinal6CaseContext? final6Case = null)
     {
         _input = input; ParentAuthority = parent; ParentFiles = parentFiles; _precursor = precursor; _precursorFiles = precursorFiles;
         _genuineHelperCase = genuineHelperCase;
+        _genuineExecutionCase = genuineExecutionCase;
+        _genuinePreflightCase = genuinePreflightCase; _recoveryV2Case = recoveryV2Case; Final6Case = final6Case;
         _scope = input.Scope is null ? null : Decode<CurrentAuthArchiveScope>(Read(parentFiles, input.Scope));
         _seed = Decode<CurrentAuthArchiveComponentBootstrapSeed>(Read(parentFiles, input.ParentSeed));
         Pins = Decode<CurrentAuthArchivePins>(Read(parentFiles, input.SigningPins));
@@ -125,8 +135,52 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         return input is null || input.Scope is not null ? throw Invalid() : OpenCoreAsync(input, initial: true, ct, expectedCase);
     }
 
+    internal static Task<CurrentAuthArchiveComponentReadback> OpenGenuineExecutionInitialAsync(CurrentAuthArchiveComponentReadbackInput input,
+        CurrentAuthArchiveGenuineExecutionCase expectedCase, CancellationToken ct)
+    {
+        CurrentAuthArchiveGenuineExecutionCases.RequireImplemented(expectedCase);
+        return input is null || input.Scope is not null ? throw Invalid() : OpenCoreAsync(input, initial: true, ct, genuineExecutionCase: expectedCase);
+    }
+
+    internal static Task<CurrentAuthArchiveComponentReadback> OpenGenuinePreflightInitialAsync(CurrentAuthArchiveComponentReadbackInput input,
+        CurrentAuthArchiveGenuinePreflightCase expected, CancellationToken ct)
+    {
+        _ = CurrentAuthArchiveGenuinePreflight.CaseId(expected);
+        return input is null || input.Scope is not null ? throw Invalid() : OpenCoreAsync(input, initial: true, ct, genuinePreflightCase: expected);
+    }
+
+    internal static Task<CurrentAuthArchiveComponentReadback> OpenRecoveryV2InitialAsync(CurrentAuthArchiveComponentReadbackInput input, CurrentAuthArchiveRecoveryV2Case expected, CancellationToken ct)
+    {
+        _ = CurrentAuthArchiveRecoveryV2.CaseId(expected);
+        return input is null || input.Scope is not null ? throw Invalid() : OpenCoreAsync(input, initial: true, ct, recoveryV2Case: expected);
+    }
+
+    internal static Task<CurrentAuthArchiveComponentReadback> OpenFinal6InitialAsync(CurrentAuthArchiveComponentReadbackInput input,
+        CurrentAuthArchiveFinal6CaseContext context, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (input.Scope is not null || !JsonSerializer.SerializeToUtf8Bytes(input).AsSpan().SequenceEqual(
+            JsonSerializer.SerializeToUtf8Bytes(context.Request.Inputs))) { throw Invalid(); }
+        var identity = CurrentAuthArchiveGeneratedCasesV2.Identity(context.Case);
+        if (identity.Phase == "helper")
+        { return OpenCoreAsync(input, initial: true, ct, genuineHelperCase: CurrentAuthArchiveGeneratedCasesV2.Helper(context.Case), final6Case: context); }
+        if (context.Case is CurrentAuthArchiveProofCaseV2.HostUnprobed or CurrentAuthArchiveProofCaseV2.LocalTrust)
+        { return OpenCoreAsync(input, initial: true, ct, genuinePreflightCase: CurrentAuthArchiveGeneratedCasesV2.Preflight(context.Case), final6Case: context); }
+        if (identity.Phase == "recovery")
+        { return OpenCoreAsync(input, initial: true, ct, recoveryV2Case: CurrentAuthArchiveGeneratedCasesV2.Recovery(context.Case), final6Case: context); }
+        var execution = CurrentAuthArchiveGeneratedCasesV2.Execution(context.Case);
+        CurrentAuthArchiveGenuineExecutionCases.RequireImplemented(execution);
+        return OpenCoreAsync(input, initial: true, ct, genuineExecutionCase: execution, final6Case: context);
+    }
+
+    internal void BindFinal6Environment(CurrentAuthLocalSessionArchiveEnvironment environment)
+    { if (Final6Case is not null) { environment.AttachFinal6Case(Final6Case); } }
+
     private static async Task<CurrentAuthArchiveComponentReadback> OpenCoreAsync(CurrentAuthArchiveComponentReadbackInput input, bool initial, CancellationToken ct,
-        CurrentAuthArchiveGenuineRecoveryHelperCase? genuineHelperCase = null)
+        CurrentAuthArchiveGenuineRecoveryHelperCase? genuineHelperCase = null,
+        CurrentAuthArchiveGenuineExecutionCase? genuineExecutionCase = null,
+        CurrentAuthArchiveGenuinePreflightCase? genuinePreflightCase = null,
+        CurrentAuthArchiveRecoveryV2Case? recoveryV2Case = null, CurrentAuthArchiveFinal6CaseContext? final6Case = null)
     {
         ct.ThrowIfCancellationRequested();
         RequireInput(input, initial);
@@ -140,7 +194,7 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
             (precursor, precursorFiles) = Resume(input.PrecursorBinding);
             if (parent.Binding.ComputeSha256() == precursor.Binding.ComputeSha256() ||
                 string.Equals(parent.Binding.ArtifactRootCanonicalPath, precursor.Binding.ArtifactRootCanonicalPath, StringComparison.OrdinalIgnoreCase)) { throw Invalid(); }
-            result = new(input, parent, parentFiles, precursor, precursorFiles, genuineHelperCase);
+            result = new(input, parent, parentFiles, precursor, precursorFiles, genuineHelperCase, genuineExecutionCase, genuinePreflightCase, recoveryV2Case, final6Case);
             result.HoldImage(input.ConsoleImage, typeof(MigrationConsole).Assembly);
             result.HoldImage(input.CoreImage, typeof(CurrentAuthLocalSessionArchivePermit).Assembly);
             Assembly[] tests = AppDomain.CurrentDomain.GetAssemblies().Where(x => x.GetName().Name == "Legacy.Maliev.DataMigration.Tests").ToArray();
@@ -175,10 +229,11 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
         if (_images.Count != 3 || await SourceBackedLocalRepairSourceAcceptance.RequireAsync(ct).ConfigureAwait(false) != _seed.AcceptedSourceCommitSha ||
             ParentAuthority.Binding.ComputeSha256() != _seed.ParentRunBindingSha256) { throw Invalid(); }
         ProductionSchemaCatalogInspector.ValidatePlan(Source, DateTimeOffset.UtcNow);
+        if (Final6Case is not null) { await Final6Case.RequireAsync(Source, _seed, Pins, TrustStore, ct).ConfigureAwait(false); }
         if (Source.SourceCommitSha != _seed.AcceptedSourceCommitSha || SchemaPlanCanonicalizer.ComputeSha256(Source) != _seed.SourceSchemaPlanSha256 ||
             !ApprovedConsumerOverlaySelection.IsApproved(Source) || Source.Databases.Sum(x => x.Tables.Count) != 100 ||
             !Source.Databases.Select(x => x.Database).Order(StringComparer.Ordinal).SequenceEqual(DatabaseInventory.ActiveDatabases.Order(StringComparer.Ordinal)) ||
-            Source.Databases.Any(x => x.TargetExtensionProfile != ApprovedConsumerOverlaySelection.ProfileForDatabase(x.Database, ConsumerOverlaySelection.CurrentConsumerSchemaV3)) ||
+            (Final6Case is null && Source.Databases.Any(x => x.TargetExtensionProfile != ApprovedConsumerOverlaySelection.ProfileForDatabase(x.Database, ConsumerOverlaySelection.CurrentConsumerSchemaV3))) ||
             Source.Databases.Single(x => x.Database == "Quotation").SourceDispositionProfile != ApprovedSourceDispositionManifest.QuotationOutboxesV1 ||
             Source.CapturedAtUtc.Offset != TimeSpan.Zero || Source.CapturedAtUtc > (_scope?.CapturedAtUtc ?? DateTimeOffset.UtcNow) ||
             DateTimeOffset.UtcNow - Source.CapturedAtUtc > TimeSpan.FromMinutes(5)) { throw Invalid(); }
@@ -201,7 +256,13 @@ internal sealed class CurrentAuthArchiveComponentReadback : IDisposable
 
     private void RequireHeldClaims()
     {
-        if (_scope is null && _genuineHelperCase is { } expected)
+        if (_scope is null && _recoveryV2Case is { } recovery)
+        { CurrentAuthArchiveGenuineExecutionSeed.RequireInitial(_seed, Pins, TrustStore, CurrentAuthArchiveRecoveryV2.SetupCase(recovery), DateTimeOffset.UtcNow); }
+        else if (_scope is null && _genuinePreflightCase is { } preflight)
+        { CurrentAuthArchiveGenuinePreflight.RequireSeed(_seed, Pins, TrustStore, preflight, DateTimeOffset.UtcNow); }
+        else if (_scope is null && _genuineExecutionCase is { } execution)
+        { CurrentAuthArchiveGenuineExecutionSeed.RequireInitial(_seed, Pins, TrustStore, execution, DateTimeOffset.UtcNow); }
+        else if (_scope is null && _genuineHelperCase is { } expected)
         { CurrentAuthArchiveGenuineRecoveryHelpers.RequireInitialSeed(_seed, Pins, TrustStore, expected, DateTimeOffset.UtcNow); }
         else if (_scope is null) { CurrentAuthArchiveComponentBootstrap.RequireInitialSeed(_seed, Pins, TrustStore, DateTimeOffset.UtcNow); }
         else { RequireAuthenticatedClaims(_scope, _seed, Pins, TrustStore, DateTimeOffset.UtcNow); }

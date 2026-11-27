@@ -53,14 +53,23 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
         try { if (!bootstrap) { _cloud = CloudNativePgTargetObserver.CreateForCurrentAppOwnedRepair(productionTarget.CloudOptions!); } RequireHealthy(); }
         catch { _publication.Dispose(); _storage.Dispose(); _cloud?.Dispose(); _gate.Dispose(); throw; }
     }
-    public async Task RequireAcceptedSourceOwnerCustodyAndTargetsAsync(CurrentAuthArchiveScope scope, CancellationToken ct)
+    public Task RequireAcceptedSourceOwnerCustodyAndTargetsAsync(CurrentAuthArchiveScope scope, CancellationToken ct)
     {
-        RequireHealthy(); Match(scope);
-        CurrentAuthLocalSessionArchivePolicy.RequireScope(scope, DateTimeOffset.UtcNow);
+        return RequireAcceptedCoreAsync(scope, null, null, ct);
+    }
+
+    private async Task RequireAcceptedCoreAsync(CurrentAuthArchiveScope scope, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, OwnedCommitProxy? proxy, CancellationToken ct)
+    {
+        RequireObservationCustody(observation, proxy); Match(scope);
+        if (_final6PersistentBaselines is not null)
+        { _final6PersistentBaselines.RequireScope(scope, DateTimeOffset.UtcNow); CurrentAuthArchiveFinal6Source.RequireProfiles(_source, DateTimeOffset.UtcNow); }
+        else if (_persistentV2Baselines is not null) { _persistentV2Baselines.RequireScope(scope, DateTimeOffset.UtcNow); }
+        else { CurrentAuthLocalSessionArchivePolicy.RequireScope(scope, DateTimeOffset.UtcNow); }
         RequireObservationPolicies(scope, DateTimeOffset.UtcNow);
         ProductionSchemaCatalogInspector.ValidatePlan(_source, DateTimeOffset.UtcNow);
+        if (_final6Case is not null) { await _final6Case.RequireAsync(_source, scope.ComponentSubject?.Seed ?? throw CurrentAuthArchiveFinal6Source.Invalid(), _pins, _trust, ct).ConfigureAwait(false); }
         if (!ApprovedConsumerOverlaySelection.IsApproved(_source) ||
-            _source.Databases.Any(x => x.TargetExtensionProfile != ApprovedConsumerOverlaySelection.ProfileForDatabase(x.Database, ConsumerOverlaySelection.CurrentConsumerSchemaV3)) ||
+            (_final6Case is null && _final6PersistentBaselines is null && _source.Databases.Any(x => x.TargetExtensionProfile != ApprovedConsumerOverlaySelection.ProfileForDatabase(x.Database, ConsumerOverlaySelection.CurrentConsumerSchemaV3))) ||
             _source.Databases.Single(x => x.Database == "Quotation").SourceDispositionProfile != ApprovedSourceDispositionManifest.QuotationOutboxesV1)
         { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
         if (await SourceBackedLocalRepairSourceAcceptance.RequireAsync(ct).ConfigureAwait(false) != scope.LocalObservationPolicy.SourceCommitSha ||
@@ -88,7 +97,7 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
             }
         }
 
-        RequireHealthy();
+        RequireObservationCustody(observation, proxy);
     }
     public Task<CurrentAuthArchiveFleet> CaptureLocalFleetAsync(CurrentAuthArchiveScope scope, CancellationToken ct)
     {
@@ -100,15 +109,21 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
         return CaptureAsync(scope, false, ct);
     }
 
-    private async Task<CurrentAuthArchiveFleet> CaptureAsync(CurrentAuthArchiveScope scope, bool local, CancellationToken ct)
+    private Task<CurrentAuthArchiveFleet> CaptureAsync(CurrentAuthArchiveScope scope, bool local, CancellationToken ct)
     {
-        RequireHealthy(); Match(scope);
+        return CaptureCoreAsync(scope, local, null, null, ct);
+    }
+
+    private async Task<CurrentAuthArchiveFleet> CaptureCoreAsync(CurrentAuthArchiveScope scope, bool local, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, OwnedCommitProxy? proxy, CancellationToken ct)
+    {
+        RequireObservationCustody(observation, proxy); Match(scope);
         CurrentAuthRepairScope policy = local ? scope.LocalObservationPolicy : scope.ProductionObservationPolicy;
-        CurrentAuthArchiveCatalogObservation before = await CaptureCatalogAsync(local, policy, ct).ConfigureAwait(false);
+        CurrentAuthArchiveCatalogObservation before = await CaptureCatalogCoreAsync(local, policy, observation, proxy, ct).ConfigureAwait(false);
         DateTimeOffset began = DateTimeOffset.UtcNow;
         var results = new List<CurrentAppOwnedDatabaseSnapshot>();
+        var cohort = _pool.BeginCohort(policy.BeforeDatabaseSha256.Keys.Order(StringComparer.Ordinal));
         CurrentAuthLocalSessionArchiveObservation? auth = null;
-        foreach (string database in policy.BeforeDatabaseSha256.Keys.Order(StringComparer.Ordinal))
+        foreach (string database in cohort.Databases)
         {
             CurrentAuthArchiveCapacity.Require(admission: false);
             await using var connection = Connection(local, database); await connection.OpenAsync(ct).ConfigureAwait(false);
@@ -121,17 +136,22 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
             else { raw = await CurrentAppOwnedRepairPreservation.CaptureAsync(connection, tx, ct).ConfigureAwait(false); }
             if (DatabaseInventory.ActiveDatabases.Contains(database, StringComparer.Ordinal))
             { await RequirePhysicalAsync(connection, tx, _source.Databases.Single(x => x.Database == database), ct).ConfigureAwait(false); }
-            await tx.RollbackAsync(ct).ConfigureAwait(false); results.Add(_pool.Intern(raw));
+            await tx.RollbackAsync(ct).ConfigureAwait(false); results.Add(cohort.Intern(raw));
         }
         DateTimeOffset ended = DateTimeOffset.UtcNow;
-        CurrentAuthArchiveCatalogObservation after = await CaptureCatalogAsync(local, policy, ct).ConfigureAwait(false);
+        CurrentAuthArchiveCatalogObservation after = await CaptureCatalogCoreAsync(local, policy, observation, proxy, ct).ConfigureAwait(false);
         var catalogs = new CurrentAuthArchiveFleetCatalogs(before, after, began, ended);
         CurrentAuthLocalSessionArchivePolicy.RequireCatalogs(catalogs, policy, !local, results.Select(x => x.Database), before.BeganAtUtc, DateTimeOffset.UtcNow);
-        RequireHealthy(); return new(auth ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid(), results.AsReadOnly(), began, ended, catalogs);
+        cohort.Complete();
+        RequireObservationCustody(observation, proxy);
+        var fleet = new CurrentAuthArchiveFleet(auth ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid(), results.AsReadOnly(), began, ended, catalogs);
+        _persistentV2Baselines?.Require(fleet, local, _reserved && _prepared is not null);
+        _final6PersistentBaselines?.Require(fleet, local, _reserved && _prepared is not null);
+        return fleet;
     }
-    private async Task<CurrentAuthArchiveCatalogObservation> CaptureCatalogAsync(bool local, CurrentAuthRepairScope policy, CancellationToken ct)
+    private async Task<CurrentAuthArchiveCatalogObservation> CaptureCatalogCoreAsync(bool local, CurrentAuthRepairScope policy, CurrentAuthArchiveGenuineExecutionIssuer.SlotDenial? observation, OwnedCommitProxy? proxy, CancellationToken ct)
     {
-        RequireHealthy();
+        RequireObservationCustody(observation, proxy);
         await _storage.RequireCustodyAsync(ct).ConfigureAwait(false);
         _ = await RequireTargetsAsync(ct).ConfigureAwait(false);
         await using var connection = Connection(local, "postgres"); await connection.OpenAsync(ct).ConfigureAwait(false);
@@ -163,7 +183,7 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
         var result = new CurrentAuthArchiveCatalogObservation(policy.RunBindingSha256, policy.TargetObservationSha256,
             system ?? throw CurrentAuthLocalSessionArchivePolicy.Invalid(), readOnly, flags.AsReadOnly(), began, DateTimeOffset.UtcNow);
         await tx.RollbackAsync(ct).ConfigureAwait(false);
-        RequireHealthy(); return result;
+        RequireObservationCustody(observation, proxy); return result;
     }
     public async Task ReserveCreateNewAsync(Guid operationId, string authorizationSha256, CancellationToken ct)
     {
@@ -298,7 +318,8 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
         if (!persistent) { CurrentAuthLocalSessionArchiveTarget.RequireDisposable(item, v.RootElement[0], _scope.OperationId, local.RunBindingSha256, DateTimeOffset.UtcNow); }
         if (LocalDockerGenerationGuard.ComposeGeneration(actual) != local.TargetGeneration || item.GetProperty("Image").GetString() != _localTarget.DockerImageId ||
             item.GetProperty("Config").GetProperty("Image").GetString() != _localTarget.DockerImageReference) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
-        CurrentAppOwnedRepairLocalTarget.RequireVolumeConsumers(await DockerAsync(["ps", "--all", "--no-trunc", "--filter", "volume=" + volumeName, "--format", "{{.ID}}"], ct).ConfigureAwait(false), id);
+        string localConsumers = await DockerAsync(["ps", "--all", "--no-trunc", "--filter", "volume=" + volumeName, "--format", "{{.ID}}"], ct).ConfigureAwait(false);
+        CurrentAppOwnedRepairLocalTarget.RequireVolumeConsumers(localConsumers, id);
         string stat = await DockerAsync(["exec", id, "env", "TZ=UTC", "LC_ALL=C", "stat", "--printf=%d|%i|%f|%u|%g|%h|%s|%y|%z", "--", _localTarget.HbaPath], ct).ConfigureAwait(false);
         if (CurrentAuthLocalSessionArchivePolicy.HashBytes(Encoding.UTF8.GetBytes(stat)) != _localTarget.HbaStatSha256) { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
         ObservedDocker? comparison = null;
@@ -316,7 +337,7 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
         }
         await RequireOrdinaryRejectedAsync(endpoint, _localOrdinary, local, ct).ConfigureAwait(false);
         await RequireOrdinaryRejectedAsync(productionEndpoint, _productionOrdinary, production, ct).ConfigureAwait(false);
-        return (new(container, volume, actual), comparison);
+        return (new(container, volume, actual, localConsumers.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)), comparison);
     }
     private async Task<ObservedDocker> RequireComparisonDisposableAsync(CurrentAuthRepairScope policy, NpgsqlConnectionStringBuilder endpoint, CancellationToken ct)
     {
@@ -336,11 +357,12 @@ internal sealed partial class CurrentAuthLocalSessionArchiveEnvironment : ICurre
         if (LocalDockerGenerationGuard.ComposeGeneration(actual) != policy.TargetGeneration || item.GetProperty("Image").GetString() != target.DockerImageId ||
             item.GetProperty("Config").GetProperty("Image").GetString() != target.DockerImageReference || target.HbaPath != actual.PgData.TrimEnd('/') + "/pg_hba.conf")
         { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
-        CurrentAppOwnedRepairLocalTarget.RequireVolumeConsumers(await DockerAsync(["ps", "--all", "--no-trunc", "--filter", "volume=" + name, "--format", "{{.ID}}"], ct).ConfigureAwait(false), id);
+        string comparisonConsumers = await DockerAsync(["ps", "--all", "--no-trunc", "--filter", "volume=" + name, "--format", "{{.ID}}"], ct).ConfigureAwait(false);
+        CurrentAppOwnedRepairLocalTarget.RequireVolumeConsumers(comparisonConsumers, id);
         string stat = await DockerAsync(["exec", id, "env", "TZ=UTC", "LC_ALL=C", "stat", "--printf=%d|%i|%f|%u|%g|%h|%s|%y|%z", "--", target.HbaPath], ct).ConfigureAwait(false);
         return CurrentAuthLocalSessionArchivePolicy.HashBytes(Encoding.UTF8.GetBytes(stat)) != target.HbaStatSha256
             ? throw CurrentAuthLocalSessionArchivePolicy.Invalid()
-            : new(container, volume, actual);
+            : new(container, volume, actual, comparisonConsumers.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
     }
     private static NpgsqlConnectionStringBuilder RequireEndpoint(string text, CurrentAuthRepairScope policy)
     {

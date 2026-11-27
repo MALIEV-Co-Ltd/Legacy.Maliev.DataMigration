@@ -18,6 +18,7 @@ internal sealed class CurrentAppOwnedSnapshotInternPool
     private readonly Dictionary<CurrentAppOwnedCatalogFact, CurrentAppOwnedCatalogFact> _catalog = [];
     private readonly Dictionary<CurrentAppOwnedRelationFact, CurrentAppOwnedRelationFact> _relations = [];
     private readonly Dictionary<CurrentAppOwnedSequenceFact, CurrentAppOwnedSequenceFact> _sequences = [];
+    private readonly object _cohortGate = new();
     private int _databases;
     internal CurrentAppOwnedSnapshotLimits Limits { get; }
     internal int TotalFactCount { get; private set; }
@@ -47,22 +48,28 @@ internal sealed class CurrentAppOwnedSnapshotInternPool
     }
 
     internal CurrentAppOwnedCatalogFact Intern(CurrentAppOwnedCatalogFact fact)
+    { return Intern(fact, countOccurrence: true); }
+    private CurrentAppOwnedCatalogFact Intern(CurrentAppOwnedCatalogFact fact, bool countOccurrence)
     {
         RequireString(fact.Catalog); RequireString(fact.Key); RequireString(fact.Sha256);
         RequireString(fact.ObjectClass); RequireString(fact.ObjectId);
-        return InternExact(fact, _catalog, (long)fact.Catalog.Length + fact.Key.Length + fact.Sha256.Length + fact.ObjectClass.Length + fact.ObjectId.Length);
+        return InternExact(fact, _catalog, (long)fact.Catalog.Length + fact.Key.Length + fact.Sha256.Length + fact.ObjectClass.Length + fact.ObjectId.Length, countOccurrence);
     }
 
     internal CurrentAppOwnedRelationFact Intern(CurrentAppOwnedRelationFact fact)
+    { return Intern(fact, countOccurrence: true); }
+    private CurrentAppOwnedRelationFact Intern(CurrentAppOwnedRelationFact fact, bool countOccurrence)
     {
         RequireString(fact.Schema); RequireString(fact.Name); RequireString(fact.RowSha256);
-        return InternExact(fact, _relations, (long)fact.Schema.Length + fact.Name.Length + fact.RowSha256.Length);
+        return InternExact(fact, _relations, (long)fact.Schema.Length + fact.Name.Length + fact.RowSha256.Length, countOccurrence);
     }
 
     internal CurrentAppOwnedSequenceFact Intern(CurrentAppOwnedSequenceFact fact)
+    { return Intern(fact, countOccurrence: true); }
+    private CurrentAppOwnedSequenceFact Intern(CurrentAppOwnedSequenceFact fact, bool countOccurrence)
     {
         RequireString(fact.Schema); RequireString(fact.Name); RequireString(fact.Owner); RequireString(fact.TupleSha256);
-        return InternExact(fact, _sequences, (long)fact.Schema.Length + fact.Name.Length + fact.Owner.Length + fact.TupleSha256.Length);
+        return InternExact(fact, _sequences, (long)fact.Schema.Length + fact.Name.Length + fact.Owner.Length + fact.TupleSha256.Length, countOccurrence);
     }
 
     internal void AddDatabase()
@@ -71,10 +78,10 @@ internal sealed class CurrentAppOwnedSnapshotInternPool
         _databases++;
     }
 
-    private T InternExact<T>(T fact, Dictionary<T, T> records, long stringCharacters) where T : notnull
+    private T InternExact<T>(T fact, Dictionary<T, T> records, long stringCharacters, bool countOccurrence) where T : notnull
     {
-        if (TotalFactCount >= Limits.MaximumFacts) { throw new JsonException("Snapshot fact limit exceeded."); }
-        TotalFactCount++;
+        if (countOccurrence)
+        { if (TotalFactCount >= Limits.MaximumFacts) { throw new JsonException("Snapshot fact limit exceeded."); } TotalFactCount++; }
         if (records.TryGetValue(fact, out T? existing)) { return existing; }
         if (UniqueRecordCount >= Limits.MaximumUniqueRecords) { throw new JsonException("Snapshot unique record limit exceeded."); }
         if (stringCharacters > Limits.MaximumUniqueStringCharacters - UniqueStringCharacterCount)
@@ -89,6 +96,69 @@ internal sealed class CurrentAppOwnedSnapshotInternPool
         if (value is null || System.Text.Encoding.UTF8.GetByteCount(value) > Limits.MaximumStringUtf8Bytes)
         {
             throw new JsonException("Snapshot string limit exceeded.");
+        }
+    }
+
+    // A complete fleet capture gets its own occurrence budget. The exact record registry and its
+    // retained unique-record/string budgets remain shared for this entire pool lifetime.
+    internal Cohort BeginCohort(IEnumerable<string> databases)
+    {
+        return new(this, databases.Take(Limits.MaximumDatabases + 1).ToArray());
+    }
+
+    internal sealed class Cohort
+    {
+        private readonly CurrentAppOwnedSnapshotInternPool _owner;
+        private readonly string[] _names;
+        private int _next;
+        private bool _completed, _failed;
+        internal IReadOnlyList<string> Databases { get; }
+        internal int TotalFactCount { get; private set; }
+        internal Cohort(CurrentAppOwnedSnapshotInternPool owner, string[] names)
+        {
+            if (names.Length is < 1 || names.Length > owner.Limits.MaximumDatabases || names.Any(string.IsNullOrWhiteSpace) ||
+                names.Distinct(StringComparer.Ordinal).Count() != names.Length) { throw new JsonException("Snapshot cohort inventory invalid."); }
+            foreach (string name in names) { owner.RequireString(name); }
+            _owner = owner; _names = names.ToArray(); Databases = Array.AsReadOnly(_names);
+        }
+        internal CurrentAppOwnedDatabaseSnapshot Intern(CurrentAppOwnedDatabaseSnapshot snapshot)
+        {
+            ArgumentNullException.ThrowIfNull(snapshot);
+            lock (_owner._cohortGate)
+            {
+                if (_failed || _completed || _next >= _names.Length || snapshot.Database != _names[_next])
+                { _failed = true; throw new JsonException("Snapshot cohort order or state invalid."); }
+                try
+                {
+                    long count = (long)snapshot.Catalog.Count + snapshot.Relations.Count + snapshot.Sequences.Count;
+                    if (count > _owner.Limits.MaximumFacts - TotalFactCount) { throw new JsonException("Snapshot cohort fact limit exceeded."); }
+                    var result = new CurrentAppOwnedDatabaseSnapshot(snapshot.Database,
+                        [.. snapshot.Catalog.Select(InternCatalog)], [.. snapshot.Relations.Select(InternRelation)], [.. snapshot.Sequences.Select(InternSequence)]);
+                    if (result.Catalog.Count != snapshot.Catalog.Count || result.Relations.Count != snapshot.Relations.Count || result.Sequences.Count != snapshot.Sequences.Count)
+                    { throw new JsonException("Snapshot cohort occurrence inventory inconsistent."); }
+                    _next++; return result;
+                }
+                catch { _failed = true; throw; }
+            }
+        }
+        private void AddOccurrence()
+        {
+            if (TotalFactCount >= _owner.Limits.MaximumFacts) { throw new JsonException("Snapshot cohort fact limit exceeded."); }
+            TotalFactCount++;
+        }
+        private CurrentAppOwnedCatalogFact InternCatalog(CurrentAppOwnedCatalogFact fact)
+        { AddOccurrence(); return _owner.Intern(fact, countOccurrence: false); }
+        private CurrentAppOwnedRelationFact InternRelation(CurrentAppOwnedRelationFact fact)
+        { AddOccurrence(); return _owner.Intern(fact, countOccurrence: false); }
+        private CurrentAppOwnedSequenceFact InternSequence(CurrentAppOwnedSequenceFact fact)
+        { AddOccurrence(); return _owner.Intern(fact, countOccurrence: false); }
+        internal void Complete()
+        {
+            lock (_owner._cohortGate)
+            {
+                if (_failed || _completed || _next != _names.Length) { _failed = true; throw new JsonException("Snapshot cohort incomplete or already completed."); }
+                _completed = true;
+            }
         }
     }
 }

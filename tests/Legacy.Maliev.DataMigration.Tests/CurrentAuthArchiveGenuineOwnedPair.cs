@@ -52,7 +52,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
 
     private static async Task<CurrentAuthArchiveGenuineOwnedPair> CreateHelperCoreAsync(
         CurrentAuthArchiveGenuineHostConfiguration request,
-        CurrentAuthArchiveGenuineRecoveryHelperCase helperCase, CancellationToken ct)
+        CurrentAuthArchiveGenuineRecoveryHelperCase helperCase, CancellationToken ct, CurrentAuthArchiveFinal6CaseContext? final6Case = null)
     {
         ct.ThrowIfCancellationRequested();
         CurrentAuthArchiveGenuineHost.RequireInput(request);
@@ -66,7 +66,8 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
         try
         {
             bundle.Require();
-            inputs = helperCase == CurrentAuthArchiveGenuineRecoveryHelperCase.DualDurableReadback ?
+            inputs = final6Case is not null ? await CurrentAuthArchiveComponentReadback.OpenFinal6InitialAsync(request.Inputs, final6Case, ct) :
+                helperCase == CurrentAuthArchiveGenuineRecoveryHelperCase.DualDurableReadback ?
                 await CurrentAuthArchiveComponentReadback.OpenInitialAsync(request.Inputs, ct) :
                 await CurrentAuthArchiveComponentReadback.OpenGenuineHelperInitialAsync(request.Inputs, helperCase, ct);
             var seed = await inputs.ReadSeedAsync(ct);
@@ -96,10 +97,16 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
     private async Task CreateOwnedAsync(CurrentAuthArchiveGenuineHostConfiguration request, CancellationToken ct)
     {
         await _inputs.RequireAsync(ct);
-        _first = await CurrentAuthArchiveFixtureTarget.CreateAsync(request.FirstFixtureParent, _inputs.ParentFiles,
+        _first = _inputs.Final6Case is { } firstFinal6 ?
+            await CurrentAuthArchiveFixtureTarget.CreateFinal6Async(request.FirstFixtureParent, _inputs.ParentFiles,
+                _inputs.SourceArtifact, _seed.AcceptedSourceCommitSha, _seed.OperationId, comparison: false, firstFinal6, ct) :
+            await CurrentAuthArchiveFixtureTarget.CreateAsync(request.FirstFixtureParent, _inputs.ParentFiles,
             _inputs.SourceArtifact, _seed.AcceptedSourceCommitSha, _seed.OperationId, comparison: false, ct);
         await _inputs.RequireAsync(ct);
-        _second = await CurrentAuthArchiveFixtureTarget.CreateAsync(request.SecondFixtureParent, _inputs.ParentFiles,
+        _second = _inputs.Final6Case is { } secondFinal6 ?
+            await CurrentAuthArchiveFixtureTarget.CreateFinal6Async(request.SecondFixtureParent, _inputs.ParentFiles,
+                _inputs.SourceArtifact, _seed.AcceptedSourceCommitSha, _seed.OperationId, comparison: true, secondFinal6, ct) :
+            await CurrentAuthArchiveFixtureTarget.CreateAsync(request.SecondFixtureParent, _inputs.ParentFiles,
             _inputs.SourceArtifact, _seed.AcceptedSourceCommitSha, _seed.OperationId, comparison: true, ct);
         var firstSeed = await CurrentAuthArchiveFixtureSeed.SeedAndCaptureAsync(_first, _inputs.ParentFiles,
             _inputs.SourceArtifact, _seed.AcceptedSourceCommitSha, ct);
@@ -146,7 +153,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
             string.Empty, string.Empty, string.Empty, string.Empty, now, expires,
             CurrentAuthArchiveProofAdmission.DisposableNativeBootstrap, subject);
         CurrentAuthArchiveComponentBootstrap.RequireClaims(_scope, _inputs.TrustStore, _inputs.Pins, now);
-        string scopePath = Path.Combine(_inputs.ParentAuthority.Binding.ArtifactRootCanonicalPath, "genuine-owned-pair-scope.json");
+        string scopePath = Path.Combine(_inputs.ParentAuthority.Binding.ArtifactRootCanonicalPath, $"genuine-owned-pair-{_seed.OperationId:N}-scope.json");
         byte[] scopeBytes = JsonSerializer.SerializeToUtf8Bytes(_scope);
         await _inputs.ParentFiles.WriteNewAsync(scopePath, scopeBytes, ct);
         if (!_inputs.ParentFiles.Read(scopePath, sharedReader: true, maximumBytes: 1024 * 1024).AsSpan().SequenceEqual(scopeBytes)) { throw Invalid(); }
@@ -157,6 +164,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
             Encoding.UTF8.GetString(_firstFiles.Read(_firstPolicy.OrdinaryConnectionPath, maximumBytes: 65536)),
             Encoding.UTF8.GetString(_secondFiles.Read(_secondPolicy.OrdinaryConnectionPath, maximumBytes: 65536)),
             devices, _inputs.TrustStore, _inputs.Pins, CurrentAuthLocalSessionArchivePolicy.Hash(_seed));
+        _inputs.BindFinal6Environment(_environment);
         _subject = await _environment.ObserveComponentSubjectAsync(_inputs, ct);
     }
 
@@ -185,6 +193,7 @@ internal sealed partial class CurrentAuthArchiveGenuineOwnedPair : IAsyncDisposa
         {
             try { resource?.Dispose(); } catch (Exception cleanup) { failure ??= cleanup; }
         }
+        try { if (_commitProxy is not null) { await _commitProxy.DisposeAsync(); } } catch (Exception cleanup) { failure ??= cleanup; }
         Release(_recoveryHelpersStorage); Release(_environment);
         Release(_secondFiles); Release(_firstFiles); Release(_secondAuthority); Release(_firstAuthority);
         Release(_secondPolicy); Release(_firstPolicy);

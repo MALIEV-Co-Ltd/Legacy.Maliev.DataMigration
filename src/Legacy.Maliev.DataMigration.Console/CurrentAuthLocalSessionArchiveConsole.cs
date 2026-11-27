@@ -16,7 +16,7 @@ public static partial class MigrationConsole
 {
     internal static void RequireArchiveConsoleScope(CurrentAuthArchiveScope scope)
     {
-        if (scope.ComponentSubject is not null || scope.ProofAdmission == CurrentAuthArchiveProofAdmission.DisposableNativeBootstrap)
+        if (scope.ComponentSubject is not null || scope.ProofAdmission != CurrentAuthArchiveProofAdmission.PersistentWithClosedConsoleProof)
         { throw CurrentAuthLocalSessionArchivePolicy.Invalid(); }
     }
     // Root must add these four fixed dispatch routes only after complete acceptance.

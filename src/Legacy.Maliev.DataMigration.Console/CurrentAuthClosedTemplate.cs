@@ -20,15 +20,37 @@ internal sealed record CurrentAuthClosedTemplateCapture(CurrentAuthClosedTemplat
 internal static class CurrentAuthClosedTemplate
 {
     private const string Image = "postgres:18.4-bookworm@sha256:882236b897e39051d2368c5ccc6cda944904723506b2dfc97f2a8f5bc9afa382";
-    internal static async Task<CurrentAuthClosedTemplateState> PrepareAsync(CurrentAppOwnedRepairCustody files,
+    internal static Task<CurrentAuthClosedTemplateState> PrepareAsync(CurrentAppOwnedRepairCustody files,
+        LocalExecutionBinding binding, Guid operation, string containerId, FreshSchemaPlan source,
+        string adminConnection, CancellationToken ct)
+    {
+        RequirePhase3Source(source);
+        return PrepareCoreAsync(files, binding, operation, containerId, source, adminConnection, ct);
+    }
+
+    internal static async Task<CurrentAuthClosedTemplateState> PrepareFinal6Async(CurrentAppOwnedRepairCustody files,
+        LocalExecutionBinding binding, Guid operation, string containerId, CurrentAuthArchiveFinal6SourceCapture.Captured source,
+        string adminConnection, CancellationToken ct)
+    {
+        await source.RequireAsync(ct).ConfigureAwait(false);
+        return await PrepareCoreAsync(files, binding, operation, containerId, source.Evidence.Capture.Plan, adminConnection, ct).ConfigureAwait(false);
+    }
+
+    // Source-family selection remains outside the source-independent disposable DDL/policy setup.
+    internal static void RequirePhase3Source(FreshSchemaPlan source)
+    {
+        if (source.Databases.Any(database => database.TargetExtensionProfile != ApprovedConsumerOverlaySelection.ProfileForDatabase(
+            database.Database, ConsumerOverlaySelection.CurrentConsumerSchemaV3))) { throw CurrentAuthRepairPermit.Invalid(); }
+    }
+
+    private static async Task<CurrentAuthClosedTemplateState> PrepareCoreAsync(CurrentAppOwnedRepairCustody files,
         LocalExecutionBinding binding, Guid operation, string containerId, FreshSchemaPlan source,
         string adminConnection, CancellationToken ct)
     {
         CurrentAuthRepairCapacity.Require(admission: true); files.Require();
         string accepted = await SourceBackedLocalRepairSourceAcceptance.RequireAsync(ct).ConfigureAwait(false);
         if (operation == Guid.Empty || !CurrentAuthRepairPermit.HashShape(containerId) || source.SourceCommitSha != accepted ||
-            source.Databases.Count != 23 || source.Databases.Sum(x => x.Tables.Count) != 100 || !ApprovedConsumerOverlaySelection.IsApproved(source) ||
-            source.Databases.Any(x => x.TargetExtensionProfile != ApprovedConsumerOverlaySelection.ProfileForDatabase(x.Database, ConsumerOverlaySelection.CurrentConsumerSchemaV3)))
+            source.Databases.Count != 23 || source.Databases.Sum(x => x.Tables.Count) != 100 || !ApprovedConsumerOverlaySelection.IsApproved(source))
         { throw CurrentAuthRepairPermit.Invalid(); }
         ProductionSchemaCatalogInspector.ValidatePlan(source, DateTimeOffset.UtcNow);
         string root = binding.ArtifactRootCanonicalPath, volumeName = "legacy-delta-proof-" + operation.ToString("N");
@@ -103,6 +125,12 @@ internal static class CurrentAuthClosedTemplate
             var physical = plan with { Tables = ApprovedConsumerColumnOverlayManifest.ComposePhysical(plan), TargetExtensionProfile = null, SourceDispositionProfile = null, SourceTableDispositions = [] };
             await using var inspector = new PostgreSqlWholeDatabaseTransaction(connection, tx, ownsResources: false);
             await inspector.ApplySchemaAsync(physical, lease.Token).ConfigureAwait(false); await inspector.FinalizeSchemaAsync(physical, lease.Token).ConfigureAwait(false);
+            if (CustomerCompanyStorageManifest.IsProfile(plan.TargetExtensionProfile))
+            {
+                // ComposePhysical intentionally clears the executable profile; the fixed Final6 fixture still needs its exact native normalizer.
+                await SqlAsync(connection, tx, CustomerCompanyStorageManifest.CreateNormalizerSql, lease.Token).ConfigureAwait(false);
+                await CustomerCompanyStorageManifest.RequireNormalizerAsync(plan, connection, tx, lease.Token).ConfigureAwait(false);
+            }
             await tx.CommitAsync(lease.Token).ConfigureAwait(false);
         }
         // Auxiliary sentinels must not change the exact source23 physical fingerprints.
@@ -209,6 +237,8 @@ internal static class CurrentAuthClosedTemplate
             while (await reader.ReadAsync(ct).ConfigureAwait(false)) { actual.Add(reader.GetString(0)); }
             if (!actual.SequenceEqual(expected, StringComparer.Ordinal)) { throw CurrentAuthRepairPermit.Invalid(); }
         }
+        bool final6 = source.Databases.Any(database => database.TargetExtensionProfile == CurrentConsumerSchemaV3SourceOrderIsoManifest.Country);
+        if (final6) { CurrentAuthArchiveFinal6Source.RequireProfiles(source, DateTimeOffset.UtcNow); }
         var baseline = new List<CurrentAppOwnedDatabaseSnapshot>(); var hashes = new Dictionary<string, string>(StringComparer.Ordinal);
         var pool = new CurrentAppOwnedSnapshotInternPool(); string nativePath = Path.Combine(root, "auth-template-native-before.json");
         foreach (string database in expected)
@@ -232,16 +262,34 @@ internal static class CurrentAuthClosedTemplate
             }
             else { snapshot = await CurrentAppOwnedRepairPreservation.CaptureAsync(connection, tx, ct).ConfigureAwait(false); }
             DatabaseSchemaPlan? schema = source.Databases.SingleOrDefault(x => x.Database == database);
+            string? final6PhysicalSha256 = null;
             if (schema is not null)
             {
                 var physical = schema with { Tables = ApprovedConsumerColumnOverlayManifest.ComposePhysical(schema), TargetExtensionProfile = null, SourceDispositionProfile = null, SourceTableDispositions = [] };
                 await using var inspector = new PostgreSqlWholeDatabaseTransaction(connection, tx, ownsResources: false);
                 if (await inspector.InspectSchemaAsync(physical, ct).ConfigureAwait(false) != physical.TargetSchemaSha256) { throw CurrentAuthRepairPermit.Invalid(); }
+                if (final6)
+                {
+                    final6PhysicalSha256 = await inspector.InspectSchemaAsync(schema, ct).ConfigureAwait(false);
+                    if (final6PhysicalSha256 != schema.TargetSchemaSha256) { throw CurrentAuthArchiveFinal6Source.Invalid(); }
+                }
             }
             snapshot = pool.Intern(snapshot); baseline.Add(snapshot); hashes.Add(database, CurrentAppOwnedSnapshotSerialization.Sha256(snapshot));
             await tx.RollbackAsync(ct).ConfigureAwait(false);
             await files.WriteNewAsync(Path.Combine(root, "auth-template-capture-" + database + ".json"),
                 JsonSerializer.SerializeToUtf8Bytes(new { database, StartedAtUtc = began, CompletedAtUtc = DateTimeOffset.UtcNow, Sha256 = hashes[database] }), ct).ConfigureAwait(false);
+            if (final6PhysicalSha256 is not null)
+            {
+                await files.WriteNewAsync(Path.Combine(root, "auth-final6-template-physical-" + database + ".json"), JsonSerializer.SerializeToUtf8Bytes(new
+                {
+                    Database = database,
+                    SourceSchemaPlanSha256 = SchemaPlanCanonicalizer.ComputeSha256(source),
+                    schema!.TargetExtensionProfile,
+                    ObservedSchemaSha256 = final6PhysicalSha256,
+                    BeganAtUtc = began,
+                    CompletedAtUtc = DateTimeOffset.UtcNow
+                }), ct).ConfigureAwait(false);
+            }
         }
         string baselinePath = Path.Combine(root, "auth-template-global-before.json");
         await files.WriteBaselineNewAsync(baselinePath, [.. baseline], ct).ConfigureAwait(false);
