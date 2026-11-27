@@ -84,12 +84,12 @@ internal sealed class CurrentAuthArchiveFinal6PersistentIssuer : IDisposable
             throw;
         }
     }
-    private async Task<CurrentAuthArchiveFinal6PersistentAttestation> MintFinal6PersistentAsync(Guid id, CancellationToken ct)
+    internal async Task<CurrentAuthArchiveFinal6PersistentAttestation> MintFinal6PersistentAsync(Guid id, CancellationToken ct)
     {
         if (id == Guid.Empty || Interlocked.CompareExchange(ref _minted, 1, 0) != 0) { throw Invalid(); }
         _id = id; return await RequireFinal6PersistentAsync(id, ct);
     }
-    private Task<CurrentAuthArchiveFinal6PersistentAttestation> RequireFinal6PersistentAsync(Guid id, CancellationToken ct)
+    internal Task<CurrentAuthArchiveFinal6PersistentAttestation> RequireFinal6PersistentAsync(Guid id, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (_disposed || id == Guid.Empty || id != _id || Volatile.Read(ref _minted) != 1) { throw Invalid(); }
@@ -98,7 +98,7 @@ internal sealed class CurrentAuthArchiveFinal6PersistentIssuer : IDisposable
         _ = CurrentAuthArchiveFinal6PersistentPolicy.Claims(_binding.Review, _binding.Authorization, _binding.Pins, _binding.Trust, DateTimeOffset.UtcNow);
         return Task.FromResult(_binding);
     }
-    private async Task<string> GetFinal6PersistentWriterAsync(Guid id, CancellationToken ct)
+    internal async Task<string> GetFinal6PersistentWriterAsync(Guid id, CancellationToken ct)
     { _ = await RequireFinal6PersistentAsync(id, ct); return _writer; }
     internal P256MigrationEvidenceSigner EvidenceSigner(string path)
     {

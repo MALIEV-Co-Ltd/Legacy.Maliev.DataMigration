@@ -7,7 +7,14 @@ public sealed class DualTargetCapturedProofOwnershipTests
 {
     private static readonly DateTimeOffset Now = new(2026, 11, 24, 0, 0, 0, TimeSpan.Zero);
     private static readonly string Accepted = new('a', 40);
-    private const string Connection = "Host=127.0.0.1;Port=15432;Database=postgres;Username=synthetic;Password=synthetic";
+    private static readonly string Connection = new Npgsql.NpgsqlConnectionStringBuilder
+    {
+        Host = "127.0.0.1",
+        Port = 15432,
+        Database = "postgres",
+        Username = "synthetic",
+        Password = Guid.NewGuid().ToString("N"),
+    }.ConnectionString;
 
     [Theory]
     [InlineData("plan-dual-target-captured-delta", null)]
